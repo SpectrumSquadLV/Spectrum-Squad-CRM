@@ -1,6 +1,7 @@
 // server.js -- Spectrum Squad ABA Client Pipeline CRM
 // Single-file build (consolidated for easy manual deployment via GitHub's
-// web UI). Uses Postgres (via the `pg` package) for persistent storage.
+// web UI). Uses Postgres (via the `pg` package) for persistent storage, and
+// the Railway volume mounted at /app/data for uploaded client documents.
 // Run with: node server.js
 "use strict";
 
@@ -168,6 +169,17 @@ const SCHEMA_SQL = `
     key TEXT PRIMARY KEY,
     weekly_hours REAL NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS client_documents (
+    id SERIAL PRIMARY KEY,
+    client_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    mime_type TEXT,
+    file_path TEXT NOT NULL,
+    uploaded_at TEXT,
+    FOREIGN KEY (client_id) REFERENCES clients(id)
+  );
 `;
 
 async function initSchema() {
@@ -178,6 +190,12 @@ async function initSchema() {
 function nowISO() {
   return new Date().toISOString();
 }
+
+// ---- Document storage (Railway volume mounted at /app/data) ----
+const DATA_DIR = path.join(__dirname, "data");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+const DOCS_DIR = path.join(DATA_DIR, "documents");
+if (!fs.existsSync(DOCS_DIR)) fs.mkdirSync(DOCS_DIR, { recursive: true });
 
 
 // ============================== AUTH ==============================
@@ -531,6 +549,16 @@ function json(res, status, data) {
   return true; // signals to the caller that the response has been written
 }
 
+function sendFile(res, status, buffer, contentType, filename) {
+  res.writeHead(status, {
+    "Content-Type": contentType || "application/octet-stream",
+    "Content-Disposition": `attachment; filename="${encodeURIComponent(filename || "document")}"`,
+    "Content-Length": buffer.length,
+  });
+  res.end(buffer);
+  return true;
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let chunks = "";
@@ -547,7 +575,13 @@ function readBody(req) {
   });
 }
 
-const PUBLIC_ROUTES = new Set(["/api/auth/login", "/api/webhook/enrollment", "/api/admin/backfill-import", "/api/admin/purge-demo"]);
+const PUBLIC_ROUTES = new Set([
+  "/api/auth/login",
+  "/api/webhook/enrollment",
+  "/api/admin/backfill-import",
+  "/api/admin/purge-demo",
+  "/api/admin/upload-document",
+]);
 
 const CLIENT_COLOR_PALETTE = ["#5fa8a0", "#e0a430", "#6660a8", "#3f8f89", "#c98a1b", "#8d85c8"];
 
@@ -767,6 +801,52 @@ async function handle(req, res, pathname, method) {
       return json(res, 200, { purged: ids.length, remainingClients: remaining });
     }
 
+    // One-time/ongoing document import: accepts base64 file content and
+    // attaches it to a client record, storing the file on the Railway volume
+    // and a metadata row in client_documents. Protected by the same
+    // ADMIN_IMPORT_SECRET as the routes above.
+    if (pathname === "/api/admin/upload-document" && method === "POST") {
+      const secret = process.env.ADMIN_IMPORT_SECRET;
+      if (!secret || req.headers["x-admin-secret"] !== secret) {
+        return json(res, 401, { error: "Invalid admin secret" });
+      }
+      const body = await readBody(req);
+      const { client_id, label, filename, mime_type, content_base64 } = body;
+      if (!client_id || !filename || !content_base64) {
+        return json(res, 400, { error: "client_id, filename, and content_base64 are required" });
+      }
+      const client = await dbGet("SELECT id FROM clients WHERE id = ?", [client_id]);
+      if (!client) return json(res, 404, { error: "Client not found" });
+
+      const safeName = String(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+      const storedName = `${client_id}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
+      const fullPath = path.join(DOCS_DIR, storedName);
+      let buffer;
+      try {
+        buffer = Buffer.from(content_base64, "base64");
+      } catch (e) {
+        return json(res, 400, { error: "Invalid base64 content" });
+      }
+      fs.writeFileSync(fullPath, buffer);
+
+      const row = await dbGet(
+        `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, uploaded_at)
+         VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+        [client_id, label || filename, filename, mime_type || "application/octet-stream", storedName, nowISO()]
+      );
+      return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename });
+    }
+
+    const downloadDocMatch = pathname.match(/^\/api\/documents\/(\d+)\/download$/);
+    if (downloadDocMatch && method === "GET") {
+      const doc = await dbGet("SELECT * FROM client_documents WHERE id = ?", [downloadDocMatch[1]]);
+      if (!doc) return json(res, 404, { error: "Not found" });
+      const fullPath = path.join(DOCS_DIR, doc.file_path);
+      if (!fs.existsSync(fullPath)) return json(res, 404, { error: "File missing on disk" });
+      const buffer = fs.readFileSync(fullPath);
+      return sendFile(res, 200, buffer, doc.mime_type, doc.filename);
+    }
+
     const clientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     if (clientMatch && method === "GET") {
       const id = clientMatch[1];
@@ -790,7 +870,11 @@ async function handle(req, res, pathname, method) {
         "SELECT * FROM notifications_log WHERE client_id = ? ORDER BY sent_at DESC",
         [id]
       );
-      return json(res, 200, { client, tasks, sessions, notifications });
+      const documents = await dbAll(
+        "SELECT id, label, filename, mime_type, uploaded_at FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
+        [id]
+      );
+      return json(res, 200, { client, tasks, sessions, notifications, documents });
     }
 
     if (clientMatch && method === "PATCH") {

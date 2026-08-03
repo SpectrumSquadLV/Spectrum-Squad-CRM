@@ -305,6 +305,13 @@ margin-bottom: 2px; line-height: 1.3; font-weight: 600;
 
 .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); font-size: 13.5px; }
 
+/* ---------- Documents ---------- */
+.doc-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.doc-row:last-child { border-bottom: none; }
+.doc-row .doc-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 6px; background: var(--brand-light); color: var(--brand-dark); font-size: 13px; margin-right: 10px; flex-shrink: 0; }
+.doc-row .doc-info { display: flex; align-items: center; font-size: 13px; }
+.doc-row .doc-filename { font-size: 11.5px; color: var(--text-muted); }
+
 </style>
 </head>
 <body>
@@ -676,10 +683,18 @@ alert(err.message || "Could not move client.");
 });
 }
 
+// ---------------- Document helpers ----------------
+function docIcon(mimeType) {
+if (!mimeType) return "📄";
+if (mimeType.includes("pdf")) return "📕";
+if (mimeType.includes("image")) return "🖼";
+return "📄";
+}
+
 // ---------------- Client Modal ----------------
 async function openClientModal(id) {
 const data = await api(`/api/clients/${id}`);
-const { client, tasks, sessions, notifications } = data;
+const { client, tasks, sessions, notifications, documents } = data;
 const sMap = stageMap();
 const stage = sMap[client.stage] || {};
 
@@ -705,6 +720,20 @@ backdrop.innerHTML = `
 <div class="field"><label>ASD Diagnosis</label><div>${client.has_asd_diagnosis || "—"}</div></div>
 <div class="field"><label>IEP</label><div>${client.has_iep || "—"}</div></div>
 </div>
+
+<div class="section-title">Documents</div>
+${
+(documents || []).length
+? documents
+.map(
+(d) => `<div class="doc-row">
+<div class="doc-info"><span class="doc-icon">${docIcon(d.mime_type)}</span><div><div><strong>${d.label}</strong></div><div class="doc-filename">${d.filename}</div></div></div>
+<a class="btn small secondary" href="/api/documents/${d.id}/download" target="_blank" rel="noopener">Download</a>
+</div>`
+)
+.join("")
+: `<div class="empty-state">No documents uploaded yet.</div>`
+}
 
 <div class="section-title">Stage Tasks</div>
 ${
