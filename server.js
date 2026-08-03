@@ -55,135 +55,146 @@ async function dbRun(sql, params = []) {
 }
 
 const SCHEMA_SQL = `
-  CREATE TABLE IF NOT EXISTS departments (
-    id SERIAL PRIMARY KEY,
-    key TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    color TEXT NOT NULL,
-    notify_email TEXT
-  );
+CREATE TABLE IF NOT EXISTS departments (
+  id SERIAL PRIMARY KEY,
+  key TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL,
+  notify_email TEXT
+);
 
-  CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    password_salt TEXT NOT NULL,
-    role TEXT NOT NULL, -- admin | intake | clinical | billing | scheduling
-    department_id INTEGER,
-    created_at TEXT
-  );
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  password_salt TEXT NOT NULL,
+  role TEXT NOT NULL, -- admin | intake | clinical | billing | scheduling
+  department_id INTEGER,
+  created_at TEXT
+);
 
-  CREATE TABLE IF NOT EXISTS sessions (
-    token TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    created_at TEXT,
-    expires_at TEXT NOT NULL
-  );
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  created_at TEXT,
+  expires_at TEXT NOT NULL
+);
 
-  CREATE TABLE IF NOT EXISTS clients (
-    id SERIAL PRIMARY KEY,
-    child_name TEXT NOT NULL,
-    dob TEXT,
-    parent_name TEXT,
-    parent_relationship TEXT,
-    parent_email TEXT,
-    parent_phone TEXT,
-    address TEXT,
-    service_location TEXT,
-    school_status TEXT,
-    start_urgency TEXT,
-    insurance_provider TEXT,
-    num_insurances TEXT,
-    has_asd_diagnosis TEXT,
-    has_iep TEXT,
-    prior_aba_nv TEXT,
-    preferred_contact TEXT,
-    desired_schedule TEXT, -- Full-Time | Part Time AM | Part Time PM
-    rethink_status TEXT,
-    stage TEXT NOT NULL DEFAULT 'new_submission',
-    notes TEXT,
-    color TEXT,
-    first_day_date TEXT,
-    discharge_reason TEXT,
-    submitted_at TEXT,
-    updated_at TEXT
-  );
+CREATE TABLE IF NOT EXISTS clients (
+  id SERIAL PRIMARY KEY,
+  child_name TEXT NOT NULL,
+  dob TEXT,
+  parent_name TEXT,
+  parent_relationship TEXT,
+  parent_email TEXT,
+  parent_phone TEXT,
+  address TEXT,
+  service_location TEXT,
+  school_status TEXT,
+  start_urgency TEXT,
+  insurance_provider TEXT,
+  num_insurances TEXT,
+  has_asd_diagnosis TEXT,
+  has_iep TEXT,
+  prior_aba_nv TEXT,
+  preferred_contact TEXT,
+  desired_schedule TEXT, -- Full-Time | Part Time AM | Part Time PM
+  rethink_status TEXT,
+  stage TEXT NOT NULL DEFAULT 'new_submission',
+  notes TEXT,
+  color TEXT,
+  first_day_date TEXT,
+  discharge_reason TEXT,
+  submitted_at TEXT,
+  updated_at TEXT
+);
 
-  CREATE TABLE IF NOT EXISTS stage_tasks (
-    id SERIAL PRIMARY KEY,
-    stage_key TEXT NOT NULL,
-    label TEXT NOT NULL,
-    department_id INTEGER NOT NULL,
-    sla_days INTEGER NOT NULL,
-    sort_order INTEGER NOT NULL,
-    next_stage_key TEXT
-  );
+CREATE TABLE IF NOT EXISTS stage_tasks (
+  id SERIAL PRIMARY KEY,
+  stage_key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  department_id INTEGER NOT NULL,
+  sla_days INTEGER NOT NULL,
+  sort_order INTEGER NOT NULL,
+  next_stage_key TEXT
+);
 
-  CREATE TABLE IF NOT EXISTS client_tasks (
-    id SERIAL PRIMARY KEY,
-    client_id INTEGER NOT NULL,
-    stage_task_id INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending', -- pending | completed | overdue
-    due_date TEXT NOT NULL,
-    completed_at TEXT,
-    overdue_notified_at TEXT,
-    created_at TEXT,
-    FOREIGN KEY (client_id) REFERENCES clients(id),
-    FOREIGN KEY (stage_task_id) REFERENCES stage_tasks(id)
-  );
+CREATE TABLE IF NOT EXISTS client_tasks (
+  id SERIAL PRIMARY KEY,
+  client_id INTEGER NOT NULL,
+  stage_task_id INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | completed | overdue
+  due_date TEXT NOT NULL,
+  completed_at TEXT,
+  overdue_notified_at TEXT,
+  created_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES clients(id),
+  FOREIGN KEY (stage_task_id) REFERENCES stage_tasks(id)
+);
 
-  CREATE TABLE IF NOT EXISTS notifications_log (
-    id SERIAL PRIMARY KEY,
-    client_id INTEGER,
-    type TEXT NOT NULL, -- department_alert | parent_milestone | overdue_alert
-    recipient TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    body TEXT NOT NULL,
-    sent_at TEXT,
-    delivered TEXT DEFAULT 'simulated' -- simulated | sent | failed
-  );
+CREATE TABLE IF NOT EXISTS notifications_log (
+  id SERIAL PRIMARY KEY,
+  client_id INTEGER,
+  type TEXT NOT NULL, -- department_alert | parent_milestone | overdue_alert
+  recipient TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  body TEXT NOT NULL,
+  sent_at TEXT,
+  delivered TEXT DEFAULT 'simulated' -- simulated | sent | failed
+);
 
-  CREATE TABLE IF NOT EXISTS therapists (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    role TEXT NOT NULL, -- BCBA | RBT
-    color TEXT NOT NULL,
-    weekly_capacity_hours REAL DEFAULT 30
-  );
+CREATE TABLE IF NOT EXISTS therapists (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL, -- BCBA | RBT
+  color TEXT NOT NULL,
+  weekly_capacity_hours REAL DEFAULT 30
+);
 
-  CREATE TABLE IF NOT EXISTS schedule_sessions (
-    id SERIAL PRIMARY KEY,
-    client_id INTEGER NOT NULL,
-    therapist_id INTEGER NOT NULL,
-    day_of_week INTEGER NOT NULL, -- 0=Sun .. 6=Sat
-    start_time TEXT NOT NULL, -- 'HH:MM'
-    end_time TEXT NOT NULL,
-    session_type TEXT DEFAULT 'ABA Therapy',
-    created_at TEXT,
-    FOREIGN KEY (client_id) REFERENCES clients(id),
-    FOREIGN KEY (therapist_id) REFERENCES therapists(id)
-  );
+CREATE TABLE IF NOT EXISTS schedule_sessions (
+  id SERIAL PRIMARY KEY,
+  client_id INTEGER NOT NULL,
+  therapist_id INTEGER NOT NULL,
+  day_of_week INTEGER NOT NULL, -- 0=Sun .. 6=Sat
+  start_time TEXT NOT NULL, -- 'HH:MM'
+  end_time TEXT NOT NULL,
+  session_type TEXT DEFAULT 'ABA Therapy',
+  created_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES clients(id),
+  FOREIGN KEY (therapist_id) REFERENCES therapists(id)
+);
 
-  CREATE TABLE IF NOT EXISTS schedule_targets (
-    key TEXT PRIMARY KEY,
-    weekly_hours REAL NOT NULL
-  );
+CREATE TABLE IF NOT EXISTS schedule_targets (
+  key TEXT PRIMARY KEY,
+  weekly_hours REAL NOT NULL
+);
 
-  CREATE TABLE IF NOT EXISTS client_documents (
-    id SERIAL PRIMARY KEY,
-    client_id INTEGER NOT NULL,
-    label TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    mime_type TEXT,
-    file_path TEXT NOT NULL,
-    uploaded_at TEXT,
-    FOREIGN KEY (client_id) REFERENCES clients(id)
-  );
+CREATE TABLE IF NOT EXISTS client_documents (
+  id SERIAL PRIMARY KEY,
+  client_id INTEGER NOT NULL,
+  label TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  mime_type TEXT,
+  file_path TEXT,
+  doc_type TEXT NOT NULL DEFAULT 'hosted', -- hosted | link
+  external_url TEXT,
+  uploaded_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES clients(id)
+);
+`;
+
+// Small forward-compatible migrations for columns added after the table
+// already existed in production. Safe to run every boot.
+const MIGRATIONS_SQL = `
+ALTER TABLE client_documents ALTER COLUMN file_path DROP NOT NULL;
+ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS doc_type TEXT NOT NULL DEFAULT 'hosted';
+ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS external_url TEXT;
 `;
 
 async function initSchema() {
   await pool.query(SCHEMA_SQL);
+  await pool.query(MIGRATIONS_SQL);
   console.log("Postgres schema ready.");
 }
 
@@ -196,7 +207,6 @@ const DATA_DIR = path.join(__dirname, "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const DOCS_DIR = path.join(DATA_DIR, "documents");
 if (!fs.existsSync(DOCS_DIR)) fs.mkdirSync(DOCS_DIR, { recursive: true });
-
 
 // ============================== AUTH ==============================
 // server/auth.js
@@ -282,7 +292,6 @@ function parseCookies(req) {
 
 const auth = { createUser, findUserByEmail, login, logout, getUserFromToken, parseCookies, sanitizeUser };
 
-
 // ============================== EMAIL ==============================
 // server/email.js
 // Zero-dependency email sending using the built-in `fetch` (Node 18+) against
@@ -350,7 +359,6 @@ function stripHtml(html) {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-
 // ============================== PIPELINE ==============================
 // server/pipeline.js
 // The enrollment pipeline: stage order, per-stage tasks/SLAs, department alerts,
@@ -411,8 +419,8 @@ async function enterStage(clientId, stageKey) {
         to: dept.notify_email,
         subject: `[${dept.name}] Action needed: ${client.child_name} — ${task.label}`,
         html: `<p><strong>${client.child_name}</strong> (parent: ${client.parent_name}) has entered stage
-               <strong>${getStage(stageKey)?.label}</strong> and needs: <strong>${task.label}</strong>.</p>
-               <p>Due by: ${new Date(dueDate).toLocaleDateString()}</p>`,
+          <strong>${getStage(stageKey)?.label}</strong> and needs: <strong>${task.label}</strong>.</p>
+          <p>Due by: ${new Date(dueDate).toLocaleDateString()}</p>`,
         clientId,
         type: "department_alert",
       }).catch((e) => console.error("sendEmail failed:", e));
@@ -533,7 +541,6 @@ async function checkOverdueTasks() {
 
 const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone };
 
-
 // ============================== ROUTES ==============================
 // server/routes.js
 // All REST API route handlers, hand-routed (no Express) against Node's http module.
@@ -581,6 +588,7 @@ const PUBLIC_ROUTES = new Set([
   "/api/admin/backfill-import",
   "/api/admin/purge-demo",
   "/api/admin/upload-document",
+  "/api/admin/delete-document",
 ]);
 
 const CLIENT_COLOR_PALETTE = ["#5fa8a0", "#e0a430", "#6660a8", "#3f8f89", "#c98a1b", "#8d85c8"];
@@ -801,9 +809,9 @@ async function handle(req, res, pathname, method) {
       return json(res, 200, { purged: ids.length, remainingClients: remaining });
     }
 
-    // One-time/ongoing document import: accepts base64 file content and
-    // attaches it to a client record, storing the file on the Railway volume
-    // and a metadata row in client_documents. Protected by the same
+    // One-time/ongoing document import: accepts EITHER base64 file content
+    // (hosted on the Railway volume) OR an external_url (e.g. a Google Drive
+    // link), and attaches it to a client record. Protected by the same
     // ADMIN_IMPORT_SECRET as the routes above.
     if (pathname === "/api/admin/upload-document" && method === "POST") {
       const secret = process.env.ADMIN_IMPORT_SECRET;
@@ -811,36 +819,72 @@ async function handle(req, res, pathname, method) {
         return json(res, 401, { error: "Invalid admin secret" });
       }
       const body = await readBody(req);
-      const { client_id, label, filename, mime_type, content_base64 } = body;
-      if (!client_id || !filename || !content_base64) {
-        return json(res, 400, { error: "client_id, filename, and content_base64 are required" });
+      const { client_id, label, filename, mime_type, content_base64, external_url } = body;
+      if (!client_id || !filename) {
+        return json(res, 400, { error: "client_id and filename are required" });
+      }
+      if (!content_base64 && !external_url) {
+        return json(res, 400, { error: "content_base64 or external_url is required" });
       }
       const client = await dbGet("SELECT id FROM clients WHERE id = ?", [client_id]);
       if (!client) return json(res, 404, { error: "Client not found" });
 
-      const safeName = String(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
-      const storedName = `${client_id}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
-      const fullPath = path.join(DOCS_DIR, storedName);
-      let buffer;
-      try {
-        buffer = Buffer.from(content_base64, "base64");
-      } catch (e) {
-        return json(res, 400, { error: "Invalid base64 content" });
-      }
-      fs.writeFileSync(fullPath, buffer);
+      if (content_base64) {
+        const safeName = String(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+        const storedName = `${client_id}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
+        const fullPath = path.join(DOCS_DIR, storedName);
+        let buffer;
+        try {
+          buffer = Buffer.from(content_base64, "base64");
+        } catch (e) {
+          return json(res, 400, { error: "Invalid base64 content" });
+        }
+        fs.writeFileSync(fullPath, buffer);
 
-      const row = await dbGet(
-        `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, uploaded_at)
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
-        [client_id, label || filename, filename, mime_type || "application/octet-stream", storedName, nowISO()]
-      );
-      return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename });
+        const row = await dbGet(
+          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
+           VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?) RETURNING id`,
+          [client_id, label || filename, filename, mime_type || "application/octet-stream", storedName, nowISO()]
+        );
+        return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "hosted" });
+      } else {
+        const row = await dbGet(
+          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
+           VALUES (?, ?, ?, ?, NULL, 'link', ?, ?) RETURNING id`,
+          [client_id, label || filename, filename, mime_type || null, external_url, nowISO()]
+        );
+        return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "link" });
+      }
+    }
+
+    // Removes a single document row (and its file on disk, if hosted).
+    // Protected by the same ADMIN_IMPORT_SECRET as the routes above.
+    if (pathname === "/api/admin/delete-document" && method === "POST") {
+      const secret = process.env.ADMIN_IMPORT_SECRET;
+      if (!secret || req.headers["x-admin-secret"] !== secret) {
+        return json(res, 401, { error: "Invalid admin secret" });
+      }
+      const { document_id } = await readBody(req);
+      if (!document_id) return json(res, 400, { error: "document_id is required" });
+      const doc = await dbGet("SELECT * FROM client_documents WHERE id = ?", [document_id]);
+      if (!doc) return json(res, 404, { error: "Not found" });
+      if (doc.doc_type === "hosted" && doc.file_path) {
+        const fullPath = path.join(DOCS_DIR, doc.file_path);
+        if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+      }
+      await dbRun("DELETE FROM client_documents WHERE id = ?", [document_id]);
+      return json(res, 200, { ok: true });
     }
 
     const downloadDocMatch = pathname.match(/^\/api\/documents\/(\d+)\/download$/);
     if (downloadDocMatch && method === "GET") {
       const doc = await dbGet("SELECT * FROM client_documents WHERE id = ?", [downloadDocMatch[1]]);
       if (!doc) return json(res, 404, { error: "Not found" });
+      if (doc.doc_type === "link") {
+        res.writeHead(302, { Location: doc.external_url });
+        res.end();
+        return true;
+      }
       const fullPath = path.join(DOCS_DIR, doc.file_path);
       if (!fs.existsSync(fullPath)) return json(res, 404, { error: "File missing on disk" });
       const buffer = fs.readFileSync(fullPath);
@@ -871,7 +915,7 @@ async function handle(req, res, pathname, method) {
         [id]
       );
       const documents = await dbAll(
-        "SELECT id, label, filename, mime_type, uploaded_at FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
+        "SELECT id, label, filename, mime_type, doc_type, external_url, uploaded_at FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
         [id]
       );
       return json(res, 200, { client, tasks, sessions, notifications, documents });
@@ -1017,7 +1061,6 @@ async function handle(req, res, pathname, method) {
 }
 
 const routes = { handle };
-
 
 // ============================== SEED ==============================
 // server/seed.js
@@ -1296,7 +1339,6 @@ async function seedDemoClients() {
     }
   }
 }
-
 
 // ============================== SERVER BOOTSTRAP ==============================
 // server/index.js

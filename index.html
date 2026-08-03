@@ -6,40 +6,40 @@
 <title>Spectrum Squad — Client Pipeline</title>
 <style>
 :root {
-/* Spectrum Squad brand palette, pulled from the logo */
---brand-navy: #29225c;
---brand-navy-dark: #1c1740;
---brand-navy-light: #edecf8;
---brand-gold: #e0a430;
---brand-gold-dark: #c98a1b;
---brand-teal: #5fa8a0;
---brand-teal-dark: #3f8f89;
+  /* Spectrum Squad brand palette, pulled from the logo */
+  --brand-navy: #29225c;
+  --brand-navy-dark: #1c1740;
+  --brand-navy-light: #edecf8;
+  --brand-gold: #e0a430;
+  --brand-gold-dark: #c98a1b;
+  --brand-teal: #5fa8a0;
+  --brand-teal-dark: #3f8f89;
 
---brand: var(--brand-navy);
---brand-dark: var(--brand-navy-dark);
---brand-light: var(--brand-navy-light);
---bg: #f7f8fb;
---surface: #ffffff;
---border: #e5e7eb;
---text: #201a4d;
---text-muted: #6b6a86;
---success: #22c55e;
---warning: var(--brand-gold);
---danger: #ef4444;
---radius: 12px;
---shadow: 0 1px 3px rgba(41, 34, 92, 0.08), 0 1px 2px rgba(41, 34, 92, 0.05);
---shadow-lg: 0 10px 30px rgba(41, 34, 92, 0.14);
---font-header: "Gentry", "Brush Script MT", "Segoe Script", cursive;
+  --brand: var(--brand-navy);
+  --brand-dark: var(--brand-navy-dark);
+  --brand-light: var(--brand-navy-light);
+  --bg: #f7f8fb;
+  --surface: #ffffff;
+  --border: #e5e7eb;
+  --text: #201a4d;
+  --text-muted: #6b6a86;
+  --success: #22c55e;
+  --warning: var(--brand-gold);
+  --danger: #ef4444;
+  --radius: 12px;
+  --shadow: 0 1px 3px rgba(41, 34, 92, 0.08), 0 1px 2px rgba(41, 34, 92, 0.05);
+  --shadow-lg: 0 10px 30px rgba(41, 34, 92, 0.14);
+  --font-header: "Gentry", "Brush Script MT", "Segoe Script", cursive;
 }
 
 * { box-sizing: border-box; }
 
 body {
-margin: 0;
-font-family: "Century Gothic", "Century Gothic MT", "CenturyGothic", Questrial, Poppins, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-background: var(--bg);
-color: var(--text);
--webkit-font-smoothing: antialiased;
+  margin: 0;
+  font-family: "Century Gothic", "Century Gothic MT", "CenturyGothic", Questrial, Poppins, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
 }
 
 h1, h2, h3, .brand-word { font-family: var(--font-header); font-weight: 400; letter-spacing: 0.01em; }
@@ -51,83 +51,83 @@ button { font-family: inherit; cursor: pointer; }
 .app-shell { display: flex; min-height: 100vh; }
 
 .sidebar {
-width: 240px;
-background: linear-gradient(180deg, var(--brand-navy) 0%, #423a86 100%);
-color: #ded9f5;
-display: flex;
-flex-direction: column;
-padding: 24px 16px;
-flex-shrink: 0;
+  width: 240px;
+  background: linear-gradient(180deg, var(--brand-navy) 0%, #423a86 100%);
+  color: #ded9f5;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 16px;
+  flex-shrink: 0;
 }
 
 .brand {
-display: flex;
-align-items: center;
-gap: 10px;
-font-weight: 700;
-font-size: 17px;
-color: #fff;
-padding: 0 8px 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 17px;
+  color: #fff;
+  padding: 0 8px 24px;
 }
 .brand-mark {
-width: 34px; height: 34px; border-radius: 10px;
-background: rgba(255,255,255,0.15);
-display: flex; align-items: center; justify-content: center;
-font-size: 18px;
+  width: 34px; height: 34px; border-radius: 10px;
+  background: rgba(255,255,255,0.15);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px;
 }
 
 .nav-item {
-display: flex;
-align-items: center;
-gap: 10px;
-padding: 10px 12px;
-border-radius: 8px;
-color: #c7d2fe;
-font-size: 14px;
-font-weight: 500;
-text-decoration: none;
-margin-bottom: 2px;
-border: none;
-background: transparent;
-width: 100%;
-text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: #c7d2fe;
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  margin-bottom: 2px;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
 }
 .nav-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
 .nav-item.active { background: rgba(255,255,255,0.18); color: #fff; }
 
 .sidebar-footer {
-margin-top: auto;
-padding: 12px 8px 0;
-border-top: 1px solid rgba(255,255,255,0.15);
+  margin-top: auto;
+  padding: 12px 8px 0;
+  border-top: 1px solid rgba(255,255,255,0.15);
 }
 .sidebar-user { font-size: 13px; color: #c7d2fe; margin-bottom: 8px; }
 .sidebar-user strong { color: #fff; display: block; }
 .logout-btn {
-background: rgba(255,255,255,0.1);
-border: none; color: #fff; padding: 8px 12px; border-radius: 8px;
-font-size: 13px; width: 100%;
+  background: rgba(255,255,255,0.1);
+  border: none; color: #fff; padding: 8px 12px; border-radius: 8px;
+  font-size: 13px; width: 100%;
 }
 .logout-btn:hover { background: rgba(255,255,255,0.2); }
 
 .main {
-flex: 1;
-padding: 28px 36px;
-max-width: 1400px;
+  flex: 1;
+  padding: 28px 36px;
+  max-width: 1400px;
 }
 
 .page-header {
-display: flex;
-align-items: center;
-justify-content: space-between;
-margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
 }
 .page-header h1 { font-size: 22px; margin: 0 0 4px; }
 .page-header p { margin: 0; color: var(--text-muted); font-size: 14px; }
 
 .btn {
-display: inline-flex; align-items: center; gap: 6px;
-background: var(--brand); color: #fff; border: none;
-padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--brand); color: #fff; border: none;
+  padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
 }
 .btn:hover { background: var(--brand-dark); }
 .btn.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
@@ -137,17 +137,17 @@ padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
 
 /* ---------- Cards / Stats ---------- */
 .stat-grid {
-display: grid;
-grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-gap: 16px;
-margin-bottom: 28px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 28px;
 }
 .stat-card {
-background: var(--surface);
-border-radius: var(--radius);
-padding: 18px 20px;
-box-shadow: var(--shadow);
-border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
 }
 .stat-card .label { font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
 .stat-card .value { font-size: 30px; font-weight: 700; margin-top: 6px; }
@@ -155,52 +155,52 @@ border: 1px solid var(--border);
 .stat-card.danger .value { color: var(--danger); }
 
 .card {
-background: var(--surface);
-border-radius: var(--radius);
-border: 1px solid var(--border);
-box-shadow: var(--shadow);
-padding: 20px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  padding: 20px;
 }
 
 /* ---------- Kanban Pipeline ---------- */
 .kanban {
-display: flex;
-gap: 14px;
-overflow-x: auto;
-padding-bottom: 12px;
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  padding-bottom: 12px;
 }
 .kanban-col {
-min-width: 260px;
-max-width: 260px;
-background: #f1f2f7;
-border-radius: var(--radius);
-padding: 12px;
-flex-shrink: 0;
-transition: background 0.12s;
+  min-width: 260px;
+  max-width: 260px;
+  background: #f1f2f7;
+  border-radius: var(--radius);
+  padding: 12px;
+  flex-shrink: 0;
+  transition: background 0.12s;
 }
 .kanban-col.drag-over {
-background: #dfe2f5;
-outline: 2px dashed var(--brand);
-outline-offset: -2px;
+  background: #dfe2f5;
+  outline: 2px dashed var(--brand);
+  outline-offset: -2px;
 }
 .kanban-col-header {
-display: flex; align-items: center; justify-content: space-between;
-margin-bottom: 10px; padding: 0 4px;
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px; padding: 0 4px;
 }
 .kanban-col-title { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .count-pill {
-background: rgba(0,0,0,0.06); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  background: rgba(0,0,0,0.06); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
 }
 
 .client-card {
-background: var(--surface);
-border-radius: 10px;
-padding: 12px;
-margin-bottom: 8px;
-box-shadow: var(--shadow);
-border-left: 4px solid var(--brand);
-cursor: pointer;
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 8px;
+  box-shadow: var(--shadow);
+  border-left: 4px solid var(--brand);
+  cursor: pointer;
 }
 .client-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-1px); transition: 0.12s; }
 .client-card.dragging { opacity: 0.4; }
@@ -208,15 +208,15 @@ cursor: pointer;
 .client-card .meta { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
 .client-card .tags { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 .tag {
-font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
-background: var(--brand-light); color: var(--brand-dark);
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
+  background: var(--brand-light); color: var(--brand-dark);
 }
 .tag.overdue { background: #fee2e2; color: #b91c1c; }
 
 /* ---------- Badges ---------- */
 .badge {
-display: inline-block; font-size: 11px; font-weight: 700; padding: 3px 9px;
-border-radius: 999px; color: #fff;
+  display: inline-block; font-size: 11px; font-weight: 700; padding: 3px 9px;
+  border-radius: 999px; color: #fff;
 }
 
 /* ---------- Tables ---------- */
@@ -231,19 +231,19 @@ tr:last-child td { border-bottom: none; }
 .field.full { grid-column: 1 / -1; }
 .field label { font-size: 12px; font-weight: 600; color: var(--text-muted); }
 input, select, textarea {
-padding: 9px 11px; border-radius: 8px; border: 1px solid var(--border);
-font-size: 13.5px; font-family: inherit; background: #fff;
+  padding: 9px 11px; border-radius: 8px; border: 1px solid var(--border);
+  font-size: 13.5px; font-family: inherit; background: #fff;
 }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-light); border-color: var(--brand); }
 
 /* ---------- Login ---------- */
 .login-wrap {
-min-height: 100vh; display: flex; align-items: center; justify-content: center;
-background: linear-gradient(135deg, var(--brand-navy) 0%, #423a86 60%, var(--brand-teal) 100%);
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--brand-navy) 0%, #423a86 60%, var(--brand-teal) 100%);
 }
 .login-card {
-background: #fff; border-radius: 16px; padding: 40px 36px; width: 380px;
-box-shadow: var(--shadow-lg);
+  background: #fff; border-radius: 16px; padding: 40px 36px; width: 380px;
+  box-shadow: var(--shadow-lg);
 }
 .login-card h1 { font-size: 20px; margin: 0 0 4px; }
 .login-card p.sub { color: var(--text-muted); font-size: 13px; margin: 0 0 24px; }
@@ -253,12 +253,12 @@ box-shadow: var(--shadow-lg);
 
 /* ---------- Modal ---------- */
 .modal-backdrop {
-position: fixed; inset: 0; background: rgba(15,23,42,0.45); display: flex;
-align-items: flex-start; justify-content: center; padding: 40px 20px; overflow-y: auto; z-index: 50;
+  position: fixed; inset: 0; background: rgba(15,23,42,0.45); display: flex;
+  align-items: flex-start; justify-content: center; padding: 40px 20px; overflow-y: auto; z-index: 50;
 }
 .modal {
-background: #fff; border-radius: var(--radius); width: 720px; max-width: 100%;
-box-shadow: var(--shadow-lg); padding: 26px 28px; margin-bottom: 40px;
+  background: #fff; border-radius: var(--radius); width: 720px; max-width: 100%;
+  box-shadow: var(--shadow-lg); padding: 26px 28px; margin-bottom: 40px;
 }
 .modal-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
 .modal-header h2 { margin: 0 0 4px; font-size: 19px; }
@@ -277,19 +277,19 @@ box-shadow: var(--shadow-lg); padding: 26px 28px; margin-bottom: 40px;
 
 /* ---------- Schedule Grid ---------- */
 .schedule-grid {
-display: grid;
-grid-template-columns: 70px repeat(7, 1fr);
-gap: 6px;
-margin-top: 16px;
+  display: grid;
+  grid-template-columns: 70px repeat(7, 1fr);
+  gap: 6px;
+  margin-top: 16px;
 }
 .schedule-grid .day-head { font-size: 11px; font-weight: 700; text-align: center; color: var(--text-muted); padding: 6px 0; }
 .schedule-grid .time-label { font-size: 10.5px; color: var(--text-muted); text-align: right; padding-right: 6px; }
 .schedule-cell {
-background: #f1f2f7; border-radius: 6px; min-height: 34px; position: relative; padding: 2px;
+  background: #f1f2f7; border-radius: 6px; min-height: 34px; position: relative; padding: 2px;
 }
 .session-block {
-background: var(--brand); color: #fff; border-radius: 6px; padding: 4px 6px; font-size: 10.5px;
-margin-bottom: 2px; line-height: 1.3; font-weight: 600;
+  background: var(--brand); color: #fff; border-radius: 6px; padding: 4px 6px; font-size: 10.5px;
+  margin-bottom: 2px; line-height: 1.3; font-weight: 600;
 }
 
 /* ---------- Outbox ---------- */
@@ -322,78 +322,78 @@ margin-bottom: 2px; line-height: 1.3; font-weight: 600;
 "use strict";
 
 const state = {
-user: null,
-clients: [],
-stages: [],
-departments: [],
-therapists: [],
+  user: null,
+  clients: [],
+  stages: [],
+  departments: [],
+  therapists: [],
 };
 
 const root = document.getElementById("app");
 
 // ---------------- API helper ----------------
 async function api(path, opts = {}) {
-const res = await fetch(path, {
-method: opts.method || "GET",
-headers: { "Content-Type": "application/json" },
-body: opts.body ? JSON.stringify(opts.body) : undefined,
-});
-if (res.status === 401) {
-state.user = null;
-location.hash = "#/login";
-throw new Error("Not authenticated");
-}
-const data = await res.json().catch(() => ({}));
-if (!res.ok) throw new Error(data.error || "Request failed");
-return data;
+  const res = await fetch(path, {
+    method: opts.method || "GET",
+    headers: { "Content-Type": "application/json" },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (res.status === 401) {
+    state.user = null;
+    location.hash = "#/login";
+    throw new Error("Not authenticated");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Request failed");
+  return data;
 }
 
 const stageMap = () => Object.fromEntries(state.stages.map((s) => [s.key, s]));
 
 function fmtDate(d) {
-if (!d) return "—";
-const date = new Date(d);
-if (isNaN(date)) return d;
-return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  if (!d) return "—";
+  const date = new Date(d);
+  if (isNaN(date)) return d;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function initials(name) {
-return (name || "?").split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+  return (name || "?").split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
 }
 
 // ---------------- Small in-app prompt (replaces native window.prompt/confirm,
 // which can hang or be blocked in some browser contexts) ----------------
 function askReason(title) {
-return new Promise((resolve) => {
-const backdrop = document.createElement("div");
-backdrop.className = "modal-backdrop";
-backdrop.innerHTML = `
-<div class="modal" style="width:420px;">
-<div class="modal-header"><h2>${title}</h2><button class="close-btn">✕</button></div>
-<div class="field full">
-<label>Notes (optional)</label>
-<textarea id="reason-input" rows="3" placeholder="Add a note..."></textarea>
-</div>
-<div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
-<button type="button" class="btn secondary" id="reason-cancel">Cancel</button>
-<button type="button" class="btn" id="reason-confirm">Confirm</button>
-</div>
-</div>
-`;
-document.body.appendChild(backdrop);
-const input = backdrop.querySelector("#reason-input");
-input.focus();
-const finish = (val) => {
-backdrop.remove();
-resolve(val);
-};
-backdrop.querySelector(".close-btn").addEventListener("click", () => finish(null));
-backdrop.querySelector("#reason-cancel").addEventListener("click", () => finish(null));
-backdrop.querySelector("#reason-confirm").addEventListener("click", () => finish(input.value || ""));
-backdrop.addEventListener("click", (e) => {
-if (e.target === backdrop) finish(null);
-});
-});
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `
+      <div class="modal" style="width:420px;">
+        <div class="modal-header"><h2>${title}</h2><button class="close-btn">✕</button></div>
+        <div class="field full">
+          <label>Notes (optional)</label>
+          <textarea id="reason-input" rows="3" placeholder="Add a note..."></textarea>
+        </div>
+        <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
+          <button type="button" class="btn secondary" id="reason-cancel">Cancel</button>
+          <button type="button" class="btn" id="reason-confirm">Confirm</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+    const input = backdrop.querySelector("#reason-input");
+    input.focus();
+    const finish = (val) => {
+      backdrop.remove();
+      resolve(val);
+    };
+    backdrop.querySelector(".close-btn").addEventListener("click", () => finish(null));
+    backdrop.querySelector("#reason-cancel").addEventListener("click", () => finish(null));
+    backdrop.querySelector("#reason-confirm").addEventListener("click", () => finish(input.value || ""));
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) finish(null);
+    });
+  });
 }
 
 // ---------------- Router ----------------
@@ -401,733 +401,740 @@ window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", boot);
 
 async function boot() {
-try {
-const { user } = await api("/api/auth/me");
-state.user = user;
-} catch (e) {
-state.user = null;
-}
-route();
+  try {
+    const { user } = await api("/api/auth/me");
+    state.user = user;
+  } catch (e) {
+    state.user = null;
+  }
+  route();
 }
 
 async function route() {
-const hash = location.hash || "#/dashboard";
+  const hash = location.hash || "#/dashboard";
 
-if (!state.user) {
-renderLogin();
-return;
-}
-if (hash === "#/login") {
-location.hash = "#/dashboard";
-return;
-}
+  if (!state.user) {
+    renderLogin();
+    return;
+  }
+  if (hash === "#/login") {
+    location.hash = "#/dashboard";
+    return;
+  }
 
-await Promise.all([
-loadStages(),
-loadDepartments(),
-loadClients(),
-loadTherapists(),
-]);
+  await Promise.all([
+    loadStages(),
+    loadDepartments(),
+    loadClients(),
+    loadTherapists(),
+  ]);
 
-const [, view, param] = hash.split("/");
+  const [, view, param] = hash.split("/");
 
-renderShell(view || "dashboard");
+  renderShell(view || "dashboard");
 
-const mount = document.getElementById("view-mount");
-if (hash.startsWith("#/dashboard") || !view) await renderDashboard(mount);
-else if (hash.startsWith("#/pipeline")) await renderPipeline(mount);
-else if (hash.startsWith("#/tasks")) await renderTasks(mount);
-else if (hash.startsWith("#/schedule")) await renderSchedule(mount);
-else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
-else if (hash.startsWith("#/admin")) await renderAdmin(mount);
-else await renderDashboard(mount);
+  const mount = document.getElementById("view-mount");
+  if (hash.startsWith("#/dashboard") || !view) await renderDashboard(mount);
+  else if (hash.startsWith("#/pipeline")) await renderPipeline(mount);
+  else if (hash.startsWith("#/tasks")) await renderTasks(mount);
+  else if (hash.startsWith("#/schedule")) await renderSchedule(mount);
+  else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
+  else if (hash.startsWith("#/admin")) await renderAdmin(mount);
+  else await renderDashboard(mount);
 
-if (param && hash.startsWith("#/pipeline/")) openClientModal(param);
+  if (param && hash.startsWith("#/pipeline/")) openClientModal(param);
 }
 
 async function loadStages() {
-state.stages = await api("/api/stages");
+  state.stages = await api("/api/stages");
 }
 async function loadDepartments() {
-state.departments = await api("/api/departments");
+  state.departments = await api("/api/departments");
 }
 async function loadClients() {
-state.clients = await api("/api/clients");
+  state.clients = await api("/api/clients");
 }
 async function loadTherapists() {
-state.therapists = await api("/api/therapists");
+  state.therapists = await api("/api/therapists");
 }
 
 // ---------------- Shell (sidebar + layout) ----------------
 function renderShell(active) {
-const navItems = [
-{ key: "dashboard", label: "Dashboard", icon: "◧" },
-{ key: "pipeline", label: "Client Pipeline", icon: "▤" },
-{ key: "tasks", label: "Tasks & Alerts", icon: "✓" },
-{ key: "schedule", label: "Therapy Schedule", icon: "▦" },
-{ key: "outbox", label: "Message Outbox", icon: "✉" },
-];
-if (state.user.role === "admin") navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
+  const navItems = [
+    { key: "dashboard", label: "Dashboard", icon: "◧" },
+    { key: "pipeline", label: "Client Pipeline", icon: "▤" },
+    { key: "tasks", label: "Tasks & Alerts", icon: "✓" },
+    { key: "schedule", label: "Therapy Schedule", icon: "▦" },
+    { key: "outbox", label: "Message Outbox", icon: "✉" },
+  ];
+  if (state.user.role === "admin") navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
 
-root.innerHTML = `
-<div class="app-shell">
-<div class="sidebar">
-<div class="brand"><span class="brand-mark">🧩</span> <span class="brand-word">Spectrum Squad</span></div>
-<nav>
-${navItems
-.map(
-(n) => `<button class="nav-item ${active === n.key ? "active" : ""}" data-nav="${n.key}">
-<span>${n.icon}</span> ${n.label}</button>`
-)
-.join("")}
-</nav>
-<div class="sidebar-footer">
-<div class="sidebar-user"><strong>${state.user.name}</strong>${state.user.role}</div>
-<button class="logout-btn" id="logout-btn">Log out</button>
-</div>
-</div>
-<div class="main"><div id="view-mount"></div></div>
-</div>
-`;
-root.querySelectorAll("[data-nav]").forEach((btn) => {
-btn.addEventListener("click", () => (location.hash = "#/" + btn.dataset.nav));
-});
-document.getElementById("logout-btn").addEventListener("click", async () => {
-await api("/api/auth/logout", { method: "POST" });
-state.user = null;
-location.hash = "#/login";
-route();
-});
+  root.innerHTML = `
+    <div class="app-shell">
+      <div class="sidebar">
+        <div class="brand"><span class="brand-mark">🧩</span> <span class="brand-word">Spectrum Squad</span></div>
+        <nav>
+          ${navItems
+            .map(
+              (n) => `<button class="nav-item ${active === n.key ? "active" : ""}" data-nav="${n.key}">
+              <span>${n.icon}</span> ${n.label}</button>`
+            )
+            .join("")}
+        </nav>
+        <div class="sidebar-footer">
+          <div class="sidebar-user"><strong>${state.user.name}</strong>${state.user.role}</div>
+          <button class="logout-btn" id="logout-btn">Log out</button>
+        </div>
+      </div>
+      <div class="main"><div id="view-mount"></div></div>
+    </div>
+  `;
+  root.querySelectorAll("[data-nav]").forEach((btn) => {
+    btn.addEventListener("click", () => (location.hash = "#/" + btn.dataset.nav));
+  });
+  document.getElementById("logout-btn").addEventListener("click", async () => {
+    await api("/api/auth/logout", { method: "POST" });
+    state.user = null;
+    location.hash = "#/login";
+    route();
+  });
 }
 
 // ---------------- Login ----------------
 function renderLogin() {
-root.innerHTML = `
-<div class="login-wrap">
-<div class="login-card">
-<h1>Spectrum Squad</h1>
-<p class="sub">Client Pipeline & Scheduling CRM</p>
-<div id="login-error" class="login-error"></div>
-<form id="login-form">
-<div class="field">
-<label>Email</label>
-<input type="email" name="email" required value="admin@spectrumsquadlv.com" />
-</div>
-<div class="field">
-<label>Password</label>
-<input type="password" name="password" required value="ChangeMe123!" />
-</div>
-<button class="btn" type="submit" style="width:100%; justify-content:center; margin-top:8px;">Log in</button>
-</form>
-<div class="demo-hint">
-Demo accounts (all use password <strong>ChangeMe123!</strong>): admin@, intake@, clinical@, billing@, scheduling@spectrumsquadlv.com
-</div>
-</div>
-</div>
-`;
-document.getElementById("login-form").addEventListener("submit", async (e) => {
-e.preventDefault();
-const fd = new FormData(e.target);
-try {
-const { user } = await api("/api/auth/login", {
-method: "POST",
-body: { email: fd.get("email"), password: fd.get("password") },
-});
-state.user = user;
-location.hash = "#/dashboard";
-route();
-} catch (err) {
-document.getElementById("login-error").textContent = err.message;
-}
-});
+  root.innerHTML = `
+    <div class="login-wrap">
+      <div class="login-card">
+        <h1>Spectrum Squad</h1>
+        <p class="sub">Client Pipeline & Scheduling CRM</p>
+        <div id="login-error" class="login-error"></div>
+        <form id="login-form">
+          <div class="field">
+            <label>Email</label>
+            <input type="email" name="email" required value="admin@spectrumsquadlv.com" />
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input type="password" name="password" required value="ChangeMe123!" />
+          </div>
+          <button class="btn" type="submit" style="width:100%; justify-content:center; margin-top:8px;">Log in</button>
+        </form>
+        <div class="demo-hint">
+          Demo accounts (all use password <strong>ChangeMe123!</strong>): admin@, intake@, clinical@, billing@, scheduling@spectrumsquadlv.com
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      const { user } = await api("/api/auth/login", {
+        method: "POST",
+        body: { email: fd.get("email"), password: fd.get("password") },
+      });
+      state.user = user;
+      location.hash = "#/dashboard";
+      route();
+    } catch (err) {
+      document.getElementById("login-error").textContent = err.message;
+    }
+  });
 }
 
 // ---------------- Dashboard ----------------
 async function renderDashboard(mount) {
-const dash = await api("/api/dashboard");
-const byStage = Object.fromEntries(dash.byStage.map((s) => [s.stage, s.n]));
-const sMap = stageMap();
+  const dash = await api("/api/dashboard");
+  const byStage = Object.fromEntries(dash.byStage.map((s) => [s.stage, s.n]));
+  const sMap = stageMap();
 
-mount.innerHTML = `
-<div class="page-header">
-<div><h1>Dashboard</h1><p>Live view of enrollments moving through your intake pipeline.</p></div>
-<button class="btn" id="new-client-btn">+ New Enrollment</button>
-</div>
-<div class="stat-grid">
-<div class="stat-card"><div class="label">Total Clients</div><div class="value">${dash.totalClients}</div></div>
-<div class="stat-card warn"><div class="label">Open Tasks</div><div class="value">${dash.pending}</div></div>
-<div class="stat-card danger"><div class="label">Overdue Tasks</div><div class="value">${dash.overdue}</div></div>
-<div class="stat-card"><div class="label">Active Therapy</div><div class="value">${byStage.active || 0}</div></div>
-</div>
-<div style="display:grid; grid-template-columns: 1.4fr 1fr; gap: 20px;">
-<div class="card">
-<div class="section-title" style="margin-top:0;">Pipeline Snapshot</div>
-${dash.stages
-.filter((s) => !["discharged", "not_moving_forward"].includes(s.key))
-.map((s) => {
-const n = byStage[s.key] || 0;
-const pct = dash.totalClients ? Math.round((n / dash.totalClients) * 100) : 0;
-return `<div style="margin-bottom:10px;">
-<div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;">
-<span><span class="dot" style="background:${s.color}; display:inline-block;"></span> ${s.label}</span>
-<strong>${n}</strong>
-</div>
-<div style="background:#eef0f5; border-radius:999px; height:6px;">
-<div style="width:${pct}%; background:${s.color}; height:6px; border-radius:999px;"></div>
-</div>
-</div>`;
-})
-.join("")}
-</div>
-<div class="card">
-<div class="section-title" style="margin-top:0;">Upcoming First Days</div>
-${
-dash.upcomingFirstDays.length
-? dash.upcomingFirstDays
-.map(
-(c) => `<div class="task-row"><div class="info"><strong>${c.child_name}</strong></div><div>${fmtDate(c.first_day_date)}</div></div>`
-)
-.join("")
-: `<div class="empty-state">No first days scheduled yet.</div>`
-}
-</div>
-</div>
-`;
+  mount.innerHTML = `
+    <div class="page-header">
+      <div><h1>Dashboard</h1><p>Live view of enrollments moving through your intake pipeline.</p></div>
+      <button class="btn" id="new-client-btn">+ New Enrollment</button>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="label">Total Clients</div><div class="value">${dash.totalClients}</div></div>
+      <div class="stat-card warn"><div class="label">Open Tasks</div><div class="value">${dash.pending}</div></div>
+      <div class="stat-card danger"><div class="label">Overdue Tasks</div><div class="value">${dash.overdue}</div></div>
+      <div class="stat-card"><div class="label">Active Therapy</div><div class="value">${byStage.active || 0}</div></div>
+    </div>
+    <div style="display:grid; grid-template-columns: 1.4fr 1fr; gap: 20px;">
+      <div class="card">
+        <div class="section-title" style="margin-top:0;">Pipeline Snapshot</div>
+        ${dash.stages
+          .filter((s) => !["discharged", "not_moving_forward"].includes(s.key))
+          .map((s) => {
+            const n = byStage[s.key] || 0;
+            const pct = dash.totalClients ? Math.round((n / dash.totalClients) * 100) : 0;
+            return `<div style="margin-bottom:10px;">
+              <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;">
+                <span><span class="dot" style="background:${s.color}; display:inline-block;"></span> ${s.label}</span>
+                <strong>${n}</strong>
+              </div>
+              <div style="background:#eef0f5; border-radius:999px; height:6px;">
+                <div style="width:${pct}%; background:${s.color}; height:6px; border-radius:999px;"></div>
+              </div>
+            </div>`;
+          })
+          .join("")}
+      </div>
+      <div class="card">
+        <div class="section-title" style="margin-top:0;">Upcoming First Days</div>
+        ${
+          dash.upcomingFirstDays.length
+            ? dash.upcomingFirstDays
+                .map(
+                  (c) => `<div class="task-row"><div class="info"><strong>${c.child_name}</strong></div><div>${fmtDate(c.first_day_date)}</div></div>`
+                )
+                .join("")
+            : `<div class="empty-state">No first days scheduled yet.</div>`
+        }
+      </div>
+    </div>
+  `;
 
-document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
+  document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
 }
 
 // ---------------- Pipeline (Kanban) ----------------
 async function renderPipeline(mount) {
-mount.innerHTML = `
-<div class="page-header">
-<div><h1>Client Pipeline</h1><p>Color-coded by stage. Click any card for full details and tasks, or drag a card to move it between stages.</p></div>
-<button class="btn" id="new-client-btn">+ New Enrollment</button>
-</div>
-<div class="kanban" id="kanban"></div>
-`;
-document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
+  mount.innerHTML = `
+    <div class="page-header">
+      <div><h1>Client Pipeline</h1><p>Color-coded by stage. Click any card for full details and tasks, or drag a card to move it between stages.</p></div>
+      <button class="btn" id="new-client-btn">+ New Enrollment</button>
+    </div>
+    <div class="kanban" id="kanban"></div>
+  `;
+  document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
 
-const kanban = document.getElementById("kanban");
-const visibleStages = state.stages.filter((s) => s.key !== "not_moving_forward");
+  const kanban = document.getElementById("kanban");
+  const visibleStages = state.stages.filter((s) => s.key !== "not_moving_forward");
 
-kanban.innerHTML = visibleStages
-.map((stage) => {
-const clients = state.clients.filter((c) => c.stage === stage.key);
-return `
-<div class="kanban-col" data-stage="${stage.key}">
-<div class="kanban-col-header">
-<div class="kanban-col-title"><span class="dot" style="background:${stage.color}"></span>${stage.label}</div>
-<span class="count-pill">${clients.length}</span>
-</div>
-${clients
-.map(
-(c) => `<div class="client-card" draggable="true" style="border-left-color:${stage.color}" data-client="${c.id}">
-<div class="name">${c.child_name}</div>
-<div class="meta">${c.parent_name || "—"} · ${c.service_location || "—"}</div>
-<div class="tags">
-${c.desired_schedule ? `<span class="tag">${c.desired_schedule}</span>` : ""}
-${c.insurance_provider ? `<span class="tag">${c.insurance_provider.split(",")[0]}</span>` : ""}
-</div>
-</div>`
-)
-.join("") || `<div class="empty-state" style="padding:16px 4px;">Empty</div>`}
-</div>`;
-})
-.join("");
+  kanban.innerHTML = visibleStages
+    .map((stage) => {
+      const clients = state.clients.filter((c) => c.stage === stage.key);
+      return `
+      <div class="kanban-col" data-stage="${stage.key}">
+        <div class="kanban-col-header">
+          <div class="kanban-col-title"><span class="dot" style="background:${stage.color}"></span>${stage.label}</div>
+          <span class="count-pill">${clients.length}</span>
+        </div>
+        ${clients
+          .map(
+            (c) => `<div class="client-card" draggable="true" style="border-left-color:${stage.color}" data-client="${c.id}">
+              <div class="name">${c.child_name}</div>
+              <div class="meta">${c.parent_name || "—"} · ${c.service_location || "—"}</div>
+              <div class="tags">
+                ${c.desired_schedule ? `<span class="tag">${c.desired_schedule}</span>` : ""}
+                ${c.insurance_provider ? `<span class="tag">${c.insurance_provider.split(",")[0]}</span>` : ""}
+              </div>
+            </div>`
+          )
+          .join("") || `<div class="empty-state" style="padding:16px 4px;">Empty</div>`}
+      </div>`;
+    })
+    .join("");
 
-let draggedClientId = null;
+  let draggedClientId = null;
 
-kanban.querySelectorAll("[data-client]").forEach((el) => {
-el.addEventListener("click", () => {
-if (el.classList.contains("dragging")) return;
-openClientModal(el.dataset.client);
-});
-el.addEventListener("dragstart", (e) => {
-draggedClientId = el.dataset.client;
-el.classList.add("dragging");
-e.dataTransfer.effectAllowed = "move";
-e.dataTransfer.setData("text/plain", el.dataset.client);
-});
-el.addEventListener("dragend", () => {
-el.classList.remove("dragging");
-draggedClientId = null;
-});
-});
+  kanban.querySelectorAll("[data-client]").forEach((el) => {
+    el.addEventListener("click", () => {
+      if (el.classList.contains("dragging")) return;
+      openClientModal(el.dataset.client);
+    });
+    el.addEventListener("dragstart", (e) => {
+      draggedClientId = el.dataset.client;
+      el.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", el.dataset.client);
+    });
+    el.addEventListener("dragend", () => {
+      el.classList.remove("dragging");
+      draggedClientId = null;
+    });
+  });
 
-kanban.querySelectorAll(".kanban-col").forEach((col) => {
-col.addEventListener("dragover", (e) => {
-e.preventDefault();
-e.dataTransfer.dropEffect = "move";
-col.classList.add("drag-over");
-});
-col.addEventListener("dragleave", () => {
-col.classList.remove("drag-over");
-});
-col.addEventListener("drop", async (e) => {
-e.preventDefault();
-col.classList.remove("drag-over");
-const clientId = e.dataTransfer.getData("text/plain") || draggedClientId;
-const targetStage = col.dataset.stage;
-if (!clientId || !targetStage) return;
-const client = state.clients.find((c) => String(c.id) === String(clientId));
-if (!client || client.stage === targetStage) return;
-try {
-await api(`/api/clients/${clientId}/advance`, { method: "POST", body: { stage: targetStage } });
-await loadClients();
-route();
-} catch (err) {
-alert(err.message || "Could not move client.");
-}
-});
-});
+  kanban.querySelectorAll(".kanban-col").forEach((col) => {
+    col.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      col.classList.add("drag-over");
+    });
+    col.addEventListener("dragleave", () => {
+      col.classList.remove("drag-over");
+    });
+    col.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      col.classList.remove("drag-over");
+      const clientId = e.dataTransfer.getData("text/plain") || draggedClientId;
+      const targetStage = col.dataset.stage;
+      if (!clientId || !targetStage) return;
+      const client = state.clients.find((c) => String(c.id) === String(clientId));
+      if (!client || client.stage === targetStage) return;
+      try {
+        await api(`/api/clients/${clientId}/advance`, { method: "POST", body: { stage: targetStage } });
+        await loadClients();
+        route();
+      } catch (err) {
+        alert(err.message || "Could not move client.");
+      }
+    });
+  });
 }
 
 // ---------------- Document helpers ----------------
 function docIcon(mimeType) {
-if (!mimeType) return "📄";
-if (mimeType.includes("pdf")) return "📕";
-if (mimeType.includes("image")) return "🖼";
-return "📄";
+  if (!mimeType) return "📄";
+  if (mimeType.includes("pdf")) return "📕";
+  if (mimeType.includes("image")) return "🖼";
+  return "📄";
+}
+
+function docLinkHtml(d) {
+  if (d.doc_type === "link") {
+    return `<a class="btn small secondary" href="${d.external_url}" target="_blank" rel="noopener">Open in Drive</a>`;
+  }
+  return `<a class="btn small secondary" href="/api/documents/${d.id}/download" target="_blank" rel="noopener">Download</a>`;
 }
 
 // ---------------- Client Modal ----------------
 async function openClientModal(id) {
-const data = await api(`/api/clients/${id}`);
-const { client, tasks, sessions, notifications, documents } = data;
-const sMap = stageMap();
-const stage = sMap[client.stage] || {};
+  const data = await api(`/api/clients/${id}`);
+  const { client, tasks, sessions, notifications, documents } = data;
+  const sMap = stageMap();
+  const stage = sMap[client.stage] || {};
 
-const backdrop = document.createElement("div");
-backdrop.className = "modal-backdrop";
-backdrop.innerHTML = `
-<div class="modal">
-<div class="modal-header">
-<div>
-<h2>${client.child_name}</h2>
-<span class="badge" style="background:${stage.color}">${stage.label}</span>
-</div>
-<button class="close-btn">✕</button>
-</div>
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <h2>${client.child_name}</h2>
+          <span class="badge" style="background:${stage.color}">${stage.label}</span>
+        </div>
+        <button class="close-btn">✕</button>
+      </div>
 
-<div class="form-grid">
-<div class="field"><label>Parent / Guardian</label><div>${client.parent_name || "—"} (${client.parent_relationship || "—"})</div></div>
-<div class="field"><label>Contact</label><div>${client.parent_email || "—"} · ${client.parent_phone || "—"}</div></div>
-<div class="field"><label>Date of Birth</label><div>${client.dob || "—"}</div></div>
-<div class="field"><label>Service Location</label><div>${client.service_location || "—"}</div></div>
-<div class="field"><label>Insurance</label><div>${client.insurance_provider || "—"}</div></div>
-<div class="field"><label>Desired Schedule</label><div>${client.desired_schedule || "—"}</div></div>
-<div class="field"><label>ASD Diagnosis</label><div>${client.has_asd_diagnosis || "—"}</div></div>
-<div class="field"><label>IEP</label><div>${client.has_iep || "—"}</div></div>
-</div>
+      <div class="form-grid">
+        <div class="field"><label>Parent / Guardian</label><div>${client.parent_name || "—"} (${client.parent_relationship || "—"})</div></div>
+        <div class="field"><label>Contact</label><div>${client.parent_email || "—"} · ${client.parent_phone || "—"}</div></div>
+        <div class="field"><label>Date of Birth</label><div>${client.dob || "—"}</div></div>
+        <div class="field"><label>Service Location</label><div>${client.service_location || "—"}</div></div>
+        <div class="field"><label>Insurance</label><div>${client.insurance_provider || "—"}</div></div>
+        <div class="field"><label>Desired Schedule</label><div>${client.desired_schedule || "—"}</div></div>
+        <div class="field"><label>ASD Diagnosis</label><div>${client.has_asd_diagnosis || "—"}</div></div>
+        <div class="field"><label>IEP</label><div>${client.has_iep || "—"}</div></div>
+      </div>
 
-<div class="section-title">Documents</div>
-${
-(documents || []).length
-? documents
-.map(
-(d) => `<div class="doc-row">
-<div class="doc-info"><span class="doc-icon">${docIcon(d.mime_type)}</span><div><div><strong>${d.label}</strong></div><div class="doc-filename">${d.filename}</div></div></div>
-<a class="btn small secondary" href="/api/documents/${d.id}/download" target="_blank" rel="noopener">Download</a>
-</div>`
-)
-.join("")
-: `<div class="empty-state">No documents uploaded yet.</div>`
-}
+      <div class="section-title">Documents</div>
+      ${
+        (documents || []).length
+          ? documents
+              .map(
+                (d) => `<div class="doc-row">
+                  <div class="doc-info"><span class="doc-icon">${docIcon(d.mime_type)}</span><div><div><strong>${d.label}</strong></div><div class="doc-filename">${d.filename}</div></div></div>
+                  ${docLinkHtml(d)}
+                </div>`
+              )
+              .join("")
+          : `<div class="empty-state">No documents uploaded yet.</div>`
+      }
 
-<div class="section-title">Stage Tasks</div>
-${
-tasks.length
-? tasks
-.map(
-(t) => `<div class="task-row">
-<div class="info">
-<span class="status-dot ${t.status}"></span><strong>${t.label}</strong>
-<div class="due">${t.department_name} · due ${fmtDate(t.due_date)} ${t.status === "overdue" ? "· <span style='color:#b91c1c;font-weight:700;'>OVERDUE</span>" : ""}</div>
-</div>
-${
-t.status !== "completed"
-? `<button class="btn small" data-complete-task="${t.id}">Mark done</button>`
-: `<span class="tag" style="background:#dcfce7; color:#166534;">Completed</span>`
-}
-</div>`
-)
-.join("")
-: `<div class="empty-state">No tasks yet.</div>`
-}
+      <div class="section-title">Stage Tasks</div>
+      ${
+        tasks.length
+          ? tasks
+              .map(
+                (t) => `<div class="task-row">
+                  <div class="info">
+                    <span class="status-dot ${t.status}"></span><strong>${t.label}</strong>
+                    <div class="due">${t.department_name} · due ${fmtDate(t.due_date)} ${t.status === "overdue" ? "· <span style='color:#b91c1c;font-weight:700;'>OVERDUE</span>" : ""}</div>
+                  </div>
+                  ${
+                    t.status !== "completed"
+                      ? `<button class="btn small" data-complete-task="${t.id}">Mark done</button>`
+                      : `<span class="tag" style="background:#dcfce7; color:#166534;">Completed</span>`
+                  }
+                </div>`
+              )
+              .join("")
+          : `<div class="empty-state">No tasks yet.</div>`
+      }
 
-<div class="section-title">Advance / Close Out</div>
-<div style="display:flex; gap:8px; flex-wrap:wrap;">
-<button class="btn secondary small" id="advance-btn">Advance to next stage manually</button>
-<button class="btn secondary small" id="discharge-btn">Mark discharged</button>
-<button class="btn secondary small" id="not-moving-btn" style="color:#b91c1c;">Not moving forward</button>
-</div>
+      <div class="section-title">Advance / Close Out</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn secondary small" id="advance-btn">Advance to next stage manually</button>
+        <button class="btn secondary small" id="discharge-btn">Mark discharged</button>
+        <button class="btn secondary small" id="not-moving-btn" style="color:#b91c1c;">Not moving forward</button>
+      </div>
 
-${
-sessions.length
-? `<div class="section-title">Weekly Schedule</div>
-${sessions
-.map(
-(s) => `<div class="task-row"><div class="info"><strong>${dayName(s.day_of_week)}</strong> ${s.start_time}–${s.end_time}</div><div>${s.therapist_name}</div></div>`
-)
-.join("")}`
-: ""
-}
+      ${
+        sessions.length
+          ? `<div class="section-title">Weekly Schedule</div>
+          ${sessions
+            .map(
+              (s) => `<div class="task-row"><div class="info"><strong>${dayName(s.day_of_week)}</strong> ${s.start_time}–${s.end_time}</div><div>${s.therapist_name}</div></div>`
+            )
+            .join("")}`
+          : ""
+      }
 
-<div class="section-title">Notification History</div>
-${
-notifications.length
-? notifications
-.slice(0, 6)
-.map(
-(n) => `<div class="task-row"><div class="info"><strong>${n.subject}</strong><div class="due">to ${n.recipient} · ${fmtDate(n.sent_at)}</div></div>
-<span class="delivered-pill ${n.delivered.split(":")[0]}">${n.delivered.split(":")[0]}</span></div>`
-)
-.join("")
-: `<div class="empty-state">No notifications yet.</div>`
-}
-</div>
-`;
-document.body.appendChild(backdrop);
+      <div class="section-title">Notification History</div>
+      ${
+        notifications.length
+          ? notifications
+              .slice(0, 6)
+              .map(
+                (n) => `<div class="task-row"><div class="info"><strong>${n.subject}</strong><div class="due">to ${n.recipient} · ${fmtDate(n.sent_at)}</div></div>
+                <span class="delivered-pill ${n.delivered.split(":")[0]}">${n.delivered.split(":")[0]}</span></div>`
+              )
+              .join("")
+          : `<div class="empty-state">No notifications yet.</div>`
+      }
+    </div>
+  `;
+  document.body.appendChild(backdrop);
 
-const close = () => {
-backdrop.remove();
-if (location.hash.startsWith("#/pipeline/")) location.hash = "#/pipeline";
-};
-backdrop.querySelector(".close-btn").addEventListener("click", close);
-backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+  const close = () => {
+    backdrop.remove();
+    if (location.hash.startsWith("#/pipeline/")) location.hash = "#/pipeline";
+  };
+  backdrop.querySelector(".close-btn").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
 
-backdrop.querySelectorAll("[data-complete-task]").forEach((btn) => {
-btn.addEventListener("click", async () => {
-await api(`/api/tasks/${btn.dataset.completeTask}/complete`, { method: "POST" });
-close();
-await loadClients();
-openClientModal(id);
-route();
-});
-});
+  backdrop.querySelectorAll("[data-complete-task]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api(`/api/tasks/${btn.dataset.completeTask}/complete`, { method: "POST" });
+      close();
+      await loadClients();
+      openClientModal(id);
+      route();
+    });
+  });
 
-backdrop.querySelector("#advance-btn").addEventListener("click", async () => {
-await api(`/api/clients/${id}/advance`, { method: "POST", body: {} });
-close();
-await loadClients();
-route();
-});
-backdrop.querySelector("#discharge-btn").addEventListener("click", async () => {
-const reason = await askReason("Discharge reason");
-if (reason === null) return;
-await api(`/api/clients/${id}/discharge`, { method: "POST", body: { reason, stage: "discharged" } });
-close();
-await loadClients();
-route();
-});
-backdrop.querySelector("#not-moving-btn").addEventListener("click", async () => {
-const reason = await askReason("Reason client is not moving forward");
-if (reason === null) return;
-await api(`/api/clients/${id}/discharge`, { method: "POST", body: { reason, stage: "not_moving_forward" } });
-close();
-await loadClients();
-route();
-});
+  backdrop.querySelector("#advance-btn").addEventListener("click", async () => {
+    await api(`/api/clients/${id}/advance`, { method: "POST", body: {} });
+    close();
+    await loadClients();
+    route();
+  });
+  backdrop.querySelector("#discharge-btn").addEventListener("click", async () => {
+    const reason = await askReason("Discharge reason");
+    if (reason === null) return;
+    await api(`/api/clients/${id}/discharge`, { method: "POST", body: { reason, stage: "discharged" } });
+    close();
+    await loadClients();
+    route();
+  });
+  backdrop.querySelector("#not-moving-btn").addEventListener("click", async () => {
+    const reason = await askReason("Reason client is not moving forward");
+    if (reason === null) return;
+    await api(`/api/clients/${id}/discharge`, { method: "POST", body: { reason, stage: "not_moving_forward" } });
+    close();
+    await loadClients();
+    route();
+  });
 }
 
 function dayName(n) {
-return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][n] || n;
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][n] || n;
 }
 
 // ---------------- New Client Modal (simulates enrollment form submission) ----------------
 function openNewClientModal() {
-const backdrop = document.createElement("div");
-backdrop.className = "modal-backdrop";
-backdrop.innerHTML = `
-<div class="modal">
-<div class="modal-header"><h2>New Enrollment</h2><button class="close-btn">✕</button></div>
-<p style="color:var(--text-muted); font-size:13px; margin-top:-8px;">
-In production this is filled automatically from your website's enrollment form. Adding one here simulates that signup and fires the same automated notifications.
-</p>
-<form id="new-client-form">
-<div class="form-grid">
-<div class="field"><label>Child's Name *</label><input name="child_name" required /></div>
-<div class="field"><label>Date of Birth</label><input name="dob" type="date" /></div>
-<div class="field"><label>Parent/Guardian Name *</label><input name="parent_name" required /></div>
-<div class="field"><label>Relationship</label><input name="parent_relationship" value="Parent / Legal Guardian" /></div>
-<div class="field"><label>Parent Email *</label><input name="parent_email" type="email" required /></div>
-<div class="field"><label>Parent Phone</label><input name="parent_phone" /></div>
-<div class="field full"><label>Address</label><input name="address" /></div>
-<div class="field">
-<label>Service Location</label>
-<select name="service_location"><option>In-Clinic</option><option>In Home</option><option>In-School</option></select>
-</div>
-<div class="field">
-<label>Desired Schedule</label>
-<select name="desired_schedule"><option>Full-Time</option><option>Part Time AM</option><option>Part Time PM</option></select>
-</div>
-<div class="field"><label>Insurance Provider</label><input name="insurance_provider" /></div>
-<div class="field">
-<label>ASD Diagnosis?</label>
-<select name="has_asd_diagnosis"><option>Yes</option><option>No</option></select>
-</div>
-</div>
-<div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
-<button type="button" class="btn secondary" id="cancel-new">Cancel</button>
-<button type="submit" class="btn">Submit Enrollment</button>
-</div>
-</form>
-</div>
-`;
-document.body.appendChild(backdrop);
-const close = () => backdrop.remove();
-backdrop.querySelector(".close-btn").addEventListener("click", close);
-backdrop.querySelector("#cancel-new").addEventListener("click", close);
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal">
+      <div class="modal-header"><h2>New Enrollment</h2><button class="close-btn">✕</button></div>
+      <p style="color:var(--text-muted); font-size:13px; margin-top:-8px;">
+        In production this is filled automatically from your website's enrollment form. Adding one here simulates that signup and fires the same automated notifications.
+      </p>
+      <form id="new-client-form">
+        <div class="form-grid">
+          <div class="field"><label>Child's Name *</label><input name="child_name" required /></div>
+          <div class="field"><label>Date of Birth</label><input name="dob" type="date" /></div>
+          <div class="field"><label>Parent/Guardian Name *</label><input name="parent_name" required /></div>
+          <div class="field"><label>Relationship</label><input name="parent_relationship" value="Parent / Legal Guardian" /></div>
+          <div class="field"><label>Parent Email *</label><input name="parent_email" type="email" required /></div>
+          <div class="field"><label>Parent Phone</label><input name="parent_phone" /></div>
+          <div class="field full"><label>Address</label><input name="address" /></div>
+          <div class="field">
+            <label>Service Location</label>
+            <select name="service_location"><option>In-Clinic</option><option>In Home</option><option>In-School</option></select>
+          </div>
+          <div class="field">
+            <label>Desired Schedule</label>
+            <select name="desired_schedule"><option>Full-Time</option><option>Part Time AM</option><option>Part Time PM</option></select>
+          </div>
+          <div class="field"><label>Insurance Provider</label><input name="insurance_provider" /></div>
+          <div class="field">
+            <label>ASD Diagnosis?</label>
+            <select name="has_asd_diagnosis"><option>Yes</option><option>No</option></select>
+          </div>
+        </div>
+        <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
+          <button type="button" class="btn secondary" id="cancel-new">Cancel</button>
+          <button type="submit" class="btn">Submit Enrollment</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".close-btn").addEventListener("click", close);
+  backdrop.querySelector("#cancel-new").addEventListener("click", close);
 
-backdrop.querySelector("#new-client-form").addEventListener("submit", async (e) => {
-e.preventDefault();
-const fd = new FormData(e.target);
-const body = Object.fromEntries(fd.entries());
-await api("/api/clients", { method: "POST", body });
-close();
-await loadClients();
-route();
-});
+  backdrop.querySelector("#new-client-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    await api("/api/clients", { method: "POST", body });
+    close();
+    await loadClients();
+    route();
+  });
 }
 
 // ---------------- Tasks ----------------
 async function renderTasks(mount) {
-const tasks = await api("/api/tasks");
-mount.innerHTML = `
-<div class="page-header"><div><h1>Tasks & Alerts</h1><p>Every open task across the pipeline, oldest due date first.</p></div></div>
-<div class="card">
-<table>
-<thead><tr><th>Status</th><th>Client</th><th>Task</th><th>Department</th><th>Due</th><th></th></tr></thead>
-<tbody>
-${
-tasks.length
-? tasks
-.map(
-(t) => `<tr>
-<td><span class="status-dot ${t.status}"></span>${t.status}</td>
-<td>${t.child_name}</td>
-<td>${t.label}</td>
-<td><span class="badge" style="background:${t.department_color}">${t.department_name}</span></td>
-<td>${fmtDate(t.due_date)}</td>
-<td><button class="btn small secondary" data-complete="${t.id}">Mark done</button></td>
-</tr>`
-)
-.join("")
-: `<tr><td colspan="6"><div class="empty-state">No open tasks. Nice work.</div></td></tr>`
-}
-</tbody>
-</table>
-</div>
-`;
-mount.querySelectorAll("[data-complete]").forEach((btn) => {
-btn.addEventListener("click", async () => {
-await api(`/api/tasks/${btn.dataset.complete}/complete`, { method: "POST" });
-await loadClients();
-route();
-});
-});
+  const tasks = await api("/api/tasks");
+  mount.innerHTML = `
+    <div class="page-header"><div><h1>Tasks & Alerts</h1><p>Every open task across the pipeline, oldest due date first.</p></div></div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Status</th><th>Client</th><th>Task</th><th>Department</th><th>Due</th><th></th></tr></thead>
+        <tbody>
+          ${
+            tasks.length
+              ? tasks
+                  .map(
+                    (t) => `<tr>
+                    <td><span class="status-dot ${t.status}"></span>${t.status}</td>
+                    <td>${t.child_name}</td>
+                    <td>${t.label}</td>
+                    <td><span class="badge" style="background:${t.department_color}">${t.department_name}</span></td>
+                    <td>${fmtDate(t.due_date)}</td>
+                    <td><button class="btn small secondary" data-complete="${t.id}">Mark done</button></td>
+                  </tr>`
+                  )
+                  .join("")
+              : `<tr><td colspan="6"><div class="empty-state">No open tasks. Nice work.</div></td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>
+  `;
+  mount.querySelectorAll("[data-complete]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api(`/api/tasks/${btn.dataset.complete}/complete`, { method: "POST" });
+      await loadClients();
+      route();
+    });
+  });
 }
 
 // ---------------- Schedule ----------------
 async function renderSchedule(mount) {
-const [sessions, targets] = await Promise.all([
-api("/api/schedule"),
-api("/api/schedule-targets"),
-]);
-const activeClients = state.clients.filter((c) => c.stage === "active" || c.stage === "first_day_scheduled");
-const targetMap = Object.fromEntries(targets.map((t) => [t.key, t.weekly_hours]));
+  const [sessions, targets] = await Promise.all([
+    api("/api/schedule"),
+    api("/api/schedule-targets"),
+  ]);
+  const activeClients = state.clients.filter((c) => c.stage === "active" || c.stage === "first_day_scheduled");
+  const targetMap = Object.fromEntries(targets.map((t) => [t.key, t.weekly_hours]));
 
-mount.innerHTML = `
-<div class="page-header">
-<div><h1>Therapy Schedule Builder</h1><p>Assign weekly sessions once a client is active. Conflicts are checked automatically.</p></div>
-<button class="btn" id="add-session-btn">+ Add Session</button>
-</div>
+  mount.innerHTML = `
+    <div class="page-header">
+      <div><h1>Therapy Schedule Builder</h1><p>Assign weekly sessions once a client is active. Conflicts are checked automatically.</p></div>
+      <button class="btn" id="add-session-btn">+ Add Session</button>
+    </div>
 
-<div class="card" style="margin-bottom:20px;">
-<div class="section-title" style="margin-top:0;">Weekly Hours vs. Target</div>
-<table>
-<thead><tr><th>Child</th><th>Desired Schedule</th><th>Target Hrs/Wk</th><th>Scheduled Hrs/Wk</th><th></th></tr></thead>
-<tbody>
-${
-activeClients
-.map((c) => {
-const clientSessions = sessions.filter((s) => s.client_id === c.id);
-const hours = clientSessions.reduce((sum, s) => sum + hoursBetween(s.start_time, s.end_time), 0);
-const target = targetMap[c.desired_schedule] || 0;
-const short = hours < target;
-return `<tr>
-<td><strong>${c.child_name}</strong></td>
-<td>${c.desired_schedule || "—"}</td>
-<td>${target}</td>
-<td style="color:${short ? "var(--danger)" : "var(--success)"}; font-weight:700;">${hours}</td>
-<td>${short ? `<span class="tag overdue">Under-scheduled</span>` : `<span class="tag" style="background:#dcfce7; color:#166534;">On target</span>`}</td>
-</tr>`;
-})
-.join("") || `<tr><td colspan="5"><div class="empty-state">No active clients yet.</div></td></tr>`
-}
-</tbody>
-</table>
-</div>
+    <div class="card" style="margin-bottom:20px;">
+      <div class="section-title" style="margin-top:0;">Weekly Hours vs. Target</div>
+      <table>
+        <thead><tr><th>Child</th><th>Desired Schedule</th><th>Target Hrs/Wk</th><th>Scheduled Hrs/Wk</th><th></th></tr></thead>
+        <tbody>
+          ${
+            activeClients
+              .map((c) => {
+                const clientSessions = sessions.filter((s) => s.client_id === c.id);
+                const hours = clientSessions.reduce((sum, s) => sum + hoursBetween(s.start_time, s.end_time), 0);
+                const target = targetMap[c.desired_schedule] || 0;
+                const short = hours < target;
+                return `<tr>
+                  <td><strong>${c.child_name}</strong></td>
+                  <td>${c.desired_schedule || "—"}</td>
+                  <td>${target}</td>
+                  <td style="color:${short ? "var(--danger)" : "var(--success)"}; font-weight:700;">${hours}</td>
+                  <td>${short ? `<span class="tag overdue">Under-scheduled</span>` : `<span class="tag" style="background:#dcfce7; color:#166534;">On target</span>`}</td>
+                </tr>`;
+              })
+              .join("") || `<tr><td colspan="5"><div class="empty-state">No active clients yet.</div></td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>
 
-<div class="card">
-<div class="section-title" style="margin-top:0;">Weekly Grid</div>
-<div class="schedule-grid">
-<div></div>
-${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d) => `<div class="day-head">${d}</div>`).join("")}
-${renderScheduleRows(sessions)}
-</div>
-</div>
-`;
+    <div class="card">
+      <div class="section-title" style="margin-top:0;">Weekly Grid</div>
+      <div class="schedule-grid">
+        <div></div>
+        ${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d) => `<div class="day-head">${d}</div>`).join("")}
+        ${renderScheduleRows(sessions)}
+      </div>
+    </div>
+  `;
 
-document.getElementById("add-session-btn").addEventListener("click", () => openAddSessionModal(activeClients));
+  document.getElementById("add-session-btn").addEventListener("click", () => openAddSessionModal(activeClients));
 }
 
 function hoursBetween(start, end) {
-const [sh, sm] = start.split(":").map(Number);
-const [eh, em] = end.split(":").map(Number);
-return Math.round(((eh * 60 + em) - (sh * 60 + sm)) / 60 * 10) / 10;
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  return Math.round(((eh * 60 + em) - (sh * 60 + sm)) / 60 * 10) / 10;
 }
 
 function renderScheduleRows(sessions) {
-const hours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
-return hours
-.map((h) => {
-const label = `<div class="time-label">${h}:00</div>`;
-const cells = [0, 1, 2, 3, 4, 5, 6]
-.map((day) => {
-const inSlot = sessions.filter((s) => {
-const startH = parseInt(s.start_time.split(":")[0], 10);
-return s.day_of_week === day && startH === h;
-});
-return `<div class="schedule-cell">${inSlot
-.map(
-(s) => `<div class="session-block" style="background:${s.client_color || "var(--brand)"}" title="${s.child_name} with ${s.therapist_name}, delete?" data-session="${s.id}">${s.child_name}<br/>${s.start_time}-${s.end_time}</div>`
-)
-.join("")}</div>`;
-})
-.join("");
-return label + cells;
-})
-.join("")
-.replace(/data-session="(\d+)"/g, 'data-session="$1" style="cursor:pointer"');
+  const hours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+  return hours
+    .map((h) => {
+      const label = `<div class="time-label">${h}:00</div>`;
+      const cells = [0, 1, 2, 3, 4, 5, 6]
+        .map((day) => {
+          const inSlot = sessions.filter((s) => {
+            const startH = parseInt(s.start_time.split(":")[0], 10);
+            return s.day_of_week === day && startH === h;
+          });
+          return `<div class="schedule-cell">${inSlot
+            .map(
+              (s) => `<div class="session-block" style="background:${s.client_color || "var(--brand)"}" title="${s.child_name} with ${s.therapist_name}, delete?" data-session="${s.id}">${s.child_name}<br/>${s.start_time}-${s.end_time}</div>`
+            )
+            .join("")}</div>`;
+        })
+        .join("");
+      return label + cells;
+    })
+    .join("")
+    .replace(/data-session="(\d+)"/g, 'data-session="$1" style="cursor:pointer"');
 }
 
 function openAddSessionModal(activeClients) {
-const backdrop = document.createElement("div");
-backdrop.className = "modal-backdrop";
-backdrop.innerHTML = `
-<div class="modal" style="width:480px;">
-<div class="modal-header"><h2>Add Session</h2><button class="close-btn">✕</button></div>
-<div id="add-session-error" class="login-error"></div>
-<form id="add-session-form">
-<div class="form-grid">
-<div class="field full">
-<label>Client</label>
-<select name="client_id" required>${activeClients.map((c) => `<option value="${c.id}">${c.child_name}</option>`).join("")}</select>
-</div>
-<div class="field full">
-<label>Therapist</label>
-<select name="therapist_id" required>${state.therapists.map((t) => `<option value="${t.id}">${t.name} (${t.role})</option>`).join("")}</select>
-</div>
-<div class="field">
-<label>Day</label>
-<select name="day_of_week">${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d, i) => `<option value="${i}">${d}</option>`).join("")}</select>
-</div>
-<div class="field"><label>Type</label><input name="session_type" value="ABA Therapy" /></div>
-<div class="field"><label>Start</label><input name="start_time" type="time" value="09:00" required /></div>
-<div class="field"><label>End</label><input name="end_time" type="time" value="12:00" required /></div>
-</div>
-<div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
-<button type="button" class="btn secondary" id="cancel-session">Cancel</button>
-<button type="submit" class="btn">Add Session</button>
-</div>
-</form>
-</div>
-`;
-document.body.appendChild(backdrop);
-const close = () => backdrop.remove();
-backdrop.querySelector(".close-btn").addEventListener("click", close);
-backdrop.querySelector("#cancel-session").addEventListener("click", close);
-backdrop.querySelector("#add-session-form").addEventListener("submit", async (e) => {
-e.preventDefault();
-const fd = new FormData(e.target);
-const body = Object.fromEntries(fd.entries());
-try {
-await api("/api/schedule", { method: "POST", body });
-close();
-route();
-} catch (err) {
-document.getElementById("add-session-error").textContent = err.message;
-}
-});
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal" style="width:480px;">
+      <div class="modal-header"><h2>Add Session</h2><button class="close-btn">✕</button></div>
+      <div id="add-session-error" class="login-error"></div>
+      <form id="add-session-form">
+        <div class="form-grid">
+          <div class="field full">
+            <label>Client</label>
+            <select name="client_id" required>${activeClients.map((c) => `<option value="${c.id}">${c.child_name}</option>`).join("")}</select>
+          </div>
+          <div class="field full">
+            <label>Therapist</label>
+            <select name="therapist_id" required>${state.therapists.map((t) => `<option value="${t.id}">${t.name} (${t.role})</option>`).join("")}</select>
+          </div>
+          <div class="field">
+            <label>Day</label>
+            <select name="day_of_week">${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d, i) => `<option value="${i}">${d}</option>`).join("")}</select>
+          </div>
+          <div class="field"><label>Type</label><input name="session_type" value="ABA Therapy" /></div>
+          <div class="field"><label>Start</label><input name="start_time" type="time" value="09:00" required /></div>
+          <div class="field"><label>End</label><input name="end_time" type="time" value="12:00" required /></div>
+        </div>
+        <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
+          <button type="button" class="btn secondary" id="cancel-session">Cancel</button>
+          <button type="submit" class="btn">Add Session</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".close-btn").addEventListener("click", close);
+  backdrop.querySelector("#cancel-session").addEventListener("click", close);
+  backdrop.querySelector("#add-session-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    try {
+      await api("/api/schedule", { method: "POST", body });
+      close();
+      route();
+    } catch (err) {
+      document.getElementById("add-session-error").textContent = err.message;
+    }
+  });
 }
 
 // ---------------- Outbox ----------------
 async function renderOutbox(mount) {
-const notifications = await api("/api/notifications");
-mount.innerHTML = `
-<div class="page-header"><div><h1>Message Outbox</h1><p>Every automated email the system has sent (or simulated) to staff and parents.</p></div></div>
-<div class="card">
-${
-notifications.length
-? notifications
-.map(
-(n) => `<div class="outbox-item">
-<div class="subject">${n.subject}</div>
-<div class="meta">to <strong>${n.recipient}</strong> · ${n.type.replace("_", " ")} · ${fmtDate(n.sent_at)}
-<span class="delivered-pill ${n.delivered.split(":")[0]}">${n.delivered.split(":")[0]}</span>
-</div>
-<div class="body">${n.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()}</div>
-</div>`
-)
-.join("")
-: `<div class="empty-state">No messages sent yet.</div>`
-}
-</div>
-`;
+  const notifications = await api("/api/notifications");
+  mount.innerHTML = `
+    <div class="page-header"><div><h1>Message Outbox</h1><p>Every automated email the system has sent (or simulated) to staff and parents.</p></div></div>
+    <div class="card">
+      ${
+        notifications.length
+          ? notifications
+              .map(
+                (n) => `<div class="outbox-item">
+                <div class="subject">${n.subject}</div>
+                <div class="meta">to <strong>${n.recipient}</strong> · ${n.type.replace("_", " ")} · ${fmtDate(n.sent_at)}
+                  <span class="delivered-pill ${n.delivered.split(":")[0]}">${n.delivered.split(":")[0]}</span>
+                </div>
+                <div class="body">${n.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()}</div>
+              </div>`
+              )
+              .join("")
+          : `<div class="empty-state">No messages sent yet.</div>`
+      }
+    </div>
+  `;
 }
 
 // ---------------- Admin ----------------
 async function renderAdmin(mount) {
-mount.innerHTML = `
-<div class="page-header"><div><h1>Admin Settings</h1><p>Department alert routing and overdue-check controls.</p></div></div>
-<div class="card" style="margin-bottom:20px;">
-<div class="section-title" style="margin-top:0;">Department Notification Emails</div>
-${state.departments
-.map(
-(d) => `<div class="task-row">
-<div class="info"><span class="badge" style="background:${d.color}">${d.name}</span></div>
-<div style="display:flex; gap:8px;">
-<input data-dept-email="${d.id}" value="${d.notify_email || ""}" style="width:240px;" />
-<button class="btn small secondary" data-save-dept="${d.id}">Save</button>
-</div>
-</div>`
-)
-.join("")}
-</div>
-<div class="card">
-<div class="section-title" style="margin-top:0;">Overdue Sweep</div>
-<p style="color:var(--text-muted); font-size:13px;">Runs automatically every 30 minutes while the server is running. Trigger it manually below.</p>
-<button class="btn secondary" id="run-sweep">Run overdue check now</button>
-<span id="sweep-result" style="margin-left:10px; font-size:13px; color:var(--text-muted);"></span>
-</div>
-`;
+  mount.innerHTML = `
+    <div class="page-header"><div><h1>Admin Settings</h1><p>Department alert routing and overdue-check controls.</p></div></div>
+    <div class="card" style="margin-bottom:20px;">
+      <div class="section-title" style="margin-top:0;">Department Notification Emails</div>
+      ${state.departments
+        .map(
+          (d) => `<div class="task-row">
+          <div class="info"><span class="badge" style="background:${d.color}">${d.name}</span></div>
+          <div style="display:flex; gap:8px;">
+            <input data-dept-email="${d.id}" value="${d.notify_email || ""}" style="width:240px;" />
+            <button class="btn small secondary" data-save-dept="${d.id}">Save</button>
+          </div>
+        </div>`
+        )
+        .join("")}
+    </div>
+    <div class="card">
+      <div class="section-title" style="margin-top:0;">Overdue Sweep</div>
+      <p style="color:var(--text-muted); font-size:13px;">Runs automatically every 30 minutes while the server is running. Trigger it manually below.</p>
+      <button class="btn secondary" id="run-sweep">Run overdue check now</button>
+      <span id="sweep-result" style="margin-left:10px; font-size:13px; color:var(--text-muted);"></span>
+    </div>
+  `;
 
-mount.querySelectorAll("[data-save-dept]").forEach((btn) => {
-btn.addEventListener("click", async () => {
-const id = btn.dataset.saveDept;
-const email = mount.querySelector(`[data-dept-email="${id}"]`).value;
-await api("/api/admin/departments", { method: "PATCH", body: { id: Number(id), notify_email: email } });
-btn.textContent = "Saved ✓";
-setTimeout(() => (btn.textContent = "Save"), 1500);
-});
-});
+  mount.querySelectorAll("[data-save-dept]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.saveDept;
+      const email = mount.querySelector(`[data-dept-email="${id}"]`).value;
+      await api("/api/admin/departments", { method: "PATCH", body: { id: Number(id), notify_email: email } });
+      btn.textContent = "Saved ✓";
+      setTimeout(() => (btn.textContent = "Save"), 1500);
+    });
+  });
 
-mount.querySelector("#run-sweep").addEventListener("click", async () => {
-const { flagged } = await api("/api/admin/check-overdue", { method: "POST" });
-document.getElementById("sweep-result").textContent = `${flagged} task(s) newly flagged overdue.`;
-});
+  mount.querySelector("#run-sweep").addEventListener("click", async () => {
+    const { flagged } = await api("/api/admin/check-overdue", { method: "POST" });
+    document.getElementById("sweep-result").textContent = `${flagged} task(s) newly flagged overdue.`;
+  });
 }
 
 </script>
