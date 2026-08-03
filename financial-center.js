@@ -9,7 +9,11 @@
 // This script runs in the SAME global scope as index.html's inline <script>
 // (classic scripts, not modules, share one global lexical environment), so
 // it can reference `state`, `api()`, etc. directly, exactly like the rest of
-// the app's code does.
+// the app's code does. IMPORTANT: `state` is declared with `const` in that
+// inline script, so it's accessible here as the bare identifier `state` --
+// but it is NOT a property of `window` (that's only true for `var`/function
+// declarations at top level, not `let`/`const`). Always reference it as
+// bare `state`, never `window.state` (which will always be undefined).
 "use strict";
 
 // ---------------- Styles (injected once) ----------------
@@ -34,13 +38,13 @@
 // credentials. Any other role (intake, scheduling -- and any future RBT
 // login) gets no access, per the "RBTs: No access" requirement.
 function canViewFinancial() {
-  return !!(window.state && state.user && ["admin", "billing", "clinical"].includes(state.user.role));
+  return typeof state !== "undefined" && !!state.user && ["admin", "billing", "clinical"].includes(state.user.role);
 }
 function canEditFinancial() {
-  return !!(window.state && state.user && ["admin", "billing"].includes(state.user.role));
+  return typeof state !== "undefined" && !!state.user && ["admin", "billing"].includes(state.user.role);
 }
 function canAdminFinancial() {
-  return !!(window.state && state.user && state.user.role === "admin");
+  return typeof state !== "undefined" && !!state.user && state.user.role === "admin";
 }
 
 const FINANCIAL_TABS = [
