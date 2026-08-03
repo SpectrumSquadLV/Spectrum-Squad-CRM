@@ -1,6 +1,6 @@
 // server.js -- Spectrum Squad ABA Client Pipeline CRM
 // Single-file build (consolidated for easy manual deployment via GitHub's
-// web UI). Zero npm dependencies -- pure Node built-ins only.
+// web UI). Uses Postgres (via the `pg` package) for persistent storage.
 // Run with: node server.js
 "use strict";
 
@@ -9,25 +9,53 @@ const fs = require("fs");
 const path = require("path");
 const url = require("url");
 const crypto = require("crypto");
-const { DatabaseSync } = require("node:sqlite");
+const { Pool } = require("pg");
 
 // ============================== DATABASE ==============================
 // server/db.js
-// Zero-dependency SQLite layer using Node's built-in node:sqlite module (Node 22+).
-// No npm install required to run this app.
+// Postgres layer using the `pg` package. Requires DATABASE_URL to be set
+// (Railway provides this automatically when a Postgres service is linked).
 "use strict";
 
-const DATA_DIR = path.join(__dirname, "data");
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+const DATABASE_URL = process.env.DATABASE_URL || "";
+if (!DATABASE_URL) {
+  console.error("FATAL: DATABASE_URL is not set. Cannot connect to Postgres.");
+}
 
-const DB_PATH = path.join(DATA_DIR, "crm.db");
-const db = new DatabaseSync(DB_PATH);
+// Railway's internal networking (host ending in .railway.internal) does not
+// use/need TLS. Any other host (e.g. the public proxy) does.
+const needsSSL = DATABASE_URL && !DATABASE_URL.includes("railway.internal");
 
-db.exec(`
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: needsSSL ? { rejectUnauthorized: false } : false,
+});
 
+// Converts our SQLite-style "?" placeholders into Postgres-style "$1, $2..."
+// placeholders, so the rest of the app can keep using "?" everywhere.
+function toPgQuery(sql) {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
+}
 
+async function dbGet(sql, params = []) {
+  const res = await pool.query(toPgQuery(sql), params);
+  return res.rows[0];
+}
+
+async function dbAll(sql, params = []) {
+  const res = await pool.query(toPgQuery(sql), params);
+  return res.rows;
+}
+
+async function dbRun(sql, params = []) {
+  const res = await pool.query(toPgQuery(sql), params);
+  return { rowCount: res.rowCount, rows: res.rows };
+}
+
+const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS departments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     key TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
     color TEXT NOT NULL,
@@ -35,25 +63,25 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
     role TEXT NOT NULL, -- admin | intake | clinical | billing | scheduling
     department_id INTEGER,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT,
     expires_at TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS clients (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     child_name TEXT NOT NULL,
     dob TEXT,
     parent_name TEXT,
@@ -77,12 +105,12 @@ db.exec(`
     color TEXT,
     first_day_date TEXT,
     discharge_reason TEXT,
-    submitted_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    submitted_at TEXT,
+    updated_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS stage_tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     stage_key TEXT NOT NULL,
     label TEXT NOT NULL,
     department_id INTEGER NOT NULL,
@@ -92,31 +120,31 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS client_tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     client_id INTEGER NOT NULL,
     stage_task_id INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending', -- pending | completed | overdue
     due_date TEXT NOT NULL,
     completed_at TEXT,
     overdue_notified_at TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT,
     FOREIGN KEY (client_id) REFERENCES clients(id),
     FOREIGN KEY (stage_task_id) REFERENCES stage_tasks(id)
   );
 
   CREATE TABLE IF NOT EXISTS notifications_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     client_id INTEGER,
     type TEXT NOT NULL, -- department_alert | parent_milestone | overdue_alert
     recipient TEXT NOT NULL,
     subject TEXT NOT NULL,
     body TEXT NOT NULL,
-    sent_at TEXT DEFAULT (datetime('now')),
+    sent_at TEXT,
     delivered TEXT DEFAULT 'simulated' -- simulated | sent | failed
   );
 
   CREATE TABLE IF NOT EXISTS therapists (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     role TEXT NOT NULL, -- BCBA | RBT
     color TEXT NOT NULL,
@@ -124,14 +152,14 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS schedule_sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     client_id INTEGER NOT NULL,
     therapist_id INTEGER NOT NULL,
     day_of_week INTEGER NOT NULL, -- 0=Sun .. 6=Sat
     start_time TEXT NOT NULL, -- 'HH:MM'
     end_time TEXT NOT NULL,
     session_type TEXT DEFAULT 'ABA Therapy',
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT,
     FOREIGN KEY (client_id) REFERENCES clients(id),
     FOREIGN KEY (therapist_id) REFERENCES therapists(id)
   );
@@ -140,13 +168,21 @@ db.exec(`
     key TEXT PRIMARY KEY,
     weekly_hours REAL NOT NULL
   );
-`);
+`;
 
+async function initSchema() {
+  await pool.query(SCHEMA_SQL);
+  console.log("Postgres schema ready.");
+}
+
+function nowISO() {
+  return new Date().toISOString();
+}
 
 
 // ============================== AUTH ==============================
 // server/auth.js
-// Zero-dependency auth: scrypt password hashing + random session tokens (cookie-based).
+// scrypt password hashing + random session tokens (cookie-based).
 "use strict";
 
 const SESSION_TTL_HOURS = 12;
@@ -161,48 +197,49 @@ function verifyPassword(password, salt, expectedHash) {
   return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(expectedHash));
 }
 
-function createUser({ name, email, password, role, department_id = null }) {
+async function createUser({ name, email, password, role, department_id = null }) {
   const { hash, salt } = hashPassword(password);
-  const stmt = db.prepare(
-    `INSERT INTO users (name, email, password_hash, password_salt, role, department_id)
-     VALUES (?, ?, ?, ?, ?, ?)`
+  const row = await dbGet(
+    `INSERT INTO users (name, email, password_hash, password_salt, role, department_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    [name, email.toLowerCase(), hash, salt, role, department_id, nowISO()]
   );
-  const info = stmt.run(name, email.toLowerCase(), hash, salt, role, department_id);
-  return info.lastInsertRowid;
+  return row.id;
 }
 
-function findUserByEmail(email) {
-  return db.prepare("SELECT * FROM users WHERE email = ?").get(email.toLowerCase());
+async function findUserByEmail(email) {
+  return dbGet("SELECT * FROM users WHERE email = ?", [email.toLowerCase()]);
 }
 
-function login(email, password) {
-  const user = findUserByEmail(email);
+async function login(email, password) {
+  const user = await findUserByEmail(email);
   if (!user) return null;
   if (!verifyPassword(password, user.password_salt, user.password_hash)) return null;
 
   const token = crypto.randomBytes(32).toString("hex");
   const expires = new Date(Date.now() + SESSION_TTL_HOURS * 3600 * 1000).toISOString();
-  db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)").run(
+  await dbRun("INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)", [
     token,
     user.id,
-    expires
-  );
+    nowISO(),
+    expires,
+  ]);
   return { token, user: sanitizeUser(user) };
 }
 
-function logout(token) {
-  db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+async function logout(token) {
+  await dbRun("DELETE FROM sessions WHERE token = ?", [token]);
 }
 
-function getUserFromToken(token) {
+async function getUserFromToken(token) {
   if (!token) return null;
-  const session = db.prepare("SELECT * FROM sessions WHERE token = ?").get(token);
+  const session = await dbGet("SELECT * FROM sessions WHERE token = ?", [token]);
   if (!session) return null;
   if (new Date(session.expires_at) < new Date()) {
-    db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+    await dbRun("DELETE FROM sessions WHERE token = ?", [token]);
     return null;
   }
-  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(session.user_id);
+  const user = await dbGet("SELECT * FROM users WHERE id = ?", [session.user_id]);
   return user ? sanitizeUser(user) : null;
 }
 
@@ -282,10 +319,11 @@ async function sendEmail({ to, subject, html, clientId = null, type = "parent_mi
     errorMsg = err.message;
   }
 
-  db.prepare(
-    `INSERT INTO notifications_log (client_id, type, recipient, subject, body, delivered)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(clientId, type, to, subject, html, delivered + (errorMsg ? `: ${errorMsg}` : ""));
+  await dbRun(
+    `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [clientId, type, to, subject, html, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : "")]
+  );
 
   return { delivered, errorMsg };
 }
@@ -334,24 +372,22 @@ function getStage(key) {
 // Create the task(s) required for a given stage, due `sla_days` business days
 // from now, and fire the department alert email that tells staff a client
 // needs attention at this stage.
-function enterStage(clientId, stageKey) {
-  const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(clientId);
+async function enterStage(clientId, stageKey) {
+  const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
   if (!client) return;
 
-  db.prepare("UPDATE clients SET stage = ?, updated_at = datetime('now') WHERE id = ?").run(
-    stageKey,
-    clientId
-  );
+  await dbRun("UPDATE clients SET stage = ?, updated_at = ? WHERE id = ?", [stageKey, nowISO(), clientId]);
 
-  const tasks = db.prepare("SELECT * FROM stage_tasks WHERE stage_key = ?").all(stageKey);
+  const tasks = await dbAll("SELECT * FROM stage_tasks WHERE stage_key = ?", [stageKey]);
   for (const task of tasks) {
     const dueDate = addBusinessDays(new Date(), task.sla_days).toISOString();
-    db.prepare(
-      `INSERT INTO client_tasks (client_id, stage_task_id, status, due_date)
-       VALUES (?, ?, 'pending', ?)`
-    ).run(clientId, task.id, dueDate);
+    await dbRun(
+      `INSERT INTO client_tasks (client_id, stage_task_id, status, due_date, created_at)
+       VALUES (?, ?, 'pending', ?, ?)`,
+      [clientId, task.id, dueDate, nowISO()]
+    );
 
-    const dept = db.prepare("SELECT * FROM departments WHERE id = ?").get(task.department_id);
+    const dept = await dbGet("SELECT * FROM departments WHERE id = ?", [task.department_id]);
     if (dept && dept.notify_email) {
       sendEmail({
         to: dept.notify_email,
@@ -361,11 +397,11 @@ function enterStage(clientId, stageKey) {
                <p>Due by: ${new Date(dueDate).toLocaleDateString()}</p>`,
         clientId,
         type: "department_alert",
-      });
+      }).catch((e) => console.error("sendEmail failed:", e));
     }
   }
 
-  sendParentMilestone(client, stageKey);
+  await sendParentMilestone(client, stageKey);
 }
 
 const PARENT_MILESTONES = {
@@ -396,46 +432,41 @@ const PARENT_MILESTONES = {
   },
 };
 
-function sendParentMilestone(client, stageKey) {
+async function sendParentMilestone(client, stageKey) {
   const milestone = PARENT_MILESTONES[stageKey];
   if (!milestone || !client.parent_email) return;
   const subject = typeof milestone.subject === "function" ? milestone.subject(client) : milestone.subject;
-  sendEmail({
+  await sendEmail({
     to: client.parent_email,
     subject,
     html: milestone.html(client),
     clientId: client.id,
     type: "parent_milestone",
-  });
+  }).catch((e) => console.error("sendEmail failed:", e));
 }
 
-function completeTask(taskId, completedByUserId) {
-  const task = db.prepare("SELECT * FROM client_tasks WHERE id = ?").get(taskId);
+async function completeTask(taskId, completedByUserId) {
+  const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [taskId]);
   if (!task) return { ok: false, error: "Task not found" };
 
-  db.prepare(
-    "UPDATE client_tasks SET status = 'completed', completed_at = datetime('now') WHERE id = ?"
-  ).run(taskId);
+  await dbRun("UPDATE client_tasks SET status = 'completed', completed_at = ? WHERE id = ?", [nowISO(), taskId]);
 
   // If all tasks for the client's current stage are complete, auto-advance.
-  const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(task.client_id);
-  const stageTaskIds = db
-    .prepare("SELECT id FROM stage_tasks WHERE stage_key = ?")
-    .all(client.stage)
-    .map((r) => r.id);
+  const client = await dbGet("SELECT * FROM clients WHERE id = ?", [task.client_id]);
+  const stageTaskRows = await dbAll("SELECT id FROM stage_tasks WHERE stage_key = ?", [client.stage]);
+  const stageTaskIds = stageTaskRows.map((r) => r.id);
 
-  const remaining = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM client_tasks
-       WHERE client_id = ? AND status != 'completed' AND stage_task_id IN (${stageTaskIds
-         .map(() => "?")
-         .join(",") || "-1"})`
-    )
-    .get(task.client_id, ...stageTaskIds);
+  const remaining = await dbGet(
+    `SELECT COUNT(*) AS n FROM client_tasks
+     WHERE client_id = ? AND status != 'completed' AND stage_task_id IN (${stageTaskIds
+       .map(() => "?")
+       .join(",") || "-1"})`,
+    [task.client_id, ...stageTaskIds]
+  );
 
-  if (remaining.n === 0) {
+  if (Number(remaining.n) === 0) {
     const next = nextStageKey(client.stage);
-    if (next) enterStage(client.id, next);
+    if (next) await enterStage(client.id, next);
   }
 
   return { ok: true };
@@ -453,23 +484,20 @@ function addBusinessDays(date, days) {
 }
 
 // Scan for pending tasks past due; mark overdue and fire one alert per task.
-function checkOverdueTasks() {
+async function checkOverdueTasks() {
   const now = new Date().toISOString();
-  const overdue = db
-    .prepare(
-      `SELECT ct.*, st.label, st.department_id, c.child_name, c.parent_name
-       FROM client_tasks ct
-       JOIN stage_tasks st ON st.id = ct.stage_task_id
-       JOIN clients c ON c.id = ct.client_id
-       WHERE ct.status = 'pending' AND ct.due_date < ? AND ct.overdue_notified_at IS NULL`
-    )
-    .all(now);
+  const overdue = await dbAll(
+    `SELECT ct.*, st.label, st.department_id, c.child_name, c.parent_name
+     FROM client_tasks ct
+     JOIN stage_tasks st ON st.id = ct.stage_task_id
+     JOIN clients c ON c.id = ct.client_id
+     WHERE ct.status = 'pending' AND ct.due_date < ? AND ct.overdue_notified_at IS NULL`,
+    [now]
+  );
 
   for (const t of overdue) {
-    db.prepare("UPDATE client_tasks SET status = 'overdue', overdue_notified_at = datetime('now') WHERE id = ?").run(
-      t.id
-    );
-    const dept = db.prepare("SELECT * FROM departments WHERE id = ?").get(t.department_id);
+    await dbRun("UPDATE client_tasks SET status = 'overdue', overdue_notified_at = ? WHERE id = ?", [nowISO(), t.id]);
+    const dept = await dbGet("SELECT * FROM departments WHERE id = ?", [t.department_id]);
     if (dept && dept.notify_email) {
       sendEmail({
         to: dept.notify_email,
@@ -479,7 +507,7 @@ function checkOverdueTasks() {
         ).toLocaleDateString()} and has not been completed.</p>`,
         clientId: t.client_id,
         type: "overdue_alert",
-      });
+      }).catch((e) => console.error("sendEmail failed:", e));
     }
   }
   return overdue.length;
@@ -523,26 +551,27 @@ const PUBLIC_ROUTES = new Set(["/api/auth/login", "/api/webhook/enrollment", "/a
 
 const CLIENT_COLOR_PALETTE = ["#5fa8a0", "#e0a430", "#6660a8", "#3f8f89", "#c98a1b", "#8d85c8"];
 
-function createClientFromPayload(c) {
-  const stmt = db.prepare(`
-    INSERT INTO clients (
+async function createClientFromPayload(c) {
+  const color = CLIENT_COLOR_PALETTE[Math.floor(Math.random() * CLIENT_COLOR_PALETTE.length)];
+  const submittedAt = nowISO();
+  const row = await dbGet(
+    `INSERT INTO clients (
       child_name, dob, parent_name, parent_relationship, parent_email, parent_phone,
       address, service_location, school_status, start_urgency, insurance_provider,
       num_insurances, has_asd_diagnosis, has_iep, prior_aba_nv, preferred_contact,
-      desired_schedule, rethink_status, color
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const color = CLIENT_COLOR_PALETTE[Math.floor(Math.random() * CLIENT_COLOR_PALETTE.length)];
-  const info = stmt.run(
-    c.child_name, c.dob || null, c.parent_name || null, c.parent_relationship || null,
-    c.parent_email || null, c.parent_phone || null, c.address || null, c.service_location || null,
-    c.school_status || null, c.start_urgency || null, c.insurance_provider || null,
-    c.num_insurances || null, c.has_asd_diagnosis || null, c.has_iep || null,
-    c.prior_aba_nv || null, c.preferred_contact || null, c.desired_schedule || null,
-    c.rethink_status || null, color
+      desired_schedule, rethink_status, color, submitted_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    [
+      c.child_name, c.dob || null, c.parent_name || null, c.parent_relationship || null,
+      c.parent_email || null, c.parent_phone || null, c.address || null, c.service_location || null,
+      c.school_status || null, c.start_urgency || null, c.insurance_provider || null,
+      c.num_insurances || null, c.has_asd_diagnosis || null, c.has_iep || null,
+      c.prior_aba_nv || null, c.preferred_contact || null, c.desired_schedule || null,
+      c.rethink_status || null, color, submittedAt, submittedAt,
+    ]
   );
-  pipeline.enterStage(info.lastInsertRowid, "new_submission");
-  return db.prepare("SELECT * FROM clients WHERE id = ?").get(info.lastInsertRowid);
+  await pipeline.enterStage(row.id, "new_submission");
+  return dbGet("SELECT * FROM clients WHERE id = ?", [row.id]);
 }
 
 // ---- One-time historical backfill (silent -- no live emails) ----
@@ -550,30 +579,30 @@ function createClientFromPayload(c) {
 // enrollment spreadsheet) without re-triggering "welcome!" / department
 // alert emails for signups that happened months ago.
 
-function createClientBackfill(c) {
-  const stmt = db.prepare(`
-    INSERT INTO clients (
+async function createClientBackfill(c) {
+  const color = CLIENT_COLOR_PALETTE[Math.floor(Math.random() * CLIENT_COLOR_PALETTE.length)];
+  const submittedAt = c.submitted_at || nowISO();
+  const row = await dbGet(
+    `INSERT INTO clients (
       child_name, dob, parent_name, parent_relationship, parent_email, parent_phone,
       address, service_location, school_status, start_urgency, insurance_provider,
       num_insurances, has_asd_diagnosis, has_iep, prior_aba_nv, preferred_contact,
       desired_schedule, rethink_status, notes, color, first_day_date, discharge_reason,
-      stage, submitted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const color = CLIENT_COLOR_PALETTE[Math.floor(Math.random() * CLIENT_COLOR_PALETTE.length)];
-  const submittedAt = c.submitted_at || new Date().toISOString();
-  const info = stmt.run(
-    c.child_name, c.dob || null, c.parent_name || null, c.parent_relationship || null,
-    c.parent_email || null, c.parent_phone || null, c.address || null, c.service_location || null,
-    c.school_status || null, c.start_urgency || null, c.insurance_provider || null,
-    c.num_insurances || null, c.has_asd_diagnosis || null, c.has_iep || null,
-    c.prior_aba_nv || null, c.preferred_contact || null, c.desired_schedule || null,
-    c.rethink_status || null, c.notes || null, color, c.first_day_date || null,
-    c.discharge_reason || null, "new_submission", submittedAt
+      stage, submitted_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    [
+      c.child_name, c.dob || null, c.parent_name || null, c.parent_relationship || null,
+      c.parent_email || null, c.parent_phone || null, c.address || null, c.service_location || null,
+      c.school_status || null, c.start_urgency || null, c.insurance_provider || null,
+      c.num_insurances || null, c.has_asd_diagnosis || null, c.has_iep || null,
+      c.prior_aba_nv || null, c.preferred_contact || null, c.desired_schedule || null,
+      c.rethink_status || null, c.notes || null, color, c.first_day_date || null,
+      c.discharge_reason || null, "new_submission", submittedAt, submittedAt,
+    ]
   );
-  const clientId = info.lastInsertRowid;
-  silentFastForward(clientId, c.stage || "new_submission");
-  return db.prepare("SELECT * FROM clients WHERE id = ?").get(clientId);
+  const clientId = row.id;
+  await silentFastForward(clientId, c.stage || "new_submission");
+  return dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
 }
 
 // Silently walks a client through every stage up to (and including)
@@ -581,33 +610,33 @@ function createClientBackfill(c) {
 // and the target stage's tasks are created as normal pending tasks (so
 // overdue tracking + dashboards behave correctly going forward). No emails
 // are ever sent by this path.
-function silentFastForward(clientId, targetStageKey) {
+async function silentFastForward(clientId, targetStageKey) {
   const targetIdx = STAGE_ORDER.indexOf(targetStageKey);
   const idx = targetIdx === -1 ? 0 : targetIdx;
 
   for (let i = 0; i <= idx; i++) {
     const stageKey = STAGE_ORDER[i];
-    const tasks = db.prepare("SELECT * FROM stage_tasks WHERE stage_key = ?").all(stageKey);
+    const tasks = await dbAll("SELECT * FROM stage_tasks WHERE stage_key = ?", [stageKey]);
     for (const task of tasks) {
       if (i < idx) {
-        db.prepare(
-          `INSERT INTO client_tasks (client_id, stage_task_id, status, due_date, completed_at)
-           VALUES (?, ?, 'completed', datetime('now'), datetime('now'))`
-        ).run(clientId, task.id);
+        const ts = nowISO();
+        await dbRun(
+          `INSERT INTO client_tasks (client_id, stage_task_id, status, due_date, completed_at, created_at)
+           VALUES (?, ?, 'completed', ?, ?, ?)`,
+          [clientId, task.id, ts, ts, ts]
+        );
       } else {
         const dueDate = addBusinessDays(new Date(), task.sla_days).toISOString();
-        db.prepare(
-          `INSERT INTO client_tasks (client_id, stage_task_id, status, due_date)
-           VALUES (?, ?, 'pending', ?)`
-        ).run(clientId, task.id, dueDate);
+        await dbRun(
+          `INSERT INTO client_tasks (client_id, stage_task_id, status, due_date, created_at)
+           VALUES (?, ?, 'pending', ?, ?)`,
+          [clientId, task.id, dueDate, nowISO()]
+        );
       }
     }
   }
 
-  db.prepare("UPDATE clients SET stage = ?, updated_at = datetime('now') WHERE id = ?").run(
-    targetStageKey,
-    clientId
-  );
+  await dbRun("UPDATE clients SET stage = ?, updated_at = ? WHERE id = ?", [targetStageKey, nowISO(), clientId]);
 }
 
 // Returns true if the route was handled.
@@ -615,7 +644,7 @@ async function handle(req, res, pathname, method) {
   if (!pathname.startsWith("/api/")) return false;
 
   const cookies = auth.parseCookies(req);
-  const user = auth.getUserFromToken(cookies.session);
+  const user = await auth.getUserFromToken(cookies.session);
 
   if (!PUBLIC_ROUTES.has(pathname) && !user) {
     json(res, 401, { error: "Not authenticated" });
@@ -626,7 +655,7 @@ async function handle(req, res, pathname, method) {
     // ---------- AUTH ----------
     if (pathname === "/api/auth/login" && method === "POST") {
       const { email, password } = await readBody(req);
-      const result = auth.login(email || "", password || "");
+      const result = await auth.login(email || "", password || "");
       if (!result) return json(res, 401, { error: "Invalid email or password" });
       res.setHeader(
         "Set-Cookie",
@@ -636,7 +665,7 @@ async function handle(req, res, pathname, method) {
     }
 
     if (pathname === "/api/auth/logout" && method === "POST") {
-      if (cookies.session) auth.logout(cookies.session);
+      if (cookies.session) await auth.logout(cookies.session);
       res.setHeader("Set-Cookie", "session=; HttpOnly; Path=/; Max-Age=0");
       return json(res, 200, { ok: true });
     }
@@ -647,21 +676,15 @@ async function handle(req, res, pathname, method) {
 
     // ---------- DASHBOARD ----------
     if (pathname === "/api/dashboard" && method === "GET") {
-      const byStage = db
-        .prepare("SELECT stage, COUNT(*) AS n FROM clients GROUP BY stage")
-        .all();
-      const overdue = db
-        .prepare("SELECT COUNT(*) AS n FROM client_tasks WHERE status = 'overdue'")
-        .get().n;
-      const pending = db
-        .prepare("SELECT COUNT(*) AS n FROM client_tasks WHERE status = 'pending'")
-        .get().n;
-      const upcomingFirstDays = db
-        .prepare(
-          "SELECT id, child_name, first_day_date FROM clients WHERE first_day_date IS NOT NULL AND first_day_date >= date('now') ORDER BY first_day_date LIMIT 5"
-        )
-        .all();
-      const totalClients = db.prepare("SELECT COUNT(*) AS n FROM clients").get().n;
+      const byStage = await dbAll("SELECT stage, COUNT(*) AS n FROM clients GROUP BY stage");
+      const overdue = (await dbGet("SELECT COUNT(*) AS n FROM client_tasks WHERE status = 'overdue'")).n;
+      const pending = (await dbGet("SELECT COUNT(*) AS n FROM client_tasks WHERE status = 'pending'")).n;
+      const today = new Date().toISOString().slice(0, 10);
+      const upcomingFirstDays = await dbAll(
+        "SELECT id, child_name, first_day_date FROM clients WHERE first_day_date IS NOT NULL AND first_day_date >= ? ORDER BY first_day_date LIMIT 5",
+        [today]
+      );
+      const totalClients = (await dbGet("SELECT COUNT(*) AS n FROM clients")).n;
       return json(res, 200, { byStage, overdue, pending, upcomingFirstDays, totalClients, stages: pipeline.STAGES });
     }
 
@@ -671,18 +694,18 @@ async function handle(req, res, pathname, method) {
     }
 
     if (pathname === "/api/departments" && method === "GET") {
-      return json(res, 200, db.prepare("SELECT * FROM departments").all());
+      return json(res, 200, await dbAll("SELECT * FROM departments"));
     }
 
     // ---------- CLIENTS ----------
     if (pathname === "/api/clients" && method === "GET") {
-      const clients = db.prepare("SELECT * FROM clients ORDER BY submitted_at DESC").all();
+      const clients = await dbAll("SELECT * FROM clients ORDER BY submitted_at DESC");
       return json(res, 200, clients);
     }
 
     if (pathname === "/api/clients" && method === "POST") {
       const c = await readBody(req);
-      const client = createClientFromPayload(c);
+      const client = await createClientFromPayload(c);
       return json(res, 201, client);
     }
 
@@ -699,7 +722,7 @@ async function handle(req, res, pathname, method) {
       if (!c.child_name || !c.parent_email) {
         return json(res, 400, { error: "child_name and parent_email are required" });
       }
-      const client = createClientFromPayload(c);
+      const client = await createClientFromPayload(c);
       return json(res, 201, client);
     }
 
@@ -717,7 +740,7 @@ async function handle(req, res, pathname, method) {
       const results = [];
       for (const c of list) {
         if (!c.child_name) continue;
-        const client = createClientBackfill(c);
+        const client = await createClientBackfill(c);
         results.push({ id: client.id, child_name: client.child_name, stage: client.stage });
       }
       return json(res, 201, { imported: results.length, results });
@@ -726,27 +749,26 @@ async function handle(req, res, pathname, method) {
     const clientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     if (clientMatch && method === "GET") {
       const id = clientMatch[1];
-      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
       if (!client) return json(res, 404, { error: "Not found" });
-      const tasks = db
-        .prepare(
-          `SELECT ct.*, st.label, st.stage_key, d.name AS department_name, d.color AS department_color
-           FROM client_tasks ct
-           JOIN stage_tasks st ON st.id = ct.stage_task_id
-           JOIN departments d ON d.id = st.department_id
-           WHERE ct.client_id = ? ORDER BY ct.created_at`
-        )
-        .all(id);
-      const sessions = db
-        .prepare(
-          `SELECT ss.*, t.name AS therapist_name, t.color AS therapist_color
-           FROM schedule_sessions ss JOIN therapists t ON t.id = ss.therapist_id
-           WHERE ss.client_id = ?`
-        )
-        .all(id);
-      const notifications = db
-        .prepare("SELECT * FROM notifications_log WHERE client_id = ? ORDER BY sent_at DESC")
-        .all(id);
+      const tasks = await dbAll(
+        `SELECT ct.*, st.label, st.stage_key, d.name AS department_name, d.color AS department_color
+         FROM client_tasks ct
+         JOIN stage_tasks st ON st.id = ct.stage_task_id
+         JOIN departments d ON d.id = st.department_id
+         WHERE ct.client_id = ? ORDER BY ct.created_at`,
+        [id]
+      );
+      const sessions = await dbAll(
+        `SELECT ss.*, t.name AS therapist_name, t.color AS therapist_color
+         FROM schedule_sessions ss JOIN therapists t ON t.id = ss.therapist_id
+         WHERE ss.client_id = ?`,
+        [id]
+      );
+      const notifications = await dbAll(
+        "SELECT * FROM notifications_log WHERE client_id = ? ORDER BY sent_at DESC",
+        [id]
+      );
       return json(res, 200, { client, tasks, sessions, notifications });
     }
 
@@ -762,106 +784,102 @@ async function handle(req, res, pathname, method) {
       const fields = Object.keys(updates).filter((k) => allowed.includes(k));
       if (fields.length) {
         const setClause = fields.map((f) => `${f} = ?`).join(", ");
-        db.prepare(`UPDATE clients SET ${setClause}, updated_at = datetime('now') WHERE id = ?`).run(
+        await dbRun(`UPDATE clients SET ${setClause}, updated_at = ? WHERE id = ?`, [
           ...fields.map((f) => updates[f]),
-          id
-        );
+          nowISO(),
+          id,
+        ]);
       }
-      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
       return json(res, 200, client);
     }
 
     const advanceMatch = pathname.match(/^\/api\/clients\/(\d+)\/advance$/);
     if (advanceMatch && method === "POST") {
       const id = advanceMatch[1];
-      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
       if (!client) return json(res, 404, { error: "Not found" });
       const { stage } = await readBody(req);
       const target = stage || pipeline.nextStageKey(client.stage);
       if (!target) return json(res, 400, { error: "No next stage" });
-      pipeline.enterStage(id, target);
-      return json(res, 200, db.prepare("SELECT * FROM clients WHERE id = ?").get(id));
+      await pipeline.enterStage(id, target);
+      return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
     }
 
     const dischargeMatch = pathname.match(/^\/api\/clients\/(\d+)\/discharge$/);
     if (dischargeMatch && method === "POST") {
       const id = dischargeMatch[1];
       const { reason, stage } = await readBody(req);
-      db.prepare(
-        "UPDATE clients SET stage = ?, discharge_reason = ?, updated_at = datetime('now') WHERE id = ?"
-      ).run(stage || "discharged", reason || null, id);
-      return json(res, 200, db.prepare("SELECT * FROM clients WHERE id = ?").get(id));
+      await dbRun(
+        "UPDATE clients SET stage = ?, discharge_reason = ?, updated_at = ? WHERE id = ?",
+        [stage || "discharged", reason || null, nowISO(), id]
+      );
+      return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
     }
 
     // ---------- TASKS ----------
     if (pathname === "/api/tasks" && method === "GET") {
-      const tasks = db
-        .prepare(
-          `SELECT ct.*, st.label, st.stage_key, c.child_name, d.name AS department_name, d.color AS department_color
-           FROM client_tasks ct
-           JOIN stage_tasks st ON st.id = ct.stage_task_id
-           JOIN clients c ON c.id = ct.client_id
-           JOIN departments d ON d.id = st.department_id
-           WHERE ct.status != 'completed'
-           ORDER BY ct.due_date ASC`
-        )
-        .all();
+      const tasks = await dbAll(
+        `SELECT ct.*, st.label, st.stage_key, c.child_name, d.name AS department_name, d.color AS department_color
+         FROM client_tasks ct
+         JOIN stage_tasks st ON st.id = ct.stage_task_id
+         JOIN clients c ON c.id = ct.client_id
+         JOIN departments d ON d.id = st.department_id
+         WHERE ct.status != 'completed'
+         ORDER BY ct.due_date ASC`
+      );
       return json(res, 200, tasks);
     }
 
     const completeTaskMatch = pathname.match(/^\/api\/tasks\/(\d+)\/complete$/);
     if (completeTaskMatch && method === "POST") {
-      const result = pipeline.completeTask(completeTaskMatch[1], user.id);
+      const result = await pipeline.completeTask(completeTaskMatch[1], user.id);
       return json(res, result.ok ? 200 : 400, result);
     }
 
     // ---------- THERAPISTS ----------
     if (pathname === "/api/therapists" && method === "GET") {
-      return json(res, 200, db.prepare("SELECT * FROM therapists").all());
+      return json(res, 200, await dbAll("SELECT * FROM therapists"));
     }
 
     // ---------- SCHEDULE ----------
     if (pathname === "/api/schedule" && method === "GET") {
-      const sessions = db
-        .prepare(
-          `SELECT ss.*, c.child_name, c.color AS client_color, t.name AS therapist_name, t.color AS therapist_color
-           FROM schedule_sessions ss
-           JOIN clients c ON c.id = ss.client_id
-           JOIN therapists t ON t.id = ss.therapist_id`
-        )
-        .all();
+      const sessions = await dbAll(
+        `SELECT ss.*, c.child_name, c.color AS client_color, t.name AS therapist_name, t.color AS therapist_color
+         FROM schedule_sessions ss
+         JOIN clients c ON c.id = ss.client_id
+         JOIN therapists t ON t.id = ss.therapist_id`
+      );
       return json(res, 200, sessions);
     }
 
     if (pathname === "/api/schedule" && method === "POST") {
       const s = await readBody(req);
       // conflict check: same therapist, same day, overlapping time
-      const conflicts = db
-        .prepare(
-          `SELECT * FROM schedule_sessions WHERE therapist_id = ? AND day_of_week = ?
-           AND NOT (end_time <= ? OR start_time >= ?)`
-        )
-        .all(s.therapist_id, s.day_of_week, s.start_time, s.end_time);
+      const conflicts = await dbAll(
+        `SELECT * FROM schedule_sessions WHERE therapist_id = ? AND day_of_week = ?
+         AND NOT (end_time <= ? OR start_time >= ?)`,
+        [s.therapist_id, s.day_of_week, s.start_time, s.end_time]
+      );
       if (conflicts.length) {
         return json(res, 409, { error: "Therapist already has a session in that time slot", conflicts });
       }
-      const info = db
-        .prepare(
-          `INSERT INTO schedule_sessions (client_id, therapist_id, day_of_week, start_time, end_time, session_type)
-           VALUES (?, ?, ?, ?, ?, ?)`
-        )
-        .run(s.client_id, s.therapist_id, s.day_of_week, s.start_time, s.end_time, s.session_type || "ABA Therapy");
-      return json(res, 201, { id: info.lastInsertRowid });
+      const row = await dbGet(
+        `INSERT INTO schedule_sessions (client_id, therapist_id, day_of_week, start_time, end_time, session_type, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [s.client_id, s.therapist_id, s.day_of_week, s.start_time, s.end_time, s.session_type || "ABA Therapy", nowISO()]
+      );
+      return json(res, 201, { id: row.id });
     }
 
     const deleteSessionMatch = pathname.match(/^\/api\/schedule\/(\d+)$/);
     if (deleteSessionMatch && method === "DELETE") {
-      db.prepare("DELETE FROM schedule_sessions WHERE id = ?").run(deleteSessionMatch[1]);
+      await dbRun("DELETE FROM schedule_sessions WHERE id = ?", [deleteSessionMatch[1]]);
       return json(res, 200, { ok: true });
     }
 
     if (pathname === "/api/schedule-targets" && method === "GET") {
-      return json(res, 200, db.prepare("SELECT * FROM schedule_targets").all());
+      return json(res, 200, await dbAll("SELECT * FROM schedule_targets"));
     }
 
     // ---------- NOTIFICATIONS / OUTBOX ----------
@@ -869,19 +887,19 @@ async function handle(req, res, pathname, method) {
       return json(
         res,
         200,
-        db.prepare("SELECT * FROM notifications_log ORDER BY sent_at DESC LIMIT 100").all()
+        await dbAll("SELECT * FROM notifications_log ORDER BY sent_at DESC LIMIT 100")
       );
     }
 
     // ---------- ADMIN ----------
     if (pathname === "/api/admin/check-overdue" && method === "POST") {
-      const n = pipeline.checkOverdueTasks();
+      const n = await pipeline.checkOverdueTasks();
       return json(res, 200, { flagged: n });
     }
 
     if (pathname === "/api/admin/departments" && method === "PATCH") {
       const { id, notify_email } = await readBody(req);
-      db.prepare("UPDATE departments SET notify_email = ? WHERE id = ?").run(notify_email, id);
+      await dbRun("UPDATE departments SET notify_email = ? WHERE id = ?", [notify_email, id]);
       return json(res, 200, { ok: true });
     }
 
@@ -903,38 +921,40 @@ const routes = { handle };
 // data) so the app is fully explorable out of the box.
 "use strict";
 
-function run() {
-  seedDepartments();
-  seedStageTasks();
-  seedUsers();
-  seedTherapists();
-  seedScheduleTargets();
-  seedDemoClients();
+async function run() {
+  await seedDepartments();
+  await seedStageTasks();
+  await seedUsers();
+  await seedTherapists();
+  await seedScheduleTargets();
+  await seedDemoClients();
   console.log("Seed complete.");
 }
 
-function seedDepartments() {
-  const existing = db.prepare("SELECT COUNT(*) AS n FROM departments").get();
-  if (existing.n > 0) return;
+async function seedDepartments() {
+  const existing = await dbGet("SELECT COUNT(*) AS n FROM departments");
+  if (Number(existing.n) > 0) return;
   const depts = [
     { key: "intake", name: "Intake / Admin", color: "#5fa8a0", notify_email: "intake@spectrumsquadlv.com" },
     { key: "clinical", name: "Clinical (BCBA)", color: "#29225c", notify_email: "clinical@spectrumsquadlv.com" },
     { key: "billing", name: "Billing / Insurance", color: "#e0a430", notify_email: "billing@spectrumsquadlv.com" },
     { key: "scheduling", name: "Scheduling", color: "#6660a8", notify_email: "scheduling@spectrumsquadlv.com" },
   ];
-  const stmt = db.prepare(
-    "INSERT INTO departments (key, name, color, notify_email) VALUES (?, ?, ?, ?)"
-  );
-  for (const d of depts) stmt.run(d.key, d.name, d.color, d.notify_email);
+  for (const d of depts) {
+    await dbRun("INSERT INTO departments (key, name, color, notify_email) VALUES (?, ?, ?, ?)", [
+      d.key, d.name, d.color, d.notify_email,
+    ]);
+  }
 }
 
-function deptId(key) {
-  return db.prepare("SELECT id FROM departments WHERE key = ?").get(key).id;
+async function deptId(key) {
+  const row = await dbGet("SELECT id FROM departments WHERE key = ?", [key]);
+  return row.id;
 }
 
-function seedStageTasks() {
-  const existing = db.prepare("SELECT COUNT(*) AS n FROM stage_tasks").get();
-  if (existing.n > 0) return;
+async function seedStageTasks() {
+  const existing = await dbGet("SELECT COUNT(*) AS n FROM stage_tasks");
+  if (Number(existing.n) > 0) return;
   const rows = [
     ["new_submission", "Welcome call / initial contact", "intake", 1, 1],
     ["clinical_screener", "Complete Clinical Screener", "clinical", 2, 1],
@@ -944,86 +964,87 @@ function seedStageTasks() {
     ["authorization", "Submit Authorization Request", "billing", 3, 1],
     ["first_day_scheduled", "Schedule First Day of ABA", "scheduling", 5, 1],
   ];
-  const stmt = db.prepare(
-    `INSERT INTO stage_tasks (stage_key, label, department_id, sla_days, sort_order)
-     VALUES (?, ?, ?, ?, ?)`
-  );
   for (const [stage_key, label, deptKey, sla_days, sort_order] of rows) {
-    stmt.run(stage_key, label, deptId(deptKey), sla_days, sort_order);
+    const did = await deptId(deptKey);
+    await dbRun(
+      `INSERT INTO stage_tasks (stage_key, label, department_id, sla_days, sort_order)
+       VALUES (?, ?, ?, ?, ?)`,
+      [stage_key, label, did, sla_days, sort_order]
+    );
   }
 }
 
-function seedUsers() {
-  if (findUserByEmail("admin@spectrumsquadlv.com")) return;
-  createUser({
+async function seedUsers() {
+  if (await findUserByEmail("admin@spectrumsquadlv.com")) return;
+  await createUser({
     name: "Quiana Blake",
     email: "admin@spectrumsquadlv.com",
     password: "ChangeMe123!",
     role: "admin",
     department_id: null,
   });
-  createUser({
+  await createUser({
     name: "Intake Staff",
     email: "intake@spectrumsquadlv.com",
     password: "ChangeMe123!",
     role: "intake",
-    department_id: deptId("intake"),
+    department_id: await deptId("intake"),
   });
-  createUser({
+  await createUser({
     name: "Clinical Staff",
     email: "clinical@spectrumsquadlv.com",
     password: "ChangeMe123!",
     role: "clinical",
-    department_id: deptId("clinical"),
+    department_id: await deptId("clinical"),
   });
-  createUser({
+  await createUser({
     name: "Billing Staff",
     email: "billing@spectrumsquadlv.com",
     password: "ChangeMe123!",
     role: "billing",
-    department_id: deptId("billing"),
+    department_id: await deptId("billing"),
   });
-  createUser({
+  await createUser({
     name: "Scheduling Staff",
     email: "scheduling@spectrumsquadlv.com",
     password: "ChangeMe123!",
     role: "scheduling",
-    department_id: deptId("scheduling"),
+    department_id: await deptId("scheduling"),
   });
 }
 
-function seedTherapists() {
-  const existing = db.prepare("SELECT COUNT(*) AS n FROM therapists").get();
-  if (existing.n > 0) return;
+async function seedTherapists() {
+  const existing = await dbGet("SELECT COUNT(*) AS n FROM therapists");
+  if (Number(existing.n) > 0) return;
   const rows = [
     ["Allie R.", "BCBA", "#29225c", 30],
     ["Katelyn S.", "RBT", "#5fa8a0", 30],
     ["April M.", "RBT", "#3f8f89", 30],
     ["Marcus T.", "RBT", "#e0a430", 25],
   ];
-  const stmt = db.prepare(
-    "INSERT INTO therapists (name, role, color, weekly_capacity_hours) VALUES (?, ?, ?, ?)"
-  );
-  for (const r of rows) stmt.run(...r);
+  for (const r of rows) {
+    await dbRun("INSERT INTO therapists (name, role, color, weekly_capacity_hours) VALUES (?, ?, ?, ?)", r);
+  }
 }
 
-function seedScheduleTargets() {
-  const existing = db.prepare("SELECT COUNT(*) AS n FROM schedule_targets").get();
-  if (existing.n > 0) return;
+async function seedScheduleTargets() {
+  const existing = await dbGet("SELECT COUNT(*) AS n FROM schedule_targets");
+  if (Number(existing.n) > 0) return;
   const rows = [
     ["Full-Time", 30],
     ["Part Time AM", 15],
     ["Part Time PM", 15],
   ];
-  const stmt = db.prepare("INSERT INTO schedule_targets (key, weekly_hours) VALUES (?, ?)");
-  for (const r of rows) stmt.run(...r);
+  for (const r of rows) {
+    await dbRun("INSERT INTO schedule_targets (key, weekly_hours) VALUES (?, ?)", r);
+  }
 }
 
 // Synthetic demo clients only -- mirrors the real form's fields/pipeline
 // without using any actual family's data.
-function seedDemoClients() {
-  const existing = db.prepare("SELECT COUNT(*) AS n FROM clients").get();
-  if (existing.n > 0) return;
+async function seedDemoClients() {
+  const existing = await dbGet("SELECT COUNT(*) AS n FROM clients");
+  if (Number(existing.n) > 0) return;
 
   const demo = [
     {
@@ -1116,58 +1137,57 @@ function seedDemoClients() {
     },
   ];
 
-  const insertStmt = db.prepare(`
-    INSERT INTO clients (
-      child_name, dob, parent_name, parent_relationship, parent_email, parent_phone,
-      address, service_location, school_status, start_urgency, insurance_provider,
-      num_insurances, has_asd_diagnosis, has_iep, prior_aba_nv, preferred_contact,
-      desired_schedule, rethink_status, stage, color
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new_submission', ?)
-  `);
-
   for (const c of demo) {
-    const info = insertStmt.run(
-      c.child_name, c.dob, c.parent_name, c.parent_relationship, c.parent_email, c.parent_phone,
-      c.address, c.service_location, c.school_status, c.start_urgency, c.insurance_provider,
-      c.num_insurances, c.has_asd_diagnosis, c.has_iep, c.prior_aba_nv, c.preferred_contact,
-      c.desired_schedule, c.rethink_status, c.color
+    const submittedAt = nowISO();
+    const row = await dbGet(
+      `INSERT INTO clients (
+        child_name, dob, parent_name, parent_relationship, parent_email, parent_phone,
+        address, service_location, school_status, start_urgency, insurance_provider,
+        num_insurances, has_asd_diagnosis, has_iep, prior_aba_nv, preferred_contact,
+        desired_schedule, rethink_status, stage, color, submitted_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new_submission', ?, ?, ?) RETURNING id`,
+      [
+        c.child_name, c.dob, c.parent_name, c.parent_relationship, c.parent_email, c.parent_phone,
+        c.address, c.service_location, c.school_status, c.start_urgency, c.insurance_provider,
+        c.num_insurances, c.has_asd_diagnosis, c.has_iep, c.prior_aba_nv, c.preferred_contact,
+        c.desired_schedule, c.rethink_status, c.color, submittedAt, submittedAt,
+      ]
     );
     // Walk the client through stages up to its target demo stage so tasks +
     // notifications get generated realistically (and land in the outbox).
-    const path = ["new_submission", "clinical_screener", "insurance_verification", "intake_packet", "assessment_scheduling", "authorization", "first_day_scheduled", "active"];
-    const targetIdx = path.indexOf(c.stage);
+    const stagePath = ["new_submission", "clinical_screener", "insurance_verification", "intake_packet", "assessment_scheduling", "authorization", "first_day_scheduled", "active"];
+    const targetIdx = stagePath.indexOf(c.stage);
     for (let i = 0; i <= targetIdx; i++) {
-      enterStage(info.lastInsertRowid, path[i]);
+      await enterStage(row.id, stagePath[i]);
       // auto-complete tasks for all but the current (final) stage, so the
       // client appears to have organically progressed to `c.stage`.
       if (i < targetIdx) {
-        const tasks = db
-          .prepare(
-            `SELECT ct.id FROM client_tasks ct JOIN stage_tasks st ON st.id = ct.stage_task_id
-             WHERE ct.client_id = ? AND st.stage_key = ?`
-          )
-          .all(info.lastInsertRowid, path[i]);
+        const tasks = await dbAll(
+          `SELECT ct.id FROM client_tasks ct JOIN stage_tasks st ON st.id = ct.stage_task_id
+           WHERE ct.client_id = ? AND st.stage_key = ?`,
+          [row.id, stagePath[i]]
+        );
         for (const t of tasks) {
-          db.prepare("UPDATE client_tasks SET status='completed', completed_at=datetime('now') WHERE id=?").run(t.id);
+          await dbRun("UPDATE client_tasks SET status='completed', completed_at=? WHERE id=?", [nowISO(), t.id]);
         }
       }
     }
   }
 
   // Give "Demo Child D" (active) a sample weekly schedule.
-  const activeClient = db.prepare("SELECT id FROM clients WHERE child_name = 'Demo Child D'").get();
-  const therapist = db.prepare("SELECT id FROM therapists LIMIT 1").get();
+  const activeClient = await dbGet("SELECT id FROM clients WHERE child_name = 'Demo Child D'");
+  const therapist = await dbGet("SELECT id FROM therapists LIMIT 1");
   if (activeClient && therapist) {
     const sessions = [
       [1, "09:00", "12:00"],
       [3, "09:00", "12:00"],
       [5, "09:00", "12:00"],
     ];
-    const stmt = db.prepare(
-      "INSERT INTO schedule_sessions (client_id, therapist_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?)"
-    );
     for (const [day, start, end] of sessions) {
-      stmt.run(activeClient.id, therapist.id, day, start, end);
+      await dbRun(
+        "INSERT INTO schedule_sessions (client_id, therapist_id, day_of_week, start_time, end_time, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [activeClient.id, therapist.id, day, start, end, nowISO()]
+      );
     }
   }
 }
@@ -1175,8 +1195,7 @@ function seedDemoClients() {
 
 // ============================== SERVER BOOTSTRAP ==============================
 // server/index.js
-// Entry point. Zero npm dependencies -- pure Node built-ins (http, fs, path,
-// node:sqlite, crypto). Run with: node server/index.js
+// Entry point. Run with: node server.js
 "use strict";
 
 loadEnvFile();
@@ -1215,11 +1234,11 @@ function loadEnvFile() {
   }
 }
 
-function ensureSeeded() {
-  const count = db.prepare("SELECT COUNT(*) AS n FROM departments").get().n;
-  if (count === 0) {
+async function ensureSeeded() {
+  const row = await dbGet("SELECT COUNT(*) AS n FROM departments");
+  if (Number(row.n) === 0) {
     console.log("First run detected -- seeding demo data...");
-    run();
+    await run();
   }
 }
 
@@ -1270,23 +1289,25 @@ const server = http.createServer(async (req, res) => {
   serveStatic(req, res, pathname);
 });
 
-ensureSeeded();
-
 // Overdue-task sweep: runs on boot and then every 30 minutes. In production,
 // keep the Node process alive (e.g. via pm2 / a platform's process manager)
 // so this interval keeps firing, or trigger POST /api/admin/check-overdue
 // from an external scheduler instead.
-pipeline.checkOverdueTasks();
-setInterval(() => {
-  try {
-    pipeline.checkOverdueTasks();
-  } catch (e) {
-    console.error("Overdue sweep failed:", e);
-  }
-}, 30 * 60 * 1000);
+async function start() {
+  await initSchema();
+  await ensureSeeded();
+  await pipeline.checkOverdueTasks();
+  setInterval(() => {
+    pipeline.checkOverdueTasks().catch((e) => console.error("Overdue sweep failed:", e));
+  }, 30 * 60 * 1000);
 
-server.listen(PORT, () => {
-  console.log(`Spectrum Squad CRM running at http://localhost:${PORT}`);
-  console.log(`Demo login: admin@spectrumsquadlv.com / ChangeMe123!`);
+  server.listen(PORT, () => {
+    console.log(`Spectrum Squad CRM running at http://localhost:${PORT}`);
+    console.log(`Demo login: admin@spectrumsquadlv.com / ChangeMe123!`);
+  });
+}
+
+start().catch((err) => {
+  console.error("Fatal startup error:", err);
+  process.exit(1);
 });
-
