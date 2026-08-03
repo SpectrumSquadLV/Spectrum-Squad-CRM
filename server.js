@@ -547,7 +547,7 @@ function readBody(req) {
   });
 }
 
-const PUBLIC_ROUTES = new Set(["/api/auth/login", "/api/webhook/enrollment", "/api/admin/backfill-import"]);
+const PUBLIC_ROUTES = new Set(["/api/auth/login", "/api/webhook/enrollment", "/api/admin/backfill-import", "/api/admin/purge-demo"]);
 
 const CLIENT_COLOR_PALETTE = ["#5fa8a0", "#e0a430", "#6660a8", "#3f8f89", "#c98a1b", "#8d85c8"];
 
@@ -744,6 +744,27 @@ async function handle(req, res, pathname, method) {
         results.push({ id: client.id, child_name: client.child_name, stage: client.stage });
       }
       return json(res, 201, { imported: results.length, results });
+    }
+
+    // One-time cleanup helper: removes synthetic demo clients (identified by
+    // a parent_email ending in @example.com) once real data has been
+    // imported. Protected by the same ADMIN_IMPORT_SECRET as the backfill
+    // route above.
+    if (pathname === "/api/admin/purge-demo" && method === "POST") {
+      const secret = process.env.ADMIN_IMPORT_SECRET;
+      if (!secret || req.headers["x-admin-secret"] !== secret) {
+        return json(res, 401, { error: "Invalid admin secret" });
+      }
+      const demo = await dbAll("SELECT id FROM clients WHERE parent_email LIKE '%@example.com'");
+      const ids = demo.map((r) => r.id);
+      for (const clientId of ids) {
+        await dbRun("DELETE FROM client_tasks WHERE client_id = ?", [clientId]);
+        await dbRun("DELETE FROM schedule_sessions WHERE client_id = ?", [clientId]);
+        await dbRun("DELETE FROM notifications_log WHERE client_id = ?", [clientId]);
+        await dbRun("DELETE FROM clients WHERE id = ?", [clientId]);
+      }
+      const remaining = (await dbGet("SELECT COUNT(*) AS n FROM clients")).n;
+      return json(res, 200, { purged: ids.length, remainingClients: remaining });
     }
 
     const clientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
