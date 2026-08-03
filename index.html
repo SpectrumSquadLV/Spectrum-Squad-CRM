@@ -153,6 +153,8 @@ button { font-family: inherit; cursor: pointer; }
 .stat-card .value { font-size: 30px; font-weight: 700; margin-top: 6px; }
 .stat-card.warn .value { color: var(--warning); }
 .stat-card.danger .value { color: var(--danger); }
+.stat-card.clickable { cursor: pointer; }
+.stat-card.clickable:hover { box-shadow: var(--shadow-lg); }
 
 .card {
   background: var(--surface);
@@ -218,6 +220,21 @@ button { font-family: inherit; cursor: pointer; }
   display: inline-block; font-size: 11px; font-weight: 700; padding: 3px 9px;
   border-radius: 999px; color: #fff;
 }
+
+/* ---------- Authorization alert levels ---------- */
+.alert-badge {
+  display: inline-block; font-size: 10.5px; font-weight: 700; padding: 3px 9px;
+  border-radius: 999px; color: #fff; text-transform: uppercase; letter-spacing: 0.02em;
+}
+.alert-badge.informational { background: #6660a8; }
+.alert-badge.attention { background: var(--brand-gold-dark); }
+.alert-badge.urgent { background: #ea580c; }
+.alert-badge.critical { background: #dc2626; }
+.alert-badge.overdue { background: #7f1d1d; }
+.alert-status-pill { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #eef0f5; color: var(--text-muted); }
+.alert-status-pill.completed { background: #dcfce7; color: #166534; }
+.alert-status-pill.renewal_started { background: #fef3c7; color: #92400e; }
+.alert-status-pill.reopened { background: #fee2e2; color: #b91c1c; }
 
 /* ---------- Tables ---------- */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -361,9 +378,17 @@ function initials(name) {
   return (name || "?").split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
 }
 
+// Can this logged-in role see/edit authorization + insurance data at all?
+function canViewAuth() {
+  return state.user && ["admin", "billing", "clinical"].includes(state.user.role);
+}
+function canEditAuth() {
+  return state.user && ["admin", "billing"].includes(state.user.role);
+}
+
 // ---------------- Small in-app prompt (replaces native window.prompt/confirm,
 // which can hang or be blocked in some browser contexts) ----------------
-function askReason(title) {
+function askReason(title, placeholder) {
   return new Promise((resolve) => {
     const backdrop = document.createElement("div");
     backdrop.className = "modal-backdrop";
@@ -371,7 +396,7 @@ function askReason(title) {
       <div class="modal" style="width:420px;">
         <div class="modal-header"><h2>${title}</h2><button class="close-btn">✕</button></div>
         <div class="field full">
-          <label>Notes (optional)</label>
+          <label>${placeholder || "Notes (optional)"}</label>
           <textarea id="reason-input" rows="3" placeholder="Add a note..."></textarea>
         </div>
         <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
@@ -439,6 +464,7 @@ async function route() {
   else if (hash.startsWith("#/tasks")) await renderTasks(mount);
   else if (hash.startsWith("#/schedule")) await renderSchedule(mount);
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
+  else if (hash.startsWith("#/auth-alerts")) await renderAuthAlerts(mount, param);
   else if (hash.startsWith("#/admin")) await renderAdmin(mount);
   else await renderDashboard(mount);
 
@@ -467,6 +493,7 @@ function renderShell(active) {
     { key: "schedule", label: "Therapy Schedule", icon: "▦" },
     { key: "outbox", label: "Message Outbox", icon: "✉" },
   ];
+  if (canViewAuth()) navItems.push({ key: "auth-alerts", label: "Authorization Alerts", icon: "⏰" });
   if (state.user.role === "admin") navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
 
   root.innerHTML = `
@@ -559,6 +586,7 @@ async function renderDashboard(mount) {
       <div class="stat-card danger"><div class="label">Overdue Tasks</div><div class="value">${dash.overdue}</div></div>
       <div class="stat-card"><div class="label">Active Therapy</div><div class="value">${byStage.active || 0}</div></div>
     </div>
+    ${dash.authCounts ? renderAuthDashboardCard(dash.authCounts) : ""}
     <div style="display:grid; grid-template-columns: 1.4fr 1fr; gap: 20px;">
       <div class="card">
         <div class="section-title" style="margin-top:0;">Pipeline Snapshot</div>
@@ -595,6 +623,34 @@ async function renderDashboard(mount) {
   `;
 
   document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
+  mount.querySelectorAll("[data-auth-bucket]").forEach((el) => {
+    el.addEventListener("click", () => (location.hash = "#/auth-alerts/" + el.dataset.authBucket));
+  });
+}
+
+function renderAuthDashboardCard(counts) {
+  const buckets = [
+    { key: "d60", label: "Expiring ≤ 60 Days", level: "informational" },
+    { key: "d30", label: "Expiring ≤ 30 Days", level: "attention" },
+    { key: "d14", label: "Expiring ≤ 14 Days", level: "urgent" },
+    { key: "d7", label: "Expiring ≤ 7 Days", level: "critical" },
+    { key: "expired", label: "Already Expired", level: "overdue" },
+  ];
+  return `
+    <div class="card" style="margin-bottom:28px;">
+      <div class="section-title" style="margin-top:0;">Authorization Alerts</div>
+      <div class="stat-grid" style="margin-bottom:0;">
+        ${buckets
+          .map(
+            (b) => `<div class="stat-card clickable" data-auth-bucket="${b.level === "overdue" ? "overdue" : b.key.replace("d", "")}">
+              <div class="label"><span class="alert-badge ${b.level}" style="margin-right:6px;">&nbsp;</span>${b.label}</div>
+              <div class="value">${counts[b.key] || 0}</div>
+            </div>`
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
 }
 
 // ---------------- Pipeline (Kanban) ----------------
@@ -698,6 +754,110 @@ function docLinkHtml(d) {
   return `<a class="btn small secondary" href="/api/documents/${d.id}/download" target="_blank" rel="noopener">Download</a>`;
 }
 
+// ---------------- Authorization helpers (client-side) ----------------
+const AUTH_STATUS_OPTIONS = ["Active", "Renewal in Progress", "Pending", "Expired", "Not Required"];
+
+function daysUntilClient(dateStr) {
+  if (!dateStr) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const exp = new Date(dateStr);
+  if (isNaN(exp)) return null;
+  exp.setHours(0, 0, 0, 0);
+  return Math.round((exp - today) / 86400000);
+}
+
+function authSectionHtml(client) {
+  if (!canViewAuth()) return "";
+  const days = daysUntilClient(client.auth_expiration_date);
+  const daysLabel =
+    client.auth_expiration_date == null
+      ? "—"
+      : days < 0
+      ? `${Math.abs(days)} day(s) overdue`
+      : `${days} day(s) remaining`;
+  const editable = canEditAuth();
+
+  if (editable) {
+    return `
+      <div class="section-title">Authorization</div>
+      <div class="form-grid">
+        <div class="field"><label>Insurance Payer</label><input id="auth-insurance_payer" value="${client.insurance_payer || ""}" /></div>
+        <div class="field"><label>Authorization Status</label>
+          <select id="auth-authorization_status">
+            ${AUTH_STATUS_OPTIONS.map((s) => `<option ${s === client.authorization_status ? "selected" : ""}>${s}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field"><label>Authorization Start Date</label><input id="auth-auth_start_date" type="date" value="${client.auth_start_date || ""}" /></div>
+        <div class="field"><label>Authorization Expiration Date</label><input id="auth-auth_expiration_date" type="date" value="${client.auth_expiration_date || ""}" /></div>
+        <div class="field"><label>Assigned BCBA (name)</label><input id="auth-assigned_bcba_name" value="${client.assigned_bcba_name || ""}" /></div>
+        <div class="field"><label>Assigned BCBA (email)</label><input id="auth-assigned_bcba_email" type="email" value="${client.assigned_bcba_email || ""}" /></div>
+        <div class="field"><label>Assigned Billing Staff (name)</label><input id="auth-assigned_billing_name" value="${client.assigned_billing_name || ""}" /></div>
+        <div class="field"><label>Assigned Billing Staff (email)</label><input id="auth-assigned_billing_email" type="email" value="${client.assigned_billing_email || ""}" /></div>
+        <div class="field full"><label>Notes</label><textarea id="auth-auth_notes" rows="2">${client.auth_notes || ""}</textarea></div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; margin-top:10px;">
+        <span class="tag" style="background:#eef0f5;">Days remaining: ${daysLabel}</span>
+        <button class="btn small secondary" id="auth-save-btn">Save Authorization</button>
+        <span id="auth-save-result" style="font-size:12px; color:var(--text-muted);"></span>
+      </div>
+    `;
+  }
+
+  // Clinical (BCBA): read-only fields + editable notes only.
+  return `
+    <div class="section-title">Authorization</div>
+    <div class="form-grid">
+      <div class="field"><label>Insurance Payer</label><div>${client.insurance_payer || "—"}</div></div>
+      <div class="field"><label>Authorization Status</label><div>${client.authorization_status || "—"}</div></div>
+      <div class="field"><label>Expiration Date</label><div>${client.auth_expiration_date || "—"}</div></div>
+      <div class="field"><label>Days Remaining</label><div>${daysLabel}</div></div>
+      <div class="field"><label>Assigned BCBA</label><div>${client.assigned_bcba_name || "—"}</div></div>
+      <div class="field"><label>Assigned Billing Staff</label><div>${client.assigned_billing_name || "—"}</div></div>
+      <div class="field full"><label>Notes</label><textarea id="auth-auth_notes" rows="2">${client.auth_notes || ""}</textarea></div>
+    </div>
+    <div style="margin-top:10px;">
+      <button class="btn small secondary" id="auth-save-btn">Save Notes</button>
+      <span id="auth-save-result" style="font-size:12px; color:var(--text-muted); margin-left:8px;"></span>
+    </div>
+  `;
+}
+
+function wireAuthSection(backdrop, clientId) {
+  const saveBtn = backdrop.querySelector("#auth-save-btn");
+  if (!saveBtn) return;
+  saveBtn.addEventListener("click", async () => {
+    const body = {};
+    if (canEditAuth()) {
+      [
+        "insurance_payer",
+        "authorization_status",
+        "auth_start_date",
+        "auth_expiration_date",
+        "assigned_bcba_name",
+        "assigned_bcba_email",
+        "assigned_billing_name",
+        "assigned_billing_email",
+        "auth_notes",
+      ].forEach((f) => {
+        const el = backdrop.querySelector(`#auth-${f}`);
+        if (el) body[f] = el.value;
+      });
+    } else {
+      const el = backdrop.querySelector("#auth-auth_notes");
+      if (el) body.auth_notes = el.value;
+    }
+    const resultEl = backdrop.querySelector("#auth-save-result");
+    try {
+      await api(`/api/clients/${clientId}/authorization`, { method: "PATCH", body });
+      resultEl.textContent = "Saved ✓";
+      await loadClients();
+    } catch (err) {
+      resultEl.textContent = err.message || "Save failed";
+    }
+  });
+}
+
 // ---------------- Client Modal ----------------
 async function openClientModal(id) {
   const data = await api(`/api/clients/${id}`);
@@ -727,6 +887,8 @@ async function openClientModal(id) {
         <div class="field"><label>ASD Diagnosis</label><div>${client.has_asd_diagnosis || "—"}</div></div>
         <div class="field"><label>IEP</label><div>${client.has_iep || "—"}</div></div>
       </div>
+
+      ${authSectionHtml(client)}
 
       <div class="section-title">Documents</div>
       ${
@@ -803,6 +965,8 @@ async function openClientModal(id) {
   };
   backdrop.querySelector(".close-btn").addEventListener("click", close);
   backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+
+  wireAuthSection(backdrop, id);
 
   backdrop.querySelectorAll("[data-complete-task]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -934,6 +1098,152 @@ async function renderTasks(mount) {
       route();
     });
   });
+}
+
+// ---------------- Authorization Alerts ----------------
+const AUTH_BUCKET_TO_LEVEL = {
+  60: "informational",
+  30: "attention",
+  14: "urgent",
+  7: "critical",
+  overdue: "overdue",
+};
+
+async function renderAuthAlerts(mount, bucketParam) {
+  if (!canViewAuth()) {
+    mount.innerHTML = `<div class="page-header"><div><h1>Authorization Alerts</h1></div></div><div class="empty-state">You don't have permission to view this page.</div>`;
+    return;
+  }
+  const level = bucketParam ? AUTH_BUCKET_TO_LEVEL[bucketParam] : null;
+  const qs = level ? `?level=${encodeURIComponent(level)}` : "";
+  const alerts = await api(`/api/auth-alerts${qs}`);
+
+  mount.innerHTML = `
+    <div class="page-header">
+      <div><h1>Authorization Alerts</h1><p>${level ? `Filtered to ${level} alerts.` : "All open authorization alerts, most urgent first."}</p></div>
+      <div style="display:flex; gap:8px;">
+        ${level ? `<button class="btn secondary" id="clear-filter-btn">Clear filter</button>` : ""}
+        ${canEditAuth() ? `<button class="btn" id="run-auth-check-btn">Run check now</button>` : ""}
+      </div>
+    </div>
+    <span id="auth-check-result" style="font-size:13px; color:var(--text-muted);"></span>
+    <div class="card" style="margin-top:10px;">
+      <table>
+        <thead><tr>
+          <th>Client</th><th>Payer</th><th>Expires</th><th>Days Left</th><th>BCBA</th><th>Billing</th><th>Status</th><th>Level</th><th></th>
+        </tr></thead>
+        <tbody>
+          ${
+            alerts.length
+              ? alerts
+                  .map(
+                    (a) => `<tr>
+                    <td><a href="#/pipeline/${a.client_id}" style="text-decoration:underline; cursor:pointer;">${a.initials}</a></td>
+                    <td>${a.insurance_payer || "—"}</td>
+                    <td>${fmtDate(a.expiration_date)}</td>
+                    <td style="font-weight:700; color:${a.days_remaining < 0 ? "var(--danger)" : "inherit"};">${a.days_remaining}</td>
+                    <td>${a.assigned_bcba_name || "—"}</td>
+                    <td>${a.assigned_billing_name || "—"}</td>
+                    <td><span class="alert-status-pill ${a.status}">${a.status.replace("_", " ")}</span></td>
+                    <td><span class="alert-badge ${a.alert_level}">${a.alert_level}</span></td>
+                    <td>
+                      <div style="display:flex; gap:4px; flex-wrap:wrap;">
+                        ${canEditAuth() ? `<button class="btn small secondary" data-alert-status="${a.id}|reviewed">Reviewed</button>` : ""}
+                        <button class="btn small secondary" data-alert-status="${a.id}|renewal_started">Renewal started</button>
+                        <button class="btn small secondary" data-alert-status="${a.id}|completed">Complete</button>
+                        ${canEditAuth() ? `<button class="btn small secondary" data-alert-status="${a.id}|reopened">Reopen</button>` : ""}
+                        ${canEditAuth() ? `<button class="btn small secondary" data-alert-assign="${a.id}">Assign</button>` : ""}
+                        <button class="btn small secondary" data-alert-history="${a.client_id}">History</button>
+                      </div>
+                    </td>
+                  </tr>`
+                  )
+                  .join("")
+              : `<tr><td colspan="9"><div class="empty-state">No alerts here yet. ${canEditAuth() ? "Try “Run check now” after entering an expiration date." : ""}</div></td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  const clearBtn = mount.querySelector("#clear-filter-btn");
+  if (clearBtn) clearBtn.addEventListener("click", () => (location.hash = "#/auth-alerts"));
+
+  const runBtn = mount.querySelector("#run-auth-check-btn");
+  if (runBtn) {
+    runBtn.addEventListener("click", async () => {
+      const resultEl = document.getElementById("auth-check-result");
+      resultEl.textContent = "Running…";
+      try {
+        const { created } = await api("/api/admin/check-auth-expirations", { method: "POST" });
+        resultEl.textContent = `${created} new alert(s) created.`;
+        route();
+      } catch (err) {
+        resultEl.textContent = err.message || "Failed to run check.";
+      }
+    });
+  }
+
+  mount.querySelectorAll("[data-alert-status]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const [alertId, status] = btn.dataset.alertStatus.split("|");
+      try {
+        await api(`/api/auth-alerts/${alertId}/status`, { method: "POST", body: { status } });
+        route();
+      } catch (err) {
+        alert(err.message || "Could not update alert.");
+      }
+    });
+  });
+
+  mount.querySelectorAll("[data-alert-assign]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const alertId = btn.dataset.alertAssign;
+      const assignedTo = await askReason("Assign to staff member", "Staff member name");
+      if (assignedTo === null) return;
+      try {
+        await api(`/api/auth-alerts/${alertId}/status`, { method: "POST", body: { status: "reviewed", assigned_to: assignedTo } });
+        route();
+      } catch (err) {
+        alert(err.message || "Could not assign alert.");
+      }
+    });
+  });
+
+  mount.querySelectorAll("[data-alert-history]").forEach((btn) => {
+    btn.addEventListener("click", async () => openAuthHistoryModal(btn.dataset.alertHistory));
+  });
+}
+
+async function openAuthHistoryModal(clientId) {
+  const rows = await api(`/api/clients/${clientId}/auth-audit`);
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal" style="width:560px;">
+      <div class="modal-header"><h2>Authorization History</h2><button class="close-btn">✕</button></div>
+      ${
+        rows.length
+          ? rows
+              .map(
+                (r) => `<div class="task-row">
+                  <div class="info">
+                    <strong>${r.action.replace(/_/g, " ")}</strong>
+                    <div class="due">${fmtDate(r.created_at)} · by ${r.actor || "system"}${
+                  r.previous_value || r.new_value ? ` · ${r.previous_value || "—"} → ${r.new_value || "—"}` : ""
+                }${r.detail ? ` · ${r.detail}` : ""}</div>
+                  </div>
+                </div>`
+              )
+              .join("")
+          : `<div class="empty-state">No history yet.</div>`
+      }
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".close-btn").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
 }
 
 // ---------------- Schedule ----------------

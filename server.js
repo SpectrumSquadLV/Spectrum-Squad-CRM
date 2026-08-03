@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS client_tasks (
 CREATE TABLE IF NOT EXISTS notifications_log (
   id SERIAL PRIMARY KEY,
   client_id INTEGER,
-  type TEXT NOT NULL, -- department_alert | parent_milestone | overdue_alert
+  type TEXT NOT NULL, -- department_alert | parent_milestone | overdue_alert | auth_alert
   recipient TEXT NOT NULL,
   subject TEXT NOT NULL,
   body TEXT NOT NULL,
@@ -182,14 +182,52 @@ CREATE TABLE IF NOT EXISTS client_documents (
   uploaded_at TEXT,
   FOREIGN KEY (client_id) REFERENCES clients(id)
 );
+
+CREATE TABLE IF NOT EXISTS auth_alerts (
+  id SERIAL PRIMARY KEY,
+  client_id INTEGER NOT NULL,
+  milestone_days INTEGER NOT NULL, -- 60 | 30 | 14 | 7 | 0
+  alert_level TEXT NOT NULL, -- informational | attention | urgent | critical | overdue
+  expiration_snapshot TEXT NOT NULL, -- auth_expiration_date this alert was generated against
+  status TEXT NOT NULL DEFAULT 'open', -- open | reviewed | renewal_started | completed | reopened | superseded
+  assigned_to TEXT,
+  email_sent TEXT, -- sent | failed | partial | simulated | not_configured
+  email_sent_at TEXT,
+  email_recipients TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES clients(id)
+);
+
+CREATE TABLE IF NOT EXISTS auth_audit_log (
+  id SERIAL PRIMARY KEY,
+  client_id INTEGER,
+  alert_id INTEGER,
+  action TEXT NOT NULL,
+  actor TEXT,
+  previous_value TEXT,
+  new_value TEXT,
+  detail TEXT,
+  created_at TEXT
+);
 `;
 
-// Small forward-compatible migrations for columns added after the table
-// already existed in production. Safe to run every boot.
+// Small forward-compatible migrations for columns/tables added after the
+// database already existed in production. Safe to run every boot.
 const MIGRATIONS_SQL = `
 ALTER TABLE client_documents ALTER COLUMN file_path DROP NOT NULL;
 ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS doc_type TEXT NOT NULL DEFAULT 'hosted';
 ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS external_url TEXT;
+
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_payer TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_start_date TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_expiration_date TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_bcba_name TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_bcba_email TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_billing_name TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_billing_email TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS authorization_status TEXT NOT NULL DEFAULT 'Not Required';
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_notes TEXT;
 `;
 
 async function initSchema() {
@@ -541,6 +579,212 @@ async function checkOverdueTasks() {
 
 const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone };
 
+// ============================== AUTHORIZATION ALERTS ==============================
+// server/authAlerts.js
+// Tracks each client's insurance authorization window and fires escalating
+// internal + email alerts as the expiration date approaches, so nobody
+// discovers an authorization has lapsed by accident.
+"use strict";
+
+const AUTH_MILESTONES = [60, 30, 14, 7, 0]; // days-before-expiration thresholds
+const AUTH_ALERT_LEVELS = { 60: "informational", 30: "attention", 14: "urgent", 7: "critical", 0: "overdue" };
+const APP_BASE_URL = (process.env.APP_BASE_URL || "https://web4-production-16ed.up.railway.app").replace(/\/$/, "");
+
+// Roles allowed to view authorization/insurance fields at all. Any role not
+// in this list (e.g. intake, scheduling, and any future RBT login) never
+// receives these fields in API responses -- least-privilege by default.
+const AUTH_VIEW_ROLES = ["admin", "billing", "clinical"];
+// Roles allowed to fully create/edit authorization fields + manage alerts.
+const AUTH_EDIT_ROLES = ["admin", "billing"];
+
+const AUTH_FIELDS = [
+  "insurance_payer",
+  "auth_start_date",
+  "auth_expiration_date",
+  "assigned_bcba_name",
+  "assigned_bcba_email",
+  "assigned_billing_name",
+  "assigned_billing_email",
+  "authorization_status",
+  "auth_notes",
+];
+
+function initialsOf(name) {
+  return (name || "?")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((p) => p[0].toUpperCase())
+    .join("");
+}
+
+// Whole days remaining until `dateStr` (negative once past). Null if no date.
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const exp = new Date(dateStr);
+  if (isNaN(exp)) return null;
+  exp.setHours(0, 0, 0, 0);
+  return Math.round((exp - today) / 86400000);
+}
+
+function canViewAuth(user) {
+  return !!user && AUTH_VIEW_ROLES.includes(user.role);
+}
+function canEditAuth(user) {
+  return !!user && AUTH_EDIT_ROLES.includes(user.role);
+}
+
+// Strips authorization/insurance fields from a client row for roles that
+// shouldn't see them (e.g. intake, scheduling -- and any future RBT login).
+function sanitizeClientForRole(user, client) {
+  if (!client) return client;
+  if (canViewAuth(user)) return client;
+  const copy = { ...client };
+  for (const f of AUTH_FIELDS) delete copy[f];
+  return copy;
+}
+
+async function logAuthAudit(clientId, alertId, action, actor, previousValue, newValue, detail) {
+  await dbRun(
+    `INSERT INTO auth_audit_log (client_id, alert_id, action, actor, previous_value, new_value, detail, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [clientId, alertId, action, actor || "system", previousValue ?? null, newValue ?? null, detail ?? null, nowISO()]
+  );
+}
+
+function authAlertEmailContent(client, milestone, daysRemaining) {
+  const initials = initialsOf(client.child_name);
+  let subject;
+  if (milestone === 0) {
+    subject = daysRemaining < 0 ? `Authorization Expired — ${initials}` : `Authorization Expires Today — ${initials}`;
+  } else {
+    subject = `Authorization Expiring in ${milestone} Days — ${initials}`;
+  }
+  const link = `${APP_BASE_URL}/#/pipeline/${client.id}`;
+  const html = `
+    <p>An ABA authorization needs attention.</p>
+    <ul>
+      <li><strong>Client:</strong> ${initials}</li>
+      <li><strong>Insurance Payer:</strong> ${client.insurance_payer || "—"}</li>
+      <li><strong>Authorization Expiration Date:</strong> ${client.auth_expiration_date || "—"}</li>
+      <li><strong>Days Remaining:</strong> ${daysRemaining}</li>
+      <li><strong>Assigned BCBA:</strong> ${client.assigned_bcba_name || "—"}</li>
+      <li><strong>Authorization Status:</strong> ${client.authorization_status || "—"}</li>
+    </ul>
+    <p><a href="${link}">View client authorization record</a></p>
+    <p>Please begin or complete the renewal process if this hasn't been started already.</p>
+  `;
+  return { subject, html };
+}
+
+// The daily (and manually-triggerable) sweep: finds every client whose
+// authorization needs a milestone alert, creates the internal alert record
+// (once -- duplicates are prevented per client+milestone+expiration date),
+// and emails the assigned BCBA, assigned billing contact, and admin/leadership.
+async function checkAuthExpirations() {
+  const clients = await dbAll(
+    "SELECT * FROM clients WHERE authorization_status != 'Not Required' AND auth_expiration_date IS NOT NULL"
+  );
+  let created = 0;
+  for (const client of clients) {
+    const daysRemaining = daysUntil(client.auth_expiration_date);
+    if (daysRemaining === null) continue;
+
+    for (const milestone of AUTH_MILESTONES) {
+      if (daysRemaining > milestone) continue;
+
+      const existing = await dbGet(
+        "SELECT id FROM auth_alerts WHERE client_id = ? AND milestone_days = ? AND expiration_snapshot = ?",
+        [client.id, milestone, client.auth_expiration_date]
+      );
+      if (existing) continue; // duplicate prevention: never re-create/re-email this milestone
+
+      const alertLevel = AUTH_ALERT_LEVELS[milestone];
+      const row = await dbGet(
+        `INSERT INTO auth_alerts (client_id, milestone_days, alert_level, expiration_snapshot, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'open', ?, ?) RETURNING id`,
+        [client.id, milestone, alertLevel, client.auth_expiration_date, nowISO(), nowISO()]
+      );
+      created++;
+      await logAuthAudit(
+        client.id,
+        row.id,
+        "alert_created",
+        "system",
+        null,
+        String(milestone),
+        `${milestone}-day milestone alert created (level: ${alertLevel})`
+      );
+
+      const recipients = [
+        client.assigned_bcba_email,
+        client.assigned_billing_email,
+        process.env.AUTH_ALERT_ADMIN_EMAIL || "admin@spectrumsquadlv.com",
+      ].filter(Boolean);
+      const uniqueRecipients = [...new Set(recipients.map((r) => r.trim().toLowerCase()))];
+
+      let overallStatus;
+      if (uniqueRecipients.length === 0) {
+        overallStatus = "not_configured";
+        await logAuthAudit(
+          client.id,
+          row.id,
+          "email_skipped",
+          "system",
+          null,
+          null,
+          "No recipient emails configured (assigned BCBA / billing / admin all blank)"
+        );
+      } else {
+        const { subject, html } = authAlertEmailContent(client, milestone, daysRemaining);
+        const results = [];
+        for (const to of uniqueRecipients) {
+          const r = await sendEmail({ to, subject, html, clientId: client.id, type: "auth_alert" }).catch((e) => ({
+            delivered: "failed",
+            errorMsg: e.message,
+          }));
+          results.push(r.delivered);
+          await logAuthAudit(
+            client.id,
+            row.id,
+            "email_sent",
+            "system",
+            null,
+            to,
+            `Delivery: ${r.delivered}${r.errorMsg ? " - " + r.errorMsg : ""}`
+          );
+        }
+        if (results.every((r) => r === "sent")) overallStatus = "sent";
+        else if (results.some((r) => r === "sent")) overallStatus = "partial";
+        else if (results.every((r) => r === "simulated")) overallStatus = "simulated";
+        else overallStatus = "failed";
+      }
+
+      await dbRun("UPDATE auth_alerts SET email_sent = ?, email_sent_at = ?, email_recipients = ? WHERE id = ?", [
+        overallStatus,
+        nowISO(),
+        uniqueRecipients.join(", "),
+        row.id,
+      ]);
+    }
+  }
+  return created;
+}
+
+const authAlerts = {
+  AUTH_MILESTONES,
+  AUTH_ALERT_LEVELS,
+  AUTH_FIELDS,
+  initialsOf,
+  daysUntil,
+  canViewAuth,
+  canEditAuth,
+  sanitizeClientForRole,
+  logAuthAudit,
+  checkAuthExpirations,
+};
+
 // ============================== ROUTES ==============================
 // server/routes.js
 // All REST API route handlers, hand-routed (no Express) against Node's http module.
@@ -682,7 +926,7 @@ async function silentFastForward(clientId, targetStageKey) {
 }
 
 // Returns true if the route was handled.
-async function handle(req, res, pathname, method) {
+async function handle(req, res, pathname, method, query = {}) {
   if (!pathname.startsWith("/api/")) return false;
 
   const cookies = auth.parseCookies(req);
@@ -727,7 +971,33 @@ async function handle(req, res, pathname, method) {
         [today]
       );
       const totalClients = (await dbGet("SELECT COUNT(*) AS n FROM clients")).n;
-      return json(res, 200, { byStage, overdue, pending, upcomingFirstDays, totalClients, stages: pipeline.STAGES });
+
+      let authCounts = null;
+      if (authAlerts.canViewAuth(user)) {
+        const activeAuths = await dbAll(
+          "SELECT auth_expiration_date FROM clients WHERE authorization_status != 'Not Required' AND auth_expiration_date IS NOT NULL"
+        );
+        authCounts = { d60: 0, d30: 0, d14: 0, d7: 0, expired: 0 };
+        for (const row of activeAuths) {
+          const d = authAlerts.daysUntil(row.auth_expiration_date);
+          if (d === null) continue;
+          if (d < 0) authCounts.expired++;
+          else if (d <= 7) authCounts.d7++;
+          else if (d <= 14) authCounts.d14++;
+          else if (d <= 30) authCounts.d30++;
+          else if (d <= 60) authCounts.d60++;
+        }
+      }
+
+      return json(res, 200, {
+        byStage,
+        overdue,
+        pending,
+        upcomingFirstDays,
+        totalClients,
+        stages: pipeline.STAGES,
+        authCounts,
+      });
     }
 
     // ---------- STAGES / DEPARTMENTS ----------
@@ -742,7 +1012,7 @@ async function handle(req, res, pathname, method) {
     // ---------- CLIENTS ----------
     if (pathname === "/api/clients" && method === "GET") {
       const clients = await dbAll("SELECT * FROM clients ORDER BY submitted_at DESC");
-      return json(res, 200, clients);
+      return json(res, 200, clients.map((c) => authAlerts.sanitizeClientForRole(user, c)));
     }
 
     if (pathname === "/api/clients" && method === "POST") {
@@ -891,6 +1161,171 @@ async function handle(req, res, pathname, method) {
       return sendFile(res, 200, buffer, doc.mime_type, doc.filename);
     }
 
+    // ---------- AUTHORIZATION ALERTS ----------
+    // List alerts, optionally filtered by ?level=informational|attention|urgent|critical|overdue
+    // and/or ?status=open|reviewed|renewal_started|completed|reopened|superseded.
+    // Only visible to roles that can see authorization data at all.
+    if (pathname === "/api/auth-alerts" && method === "GET") {
+      if (!authAlerts.canViewAuth(user)) return json(res, 403, { error: "Not permitted to view authorization alerts" });
+      const conditions = [];
+      const params = [];
+      if (query.level) {
+        conditions.push("aa.alert_level = ?");
+        params.push(query.level);
+      }
+      if (query.status) {
+        conditions.push("aa.status = ?");
+        params.push(query.status);
+      } else {
+        // default view: hide superseded (stale) alerts unless explicitly asked for
+        conditions.push("aa.status != 'superseded'");
+      }
+      const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+      const rows = await dbAll(
+        `SELECT aa.*, c.child_name, c.insurance_payer, c.assigned_bcba_name, c.assigned_billing_name
+         FROM auth_alerts aa
+         JOIN clients c ON c.id = aa.client_id
+         ${where}
+         ORDER BY aa.milestone_days ASC, aa.created_at DESC`,
+        params
+      );
+      const shaped = rows.map((r) => ({
+        id: r.id,
+        client_id: r.client_id,
+        initials: authAlerts.initialsOf(r.child_name),
+        insurance_payer: r.insurance_payer,
+        expiration_date: r.expiration_snapshot,
+        days_remaining: authAlerts.daysUntil(r.expiration_snapshot),
+        assigned_bcba_name: r.assigned_bcba_name,
+        assigned_billing_name: r.assigned_billing_name,
+        milestone_days: r.milestone_days,
+        alert_level: r.alert_level,
+        status: r.status,
+        assigned_to: r.assigned_to,
+        email_sent: r.email_sent,
+        email_sent_at: r.email_sent_at,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      }));
+      return json(res, 200, shaped);
+    }
+
+    const alertStatusMatch = pathname.match(/^\/api\/auth-alerts\/(\d+)\/status$/);
+    if (alertStatusMatch && method === "POST") {
+      if (!authAlerts.canViewAuth(user)) return json(res, 403, { error: "Not permitted" });
+      const alertId = alertStatusMatch[1];
+      const { status, assigned_to } = await readBody(req);
+      const validStatuses = ["open", "reviewed", "renewal_started", "completed", "reopened"];
+      if (!validStatuses.includes(status)) return json(res, 400, { error: "Invalid status" });
+
+      // Clinical (BCBA) users may only move an alert into renewal-in-progress
+      // or completed, and may add themselves as the assignee -- everything
+      // else (reviewed/reopened/open, or assigning other staff) requires
+      // admin or billing.
+      if (!authAlerts.canEditAuth(user) && !["renewal_started", "completed"].includes(status)) {
+        return json(res, 403, { error: "Only admin/billing can set this status" });
+      }
+
+      const alert = await dbGet("SELECT * FROM auth_alerts WHERE id = ?", [alertId]);
+      if (!alert) return json(res, 404, { error: "Not found" });
+
+      const fields = ["status = ?"];
+      const params = [status];
+      if (assigned_to !== undefined) {
+        fields.push("assigned_to = ?");
+        params.push(assigned_to);
+      }
+      fields.push("updated_at = ?");
+      params.push(nowISO());
+      params.push(alertId);
+      await dbRun(`UPDATE auth_alerts SET ${fields.join(", ")} WHERE id = ?`, params);
+
+      await authAlerts.logAuthAudit(
+        alert.client_id,
+        alertId,
+        "alert_status_changed",
+        user.email,
+        alert.status,
+        status,
+        assigned_to !== undefined ? `Assigned to: ${assigned_to || "—"}` : null
+      );
+      return json(res, 200, { ok: true });
+    }
+
+    const clientAuthAuditMatch = pathname.match(/^\/api\/clients\/(\d+)\/auth-audit$/);
+    if (clientAuthAuditMatch && method === "GET") {
+      if (!authAlerts.canViewAuth(user)) return json(res, 403, { error: "Not permitted" });
+      const rows = await dbAll(
+        "SELECT * FROM auth_audit_log WHERE client_id = ? ORDER BY created_at DESC",
+        [clientAuthAuditMatch[1]]
+      );
+      return json(res, 200, rows);
+    }
+
+    // Manually trigger the daily authorization-expiration sweep (used for
+    // testing, and as a way to get an immediate alert right after entering
+    // a new expiration date rather than waiting for the next scheduled run).
+    if (pathname === "/api/admin/check-auth-expirations" && method === "POST") {
+      if (!authAlerts.canEditAuth(user)) return json(res, 403, { error: "Only admin/billing can run this" });
+      const created = await authAlerts.checkAuthExpirations();
+      return json(res, 200, { created });
+    }
+
+    const authorizationMatch = pathname.match(/^\/api\/clients\/(\d+)\/authorization$/);
+    if (authorizationMatch && method === "PATCH") {
+      const id = authorizationMatch[1];
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+
+      const body = await readBody(req);
+      let allowedFields;
+      if (authAlerts.canEditAuth(user)) {
+        allowedFields = authAlerts.AUTH_FIELDS;
+      } else if (user.role === "clinical") {
+        allowedFields = ["auth_notes"]; // BCBAs can add notes only
+      } else {
+        return json(res, 403, { error: "Not permitted to edit authorization fields" });
+      }
+
+      const fields = Object.keys(body).filter((k) => allowedFields.includes(k));
+      if (!fields.length) return json(res, 400, { error: "No editable fields provided" });
+
+      // If the expiration date is changing, invalidate not-yet-actioned
+      // alerts tied to the old date so stale milestones don't linger, and
+      // record the change for audit history. Completed / renewal-in-progress
+      // alerts are left alone as historical record.
+      if (fields.includes("auth_expiration_date") && body.auth_expiration_date !== client.auth_expiration_date) {
+        await dbRun(
+          "UPDATE auth_alerts SET status = 'superseded', updated_at = ? WHERE client_id = ? AND status IN ('open','reviewed')",
+          [nowISO(), id]
+        );
+        await authAlerts.logAuthAudit(
+          id,
+          null,
+          "expiration_date_changed",
+          user.email,
+          client.auth_expiration_date,
+          body.auth_expiration_date,
+          "Open/reviewed alerts tied to the previous date were superseded"
+        );
+      }
+      for (const f of fields) {
+        if (f === "auth_expiration_date") continue; // already logged above with more detail
+        if (body[f] !== client[f]) {
+          await authAlerts.logAuthAudit(id, null, `${f}_changed`, user.email, client[f], body[f], null);
+        }
+      }
+
+      const setClause = fields.map((f) => `${f} = ?`).join(", ");
+      await dbRun(`UPDATE clients SET ${setClause}, updated_at = ? WHERE id = ?`, [
+        ...fields.map((f) => body[f]),
+        nowISO(),
+        id,
+      ]);
+      const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      return json(res, 200, authAlerts.sanitizeClientForRole(user, updated));
+    }
+
     const clientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     if (clientMatch && method === "GET") {
       const id = clientMatch[1];
@@ -918,7 +1353,13 @@ async function handle(req, res, pathname, method) {
         "SELECT id, label, filename, mime_type, doc_type, external_url, uploaded_at FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
         [id]
       );
-      return json(res, 200, { client, tasks, sessions, notifications, documents });
+      return json(res, 200, {
+        client: authAlerts.sanitizeClientForRole(user, client),
+        tasks,
+        sessions,
+        notifications,
+        documents,
+      });
     }
 
     if (clientMatch && method === "PATCH") {
@@ -940,7 +1381,7 @@ async function handle(req, res, pathname, method) {
         ]);
       }
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
-      return json(res, 200, client);
+      return json(res, 200, authAlerts.sanitizeClientForRole(user, client));
     }
 
     const advanceMatch = pathname.match(/^\/api\/clients\/(\d+)\/advance$/);
@@ -1247,8 +1688,8 @@ async function seedDemoClients() {
       parent_email: "demo.parentC@example.com",
       parent_phone: "555-010-0003",
       address: "789 Example Blvd, Las Vegas, NV",
-      service_location: "In-Clinic",
       school_status: "None: Homeschooled/Not School Aged",
+      service_location: "In-Clinic",
       start_urgency: "ASAP",
       insurance_provider: "TriCare",
       num_insurances: "2",
@@ -1425,7 +1866,7 @@ const server = http.createServer(async (req, res) => {
   const pathname = decodeURIComponent(parsed.pathname);
 
   if (pathname.startsWith("/api/")) {
-    const handled = await routes.handle(req, res, pathname, req.method);
+    const handled = await routes.handle(req, res, pathname, req.method, parsed.query || {});
     if (!handled) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Not found" }));
@@ -1436,17 +1877,25 @@ const server = http.createServer(async (req, res) => {
   serveStatic(req, res, pathname);
 });
 
-// Overdue-task sweep: runs on boot and then every 30 minutes. In production,
-// keep the Node process alive (e.g. via pm2 / a platform's process manager)
-// so this interval keeps firing, or trigger POST /api/admin/check-overdue
+// Overdue-task + authorization-expiration sweeps: run on boot, then on their
+// own intervals. In production, keep the Node process alive (e.g. via pm2 /
+// a platform's process manager) so these intervals keep firing, or trigger
+// POST /api/admin/check-overdue and POST /api/admin/check-auth-expirations
 // from an external scheduler instead.
 async function start() {
   await initSchema();
   await ensureSeeded();
   await pipeline.checkOverdueTasks();
+  await authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
+
   setInterval(() => {
     pipeline.checkOverdueTasks().catch((e) => console.error("Overdue sweep failed:", e));
   }, 30 * 60 * 1000);
+
+  // Daily authorization-expiration check (also runs once on boot above).
+  setInterval(() => {
+    authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
+  }, 24 * 60 * 60 * 1000);
 
   server.listen(PORT, () => {
     console.log(`Spectrum Squad CRM running at http://localhost:${PORT}`);
