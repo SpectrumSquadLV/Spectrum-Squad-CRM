@@ -263,18 +263,24 @@ async function renderFinancialSettings(content) {
 // #app's innerHTML on every navigation, and don't know this nav item or page
 // exist. Rather than editing that code (risking existing functionality), a
 // MutationObserver watches #app and, after every re-render:
-//   1. (Re-)injects the "Financial Center" sidebar button if missing.
+//   1. (Re-)injects the "Financial Center" sidebar button if missing (or if
+//      permission just became available, e.g. state.user finished loading).
 //   2. If the current hash is #/financial-center[...], renders this page's
 //      content into #view-mount, replacing whatever the native router put
 //      there for the (unrecognized-to-it) hash.
-// A small dataset guard prevents re-render loops from the observer seeing
-// this script's own DOM writes.
+// The re-render guard key includes the permission check result (not just the
+// hash) specifically so an early render that happened before `state.user`
+// finished loading (and so saw canViewFinancial() as false) gets corrected
+// automatically once auth state settles, instead of being locked in forever.
 
 function syncNavButton() {
-  if (!canViewFinancial()) return;
   const nav = document.querySelector(".sidebar nav");
   if (!nav) return;
   let btn = nav.querySelector('[data-nav="financial-center"]');
+  if (!canViewFinancial()) {
+    if (btn) btn.remove();
+    return;
+  }
   const isActive = location.hash.startsWith("#/financial-center");
   if (!btn) {
     btn = document.createElement("button");
@@ -298,8 +304,12 @@ function syncFinancialView() {
   const mount = document.getElementById("view-mount");
   if (!mount) return;
   if (!location.hash.startsWith("#/financial-center")) return;
-  if (mount.dataset.fcRendered === location.hash) return; // already rendered for this hash
-  mount.dataset.fcRendered = location.hash;
+  // Guard key includes the permission outcome, not just the hash, so a
+  // render that happened before auth state settled gets retried once
+  // canViewFinancial() flips to true (see comment above).
+  const guardKey = location.hash + "|" + (canViewFinancial() ? "v" : "x");
+  if (mount.dataset.fcRendered === guardKey) return;
+  mount.dataset.fcRendered = guardKey;
   const parts = location.hash.split("/");
   const param = parts[2];
   renderFinancialCenter(mount, param);
@@ -322,6 +332,11 @@ function initFinancialCenter() {
     setTimeout(onAppMutated, 0);
   });
   onAppMutated();
+  // Defensive redundancy: auth/data loading is async, and it's possible for
+  // the DOM to finish settling before state.user is fully populated (or for
+  // no further mutation to fire after that point). These are cheap, safe,
+  // no-op if everything already synced correctly (see the guards above).
+  [150, 500, 1200, 2500].forEach((ms) => setTimeout(onAppMutated, ms));
 }
 
 if (document.readyState === "loading") {
