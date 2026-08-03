@@ -24,7 +24,7 @@ const DB_PATH = path.join(DATA_DIR, "crm.db");
 const db = new DatabaseSync(DB_PATH);
 
 db.exec(`
-  PRAGMA journal_mode = WAL;
+
 
   CREATE TABLE IF NOT EXISTS departments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
