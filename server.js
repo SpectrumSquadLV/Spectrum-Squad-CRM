@@ -210,6 +210,66 @@ CREATE TABLE IF NOT EXISTS auth_audit_log (
   detail TEXT,
   created_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS clickup_config (
+  id INTEGER PRIMARY KEY DEFAULT 1,
+  encrypted_token TEXT,
+  token_iv TEXT,
+  token_auth_tag TEXT,
+  workspace_id TEXT,
+  space_id TEXT,
+  folder_id TEXT,
+  list_ids TEXT, -- comma-separated ClickUp list IDs to sync
+  last_connection_status TEXT, -- connected | disconnected | connection_failed
+  updated_by TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS clickup_sync_log (
+  id SERIAL PRIMARY KEY,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL DEFAULT 'running', -- running | success | failed
+  tasks_synced INTEGER DEFAULT 0,
+  tasks_created INTEGER DEFAULT 0,
+  tasks_updated INTEGER DEFAULT 0,
+  error TEXT,
+  triggered_by TEXT NOT NULL DEFAULT 'scheduled' -- scheduled | manual
+);
+
+CREATE TABLE IF NOT EXISTS clickup_tasks (
+  id SERIAL PRIMARY KEY,
+  clickup_task_id TEXT UNIQUE NOT NULL,
+  list_id TEXT,
+  name TEXT,
+  status TEXT,
+  category TEXT, -- mapped via clickup_category_mappings
+  assignee TEXT,
+  due_date TEXT,
+  date_created TEXT,
+  date_closed TEXT,
+  url TEXT,
+  raw_json TEXT,
+  first_synced_at TEXT,
+  last_synced_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS clickup_category_mappings (
+  id SERIAL PRIMARY KEY,
+  list_id TEXT NOT NULL UNIQUE,
+  list_name TEXT,
+  category TEXT NOT NULL, -- Billing | Credentialing | Authorizations | Appeals | Provider Enrollment | Insurance Follow-up | Client Billing | Collections | Other
+  created_at TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS financial_audit_log (
+  id SERIAL PRIMARY KEY,
+  actor TEXT,
+  action TEXT NOT NULL,
+  detail TEXT,
+  created_at TEXT
+);
 `;
 
 // Small forward-compatible migrations for columns/tables added after the
@@ -228,6 +288,8 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_billing_name TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_billing_email TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS authorization_status TEXT NOT NULL DEFAULT 'Not Required';
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_notes TEXT;
+
+ALTER TABLE clickup_config ADD COLUMN IF NOT EXISTS last_connection_status TEXT;
 `;
 
 async function initSchema() {
@@ -783,6 +845,400 @@ const authAlerts = {
   sanitizeClientForRole,
   logAuthAudit,
   checkAuthExpirations,
+};
+
+// ============================== ENCRYPTION ==============================
+// server/encryption.js
+// Encrypts secrets (currently: the ClickUp Personal API Token) at rest using
+// AES-256-GCM. The key is derived from CLICKUP_ENCRYPTION_KEY (set this in
+// Railway's environment variables -- never commit it to source control). If
+// it's not set, a random key is generated at boot as a safe fallback so the
+// app doesn't crash, but any token saved before a real key is configured
+// will stop decrypting after a restart and will need to be re-entered once
+// CLICKUP_ENCRYPTION_KEY is set (documented in the setup instructions).
+"use strict";
+
+const ENCRYPTION_KEY_RAW = process.env.CLICKUP_ENCRYPTION_KEY || "";
+if (!ENCRYPTION_KEY_RAW) {
+  console.warn(
+    "WARNING: CLICKUP_ENCRYPTION_KEY is not set. Using a random ephemeral key -- " +
+      "the saved ClickUp token will need to be re-entered after every restart until " +
+      "you set CLICKUP_ENCRYPTION_KEY in Railway's environment variables."
+  );
+}
+const ENCRYPTION_KEY = ENCRYPTION_KEY_RAW
+  ? crypto.createHash("sha256").update(ENCRYPTION_KEY_RAW).digest()
+  : crypto.randomBytes(32);
+
+function encryptSecret(plaintext) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return {
+    encrypted: encrypted.toString("hex"),
+    iv: iv.toString("hex"),
+    authTag: authTag.toString("hex"),
+  };
+}
+
+function decryptSecret(encryptedHex, ivHex, authTagHex) {
+  if (!encryptedHex || !ivHex || !authTagHex) return null;
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-gcm", ENCRYPTION_KEY, Buffer.from(ivHex, "hex"));
+    decipher.setAuthTag(Buffer.from(authTagHex, "hex"));
+    const decrypted = Buffer.concat([decipher.update(Buffer.from(encryptedHex, "hex")), decipher.final()]);
+    return decrypted.toString("utf8");
+  } catch (e) {
+    return null; // key rotated/mismatched, or corrupted -- treat as "not configured"
+  }
+}
+
+// ============================== CLICKUP INTEGRATION ==============================
+// server/clickupIntegration.js
+// Read-only, one-directional integration (ClickUp -> CRM): pulls billing,
+// credentialing, and authorization-related tasks from a ClickUp workspace
+// managed by an external billing company, so leadership gets an executive
+// summary inside the CRM without logging into ClickUp all day. This module
+// never writes back to ClickUp.
+"use strict";
+
+const CLICKUP_API_BASE = "https://api.clickup.com/api/v2";
+
+// Mirrors the existing Authorization Alerts permission model: admin + billing
+// + clinical (BCBA) can view financial data; only admin + billing can edit
+// records or trigger a sync; only admin can change API credentials/workspace
+// config. Any other role (intake, scheduling -- and any future RBT login)
+// gets no access at all, per the spec's "RBTs: No access" requirement.
+const FINANCIAL_VIEW_ROLES = ["admin", "billing", "clinical"];
+const FINANCIAL_EDIT_ROLES = ["admin", "billing"];
+const FINANCIAL_ADMIN_ROLES = ["admin"];
+
+function canViewFinancial(user) {
+  return !!user && FINANCIAL_VIEW_ROLES.includes(user.role);
+}
+function canEditFinancial(user) {
+  return !!user && FINANCIAL_EDIT_ROLES.includes(user.role);
+}
+function canAdminFinancial(user) {
+  return !!user && FINANCIAL_ADMIN_ROLES.includes(user.role);
+}
+
+async function logFinancialAudit(actor, action, detail) {
+  await dbRun("INSERT INTO financial_audit_log (actor, action, detail, created_at) VALUES (?, ?, ?, ?)", [
+    actor || "system",
+    action,
+    detail ?? null,
+    nowISO(),
+  ]);
+}
+
+async function getConfig() {
+  return dbGet("SELECT * FROM clickup_config WHERE id = 1");
+}
+
+// Server-side only -- includes the decrypted token. Never return this
+// directly from an API route; use getConfigStatus() for that.
+async function getConfigWithToken() {
+  const row = await getConfig();
+  if (!row) return null;
+  const token = decryptSecret(row.encrypted_token, row.token_iv, row.token_auth_tag);
+  return { ...row, token };
+}
+
+// Safe-to-return-to-the-frontend view: never includes the raw or encrypted token.
+async function getConfigStatus() {
+  const row = await getConfig();
+  if (!row || !row.encrypted_token) {
+    return {
+      configured: false,
+      workspace_id: null,
+      space_id: null,
+      folder_id: null,
+      list_ids: null,
+      connection_status: "disconnected",
+    };
+  }
+  return {
+    configured: true,
+    workspace_id: row.workspace_id,
+    space_id: row.space_id,
+    folder_id: row.folder_id,
+    list_ids: row.list_ids,
+    updated_by: row.updated_by,
+    updated_at: row.updated_at,
+    connection_status: row.last_connection_status || "disconnected",
+  };
+}
+
+async function saveConfig({ token, workspace_id, space_id, folder_id, list_ids }, actor) {
+  const existing = await getConfig();
+  let encFields = {};
+  if (token) {
+    const { encrypted, iv, authTag } = encryptSecret(token);
+    encFields = { encrypted_token: encrypted, token_iv: iv, token_auth_tag: authTag };
+  }
+  if (existing) {
+    await dbRun(
+      `UPDATE clickup_config SET
+         encrypted_token = COALESCE(?, encrypted_token),
+         token_iv = COALESCE(?, token_iv),
+         token_auth_tag = COALESCE(?, token_auth_tag),
+         workspace_id = ?, space_id = ?, folder_id = ?, list_ids = ?,
+         updated_by = ?, updated_at = ?
+       WHERE id = 1`,
+      [
+        encFields.encrypted_token || null,
+        encFields.token_iv || null,
+        encFields.token_auth_tag || null,
+        workspace_id ?? existing.workspace_id,
+        space_id ?? existing.space_id,
+        folder_id ?? existing.folder_id,
+        list_ids ?? existing.list_ids,
+        actor,
+        nowISO(),
+      ]
+    );
+  } else {
+    await dbRun(
+      `INSERT INTO clickup_config (id, encrypted_token, token_iv, token_auth_tag, workspace_id, space_id, folder_id, list_ids, updated_by, updated_at)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        encFields.encrypted_token || null,
+        encFields.token_iv || null,
+        encFields.token_auth_tag || null,
+        workspace_id || null,
+        space_id || null,
+        folder_id || null,
+        list_ids || null,
+        actor,
+        nowISO(),
+      ]
+    );
+  }
+  await logFinancialAudit(
+    actor,
+    "config_saved",
+    `workspace=${workspace_id || "-"} space=${space_id || "-"} folder=${folder_id || "-"} lists=${list_ids || "-"}${
+      token ? " (token updated)" : ""
+    }`
+  );
+}
+
+async function setConnectionStatus(status) {
+  await dbRun("UPDATE clickup_config SET last_connection_status = ? WHERE id = 1", [status]).catch(() => {});
+}
+
+// Calls ClickUp's GET /team endpoint (lightweight -- works with any valid
+// Personal API Token regardless of workspace/space/list configuration) to
+// verify the token itself is valid before attempting a full sync.
+async function testConnection(actor) {
+  const config = await getConfigWithToken();
+  if (!config || !config.token) {
+    return { ok: false, status: "disconnected", detail: "No API token configured yet." };
+  }
+  try {
+    const res = await fetch(`${CLICKUP_API_BASE}/team`, { headers: { Authorization: config.token } });
+    if (res.status === 401) {
+      await setConnectionStatus("connection_failed");
+      await logFinancialAudit(actor, "test_connection", "Failed: invalid token (401 Unauthorized)");
+      return { ok: false, status: "connection_failed", detail: "ClickUp rejected the API token (401 Unauthorized). Double-check the Personal API Token." };
+    }
+    if (!res.ok) {
+      await setConnectionStatus("connection_failed");
+      await logFinancialAudit(actor, "test_connection", `Failed: HTTP ${res.status}`);
+      return { ok: false, status: "connection_failed", detail: `ClickUp API returned HTTP ${res.status}.` };
+    }
+    const data = await res.json();
+    const teamNames = (data.teams || []).map((t) => t.name).join(", ") || "none";
+    await setConnectionStatus("connected");
+    await logFinancialAudit(actor, "test_connection", `Success: token valid, workspaces visible: ${teamNames}`);
+    return { ok: true, status: "connected", detail: `Connected. Workspaces visible to this token: ${teamNames}.` };
+  } catch (e) {
+    await setConnectionStatus("connection_failed");
+    await logFinancialAudit(actor, "test_connection", `Failed: ${e.message}`);
+    return { ok: false, status: "connection_failed", detail: `Network error contacting ClickUp: ${e.message}` };
+  }
+}
+
+// ---- Task category mapping (admin-customizable) ----
+async function getCategoryMappings() {
+  return dbAll("SELECT * FROM clickup_category_mappings ORDER BY list_name, list_id");
+}
+
+async function saveCategoryMapping({ list_id, list_name, category }, actor) {
+  const existing = await dbGet("SELECT * FROM clickup_category_mappings WHERE list_id = ?", [list_id]);
+  if (existing) {
+    await dbRun("UPDATE clickup_category_mappings SET list_name = ?, category = ?, updated_at = ? WHERE list_id = ?", [
+      list_name || existing.list_name,
+      category,
+      nowISO(),
+      list_id,
+    ]);
+  } else {
+    await dbRun(
+      "INSERT INTO clickup_category_mappings (list_id, list_name, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      [list_id, list_name || null, category, nowISO(), nowISO()]
+    );
+  }
+  await logFinancialAudit(actor, "category_mapping_saved", `list ${list_id} -> ${category}`);
+}
+
+async function categoryForList(listId) {
+  const row = await dbGet("SELECT category FROM clickup_category_mappings WHERE list_id = ?", [listId]);
+  return row ? row.category : "Uncategorized";
+}
+
+// ---- Sync engine ----
+// One-directional, read-only: pulls tasks from every configured List ID,
+// upserts into clickup_tasks keyed by clickup_task_id (this is what prevents
+// duplicate records on every 15-minute re-sync), and always writes a row to
+// clickup_sync_log -- success or failure -- so Last Sync / Next Sync / Last
+// Successful Sync / Errors can always be shown accurately.
+async function syncNow(triggeredBy = "scheduled") {
+  const startedAt = nowISO();
+  const logRow = await dbGet(
+    "INSERT INTO clickup_sync_log (started_at, status, triggered_by) VALUES (?, 'running', ?) RETURNING id",
+    [startedAt, triggeredBy]
+  );
+
+  const config = await getConfigWithToken();
+  if (!config || !config.token) {
+    await dbRun("UPDATE clickup_sync_log SET finished_at = ?, status = 'failed', error = ? WHERE id = ?", [
+      nowISO(),
+      "No ClickUp API token configured yet",
+      logRow.id,
+    ]);
+    return { ok: false, error: "No ClickUp API token configured yet" };
+  }
+
+  const listIds = (config.list_ids || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (!listIds.length) {
+    await dbRun("UPDATE clickup_sync_log SET finished_at = ?, status = 'failed', error = ? WHERE id = ?", [
+      nowISO(),
+      "No List IDs configured to sync yet",
+      logRow.id,
+    ]);
+    return { ok: false, error: "No List IDs configured to sync yet" };
+  }
+
+  let created = 0;
+  let updated = 0;
+  let totalSeen = 0;
+  const errors = [];
+
+  for (const listId of listIds) {
+    try {
+      const res = await fetch(`${CLICKUP_API_BASE}/list/${listId}/task?include_closed=true`, {
+        headers: { Authorization: config.token },
+      });
+      if (!res.ok) {
+        errors.push(`List ${listId}: HTTP ${res.status}`);
+        continue;
+      }
+      const data = await res.json();
+      const tasks = data.tasks || [];
+      const category = await categoryForList(listId);
+      for (const t of tasks) {
+        totalSeen++;
+        const existing = await dbGet("SELECT id FROM clickup_tasks WHERE clickup_task_id = ?", [t.id]);
+        const fields = [
+          (t.list && t.list.id) || listId,
+          t.name || null,
+          (t.status && t.status.status) || null,
+          category,
+          (t.assignees || []).map((a) => a.username).join(", ") || null,
+          t.due_date ? new Date(Number(t.due_date)).toISOString() : null,
+          t.date_created ? new Date(Number(t.date_created)).toISOString() : null,
+          t.date_closed ? new Date(Number(t.date_closed)).toISOString() : null,
+          t.url || null,
+          JSON.stringify(t),
+        ];
+        if (existing) {
+          await dbRun(
+            `UPDATE clickup_tasks SET list_id=?, name=?, status=?, category=?, assignee=?, due_date=?, date_created=?, date_closed=?, url=?, raw_json=?, last_synced_at=?
+             WHERE clickup_task_id = ?`,
+            [...fields, nowISO(), t.id]
+          );
+          updated++;
+        } else {
+          await dbRun(
+            `INSERT INTO clickup_tasks (clickup_task_id, list_id, name, status, category, assignee, due_date, date_created, date_closed, url, raw_json, first_synced_at, last_synced_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [t.id, ...fields, nowISO(), nowISO()]
+          );
+          created++;
+        }
+      }
+    } catch (e) {
+      errors.push(`List ${listId}: ${e.message}`);
+    }
+  }
+
+  const failedEntirely = errors.length > 0 && created + updated === 0 && totalSeen === 0;
+  const status = failedEntirely ? "failed" : "success";
+  await dbRun(
+    "UPDATE clickup_sync_log SET finished_at = ?, status = ?, tasks_synced = ?, tasks_created = ?, tasks_updated = ?, error = ? WHERE id = ?",
+    [nowISO(), status, totalSeen, created, updated, errors.length ? errors.join("; ") : null, logRow.id]
+  );
+  await setConnectionStatus(failedEntirely ? "connection_failed" : "connected");
+  await logFinancialAudit(
+    triggeredBy === "manual" ? "manual_sync" : "system",
+    "sync_completed",
+    `${status}: ${totalSeen} tasks seen, ${created} created, ${updated} updated${errors.length ? `, errors: ${errors.join("; ")}` : ""}`
+  );
+
+  return { ok: !failedEntirely, tasksSeen: totalSeen, created, updated, errors };
+}
+
+async function getSyncStatus() {
+  const last = await dbGet("SELECT * FROM clickup_sync_log ORDER BY id DESC LIMIT 1");
+  const lastSuccessful = await dbGet("SELECT * FROM clickup_sync_log WHERE status = 'success' ORDER BY id DESC LIMIT 1");
+  const config = await getConfig();
+  let nextSync = null;
+  if (last && last.finished_at) {
+    nextSync = new Date(new Date(last.finished_at).getTime() + 15 * 60 * 1000).toISOString();
+  }
+  return {
+    configured: !!(config && config.encrypted_token),
+    lastSync: last
+      ? {
+          startedAt: last.started_at,
+          finishedAt: last.finished_at,
+          status: last.status,
+          tasksSynced: last.tasks_synced,
+          error: last.error,
+          triggeredBy: last.triggered_by,
+        }
+      : null,
+    lastSuccessfulSync: lastSuccessful
+      ? { finishedAt: lastSuccessful.finished_at, tasksSynced: lastSuccessful.tasks_synced }
+      : null,
+    nextSync,
+  };
+}
+
+async function getRecentSyncLogs(limit = 20) {
+  return dbAll("SELECT * FROM clickup_sync_log ORDER BY id DESC LIMIT ?", [limit]);
+}
+
+const clickupIntegration = {
+  canViewFinancial,
+  canEditFinancial,
+  canAdminFinancial,
+  getConfigStatus,
+  saveConfig,
+  testConnection,
+  getCategoryMappings,
+  saveCategoryMapping,
+  syncNow,
+  getSyncStatus,
+  getRecentSyncLogs,
+  logFinancialAudit,
 };
 
 // ============================== ROUTES ==============================
@@ -1491,6 +1947,72 @@ async function handle(req, res, pathname, method, query = {}) {
       );
     }
 
+    // ---------- FINANCIAL CENTER (ClickUp) ----------
+    // All routes below are session-authenticated (normal cookie login, not
+    // the one-off ADMIN_IMPORT_SECRET pattern) and role-gated inline, mirroring
+    // the Authorization Alerts routes above.
+    if (pathname === "/api/financial/config-status" && method === "GET") {
+      if (!clickupIntegration.canViewFinancial(user)) return json(res, 403, { error: "Not permitted" });
+      return json(res, 200, await clickupIntegration.getConfigStatus());
+    }
+
+    if (pathname === "/api/financial/config" && method === "POST") {
+      if (!clickupIntegration.canAdminFinancial(user)) {
+        return json(res, 403, { error: "Only admin can configure the ClickUp integration" });
+      }
+      const body = await readBody(req);
+      await clickupIntegration.saveConfig(body, user.email);
+      return json(res, 200, await clickupIntegration.getConfigStatus());
+    }
+
+    if (pathname === "/api/financial/test-connection" && method === "POST") {
+      if (!clickupIntegration.canAdminFinancial(user)) {
+        return json(res, 403, { error: "Only admin can test the ClickUp connection" });
+      }
+      const result = await clickupIntegration.testConnection(user.email);
+      return json(res, result.ok ? 200 : 502, result);
+    }
+
+    if (pathname === "/api/financial/sync-now" && method === "POST") {
+      if (!clickupIntegration.canEditFinancial(user)) return json(res, 403, { error: "Not permitted" });
+      const result = await clickupIntegration.syncNow("manual");
+      return json(res, result.ok ? 200 : 502, result);
+    }
+
+    if (pathname === "/api/financial/sync-status" && method === "GET") {
+      if (!clickupIntegration.canViewFinancial(user)) return json(res, 403, { error: "Not permitted" });
+      return json(res, 200, await clickupIntegration.getSyncStatus());
+    }
+
+    if (pathname === "/api/financial/sync-logs" && method === "GET") {
+      if (!clickupIntegration.canViewFinancial(user)) return json(res, 403, { error: "Not permitted" });
+      return json(res, 200, await clickupIntegration.getRecentSyncLogs());
+    }
+
+    if (pathname === "/api/financial/category-mappings" && method === "GET") {
+      if (!clickupIntegration.canViewFinancial(user)) return json(res, 403, { error: "Not permitted" });
+      return json(res, 200, await clickupIntegration.getCategoryMappings());
+    }
+
+    if (pathname === "/api/financial/category-mappings" && method === "POST") {
+      if (!clickupIntegration.canAdminFinancial(user)) {
+        return json(res, 403, { error: "Only admin can edit category mappings" });
+      }
+      const body = await readBody(req);
+      if (!body.list_id || !body.category) return json(res, 400, { error: "list_id and category are required" });
+      await clickupIntegration.saveCategoryMapping(body, user.email);
+      return json(res, 200, await clickupIntegration.getCategoryMappings());
+    }
+
+    if (pathname === "/api/financial/tasks" && method === "GET") {
+      if (!clickupIntegration.canViewFinancial(user)) return json(res, 403, { error: "Not permitted" });
+      const tasks = await dbAll(
+        `SELECT id, clickup_task_id, list_id, name, status, category, assignee, due_date, date_created, date_closed, url, last_synced_at
+         FROM clickup_tasks ORDER BY date_created DESC LIMIT 500`
+      );
+      return json(res, 200, tasks);
+    }
+
     // ---------- ADMIN ----------
     if (pathname === "/api/admin/check-overdue" && method === "POST") {
       const n = await pipeline.checkOverdueTasks();
@@ -1887,16 +2409,17 @@ const server = http.createServer(async (req, res) => {
   serveStatic(req, res, pathname);
 });
 
-// Overdue-task + authorization-expiration sweeps: run on boot, then on their
-// own intervals. In production, keep the Node process alive (e.g. via pm2 /
-// a platform's process manager) so these intervals keep firing, or trigger
-// POST /api/admin/check-overdue and POST /api/admin/check-auth-expirations
+// Overdue-task + authorization-expiration + ClickUp Financial Center sweeps:
+// run on boot, then on their own intervals. In production, keep the Node
+// process alive (e.g. via pm2 / a platform's process manager) so these
+// intervals keep firing, or trigger the equivalent POST /api/admin/... routes
 // from an external scheduler instead.
 async function start() {
   await initSchema();
   await ensureSeeded();
   await pipeline.checkOverdueTasks();
   await authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
+  await clickupIntegration.syncNow("scheduled").catch((e) => console.error("ClickUp sync failed:", e));
 
   setInterval(() => {
     pipeline.checkOverdueTasks().catch((e) => console.error("Overdue sweep failed:", e));
@@ -1906,6 +2429,14 @@ async function start() {
   setInterval(() => {
     authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
   }, 24 * 60 * 60 * 1000);
+
+  // ClickUp Financial Center sync, every 15 minutes (also runs once on boot
+  // above). Harmless no-op (logs a clear "not configured" sync-log entry)
+  // until an admin saves a ClickUp Personal API Token under Financial Center
+  // -> Integration Settings.
+  setInterval(() => {
+    clickupIntegration.syncNow("scheduled").catch((e) => console.error("ClickUp sync failed:", e));
+  }, 15 * 60 * 1000);
 
   server.listen(PORT, () => {
     console.log(`Spectrum Squad CRM running at http://localhost:${PORT}`);
