@@ -1,0 +1,15 @@
+{
+  "name": "spectrum-squad-crm",
+  "version": "1.0.0",
+  "description": "Spectrum Squad ABA Enrollment & Client Pipeline CRM",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "seed": "node server/seed.js"
+  },
+  "dependencies": {},
+  "notes": "Zero npm dependencies by design -- uses Node's built-in http, node:sqlite, crypto, and fetch. No 'npm install' required. See README.md for optional real-email provider setup (Resend/SendGrid) and Postgres migration notes for production/HIPAA hosting."
+}
