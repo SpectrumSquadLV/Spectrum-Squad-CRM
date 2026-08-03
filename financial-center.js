@@ -265,17 +265,20 @@ async function renderFinancialSettings(content) {
 // ---------------- Non-invasive wiring into the existing app shell ----------------
 // The existing renderShell()/route() functions in index.html fully replace
 // #app's innerHTML on every navigation, and don't know this nav item or page
-// exist. Rather than editing that code (risking existing functionality), a
-// MutationObserver watches #app and, after every re-render:
-//   1. (Re-)injects the "Financial Center" sidebar button if missing (or if
-//      permission just became available, e.g. state.user finished loading).
-//   2. If the current hash is #/financial-center[...], renders this page's
-//      content into #view-mount, replacing whatever the native router put
-//      there for the (unrecognized-to-it) hash.
-// The re-render guard key includes the permission check result (not just the
-// hash) specifically so an early render that happened before `state.user`
-// finished loading (and so saw canViewFinancial() as false) gets corrected
-// automatically once auth state settles, instead of being locked in forever.
+// exist. For any hash it doesn't recognize (including #/financial-center),
+// the native route() falls through to rendering the Dashboard into
+// #view-mount -- and since that's async (awaits several API calls first),
+// it can finish AFTER this script's own render and silently overwrite it.
+//
+// A MutationObserver watches #app and, after every mutation:
+//   1. (Re-)injects the "Financial Center" sidebar button if missing (or
+//      removes it if permission was lost, e.g. after logout).
+//   2. If the current hash is #/financial-center[...] and permitted, checks
+//      whether #view-mount's content is ACTUALLY still this page's content
+//      (by looking for the #fc-tab-content marker this script renders) --
+//      not just a remembered flag -- and re-renders if the native router's
+//      Dashboard fallback stomped it. This makes recovery self-healing
+//      regardless of how the two async render paths happen to interleave.
 
 function syncNavButton() {
   const nav = document.querySelector(".sidebar nav");
@@ -304,19 +307,37 @@ function syncNavButton() {
   }
 }
 
+let fcRenderInFlight = false;
+
 function syncFinancialView() {
   const mount = document.getElementById("view-mount");
   if (!mount) return;
   if (!location.hash.startsWith("#/financial-center")) return;
-  // Guard key includes the permission outcome, not just the hash, so a
-  // render that happened before auth state settled gets retried once
-  // canViewFinancial() flips to true (see comment above).
-  const guardKey = location.hash + "|" + (canViewFinancial() ? "v" : "x");
-  if (mount.dataset.fcRendered === guardKey) return;
-  mount.dataset.fcRendered = guardKey;
+  if (fcRenderInFlight) return; // a render is already in progress; let it finish
+
+  if (!canViewFinancial()) {
+    if (mount.dataset.fcState !== "denied") {
+      mount.dataset.fcState = "denied";
+      renderFinancialCenter(mount, undefined);
+    }
+    return;
+  }
+
   const parts = location.hash.split("/");
-  const param = parts[2];
-  renderFinancialCenter(mount, param);
+  const param = parts[2] || "overview";
+  const wantedKey = "granted:" + param;
+  // Self-healing: only skip re-render if we previously rendered THIS exact
+  // tab AND the DOM still actually shows our content. If the native
+  // router's async Dashboard fallback overwrote #view-mount after we last
+  // rendered, #fc-tab-content will be missing and we render again.
+  if (mount.dataset.fcState === wantedKey && mount.querySelector("#fc-tab-content")) {
+    return;
+  }
+  mount.dataset.fcState = wantedKey;
+  fcRenderInFlight = true;
+  renderFinancialCenter(mount, param).finally(() => {
+    fcRenderInFlight = false;
+  });
 }
 
 function onAppMutated() {
@@ -332,15 +353,15 @@ function initFinancialCenter() {
   }
   window.addEventListener("hashchange", () => {
     const mount = document.getElementById("view-mount");
-    if (mount) delete mount.dataset.fcRendered;
+    if (mount) delete mount.dataset.fcState;
     setTimeout(onAppMutated, 0);
   });
   onAppMutated();
-  // Defensive redundancy: auth/data loading is async, and it's possible for
-  // the DOM to finish settling before state.user is fully populated (or for
-  // no further mutation to fire after that point). These are cheap, safe,
-  // no-op if everything already synced correctly (see the guards above).
-  [150, 500, 1200, 2500].forEach((ms) => setTimeout(onAppMutated, ms));
+  // Defensive redundancy for the initial load race between this script's
+  // render and the native app's own async auth-check + data-fetch + render
+  // sequence. Cheap and safe -- the self-healing checks above make every
+  // call here a no-op once things have settled correctly.
+  [150, 500, 1200, 2500, 4000].forEach((ms) => setTimeout(onAppMutated, ms));
 }
 
 if (document.readyState === "loading") {
