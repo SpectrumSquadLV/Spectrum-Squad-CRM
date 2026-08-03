@@ -977,15 +977,21 @@ async function handle(req, res, pathname, method, query = {}) {
         const activeAuths = await dbAll(
           "SELECT auth_expiration_date FROM clients WHERE authorization_status != 'Not Required' AND auth_expiration_date IS NOT NULL"
         );
+        // Cumulative buckets: a client 5 days out counts toward every window
+        // it falls within (≤60, ≤30, ≤14, ≤7), matching "expiring within X
+        // days" as plain English reads. Already-expired is its own bucket.
         authCounts = { d60: 0, d30: 0, d14: 0, d7: 0, expired: 0 };
         for (const row of activeAuths) {
           const d = authAlerts.daysUntil(row.auth_expiration_date);
           if (d === null) continue;
-          if (d < 0) authCounts.expired++;
-          else if (d <= 7) authCounts.d7++;
-          else if (d <= 14) authCounts.d14++;
-          else if (d <= 30) authCounts.d30++;
-          else if (d <= 60) authCounts.d60++;
+          if (d < 0) {
+            authCounts.expired++;
+            continue;
+          }
+          if (d <= 60) authCounts.d60++;
+          if (d <= 30) authCounts.d30++;
+          if (d <= 14) authCounts.d14++;
+          if (d <= 7) authCounts.d7++;
         }
       }
 
@@ -1058,10 +1064,11 @@ async function handle(req, res, pathname, method, query = {}) {
       return json(res, 201, { imported: results.length, results });
     }
 
-    // One-time cleanup helper: removes synthetic demo clients (identified by
-    // a parent_email ending in @example.com) once real data has been
-    // imported. Protected by the same ADMIN_IMPORT_SECRET as the backfill
-    // route above.
+    // One-time cleanup helper: removes synthetic demo/test clients
+    // (identified by a parent_email ending in @example.com), along with any
+    // related rows across every table that references a client, once real
+    // data has been imported or QA testing is done. Protected by the same
+    // ADMIN_IMPORT_SECRET as the backfill route above.
     if (pathname === "/api/admin/purge-demo" && method === "POST") {
       const secret = process.env.ADMIN_IMPORT_SECRET;
       if (!secret || req.headers["x-admin-secret"] !== secret) {
@@ -1073,6 +1080,9 @@ async function handle(req, res, pathname, method, query = {}) {
         await dbRun("DELETE FROM client_tasks WHERE client_id = ?", [clientId]);
         await dbRun("DELETE FROM schedule_sessions WHERE client_id = ?", [clientId]);
         await dbRun("DELETE FROM notifications_log WHERE client_id = ?", [clientId]);
+        await dbRun("DELETE FROM client_documents WHERE client_id = ?", [clientId]);
+        await dbRun("DELETE FROM auth_audit_log WHERE client_id = ?", [clientId]);
+        await dbRun("DELETE FROM auth_alerts WHERE client_id = ?", [clientId]);
         await dbRun("DELETE FROM clients WHERE id = ?", [clientId]);
       }
       const remaining = (await dbGet("SELECT COUNT(*) AS n FROM clients")).n;
