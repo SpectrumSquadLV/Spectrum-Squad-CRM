@@ -270,6 +270,17 @@ CREATE TABLE IF NOT EXISTS financial_audit_log (
   detail TEXT,
   created_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS email_templates (
+  id SERIAL PRIMARY KEY,
+  template_key TEXT UNIQUE NOT NULL,
+  label TEXT NOT NULL,
+  category TEXT,
+  subject_template TEXT NOT NULL,
+  body_template TEXT NOT NULL,
+  updated_by TEXT,
+  updated_at TEXT
+);
 `;
 
 // Small forward-compatible migrations for columns/tables added after the
@@ -307,6 +318,8 @@ const DATA_DIR = path.join(__dirname, "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const DOCS_DIR = path.join(DATA_DIR, "documents");
 if (!fs.existsSync(DOCS_DIR)) fs.mkdirSync(DOCS_DIR, { recursive: true });
+const IMAGES_DIR = path.join(DATA_DIR, "email-images");
+if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
 
 // ============================== AUTH ==============================
 // server/auth.js
@@ -459,6 +472,267 @@ function stripHtml(html) {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
+// ============================== EMAIL TEMPLATES ==============================
+// server/emailTemplates.js
+// Every automated email the CRM sends (parent milestone emails, internal
+// staff alerts, and authorization expiration alerts) is stored in the
+// email_templates table and editable from Settings -> Email Templates. Each
+// template's subject/body may contain {{merge_field}} tokens that get
+// substituted with real values at send time -- including links, dates, and
+// uploaded photos, all embeddable as plain HTML. Templates are seeded with
+// the CRM's original built-in copy on every boot (INSERT ... ON CONFLICT DO
+// NOTHING) so nothing breaks before an admin has ever touched this page.
+"use strict";
+
+const EMAIL_TEMPLATE_EDIT_ROLES = ["admin"];
+
+function canEditEmailTemplates(user) {
+  return !!user && EMAIL_TEMPLATE_EDIT_ROLES.includes(user.role);
+}
+
+// Metadata shown in the admin UI: human-readable label/category/description,
+// plus the exact list of merge fields available for that template so the
+// editor can offer an "insert field" picker instead of making the admin guess.
+const EMAIL_TEMPLATE_DEFS = [
+  {
+    key: "milestone_new_submission",
+    label: "New Submission Received",
+    category: "Parent Milestone Emails",
+    description: "Sent to the parent as soon as their enrollment form is received.",
+    fields: ["parent_name", "child_name", "today"],
+  },
+  {
+    key: "milestone_intake_packet",
+    label: "Intake Packet Sent",
+    category: "Parent Milestone Emails",
+    description: "Sent to the parent when the intake packet goes out.",
+    fields: ["parent_name", "child_name", "today"],
+  },
+  {
+    key: "milestone_authorization",
+    label: "Authorization Requested",
+    category: "Parent Milestone Emails",
+    description: "Sent to the parent when the authorization request is submitted to insurance.",
+    fields: ["parent_name", "child_name", "today"],
+  },
+  {
+    key: "milestone_first_day_scheduled",
+    label: "Ready to Schedule First Day",
+    category: "Parent Milestone Emails",
+    description: "Sent to the parent once authorization is in and scheduling can begin.",
+    fields: ["parent_name", "child_name", "today"],
+  },
+  {
+    key: "milestone_active",
+    label: "Welcome / Active Therapy",
+    category: "Parent Milestone Emails",
+    description: "Sent to the parent when their child officially starts ABA therapy.",
+    fields: ["parent_name", "child_name", "today"],
+  },
+  {
+    key: "department_alert",
+    label: "Staff Department Alert",
+    category: "Internal Staff Alerts",
+    description: "Sent to a department's notify email whenever a client enters a stage that needs their action.",
+    fields: ["dept_name", "child_name", "parent_name", "stage_label", "task_label", "due_date"],
+  },
+  {
+    key: "overdue_alert",
+    label: "Overdue Task Alert",
+    category: "Internal Staff Alerts",
+    description: "Sent to a department when one of their tasks passes its due date.",
+    fields: ["task_label", "child_name", "parent_name", "due_date"],
+  },
+  {
+    key: "auth_alert",
+    label: "Authorization Expiration Alert",
+    category: "Authorization Alerts",
+    description: "Sent to the assigned BCBA, billing contact, and admin as an authorization approaches or passes its expiration date.",
+    fields: [
+      "initials", "milestone_label", "insurance_payer", "auth_expiration_date",
+      "days_remaining", "assigned_bcba_name", "authorization_status", "client_link",
+    ],
+  },
+];
+
+// The CRM's original built-in copy -- used both as the seed data and as a
+// last-resort fallback if a template row is somehow missing.
+const EMAIL_TEMPLATE_DEFAULTS = {
+  milestone_new_submission: {
+    subject: "We received your enrollment form — Spectrum Squad",
+    body: "<p>Hi {{parent_name}},</p><p>Thanks for submitting your enrollment form for {{child_name}}. Our intake team will reach out within 24-48 hours.</p>",
+  },
+  milestone_intake_packet: {
+    subject: "Your intake packet is on its way — Spectrum Squad",
+    body: "<p>Hi {{parent_name}},</p><p>We're sending over {{child_name}}'s intake packet. Please complete and return it so we can keep things moving.</p>",
+  },
+  milestone_authorization: {
+    subject: "We're requesting your authorization for services — Spectrum Squad",
+    body: "<p>Hi {{parent_name}},</p><p>We're now submitting the authorization request for {{child_name}}'s ABA services to your insurance.</p>",
+  },
+  milestone_first_day_scheduled: {
+    subject: "Let's get a first day scheduled! — Spectrum Squad",
+    body: "<p>Hi {{parent_name}},</p><p>{{child_name}}'s authorization is in and we're ready to schedule a first day of ABA therapy. Our scheduling team will be in touch shortly.</p>",
+  },
+  milestone_active: {
+    subject: "Welcome to Spectrum Squad, {{child_name}}!",
+    body: "<p>Hi {{parent_name}},</p><p>We're so excited — {{child_name}} is officially starting ABA therapy with us! Your care team will follow up with weekly schedule details.</p>",
+  },
+  department_alert: {
+    subject: "[{{dept_name}}] Action needed: {{child_name}} — {{task_label}}",
+    body: "<p><strong>{{child_name}}</strong> (parent: {{parent_name}}) has entered stage <strong>{{stage_label}}</strong> and needs: <strong>{{task_label}}</strong>.</p><p>Due by: {{due_date}}</p>",
+  },
+  overdue_alert: {
+    subject: "⚠ OVERDUE: {{task_label}} — {{child_name}}",
+    body: "<p><strong>{{task_label}}</strong> for <strong>{{child_name}}</strong> (parent: {{parent_name}}) was due {{due_date}} and has not been completed.</p>",
+  },
+  auth_alert: {
+    subject: "Authorization {{milestone_label}} — {{initials}}",
+    body: `<p>An ABA authorization needs attention.</p>
+    <ul>
+      <li><strong>Client:</strong> {{initials}}</li>
+      <li><strong>Insurance Payer:</strong> {{insurance_payer}}</li>
+      <li><strong>Authorization Expiration Date:</strong> {{auth_expiration_date}}</li>
+      <li><strong>Days Remaining:</strong> {{days_remaining}}</li>
+      <li><strong>Assigned BCBA:</strong> {{assigned_bcba_name}}</li>
+      <li><strong>Authorization Status:</strong> {{authorization_status}}</li>
+    </ul>
+    <p><a href="{{client_link}}">View client authorization record</a></p>
+    <p>Please begin or complete the renewal process if this hasn't been started already.</p>`,
+  },
+};
+
+async function seedEmailTemplates() {
+  for (const def of EMAIL_TEMPLATE_DEFS) {
+    const defaults = EMAIL_TEMPLATE_DEFAULTS[def.key];
+    await dbRun(
+      `INSERT INTO email_templates (template_key, label, category, subject_template, body_template, updated_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'system', ?)
+       ON CONFLICT (template_key) DO NOTHING`,
+      [def.key, def.label, def.category, defaults.subject, defaults.body, nowISO()]
+    );
+  }
+}
+
+// {{field_name}} -> value substitution. Unknown/blank fields render as "".
+function renderMergeFields(str, fields) {
+  return String(str || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (m, key) => {
+    const v = fields ? fields[key] : undefined;
+    return v === undefined || v === null ? "" : String(v);
+  });
+}
+
+async function getEmailTemplate(key) {
+  const row = await dbGet("SELECT * FROM email_templates WHERE template_key = ?", [key]);
+  if (row) return row;
+  // Defensive fallback in case a row is somehow missing (shouldn't happen --
+  // seedEmailTemplates runs on every boot).
+  const def = EMAIL_TEMPLATE_DEFS.find((d) => d.key === key);
+  const defaults = EMAIL_TEMPLATE_DEFAULTS[key];
+  if (!def || !defaults) return null;
+  return {
+    template_key: key,
+    label: def.label,
+    category: def.category,
+    subject_template: defaults.subject,
+    body_template: defaults.body,
+  };
+}
+
+async function listEmailTemplates() {
+  const rows = await dbAll("SELECT * FROM email_templates ORDER BY category, label");
+  return rows.map((row) => {
+    const def = EMAIL_TEMPLATE_DEFS.find((d) => d.key === row.template_key) || {};
+    return { ...row, description: def.description || null, fields: def.fields || [] };
+  });
+}
+
+async function saveEmailTemplate(key, { subject_template, body_template }, actor) {
+  const def = EMAIL_TEMPLATE_DEFS.find((d) => d.key === key);
+  if (!def) return { ok: false, error: "Unknown template key" };
+  await dbRun(
+    `UPDATE email_templates SET subject_template = ?, body_template = ?, updated_by = ?, updated_at = ? WHERE template_key = ?`,
+    [subject_template, body_template, actor, nowISO(), key]
+  );
+  return { ok: true };
+}
+
+// Sample merge-field values for the live preview / send-test features, so an
+// admin can see (and receive) a realistic-looking email before it ever goes
+// out to a real family or staff member.
+function sampleFieldsFor() {
+  return {
+    parent_name: "Jane Doe",
+    child_name: "Alex Doe",
+    today: new Date().toLocaleDateString(),
+    dept_name: "Billing / Insurance",
+    stage_label: "Authorization Pending",
+    task_label: "Submit Authorization Request",
+    due_date: new Date(Date.now() + 3 * 86400000).toLocaleDateString(),
+    initials: "AD",
+    milestone_label: "Expiring in 30 Days",
+    insurance_payer: "Aetna",
+    auth_expiration_date: new Date(Date.now() + 30 * 86400000).toLocaleDateString(),
+    days_remaining: 30,
+    assigned_bcba_name: "Allie R.",
+    authorization_status: "Approved",
+    client_link: `${APP_BASE_URL}/#/pipeline/123`,
+  };
+}
+
+async function previewEmailTemplate(key) {
+  const template = await getEmailTemplate(key);
+  if (!template) return null;
+  const fields = sampleFieldsFor();
+  return {
+    subject: renderMergeFields(template.subject_template, fields),
+    html: renderMergeFields(template.body_template, fields),
+  };
+}
+
+async function sendTestEmailTemplate(key, toEmail, actor) {
+  const rendered = await previewEmailTemplate(key);
+  if (!rendered) return { ok: false, error: "Unknown template key" };
+  const result = await sendEmail({
+    to: toEmail,
+    subject: `[TEST] ${rendered.subject}`,
+    html: rendered.html,
+    type: "template_test",
+  });
+  await logFinancialAudit(actor, "email_template_test_sent", `key=${key} to=${toEmail} delivered=${result.delivered}`).catch(
+    () => {}
+  );
+  return { ok: result.delivered !== "failed", ...result };
+}
+
+// ---- Image storage for template bodies (Railway volume) ----
+function guessExtFromMime(mimeType) {
+  const map = { "image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/gif": ".gif", "image/webp": ".webp" };
+  return map[mimeType] || ".png";
+}
+
+function saveEmailImage(filename, mimeType, base64Content) {
+  const rawExt = path.extname(filename || "").toLowerCase();
+  const ext = /^\.(png|jpe?g|gif|webp)$/.test(rawExt) ? rawExt : guessExtFromMime(mimeType);
+  const storedName = `${crypto.randomBytes(8).toString("hex")}${ext}`;
+  const buffer = Buffer.from(base64Content, "base64");
+  fs.writeFileSync(path.join(IMAGES_DIR, storedName), buffer);
+  return storedName;
+}
+
+const emailTemplates = {
+  canEditEmailTemplates,
+  EMAIL_TEMPLATE_DEFS,
+  seedEmailTemplates,
+  renderMergeFields,
+  getEmailTemplate,
+  listEmailTemplates,
+  saveEmailTemplate,
+  previewEmailTemplate,
+  sendTestEmailTemplate,
+  saveEmailImage,
+};
+
 // ============================== PIPELINE ==============================
 // server/pipeline.js
 // The enrollment pipeline: stage order, per-stage tasks/SLAs, department alerts,
@@ -515,12 +789,19 @@ async function enterStage(clientId, stageKey) {
 
     const dept = await dbGet("SELECT * FROM departments WHERE id = ?", [task.department_id]);
     if (dept && dept.notify_email) {
+      const template = await emailTemplates.getEmailTemplate("department_alert");
+      const fields = {
+        dept_name: dept.name,
+        child_name: client.child_name,
+        parent_name: client.parent_name,
+        stage_label: getStage(stageKey)?.label,
+        task_label: task.label,
+        due_date: new Date(dueDate).toLocaleDateString(),
+      };
       sendEmail({
         to: dept.notify_email,
-        subject: `[${dept.name}] Action needed: ${client.child_name} — ${task.label}`,
-        html: `<p><strong>${client.child_name}</strong> (parent: ${client.parent_name}) has entered stage
-          <strong>${getStage(stageKey)?.label}</strong> and needs: <strong>${task.label}</strong>.</p>
-          <p>Due by: ${new Date(dueDate).toLocaleDateString()}</p>`,
+        subject: emailTemplates.renderMergeFields(template.subject_template, fields),
+        html: emailTemplates.renderMergeFields(template.body_template, fields),
         clientId,
         type: "department_alert",
       }).catch((e) => console.error("sendEmail failed:", e));
@@ -530,42 +811,24 @@ async function enterStage(clientId, stageKey) {
   await sendParentMilestone(client, stageKey);
 }
 
-const PARENT_MILESTONES = {
-  new_submission: {
-    subject: "We received your enrollment form — Spectrum Squad",
-    html: (c) =>
-      `<p>Hi ${c.parent_name},</p><p>Thanks for submitting your enrollment form for ${c.child_name}. Our intake team will reach out within 24-48 hours.</p>`,
-  },
-  intake_packet: {
-    subject: "Your intake packet is on its way — Spectrum Squad",
-    html: (c) =>
-      `<p>Hi ${c.parent_name},</p><p>We're sending over ${c.child_name}'s intake packet. Please complete and return it so we can keep things moving.</p>`,
-  },
-  authorization: {
-    subject: "We're requesting your authorization for services — Spectrum Squad",
-    html: (c) =>
-      `<p>Hi ${c.parent_name},</p><p>We're now submitting the authorization request for ${c.child_name}'s ABA services to your insurance.</p>`,
-  },
-  first_day_scheduled: {
-    subject: "Let's get a first day scheduled! — Spectrum Squad",
-    html: (c) =>
-      `<p>Hi ${c.parent_name},</p><p>${c.child_name}'s authorization is in and we're ready to schedule a first day of ABA therapy. Our scheduling team will be in touch shortly.</p>`,
-  },
-  active: {
-    subject: (c) => `Welcome to Spectrum Squad, ${c.child_name}!`,
-    html: (c) =>
-      `<p>Hi ${c.parent_name},</p><p>We're so excited — ${c.child_name} is officially starting ABA therapy with us! Your care team will follow up with weekly schedule details.</p>`,
-  },
-};
+// Stages that trigger a parent-facing milestone email. Each maps to a
+// "milestone_<stageKey>" row in the email_templates table (editable under
+// Settings -> Email Templates).
+const MILESTONE_STAGE_KEYS = ["new_submission", "intake_packet", "authorization", "first_day_scheduled", "active"];
 
 async function sendParentMilestone(client, stageKey) {
-  const milestone = PARENT_MILESTONES[stageKey];
-  if (!milestone || !client.parent_email) return;
-  const subject = typeof milestone.subject === "function" ? milestone.subject(client) : milestone.subject;
+  if (!MILESTONE_STAGE_KEYS.includes(stageKey) || !client.parent_email) return;
+  const template = await emailTemplates.getEmailTemplate(`milestone_${stageKey}`);
+  if (!template) return;
+  const fields = {
+    parent_name: client.parent_name,
+    child_name: client.child_name,
+    today: new Date().toLocaleDateString(),
+  };
   await sendEmail({
     to: client.parent_email,
-    subject,
-    html: milestone.html(client),
+    subject: emailTemplates.renderMergeFields(template.subject_template, fields),
+    html: emailTemplates.renderMergeFields(template.body_template, fields),
     clientId: client.id,
     type: "parent_milestone",
   }).catch((e) => console.error("sendEmail failed:", e));
@@ -625,12 +888,17 @@ async function checkOverdueTasks() {
     await dbRun("UPDATE client_tasks SET status = 'overdue', overdue_notified_at = ? WHERE id = ?", [nowISO(), t.id]);
     const dept = await dbGet("SELECT * FROM departments WHERE id = ?", [t.department_id]);
     if (dept && dept.notify_email) {
+      const template = await emailTemplates.getEmailTemplate("overdue_alert");
+      const fields = {
+        task_label: t.label,
+        child_name: t.child_name,
+        parent_name: t.parent_name,
+        due_date: new Date(t.due_date).toLocaleDateString(),
+      };
       sendEmail({
         to: dept.notify_email,
-        subject: `⚠ OVERDUE: ${t.label} — ${t.child_name}`,
-        html: `<p><strong>${t.label}</strong> for <strong>${t.child_name}</strong> (parent: ${t.parent_name}) was due ${new Date(
-          t.due_date
-        ).toLocaleDateString()} and has not been completed.</p>`,
+        subject: emailTemplates.renderMergeFields(template.subject_template, fields),
+        html: emailTemplates.renderMergeFields(template.body_template, fields),
         clientId: t.client_id,
         type: "overdue_alert",
       }).catch((e) => console.error("sendEmail failed:", e));
@@ -715,29 +983,30 @@ async function logAuthAudit(clientId, alertId, action, actor, previousValue, new
   );
 }
 
-function authAlertEmailContent(client, milestone, daysRemaining) {
+async function authAlertEmailContent(client, milestone, daysRemaining) {
   const initials = initialsOf(client.child_name);
-  let subject;
+  let milestoneLabel;
   if (milestone === 0) {
-    subject = daysRemaining < 0 ? `Authorization Expired — ${initials}` : `Authorization Expires Today — ${initials}`;
+    milestoneLabel = daysRemaining < 0 ? "Expired" : "Expires Today";
   } else {
-    subject = `Authorization Expiring in ${milestone} Days — ${initials}`;
+    milestoneLabel = `Expiring in ${milestone} Days`;
   }
   const link = `${APP_BASE_URL}/#/pipeline/${client.id}`;
-  const html = `
-    <p>An ABA authorization needs attention.</p>
-    <ul>
-      <li><strong>Client:</strong> ${initials}</li>
-      <li><strong>Insurance Payer:</strong> ${client.insurance_payer || "—"}</li>
-      <li><strong>Authorization Expiration Date:</strong> ${client.auth_expiration_date || "—"}</li>
-      <li><strong>Days Remaining:</strong> ${daysRemaining}</li>
-      <li><strong>Assigned BCBA:</strong> ${client.assigned_bcba_name || "—"}</li>
-      <li><strong>Authorization Status:</strong> ${client.authorization_status || "—"}</li>
-    </ul>
-    <p><a href="${link}">View client authorization record</a></p>
-    <p>Please begin or complete the renewal process if this hasn't been started already.</p>
-  `;
-  return { subject, html };
+  const template = await emailTemplates.getEmailTemplate("auth_alert");
+  const fields = {
+    initials,
+    milestone_label: milestoneLabel,
+    insurance_payer: client.insurance_payer || "—",
+    auth_expiration_date: client.auth_expiration_date || "—",
+    days_remaining: daysRemaining,
+    assigned_bcba_name: client.assigned_bcba_name || "—",
+    authorization_status: client.authorization_status || "—",
+    client_link: link,
+  };
+  return {
+    subject: emailTemplates.renderMergeFields(template.subject_template, fields),
+    html: emailTemplates.renderMergeFields(template.body_template, fields),
+  };
 }
 
 // The daily (and manually-triggerable) sweep: finds every client whose
@@ -799,7 +1068,7 @@ async function checkAuthExpirations() {
           "No recipient emails configured (assigned BCBA / billing / admin all blank)"
         );
       } else {
-        const { subject, html } = authAlertEmailContent(client, milestone, daysRemaining);
+        const { subject, html } = await authAlertEmailContent(client, milestone, daysRemaining);
         const results = [];
         for (const to of uniqueRecipients) {
           const r = await sendEmail({ to, subject, html, clientId: client.id, type: "auth_alert" }).catch((e) => ({
@@ -1388,7 +1657,12 @@ async function handle(req, res, pathname, method, query = {}) {
   const cookies = auth.parseCookies(req);
   const user = await auth.getUserFromToken(cookies.session);
 
-  if (!PUBLIC_ROUTES.has(pathname) && !user) {
+  // Email images are embedded in emails opened by parents/staff in their own
+  // mail client (no session cookie present), so this one path must stay
+  // publicly readable regardless of the generated filename.
+  const isPublicEmailImage = pathname.startsWith("/api/email-templates/images/");
+
+  if (!PUBLIC_ROUTES.has(pathname) && !isPublicEmailImage && !user) {
     json(res, 401, { error: "Not authenticated" });
     return true;
   }
@@ -2013,6 +2287,83 @@ async function handle(req, res, pathname, method, query = {}) {
       return json(res, 200, tasks);
     }
 
+    // ---------- EMAIL TEMPLATES ----------
+    // Every automated email the CRM sends is editable here. Kept to admin-only
+    // since it controls messaging content sent workspace-wide to families and
+    // staff, mirroring the access level required to change ClickUp credentials.
+    if (pathname === "/api/email-templates" && method === "GET") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      return json(res, 200, await emailTemplates.listEmailTemplates());
+    }
+
+    if (pathname === "/api/email-templates/upload-image" && method === "POST") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      const { filename, mime_type, content_base64 } = await readBody(req);
+      if (!content_base64) return json(res, 400, { error: "content_base64 is required" });
+      let storedName;
+      try {
+        storedName = emailTemplates.saveEmailImage(filename || "image.png", mime_type || "image/png", content_base64);
+      } catch (e) {
+        return json(res, 400, { error: "Invalid image data" });
+      }
+      return json(res, 201, { url: `/api/email-templates/images/${storedName}` });
+    }
+
+    const emailImageMatch = pathname.match(/^\/api\/email-templates\/images\/([a-zA-Z0-9._-]+)$/);
+    if (emailImageMatch && method === "GET") {
+      const fullPath = path.join(IMAGES_DIR, emailImageMatch[1]);
+      if (!fs.existsSync(fullPath)) return json(res, 404, { error: "Not found" });
+      const buffer = fs.readFileSync(fullPath);
+      const ext = path.extname(fullPath).toLowerCase();
+      const mimeMap = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
+      res.writeHead(200, {
+        "Content-Type": mimeMap[ext] || "application/octet-stream",
+        "Content-Length": buffer.length,
+        "Cache-Control": "public, max-age=31536000",
+      });
+      res.end(buffer);
+      return true;
+    }
+
+    const emailTemplatePreviewMatch = pathname.match(/^\/api\/email-templates\/([a-z0-9_]+)\/preview$/);
+    if (emailTemplatePreviewMatch && method === "POST") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      const rendered = await emailTemplates.previewEmailTemplate(emailTemplatePreviewMatch[1]);
+      if (!rendered) return json(res, 404, { error: "Unknown template" });
+      return json(res, 200, rendered);
+    }
+
+    const emailTemplateTestMatch = pathname.match(/^\/api\/email-templates\/([a-z0-9_]+)\/send-test$/);
+    if (emailTemplateTestMatch && method === "POST") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      const result = await emailTemplates.sendTestEmailTemplate(emailTemplateTestMatch[1], user.email, user.email);
+      return json(res, result.ok ? 200 : 502, result);
+    }
+
+    const emailTemplateMatch = pathname.match(/^\/api\/email-templates\/([a-z0-9_]+)$/);
+    if (emailTemplateMatch && method === "GET") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      const template = await emailTemplates.getEmailTemplate(emailTemplateMatch[1]);
+      if (!template) return json(res, 404, { error: "Unknown template" });
+      const def = emailTemplates.EMAIL_TEMPLATE_DEFS.find((d) => d.key === emailTemplateMatch[1]);
+      return json(res, 200, { ...template, fields: def ? def.fields : [] });
+    }
+
+    if (emailTemplateMatch && method === "PUT") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      const { subject_template, body_template } = await readBody(req);
+      if (!subject_template || !body_template) {
+        return json(res, 400, { error: "subject_template and body_template are required" });
+      }
+      const result = await emailTemplates.saveEmailTemplate(
+        emailTemplateMatch[1],
+        { subject_template, body_template },
+        user.email
+      );
+      if (!result.ok) return json(res, 404, result);
+      return json(res, 200, await emailTemplates.getEmailTemplate(emailTemplateMatch[1]));
+    }
+
     // ---------- ADMIN ----------
     if (pathname === "/api/admin/check-overdue" && method === "POST") {
       const n = await pipeline.checkOverdueTasks();
@@ -2416,6 +2767,7 @@ const server = http.createServer(async (req, res) => {
 // from an external scheduler instead.
 async function start() {
   await initSchema();
+  await emailTemplates.seedEmailTemplates();
   await ensureSeeded();
   await pipeline.checkOverdueTasks();
   await authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
