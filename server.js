@@ -2223,6 +2223,49 @@ async function handle(req, res, pathname, method, query = {}) {
       );
     }
 
+    const attendanceAlertMatch = pathname.match(/^\/api\/clients\/(\d+)\/attendance-alert$/);
+    if (attendanceAlertMatch && method === "POST") {
+      const id = attendanceAlertMatch[1];
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      if (!client.parent_email) return json(res, 400, { error: "No parent email on file for this client" });
+
+      const { percentage } = await readBody(req);
+      const pct = Number(percentage);
+      if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+        return json(res, 400, { error: "percentage must be a number between 0 and 100" });
+      }
+
+      const subject = `Attendance Update for ${client.child_name}`;
+      const html = `
+        <p>Hi ${client.parent_name || "there"},</p>
+        <p>We wanted to reach out regarding <strong>${client.child_name}</strong>'s attendance. Based on our records, their current session attendance rate is <strong>${pct}%</strong>, which is below the level needed to maintain consistent progress and insurance authorization.</p>
+        <p>Missed sessions can affect ${client.child_name}'s treatment progress and may put continued authorization at risk. We ask that you please help ensure ${client.child_name} attends all scheduled sessions going forward.</p>
+        <p>Please reply to this email to let us know you've received this message, or reach out if you'd like to discuss scheduling.</p>
+        <p>Thank you,<br/>Spectrum Squad</p>
+      `;
+
+      const result = await sendEmail({
+        to: client.parent_email,
+        subject,
+        html,
+        clientId: id,
+        type: "attendance_alert",
+      });
+      return json(res, 200, result);
+    }
+
+    const ackNotificationMatch = pathname.match(/^\/api\/notifications\/(\d+)\/acknowledge$/);
+    if (ackNotificationMatch && method === "POST") {
+      const id = ackNotificationMatch[1];
+      await dbRun(
+        "UPDATE notifications_log SET acknowledged = true, acknowledged_at = ? WHERE id = ?",
+        [nowISO(), id]
+      );
+      return json(res, 200, await dbGet("SELECT * FROM notifications_log WHERE id = ?", [id]));
+    }
+    
+    
     // ---------- FINANCIAL CENTER (ClickUp) ----------
     // All routes below are session-authenticated (normal cookie login, not
     // the one-off ADMIN_IMPORT_SECRET pattern) and role-gated inline, mirroring
