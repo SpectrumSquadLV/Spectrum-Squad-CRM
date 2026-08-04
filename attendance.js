@@ -12,15 +12,10 @@
 // exactly like the other plugin files in this app.
 "use strict";
 
-function attCanUse() {
-  return !!(window.state && state.user);
-}
-
 // ---------------- sidebar nav button ----------------
 function attSyncNavButton() {
-  if (!attCanUse()) return;
   const nav = document.querySelector(".sidebar nav");
-  if (!nav) return;
+  if (!nav) return; // not logged in / shell not mounted yet
   if (nav.querySelector('[data-nav="attendance"]')) return;
   const btn = document.createElement("button");
   btn.className = "nav-item" + (location.hash.startsWith("#/attendance") ? " active" : "");
@@ -35,9 +30,7 @@ async function attRenderView(mount) {
   let clients = [];
   let notifications = [];
   try {
-    clients = (window.state && Array.isArray(state.clients) && state.clients.length
-      ? state.clients
-      : await api("/api/clients"));
+    clients = await api("/api/clients");
   } catch (e) { clients = []; }
   try {
     notifications = await api("/api/notifications");
