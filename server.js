@@ -301,6 +301,8 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS authorization_status TEXT NOT NULL 
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_notes TEXT;
 
 ALTER TABLE clickup_config ADD COLUMN IF NOT EXISTS last_connection_status TEXT;
+ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged_at TEXT;
 `;
 
 async function initSchema() {
