@@ -22,9 +22,10 @@ function applyCreamTheme() {
 // ---- switch the primary brand color from navy to the logo's gold, and
 // swap the script header font + hardcoded navy body text for a clean
 // modern sans-serif. index.html hardcodes several rules (sidebar gradient,
-// nav-item colors, body font-family) instead of referencing var(--brand)/
-// var(--font-header), so a CSS-variable override alone won't reach them --
-// this injects a small override stylesheet for just those rules. ----
+// login-screen gradient, nav-item colors, body font-family) instead of
+// referencing var(--brand)/var(--font-header), so a CSS-variable override
+// alone won't reach them -- this injects a small override stylesheet for
+// just those rules. ----
 function applyGoldBrand() {
   const root = document.documentElement.style;
   root.setProperty("--brand", "#e0a430");
@@ -43,6 +44,9 @@ function applyGoldBrand() {
     .sidebar {
       background: linear-gradient(180deg, var(--brand-gold) 0%, var(--brand-gold-dark) 100%) !important;
       color: #3d2c05 !important;
+    }
+    .login-wrap {
+      background: linear-gradient(135deg, var(--brand-gold) 0%, var(--brand-gold-dark) 60%, var(--brand-teal) 100%) !important;
     }
     .brand { color: #2a1d02 !important; }
     .brand-mark { background: rgba(255,255,255,0.28) !important; }
