@@ -331,6 +331,7 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS rethink_client_created BOOLEAN NOT 
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_rbt_name TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS schedule_finalized BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS stage_entered_at TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_intake_coordinator_name TEXT;
 `;
 
 async function initSchema() {
