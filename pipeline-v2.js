@@ -32,6 +32,7 @@
   let allClients = [];
   let filters = {};
   let loaded = false;
+  let mountObserver = null;
 
   function injectNavButton() {
     const nav = document.querySelector(".sidebar nav");
@@ -247,10 +248,29 @@
   // The app's own router also reacts to hashchange events, including for a
   // route it doesn't recognize like ours, and may asynchronously overwrite
   // #view-mount (and reset nav "active" classes) shortly AFTER we've already
-  // rendered -- a race we can lose depending on network timing. Re-assert
-  // both our content and our nav highlight a few times shortly after
-  // navigating in, using already-fetched data (no extra network calls) --
-  // not a loop, just a small fixed number of one-off checks per navigation.
+  // rendered -- a race we can lose depending on network timing, sometimes
+  // more than 1.5s after navigating in. Rather than relying only on a fixed
+  // set of timed re-checks (which can lose the race if the app's router is
+  // slow), also watch #view-mount itself for the app clobbering it, and
+  // re-render immediately whenever that happens. This can't loop: our own
+  // render() sets mount.dataset.pv2 = "1" synchronously right after setting
+  // innerHTML, and the observer callback (which always runs after that,
+  // since MutationObserver callbacks are microtasks queued after the
+  // current synchronous code finishes) only re-renders when dataset.pv2 is
+  // NOT "1" -- so it never reacts to its own render.
+  function watchMount() {
+    const mount = document.getElementById("view-mount");
+    if (!mount) return;
+    if (mountObserver) mountObserver.disconnect();
+    mountObserver = new MutationObserver(() => {
+      if (location.hash !== HASH) return;
+      if (!loaded) return;
+      const m = document.getElementById("view-mount");
+      if (m && m.dataset.pv2 !== "1") render();
+    });
+    mountObserver.observe(mount, { childList: true });
+  }
+
   function reassertIfNeeded() {
     if (location.hash !== HASH) return;
     setActiveNav(true);
@@ -262,7 +282,11 @@
   function onHashChange() {
     const isActive = location.hash === HASH;
     setActiveNav(isActive);
-    if (!isActive) return;
+    if (!isActive) {
+      if (mountObserver) { mountObserver.disconnect(); mountObserver = null; }
+      return;
+    }
+    watchMount();
     loadAndRender();
     [100, 300, 800, 1500].forEach((ms) => setTimeout(reassertIfNeeded, ms));
   }
