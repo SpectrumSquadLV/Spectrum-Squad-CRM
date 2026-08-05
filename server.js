@@ -1104,7 +1104,179 @@ const pipelineV2 = { MILESTONES, milestoneForStage, computeMilestoneView };
     return roles.includes(user.role);
   }
 
-  const ownerFinancials = { getOwnerFinancialSettings, canViewFinancials };
+  const FINANCIAL_MISSING_LABELS = {
+    service_start_date: "Service start date needed",
+    scheduled_hours: "Scheduled hours needed",
+    authorized_hours: "Authorized hours needed",
+    custom_hours: "Custom projected hours needed",
+    authorization_dates: "Authorization dates needed",
+    service_end_date: "Service end date needed",
+  };
+
+  const MS_PER_WEEK = 86400000 * 7;
+
+  function timeStrToHours(t) {
+    if (!t) return 0;
+    const parts = String(t).split(":");
+    const h = Number(parts[0]) || 0;
+    const m = Number(parts[1]) || 0;
+    return h + m / 60;
+  }
+
+  async function getScheduledHoursByClient() {
+    const rows = await dbAll("SELECT client_id, start_time, end_time FROM schedule_sessions");
+    const totals = {};
+    for (const r of rows) {
+      const hrs = timeStrToHours(r.end_time) - timeStrToHours(r.start_time);
+      totals[r.client_id] = (totals[r.client_id] || 0) + (hrs > 0 ? hrs : 0);
+    }
+    return totals;
+  }
+
+  function weeksBetween(startISO, endISO) {
+    if (!startISO || !endISO) return null;
+    const start = new Date(startISO);
+    const end = new Date(endISO);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return null;
+    const diff = (end.getTime() - start.getTime()) / MS_PER_WEEK;
+    return diff > 0 ? diff : 0;
+  }
+
+  function resolveProjectedHours(fsRow, ownerSettings, scheduledHoursPerWeek) {
+    const pref = (fsRow && fsRow.hours_source_preference) || ownerSettings.default_hours_source || "scheduled";
+    const authorized = fsRow && fsRow.authorized_hours_per_week != null ? Number(fsRow.authorized_hours_per_week) : null;
+    const custom = fsRow && fsRow.custom_projected_hours_per_week != null ? Number(fsRow.custom_projected_hours_per_week) : null;
+    const scheduled = scheduledHoursPerWeek != null ? Number(scheduledHoursPerWeek) : null;
+
+    if (pref === "custom") {
+      if (custom != null) return { hours: custom, source: "custom", sourceLabel: `${custom} custom projected hours per week` };
+      return { hours: null, source: "custom", missing: "custom_hours" };
+    }
+    if (pref === "authorized") {
+      if (authorized != null) return { hours: authorized, source: "authorized", sourceLabel: `${authorized} authorized hours per week` };
+      return { hours: null, source: "authorized", missing: "authorized_hours" };
+    }
+    if (scheduled != null && scheduled > 0) return { hours: scheduled, source: "scheduled", sourceLabel: `${round2(scheduled)} scheduled hours per week` };
+    if (authorized != null) return { hours: authorized, source: "authorized", sourceLabel: `${authorized} authorized hours per week (no scheduled hours found)` };
+    return { hours: null, source: "scheduled", missing: "scheduled_hours" };
+  }
+
+  function round2(n) {
+    return Math.round(n * 100) / 100;
+  }
+  function roundDollars(n) {
+    return n == null ? null : Math.round(n);
+  }
+
+  function computeClientFinancials(client, fsRow, ownerSettings, scheduledHoursPerWeek, nowDate) {
+    const now = nowDate || new Date();
+    const nowIso = now.toISOString();
+    const missing = [];
+
+    const revenuePerHour = Number(ownerSettings.avg_revenue_per_hour);
+    const profitPerHour = Number(ownerSettings.avg_net_profit_per_hour);
+    const monthlyFactor = Number(ownerSettings.monthly_conversion_factor);
+
+    const hoursResult = resolveProjectedHours(fsRow, ownerSettings, scheduledHoursPerWeek);
+    if (hoursResult.missing) missing.push(hoursResult.missing);
+    const weeklyHours = hoursResult.hours;
+
+    const isInactive = client.stage === "discharged" || client.stage === "not_moving_forward";
+
+    const serviceStartDate = (fsRow && fsRow.service_start_date_override) || client.first_day_date || client.submitted_at || null;
+    if (!serviceStartDate) missing.push("service_start_date");
+
+    const serviceEndDate = (fsRow && fsRow.service_end_date_override) || null;
+    if (isInactive && !serviceEndDate) missing.push("service_end_date");
+
+    if (!client.auth_start_date || !client.auth_expiration_date) missing.push("authorization_dates");
+
+    const out = {
+      inputs: {
+        weeklyHoursUsed: weeklyHours,
+        hoursSource: hoursResult.source,
+        hoursSourceLabel: hoursResult.sourceLabel || null,
+        revenuePerHour,
+        profitPerHour,
+        monthlyFactor,
+        serviceStartDate,
+        serviceEndDate: isInactive ? serviceEndDate : null,
+        isInactive,
+      },
+      revenue: null,
+      netProfit: null,
+      lifetime: null,
+      missing,
+      missingLabels: missing.map((m) => FINANCIAL_MISSING_LABELS[m] || m),
+    };
+
+    if (weeklyHours != null) {
+      const monthlyHours = weeklyHours * monthlyFactor;
+      const annualHours = weeklyHours * 52;
+      out.revenue = {
+        weekly: roundDollars(weeklyHours * revenuePerHour),
+        monthly: roundDollars(monthlyHours * revenuePerHour),
+        annual: roundDollars(annualHours * revenuePerHour),
+        authorizationPeriod: null,
+      };
+      out.netProfit = {
+        weekly: roundDollars(weeklyHours * profitPerHour),
+        monthly: roundDollars(monthlyHours * profitPerHour),
+        annual: roundDollars(annualHours * profitPerHour),
+        authorizationPeriod: null,
+      };
+
+      const authWeeks = weeksBetween(client.auth_start_date, client.auth_expiration_date);
+      if (authWeeks != null) {
+        const authHours = weeklyHours * authWeeks;
+        out.revenue.authorizationPeriod = roundDollars(authHours * revenuePerHour);
+        out.netProfit.authorizationPeriod = roundDollars(authHours * profitPerHour);
+      }
+    }
+
+    if (weeklyHours != null && serviceStartDate) {
+      const lifetimeEndIso = isInactive ? (serviceEndDate || client.updated_at || nowIso) : nowIso;
+      const weeksSinceStart = weeksBetween(serviceStartDate, lifetimeEndIso);
+      const lifetimeHours = weeksSinceStart != null ? weeklyHours * weeksSinceStart : null;
+      const lifetimeRevenue = lifetimeHours != null ? lifetimeHours * revenuePerHour : null;
+      const lifetimeNetProfit = lifetimeHours != null ? lifetimeHours * profitPerHour : null;
+
+      const lifetime = {
+        serviceStartDate,
+        serviceEndDate: isInactive ? serviceEndDate : null,
+        isInactive,
+        totalServiceWeeks: weeksSinceStart != null ? round2(weeksSinceStart) : null,
+        lifetimeHours: lifetimeHours != null ? round2(lifetimeHours) : null,
+        lifetimeRevenue: roundDollars(lifetimeRevenue),
+        lifetimeNetProfit: roundDollars(lifetimeNetProfit),
+        calculationSource: (fsRow && fsRow.lifetime_calc_source) || "estimated_from_schedule",
+        projected12moRevenue: null,
+        projected12moNetProfit: null,
+        combinedRevenue: roundDollars(lifetimeRevenue),
+        combinedNetProfit: roundDollars(lifetimeNetProfit),
+      };
+
+      if (!isInactive) {
+        const projectedAnnualHours = weeklyHours * 52;
+        lifetime.projected12moRevenue = roundDollars(projectedAnnualHours * revenuePerHour);
+        lifetime.projected12moNetProfit = roundDollars(projectedAnnualHours * profitPerHour);
+        lifetime.combinedRevenue = roundDollars((lifetimeRevenue || 0) + projectedAnnualHours * revenuePerHour);
+        lifetime.combinedNetProfit = roundDollars((lifetimeNetProfit || 0) + projectedAnnualHours * profitPerHour);
+      }
+
+      out.lifetime = lifetime;
+    }
+
+    return out;
+  }
+
+  const ownerFinancials = {
+    getOwnerFinancialSettings,
+    canViewFinancials,
+    FINANCIAL_MISSING_LABELS,
+    getScheduledHoursByClient,
+    computeClientFinancials,
+  };
 // ============================== SIGNNOW ENROLLMENT PACKET ==============================
 // Automatically sends the "Spectrum Squad New Patient Enrollment Packet"
 // via SignNow the moment a new lead is created (see createClientFromPayload
