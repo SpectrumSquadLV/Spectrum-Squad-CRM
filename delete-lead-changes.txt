@@ -1,0 +1,239 @@
+DELETE LEAD (password-gated) -- server.js + index.html changes
+========================================================================
+Two files change: server.js gets a new DELETE route, index.html gets a new
+button + password prompt in the client detail modal. theme.js also changes
+separately for the watermark (see theme.js-watermark-changes.txt).
+
+Only your admin@spectrumsquadlv.com account's password will work to confirm
+a delete, no matter who is logged in and clicks the button.
+
+--------------------------------------------------------------------------
+SERVER.JS -- new route
+--------------------------------------------------------------------------
+Find this (server.js, around line 2318-2327 -- the discharge route):
+https://github.com/SpectrumSquadLV/Spectrum-Squad-CRM/blob/main/server.js#L2318-L2329
+
+    const dischargeMatch = pathname.match(/^\/api\/clients\/(\d+)\/discharge$/);
+    if (dischargeMatch && method === "POST") {
+      const id = dischargeMatch[1];
+      const { reason, stage } = await readBody(req);
+      await dbRun(
+        "UPDATE clients SET stage = ?, discharge_reason = ?, updated_at = ? WHERE id = ?",
+        [stage || "discharged", reason || null, nowISO(), id]
+      );
+      return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
+    }
+
+    // ---------- TASKS ----------
+
+Insert this new block between the discharge route's closing `}` and the
+"// ---------- TASKS ----------" comment, so it reads:
+
+    const dischargeMatch = pathname.match(/^\/api\/clients\/(\d+)\/discharge$/);
+    if (dischargeMatch && method === "POST") {
+      const id = dischargeMatch[1];
+      const { reason, stage } = await readBody(req);
+      await dbRun(
+        "UPDATE clients SET stage = ?, discharge_reason = ?, updated_at = ? WHERE id = ?",
+        [stage || "discharged", reason || null, nowISO(), id]
+      );
+      return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
+    }
+
+    // Permanently deletes a client and everything tied to it. Gated by the
+    // admin@spectrumsquadlv.com account's password specifically -- not
+    // whichever user happens to be logged in -- so only someone who knows
+    // that password can ever do this, regardless of session/role.
+    const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
+    if (deleteClientMatch && method === "DELETE") {
+      const clientId = deleteClientMatch[1];
+      const { password } = await readBody(req);
+      if (!password) return json(res, 400, { error: "Password is required" });
+
+      const owner = await auth.findUserByEmail("admin@spectrumsquadlv.com");
+      if (!owner || !verifyPassword(password, owner.password_salt, owner.password_hash)) {
+        return json(res, 403, { error: "Incorrect password" });
+      }
+
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+      if (!client) return json(res, 404, { error: "Not found" });
+
+      await dbRun("DELETE FROM client_tasks WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM schedule_sessions WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM notifications_log WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM client_documents WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM auth_audit_log WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM auth_alerts WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM enrollment_packets WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM clients WHERE id = ?", [clientId]);
+
+      return json(res, 200, { ok: true, deleted: clientId });
+    }
+
+    // ---------- TASKS ----------
+
+Note: this reuses the existing verifyPassword()/auth.findUserByEmail()
+functions already used by login -- no new hashing or password logic. It
+also cleans up every related table (tasks, sessions, notifications,
+documents, authorization records, and the enrollment packet tracking row)
+so nothing gets left behind as orphaned data.
+
+--------------------------------------------------------------------------
+INDEX.HTML -- password prompt helper (new, reuses the modal styling)
+--------------------------------------------------------------------------
+Find this (search for "function askReason", around line 395-426):
+https://github.com/SpectrumSquadLV/Spectrum-Squad-CRM/blob/main/index.html#L395-L426
+
+function askReason(title, placeholder) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `
+      <div class="modal" style="width:420px;">
+        <div class="modal-header"><h2>${title}</h2><button class="close-btn">✕</button></div>
+        <div class="field full">
+          <label>${placeholder || "Notes (optional)"}</label>
+          <textarea id="reason-input" rows="3" placeholder="Add a note..."></textarea>
+        </div>
+        <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
+          <button type="button" class="btn secondary" id="reason-cancel">Cancel</button>
+          <button type="button" class="btn" id="reason-confirm">Confirm</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+    const input = backdrop.querySelector("#reason-input");
+    input.focus();
+    const finish = (val) => {
+      backdrop.remove();
+      resolve(val);
+    };
+    backdrop.querySelector(".close-btn").addEventListener("click", () => finish(null));
+    backdrop.querySelector("#reason-cancel").addEventListener("click", () => finish(null));
+    backdrop.querySelector("#reason-confirm").addEventListener("click", () => finish(input.value || ""));
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) finish(null);
+    });
+  });
+}
+
+Leave that function exactly as-is, and add this new one directly after its
+closing brace (it's the same pattern but with a masked password field
+instead of a plain textarea):
+
+function askPassword(title) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `
+      <div class="modal" style="width:420px;">
+        <div class="modal-header"><h2>${title}</h2><button class="close-btn">✕</button></div>
+        <div class="field full">
+          <label>Password</label>
+          <input id="password-input" type="password" autocomplete="off" />
+        </div>
+        <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
+          <button type="button" class="btn secondary" id="password-cancel">Cancel</button>
+          <button type="button" class="btn" id="password-confirm">Confirm</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+    const input = backdrop.querySelector("#password-input");
+    input.focus();
+    const finish = (val) => {
+      backdrop.remove();
+      resolve(val);
+    };
+    backdrop.querySelector(".close-btn").addEventListener("click", () => finish(null));
+    backdrop.querySelector("#password-cancel").addEventListener("click", () => finish(null));
+    backdrop.querySelector("#password-confirm").addEventListener("click", () => finish(input.value || null));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") finish(input.value || null);
+    });
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) finish(null);
+    });
+  });
+}
+
+--------------------------------------------------------------------------
+INDEX.HTML -- the Delete Lead button itself
+--------------------------------------------------------------------------
+Find this (search for "Advance / Close Out", around line 932-937):
+https://github.com/SpectrumSquadLV/Spectrum-Squad-CRM/blob/main/index.html#L932-L937
+
+      <div class="section-title">Advance / Close Out</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn secondary small" id="advance-btn">Advance to next stage manually</button>
+        <button class="btn secondary small" id="discharge-btn">Mark discharged</button>
+        <button class="btn secondary small" id="not-moving-btn" style="color:#b91c1c;">Not moving forward</button>
+      </div>
+
+Replace it with this (adds one new red button):
+
+      <div class="section-title">Advance / Close Out</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn secondary small" id="advance-btn">Advance to next stage manually</button>
+        <button class="btn secondary small" id="discharge-btn">Mark discharged</button>
+        <button class="btn secondary small" id="not-moving-btn" style="color:#b91c1c;">Not moving forward</button>
+        <button class="btn secondary small" id="delete-lead-btn" style="color:#fff; background:#b91c1c; border-color:#b91c1c;">Delete Lead</button>
+      </div>
+
+--------------------------------------------------------------------------
+INDEX.HTML -- wire up the button's click handler
+--------------------------------------------------------------------------
+Find this (search for "not-moving-btn").addEventListener", around line
+999-1006 -- the last of the three existing button handlers in
+openClientModal):
+https://github.com/SpectrumSquadLV/Spectrum-Squad-CRM/blob/main/index.html#L999-L1007
+
+  backdrop.querySelector("#not-moving-btn").addEventListener("click", async () => {
+    const reason = await askReason("Reason client is not moving forward");
+    if (reason === null) return;
+    await api(`/api/clients/${id}/discharge`, { method: "POST", body: { reason, stage: "not_moving_forward" } });
+    close();
+    await loadClients();
+    route();
+  });
+}
+
+Add the new handler right after that one, still before the function's own
+closing brace, so it reads:
+
+  backdrop.querySelector("#not-moving-btn").addEventListener("click", async () => {
+    const reason = await askReason("Reason client is not moving forward");
+    if (reason === null) return;
+    await api(`/api/clients/${id}/discharge`, { method: "POST", body: { reason, stage: "not_moving_forward" } });
+    close();
+    await loadClients();
+    route();
+  });
+  backdrop.querySelector("#delete-lead-btn").addEventListener("click", async () => {
+    if (!confirm(`This will permanently delete ${client.child_name}'s record, including all tasks, documents, and notification history. This cannot be undone. Continue?`)) return;
+    const password = await askPassword("Enter password to confirm deletion");
+    if (!password) return;
+    try {
+      await api(`/api/clients/${id}`, { method: "DELETE", body: { password } });
+      close();
+      await loadClients();
+      route();
+    } catch (e) {
+      alert("Could not delete: " + e.message);
+    }
+  });
+}
+
+--------------------------------------------------------------------------
+What this adds once deployed
+--------------------------------------------------------------------------
+- Opening any client's detail card now shows a red "Delete Lead" button
+  next to the existing Advance/Discharge/Not Moving Forward buttons.
+- Clicking it asks for confirmation, then a password.
+- The password is checked against admin@spectrumsquadlv.com's account
+  specifically -- entering any other password (even a valid login for a
+  different account) fails with "Incorrect password."
+- On success, the client and every related record (tasks, sessions,
+  notifications, documents, authorization records, enrollment packet
+  tracking) are permanently deleted. This cannot be undone -- there's no
+  recovery/undo built in.
