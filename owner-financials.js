@@ -76,6 +76,7 @@
     } catch (e) {
       /* keep stale summary rather than blow away the UI */
     }
+    attachDashboardStat();
   }
 
   // ---------- Compact summary (always visible if authorized) ----------
@@ -392,6 +393,42 @@
     if (modalBody && lastOpenedClientId) {
       attachSection(modalBody, lastOpenedClientId);
     }
+    attachDashboardStat();
+  }
+
+  function computeTotalMonthlyNetProfit() {
+    if (!summaryData) return null;
+    let total = 0;
+    let any = false;
+    let missing = false;
+    Object.values(summaryData).forEach((s) => {
+      if (!s) return;
+      if (typeof s.estMonthlyNetProfit === "number") {
+        total += s.estMonthlyNetProfit;
+        any = true;
+      }
+      if (s.hasMissing) missing = true;
+    });
+    return any ? { total, missing } : null;
+  }
+
+  function attachDashboardStat() {
+    if (authorized !== true) return;
+    const grid = document.querySelector(".stat-grid");
+    if (!grid) return;
+    let card = grid.querySelector(".ofin-dash-stat");
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "stat-card ofin-dash-stat";
+      card.innerHTML =
+        '<div class="label">🔒 Est. Total Monthly Net Profit</div>' +
+        '<div class="value"></div>' +
+        '<div class="ofin-dash-note" style="font-size:10.5px;color:var(--text-muted,#767488);margin-top:2px;"></div>';
+      grid.appendChild(card);
+    }
+    const result = computeTotalMonthlyNetProfit();
+    card.querySelector(".value").textContent = result ? fmtMoney(result.total) : "—";
+    card.querySelector(".ofin-dash-note").textContent = result && result.missing ? "Some clients missing info" : "";
   }
 
   // ---------- Phase 4c: private Owner Financial Settings page ----------
