@@ -2700,6 +2700,110 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
     await dbRun(`UPDATE clients SET ${setClause}, updated_at = ? WHERE id = ?`, [...fields.map((f) => body[f]), nowISO(), id]);
     const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
     return json(res, 200, { id: updated.id, ...pipelineV2.computeMilestoneView(updated) });
+
+const clientFinancialsMatch = pathname.match(/^\/api\/clients\/(\d+)\/financials$/);
+  if (clientFinancialsMatch && method === "GET") {
+    if (!(await ownerFinancials.canViewFinancials(user))) return json(res, 403, { error: "Not permitted to view financial data" });
+    const id = clientFinancialsMatch[1];
+    const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+    if (!client) return json(res, 404, { error: "Not found" });
+    const fsRow = await dbGet("SELECT * FROM client_financial_settings WHERE client_id = ?", [id]);
+    const ownerSettings = await ownerFinancials.getOwnerFinancialSettings();
+    const scheduledByClient = await ownerFinancials.getScheduledHoursByClient();
+    const result = ownerFinancials.computeClientFinancials(client, fsRow, ownerSettings, scheduledByClient[id] || 0);
+    return json(res, 200, result);
+  }
+
+  const clientFinancialSettingsMatch = pathname.match(/^\/api\/clients\/(\d+)\/financial-settings$/);
+  if (clientFinancialSettingsMatch && method === "PATCH") {
+    if (!(await ownerFinancials.canViewFinancials(user))) return json(res, 403, { error: "Not permitted to edit financial data" });
+    const id = clientFinancialSettingsMatch[1];
+    const client = await dbGet("SELECT id FROM clients WHERE id = ?", [id]);
+    if (!client) return json(res, 404, { error: "Not found" });
+    const body = await readBody(req);
+    const allowedFinancialFields = [
+      "authorized_hours_per_week",
+      "custom_projected_hours_per_week",
+      "hours_source_preference",
+      "service_start_date_override",
+      "service_end_date_override",
+      "lifetime_calc_source",
+    ];
+    const fields = Object.keys(body).filter((k) => allowedFinancialFields.includes(k));
+    if (!fields.length) return json(res, 400, { error: "No editable fields provided" });
+
+    const existing = await dbGet("SELECT client_id FROM client_financial_settings WHERE client_id = ?", [id]);
+    if (existing) {
+      const setClause = fields.map((f) => `${f} = ?`).join(", ");
+      await dbRun(`UPDATE client_financial_settings SET ${setClause}, updated_at = ? WHERE client_id = ?`, [
+        ...fields.map((f) => body[f]),
+        nowISO(),
+        id,
+      ]);
+    } else {
+      const cols = ["client_id", ...fields, "updated_at"];
+      const placeholders = cols.map(() => "?").join(", ");
+      await dbRun(`INSERT INTO client_financial_settings (${cols.join(", ")}) VALUES (${placeholders})`, [
+        id,
+        ...fields.map((f) => body[f]),
+        nowISO(),
+      ]);
+    }
+
+    const updatedClient = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+    const fsRow = await dbGet("SELECT * FROM client_financial_settings WHERE client_id = ?", [id]);
+    const ownerSettings = await ownerFinancials.getOwnerFinancialSettings();
+    const scheduledByClient = await ownerFinancials.getScheduledHoursByClient();
+    const result = ownerFinancials.computeClientFinancials(updatedClient, fsRow, ownerSettings, scheduledByClient[id] || 0);
+    return json(res, 200, result);
+  }
+
+  if (pathname === "/api/clients/financials-summary" && method === "GET") {
+    if (!(await ownerFinancials.canViewFinancials(user))) return json(res, 403, { error: "Not permitted to view financial data" });
+    const clients = await dbAll("SELECT * FROM clients");
+    const fsRows = await dbAll("SELECT * FROM client_financial_settings");
+    const fsByClient = {};
+    fsRows.forEach((r) => { fsByClient[r.client_id] = r; });
+    const ownerSettings = await ownerFinancials.getOwnerFinancialSettings();
+    const scheduledByClient = await ownerFinancials.getScheduledHoursByClient();
+
+    const summary = {};
+    for (const c of clients) {
+      const full = ownerFinancials.computeClientFinancials(c, fsByClient[c.id], ownerSettings, scheduledByClient[c.id] || 0);
+      summary[c.id] = {
+        estMonthlyRevenue: full.revenue ? full.revenue.monthly : null,
+        estMonthlyNetProfit: full.netProfit ? full.netProfit.monthly : null,
+        estLifetimeRevenue: full.lifetime ? full.lifetime.lifetimeRevenue : null,
+        estLifetimeNetProfit: full.lifetime ? full.lifetime.lifetimeNetProfit : null,
+        hasMissing: full.missing.length > 0,
+      };
+    }
+    return json(res, 200, summary);
+  }
+
+  if (pathname === "/api/owner-financial-settings" && method === "GET") {
+    if (!(await ownerFinancials.canViewFinancials(user))) return json(res, 403, { error: "Not permitted to view financial settings" });
+    const settings = await ownerFinancials.getOwnerFinancialSettings();
+    return json(res, 200, settings);
+  }
+
+  if (pathname === "/api/owner-financial-settings" && method === "PATCH") {
+    if (!(await ownerFinancials.canViewFinancials(user))) return json(res, 403, { error: "Not permitted to edit financial settings" });
+    const body = await readBody(req);
+    const allowedSettingsFields = [
+      "avg_revenue_per_hour",
+      "avg_net_profit_per_hour",
+      "monthly_conversion_factor",
+      "default_hours_source",
+      "financial_view_roles",
+    ];
+    const fields = Object.keys(body).filter((k) => allowedSettingsFields.includes(k));
+    if (!fields.length) return json(res, 400, { error: "No editable fields provided" });
+    const setClause = fields.map((f) => `${f} = ?`).join(", ");
+    await dbRun(`UPDATE owner_financial_settings SET ${setClause} WHERE id = 1`, fields.map((f) => body[f]));
+    const updated = await ownerFinancials.getOwnerFinancialSettings();
+    return json(res, 200, updated);
+  }
   }
 
 
