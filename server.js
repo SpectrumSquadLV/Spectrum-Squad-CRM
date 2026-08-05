@@ -2700,6 +2700,7 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
     await dbRun(`UPDATE clients SET ${setClause}, updated_at = ? WHERE id = ?`, [...fields.map((f) => body[f]), nowISO(), id]);
     const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
     return json(res, 200, { id: updated.id, ...pipelineV2.computeMilestoneView(updated) });
+  }
 
 const clientFinancialsMatch = pathname.match(/^\/api\/clients\/(\d+)\/financials$/);
   if (clientFinancialsMatch && method === "GET") {
@@ -2805,7 +2806,6 @@ const clientFinancialsMatch = pathname.match(/^\/api\/clients\/(\d+)\/financials
     await dbRun(`UPDATE owner_financial_settings SET ${setClause} WHERE id = 1`, fields.map((f) => body[f]));
     const updated = await ownerFinancials.getOwnerFinancialSettings();
     return json(res, 200, updated);
-  }
   }
 
 
