@@ -39,11 +39,19 @@
     const btn = document.createElement("button");
     btn.className = "nav-item";
     btn.id = "pv2-nav-btn";
-    btn.textContent = "◱ Pipeline v2";
+    btn.textContent = "◱ Pipeline";
     btn.addEventListener("click", () => {
       location.hash = HASH;
     });
-    nav.appendChild(btn);
+    // Insert right after the first existing nav item so this reads as the
+    // primary pipeline view rather than an extra item tacked on at the
+    // bottom of the sidebar.
+    const items = nav.querySelectorAll(".nav-item");
+    if (items.length > 1) {
+      nav.insertBefore(btn, items[1]);
+    } else {
+      nav.appendChild(btn);
+    }
   }
 
   function setActiveNav(isActive) {
@@ -93,11 +101,33 @@
     return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   }
 
+  // Checklist item keys that map directly to a real boolean column on the
+  // client record, and can therefore be checked off right from the card.
+  // Keys prefixed with "__" are computed from other existing fields
+  // (BCBA assignment, authorization status, etc.) and are set elsewhere in
+  // the app, so they're shown as plain text here, not as checkboxes.
+  function isCheckableKey(key) {
+    return !!key && key.indexOf("__") !== 0;
+  }
+
+  function missingItemRow(label, key, clientId) {
+    if (!isCheckableKey(key)) {
+      return '<div style="color:#a3282e;">✕ ' + esc(label) + "</div>";
+    }
+    return (
+      '<label style="display:flex;align-items:center;gap:6px;color:#a3282e;cursor:pointer;" data-pv2-checkrow="1">' +
+        '<input type="checkbox" data-pv2-check="' + esc(clientId) + '" data-pv2-key="' + esc(key) + '" style="margin:0;cursor:pointer;flex:0 0 auto;" />' +
+        "<span>" + esc(label) + "</span>" +
+      "</label>"
+    );
+  }
+
   function cardHTML(c) {
     const ms = MILESTONES.find((m) => m.key === c.milestone) || MILESTONES[0];
     const b = BLOCKERS[c.blocker] || BLOCKERS.ready;
     const p = PRIORITY_STYLE[c.priority] || PRIORITY_STYLE.Low;
     const missing = (c.missingItems || []).slice(0, 3);
+    const missingKeys = c.missingItemKeys || [];
     return (
       '<div style="background:#fff;border:1px solid #e6e1d4;border-radius:12px;padding:13px 14px;margin-bottom:10px;border-left:4px solid ' + ms.color + ';cursor:pointer;" data-pv2-open="' + c.id + '">' +
         '<div style="font-weight:700;font-size:14.5px;margin-bottom:6px;">' + esc(c.child_name) + "</div>" +
@@ -106,7 +136,7 @@
         '<div style="display:flex;justify-content:space-between;font-size:12px;color:#767488;margin-bottom:6px;"><span>Priority</span><span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:' + p.bg + ";color:" + p.text + ';">' + esc(c.priority || "—") + "</span></div>" +
         '<div style="background:#eee;border-radius:6px;height:6px;overflow:hidden;margin:6px 0 8px;"><div style="height:100%;border-radius:6px;width:' + (c.progressPct || 0) + "%;background:" + ms.color + ';"></div></div>' +
         '<div style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;margin:0 0 8px;background:' + b.bg + ";color:" + b.text + ';"><span style="width:8px;height:8px;border-radius:50%;background:' + b.color + ';display:inline-block;"></span>' + esc(b.label) + "</div>" +
-        (missing.length ? '<div style="font-size:12px;margin-top:4px;line-height:1.6;color:#a3282e;">' + missing.map((m) => "<div>✕ " + esc(m) + "</div>").join("") + "</div>" : "") +
+        (missing.length ? '<div style="font-size:12px;margin-top:4px;line-height:1.7;">' + missing.map((m, i) => missingItemRow(m, missingKeys[i], c.id)).join("") + "</div>" : "") +
         '<div style="font-size:12px;margin-top:8px;background:#faf8f2;border-radius:8px;padding:7px 9px;border:1px solid #e6e1d4;"><b style="display:block;font-size:10.5px;text-transform:uppercase;color:#767488;margin-bottom:2px;">Next action</b>' + esc(c.nextAction || "—") + "</div>" +
       "</div>"
     );
@@ -143,6 +173,42 @@
     if (clear) clear.addEventListener("click", () => { filters = {}; render(); });
   }
 
+  // Wires the per-item checkboxes on each card. Clicking a checkbox marks
+  // that checklist item complete via PATCH /api/clients/:id/checklist, then
+  // reloads real data from the server so the card, its progress bar, and
+  // (if this was the last missing item) its blocker/next-action all reflect
+  // the update -- same "always refetch real data" approach used elsewhere
+  // in this file, so there's no local state that can drift from the DB.
+  function wireChecklist(mount) {
+    mount.querySelectorAll("[data-pv2-checkrow]").forEach((row) => {
+      row.addEventListener("click", (e) => e.stopPropagation());
+    });
+    mount.querySelectorAll("[data-pv2-check]").forEach((cb) => {
+      cb.addEventListener("click", (e) => e.stopPropagation());
+      cb.addEventListener("change", async () => {
+        const clientId = cb.getAttribute("data-pv2-check");
+        const key = cb.getAttribute("data-pv2-key");
+        if (!clientId || !key) return;
+        cb.disabled = true;
+        const payload = {};
+        payload[key] = key === "intake_assessment_scheduled_date" ? new Date().toISOString().slice(0, 10) : true;
+        try {
+          const res = await fetch("/api/clients/" + encodeURIComponent(clientId) + "/checklist", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) throw new Error("Update failed");
+          await loadAndRender();
+        } catch (e) {
+          cb.disabled = false;
+          cb.checked = false;
+          alert("Could not save that update. Please try again.");
+        }
+      });
+    });
+  }
+
   function render() {
     const mount = document.getElementById("view-mount");
     if (!mount) return;
@@ -162,14 +228,15 @@
 
     mount.innerHTML =
       '<div style="padding:24px 28px 60px;">' +
-        '<h1 style="font-size:24px;margin:0 0 4px;font-weight:700;color:#29225c;">Client pipeline (v2)</h1>' +
-        '<p style="margin:0 0 18px;color:#767488;font-size:14px;">Milestone view with progress, blockers, and next actions. Click a card to open the full client record.</p>' +
+        '<h1 style="font-size:24px;margin:0 0 4px;font-weight:700;color:#29225c;">Client pipeline</h1>' +
+        '<p style="margin:0 0 18px;color:#767488;font-size:14px;">Milestone view with progress, blockers, and next actions. Check off an item to mark it done, or click a card to open the full client record.</p>' +
         filterBarHTML() +
         '<div style="display:flex;gap:16px;overflow-x:auto;padding-bottom:8px;align-items:flex-start;">' + columns + "</div>" +
       "</div>";
     mount.dataset.pv2 = "1";
 
     wireFilters(mount);
+    wireChecklist(mount);
     mount.querySelectorAll("[data-pv2-open]").forEach((card) => {
       card.addEventListener("click", () => {
         location.hash = "#/pipeline/" + card.getAttribute("data-pv2-open");
