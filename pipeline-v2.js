@@ -179,13 +179,15 @@
 
   // The app's own router also reacts to hashchange events, including for a
   // route it doesn't recognize like ours, and may asynchronously overwrite
-  // #view-mount with its own fallback content shortly AFTER we've already
-  // rendered (a race we can lose depending on network timing). Re-assert our
-  // content a few times shortly after navigating in, using already-fetched
-  // data (no extra network calls) -- not a loop, just a small fixed number
-  // of one-off checks per navigation.
+  // #view-mount (and reset nav "active" classes) shortly AFTER we've already
+  // rendered -- a race we can lose depending on network timing. Re-assert
+  // both our content and our nav highlight a few times shortly after
+  // navigating in, using already-fetched data (no extra network calls) --
+  // not a loop, just a small fixed number of one-off checks per navigation.
   function reassertIfNeeded() {
-    if (location.hash !== HASH || !loaded) return;
+    if (location.hash !== HASH) return;
+    setActiveNav(true);
+    if (!loaded) return;
     const mount = document.getElementById("view-mount");
     if (mount && mount.dataset.pv2 !== "1") render();
   }
