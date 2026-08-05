@@ -542,6 +542,14 @@
     settingsMountObserver.observe(mount, { childList: true });
   }
 
+  function reassertSettingsIfNeeded() {
+    if (location.hash !== SETTINGS_HASH) return;
+    if (authorized !== true) return;
+    setSettingsNavActive(true);
+    const mount = document.getElementById("view-mount");
+    if (mount && mount.dataset.ofinSettings !== "1") renderSettingsPage();
+  }
+
   function onHashChange() {
     const isSettings = location.hash === SETTINGS_HASH;
     setSettingsNavActive(isSettings);
@@ -552,6 +560,7 @@
     if (authorized !== true) return; // no nav button either, but guard direct hash navigation too
     watchSettingsMount();
     renderSettingsPage();
+    [100, 300, 800, 1500].forEach((ms) => setTimeout(reassertSettingsIfNeeded, ms));
   }
 
   function boot() {
