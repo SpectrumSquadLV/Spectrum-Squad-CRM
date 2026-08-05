@@ -2455,6 +2455,28 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
       }));
       return json(res, 200, shaped);
     }
+    const checklistMatch = pathname.match(/^\/api\/clients\/(\d+)\/checklist$/);
+  if (checklistMatch && method === "PATCH") {
+    const id = checklistMatch[1];
+    const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+    if (!client) return json(res, 404, { error: "Not found" });
+    const body = await readBody(req);
+    const allowedChecklistFields = [
+      "diagnosis_uploaded", "insurance_card_uploaded", "clinical_screener_completed",
+      "insurance_verification_completed", "intake_packet_sent", "intake_packet_returned",
+      "vineland_completed", "intake_assessment_scheduled_date", "intake_assessment_completed",
+      "authorization_submitted", "previous_provider_discharge_letter_received",
+      "physician_referral_received", "additional_insurance_docs_received",
+      "rethink_client_created", "assigned_rbt_name", "schedule_finalized",
+      "assigned_intake_coordinator_name",
+    ];
+    const fields = Object.keys(body).filter((k) => allowedChecklistFields.includes(k));
+    if (!fields.length) return json(res, 400, { error: "No editable fields provided" });
+    const setClause = fields.map((f) => `${f} = ?`).join(", ");
+    await dbRun(`UPDATE clients SET ${setClause}, updated_at = ? WHERE id = ?`, [...fields.map((f) => body[f]), nowISO(), id]);
+    const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+    return json(res, 200, { id: updated.id, ...pipelineV2.computeMilestoneView(updated) });
+  }
 
 
     
