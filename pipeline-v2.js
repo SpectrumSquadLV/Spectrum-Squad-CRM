@@ -31,6 +31,7 @@
 
   let allClients = [];
   let filters = {};
+  let loaded = false;
 
   function injectNavButton() {
     const nav = document.querySelector(".sidebar nav");
@@ -63,6 +64,7 @@
     try {
       const res = await fetch("/api/dashboard/pipeline-v2");
       allClients = await res.json();
+      loaded = true;
     } catch (e) {
       mount.innerHTML = '<div style="padding:40px;color:#a3282e;">Failed to load pipeline data.</div>';
       return;
@@ -165,6 +167,7 @@
         filterBarHTML() +
         '<div style="display:flex;gap:16px;overflow-x:auto;padding-bottom:8px;align-items:flex-start;">' + columns + "</div>" +
       "</div>";
+    mount.dataset.pv2 = "1";
 
     wireFilters(mount);
     mount.querySelectorAll("[data-pv2-open]").forEach((card) => {
@@ -174,19 +177,32 @@
     });
   }
 
+  // The app's own router also reacts to hashchange events, including for a
+  // route it doesn't recognize like ours, and may asynchronously overwrite
+  // #view-mount with its own fallback content shortly AFTER we've already
+  // rendered (a race we can lose depending on network timing). Re-assert our
+  // content a few times shortly after navigating in, using already-fetched
+  // data (no extra network calls) -- not a loop, just a small fixed number
+  // of one-off checks per navigation.
+  function reassertIfNeeded() {
+    if (location.hash !== HASH || !loaded) return;
+    const mount = document.getElementById("view-mount");
+    if (mount && mount.dataset.pv2 !== "1") render();
+  }
+
   function onHashChange() {
     const isActive = location.hash === HASH;
     setActiveNav(isActive);
-    if (isActive) loadAndRender();
+    if (!isActive) return;
+    loadAndRender();
+    [100, 300, 800, 1500].forEach((ms) => setTimeout(reassertIfNeeded, ms));
   }
 
   function boot() {
-    // IMPORTANT: this MutationObserver only re-injects the nav button if the
-    // app's own re-renders wipe it out. It must NOT trigger onHashChange/
-    // loadAndRender, because loadAndRender itself mutates the DOM (it sets
-    // #view-mount's innerHTML) -- if this observer called onHashChange too,
-    // every render would trigger the observer, which would render again,
-    // which would trigger the observer again, forever. Keep these separate.
+    // This MutationObserver only re-injects the nav button if the app's own
+    // re-renders wipe it out of the sidebar. It must NOT call onHashChange
+    // or render(), since those mutate the DOM themselves -- calling them
+    // from here would make the observer react to its own changes forever.
     const tryInject = () => {
       injectNavButton();
     };
