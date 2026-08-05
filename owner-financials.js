@@ -396,6 +396,10 @@
     attachDashboardStat();
   }
 
+  // Sums estMonthlyNetProfit across every client currently in the summary.
+  // Clients with incomplete data contribute nothing to the total (their
+  // value is null), so the total only ever reflects clients that actually
+  // have enough info to project -- never a misleadingly padded number.
   function computeTotalMonthlyNetProfit() {
     if (!summaryData) return null;
     let total = 0;
@@ -412,6 +416,11 @@
     return any ? { total, missing } : null;
   }
 
+  // Owner-only stat card injected into the dashboard's existing stat grid,
+  // right alongside Total Clients / Open Tasks / etc. Idempotent (keyed off
+  // its own marker class) so repeated re-scans update the number in place
+  // instead of duplicating the card, and it re-injects itself if the app's
+  // own dashboard re-render ever wipes the grid out.
   function attachDashboardStat() {
     if (authorized !== true) return;
     const grid = document.querySelector(".stat-grid");
@@ -427,8 +436,18 @@
       grid.appendChild(card);
     }
     const result = computeTotalMonthlyNetProfit();
-    card.querySelector(".value").textContent = result ? fmtMoney(result.total) : "—";
-    card.querySelector(".ofin-dash-note").textContent = result && result.missing ? "Some clients missing info" : "";
+    const newValue = result ? fmtMoney(result.total) : "—";
+    const newNote = result && result.missing ? "Some clients missing info" : "";
+    // Only touch the DOM if the text actually changed. This card lives
+    // inside the subtree the boot() MutationObserver watches, so an
+    // unconditional textContent write here -- even to the same value --
+    // would itself count as a mutation and re-trigger the observer
+    // forever. Same bug class as the pipeline-v2.js race earlier this
+    // session, caught here before it shipped a second time.
+    const valueEl = card.querySelector(".value");
+    const noteEl = card.querySelector(".ofin-dash-note");
+    if (valueEl.textContent !== newValue) valueEl.textContent = newValue;
+    if (noteEl.textContent !== newNote) noteEl.textContent = newNote;
   }
 
   // ---------- Phase 4c: private Owner Financial Settings page ----------
@@ -579,6 +598,13 @@
     settingsMountObserver.observe(mount, { childList: true });
   }
 
+  // The app's own router also reacts to hashchange, doesn't recognize our
+  // route, and falls through to rendering the Dashboard into #view-mount --
+  // sometimes AFTER we've already rendered the settings page there, losing
+  // a timing race (same class of race pipeline-v2.js hit and fixed earlier
+  // this session). watchSettingsMount()'s MutationObserver catches most
+  // cases, but exactly like pipeline-v2.js, a few scheduled re-checks close
+  // the gap for the cases the observer's timing can miss.
   function reassertSettingsIfNeeded() {
     if (location.hash !== SETTINGS_HASH) return;
     if (authorized !== true) return;
