@@ -2456,9 +2456,6 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
       return json(res, 200, shaped);
     }
 
-Commit all 4 as: "Add pipeline v2 milestone logic and API"
-(Note for you, not code -- don't paste this line into the file.)
-
 
     
 const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
