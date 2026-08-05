@@ -314,6 +314,23 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_notes TEXT;
 ALTER TABLE clickup_config ADD COLUMN IF NOT EXISTS last_connection_status TEXT;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged_at TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS diagnosis_uploaded BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_card_uploaded BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS clinical_screener_completed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_verification_completed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_packet_sent BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_packet_returned BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_completed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_assessment_scheduled_date TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_assessment_completed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS authorization_submitted BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS previous_provider_discharge_letter_received BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS physician_referral_received BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS additional_insurance_docs_received BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS rethink_client_created BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_rbt_name TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS schedule_finalized BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS stage_entered_at TEXT;
 `;
 
 async function initSchema() {
