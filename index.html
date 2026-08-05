@@ -420,7 +420,34 @@ function askReason(title, placeholder) {
     });
   });
 }
-
+function askPassword(title) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `
+      <div class="modal" style="width:420px;">
+        <div class="modal-header"><h2>${title}</h2><button class="close-btn">✕</button></div>
+        <div class="field full">
+          <label>Password</label>
+          <input id="password-input" type="password" autocomplete="off" />
+        </div>
+        <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
+          <button type="button" class="btn secondary" id="password-cancel">Cancel</button>
+          <button type="button" class="btn" id="password-confirm">Confirm</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+    const input = backdrop.querySelector("#password-input");
+    input.focus();
+    const finish = (val) => { backdrop.remove(); resolve(val); };
+    backdrop.querySelector(".close-btn").addEventListener("click", () => finish(null));
+    backdrop.querySelector("#password-cancel").addEventListener("click", () => finish(null));
+    backdrop.querySelector("#password-confirm").addEventListener("click", () => finish(input.value || null));
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(input.value || null); });
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) finish(null); });
+  });
+}
 // ---------------- Router ----------------
 window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", boot);
