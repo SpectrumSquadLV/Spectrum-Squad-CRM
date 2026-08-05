@@ -1063,40 +1063,101 @@ function openNewClientModal() {
 }
 
 // ---------------- Tasks ----------------
+let tasksShowCompleted = false;
 async function renderTasks(mount) {
-  const tasks = await api("/api/tasks");
+  const tasks = await api(`/api/tasks${tasksShowCompleted ? "?status=all" : ""}`);
   mount.innerHTML = `
     <div class="page-header"><div><h1>Tasks & Alerts</h1><p>Every open task across the pipeline, oldest due date first.</p></div></div>
     <div class="card">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+        <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted);">
+          <input type="checkbox" id="tasks-show-completed" ${tasksShowCompleted ? "checked" : ""} />
+          Show completed
+        </label>
+        <div style="display:flex; gap:8px;">
+          <button class="btn small secondary" id="tasks-bulk-done" disabled>Mark selected done</button>
+          <button class="btn small secondary" id="tasks-bulk-undone" disabled>Mark selected undone</button>
+        </div>
+      </div>
       <table>
-        <thead><tr><th>Status</th><th>Client</th><th>Task</th><th>Department</th><th>Due</th><th></th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="tasks-select-all" /></th><th>Status</th><th>Client</th><th>Task</th><th>Department</th><th>Due</th><th></th></tr></thead>
         <tbody>
           ${
             tasks.length
               ? tasks
                   .map(
                     (t) => `<tr>
+                    <td><input type="checkbox" class="tasks-row-check" data-id="${t.id}" /></td>
                     <td><span class="status-dot ${t.status}"></span>${t.status}</td>
                     <td>${t.child_name}</td>
                     <td>${t.label}</td>
                     <td><span class="badge" style="background:${t.department_color}">${t.department_name}</span></td>
                     <td>${fmtDate(t.due_date)}</td>
-                    <td><button class="btn small secondary" data-complete="${t.id}">Mark done</button></td>
+                    <td>${
+                      t.status === "completed"
+                        ? `<button class="btn small secondary" data-reopen="${t.id}">Mark undone</button>`
+                        : `<button class="btn small secondary" data-complete="${t.id}">Mark done</button>`
+                    }</td>
                   </tr>`
                   )
                   .join("")
-              : `<tr><td colspan="6"><div class="empty-state">No open tasks. Nice work.</div></td></tr>`
+              : `<tr><td colspan="7"><div class="empty-state">No open tasks. Nice work.</div></td></tr>`
           }
         </tbody>
       </table>
     </div>
   `;
+
+  mount.querySelector("#tasks-show-completed").addEventListener("change", (e) => {
+    tasksShowCompleted = e.target.checked;
+    renderTasks(mount);
+  });
+
+  function updateBulkButtons() {
+    const checked = mount.querySelectorAll(".tasks-row-check:checked").length;
+    mount.querySelector("#tasks-bulk-done").disabled = checked === 0;
+    mount.querySelector("#tasks-bulk-undone").disabled = checked === 0;
+  }
+
+  mount.querySelector("#tasks-select-all").addEventListener("change", (e) => {
+    mount.querySelectorAll(".tasks-row-check").forEach((cb) => { cb.checked = e.target.checked; });
+    updateBulkButtons();
+  });
+
+  mount.querySelectorAll(".tasks-row-check").forEach((cb) => {
+    cb.addEventListener("change", updateBulkButtons);
+  });
+
   mount.querySelectorAll("[data-complete]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       await api(`/api/tasks/${btn.dataset.complete}/complete`, { method: "POST" });
       await loadClients();
       route();
     });
+  });
+
+  mount.querySelectorAll("[data-reopen]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api(`/api/tasks/${btn.dataset.reopen}/reopen`, { method: "POST" });
+      await loadClients();
+      route();
+    });
+  });
+
+  mount.querySelector("#tasks-bulk-done").addEventListener("click", async () => {
+    const ids = Array.from(mount.querySelectorAll(".tasks-row-check:checked")).map((cb) => cb.dataset.id);
+    if (!ids.length) return;
+    await api("/api/tasks/bulk-update", { method: "POST", body: { ids, status: "completed" } });
+    await loadClients();
+    route();
+  });
+
+  mount.querySelector("#tasks-bulk-undone").addEventListener("click", async () => {
+    const ids = Array.from(mount.querySelectorAll(".tasks-row-check:checked")).map((cb) => cb.dataset.id);
+    if (!ids.length) return;
+    await api("/api/tasks/bulk-update", { method: "POST", body: { ids, status: "pending" } });
+    await loadClients();
+    route();
   });
 }
 
