@@ -1049,7 +1049,7 @@ function computeMilestoneView(client) {
     ? `Follow up on: ${missing[0].label.toLowerCase()}.`
     : "Ready to advance to the next milestone.";
 
-  return { milestone, milestoneLabel: def ? def.label : null, progressPct, missingItems: missing.map((m) => m.label), blocker, owner, nextAction, daysInStage, priority };
+  
 }
 
 const pipelineV2 = { MILESTONES, milestoneForStage, computeMilestoneView };
