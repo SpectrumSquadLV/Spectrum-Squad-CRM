@@ -2150,14 +2150,18 @@ async function handle(req, res, pathname, method, query = {}) {
     }
 
     // ---------- TASKS ----------
+    // By default only open (non-completed) tasks are returned, same as
+    // before. Pass ?status=all to also include completed tasks (used by
+    // the "Show completed" toggle so completed tasks can be marked undone).
     if (pathname === "/api/tasks" && method === "GET") {
+      const showAll = query.status === "all";
       const tasks = await dbAll(
         `SELECT ct.*, st.label, st.stage_key, c.child_name, d.name AS department_name, d.color AS department_color
          FROM client_tasks ct
          JOIN stage_tasks st ON st.id = ct.stage_task_id
          JOIN clients c ON c.id = ct.client_id
          JOIN departments d ON d.id = st.department_id
-         WHERE ct.status != 'completed'
+         ${showAll ? "" : "WHERE ct.status != 'completed'"}
          ORDER BY ct.due_date ASC`
       );
       return json(res, 200, tasks);
@@ -2167,6 +2171,41 @@ async function handle(req, res, pathname, method, query = {}) {
     if (completeTaskMatch && method === "POST") {
       const result = await pipeline.completeTask(completeTaskMatch[1], user.id);
       return json(res, result.ok ? 200 : 400, result);
+    }
+
+    const reopenTaskMatch = pathname.match(/^\/api\/tasks\/(\d+)\/reopen$/);
+    if (reopenTaskMatch && method === "POST") {
+      const id = reopenTaskMatch[1];
+      const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [id]);
+      if (!task) return json(res, 404, { error: "Not found" });
+      await dbRun(
+        "UPDATE client_tasks SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL WHERE id = ?",
+        [id]
+      );
+      return json(res, 200, { ok: true });
+    }
+
+    if (pathname === "/api/tasks/bulk-update" && method === "POST") {
+      const { ids, status } = await readBody(req);
+      if (!Array.isArray(ids) || !ids.length) {
+        return json(res, 400, { error: "ids must be a non-empty array" });
+      }
+      if (status !== "completed" && status !== "pending") {
+        return json(res, 400, { error: "status must be 'completed' or 'pending'" });
+      }
+      const results = [];
+      for (const id of ids) {
+        if (status === "completed") {
+          results.push(await pipeline.completeTask(id, user.id));
+        } else {
+          await dbRun(
+            "UPDATE client_tasks SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL WHERE id = ?",
+            [id]
+          );
+          results.push({ ok: true });
+        }
+      }
+      return json(res, 200, { ok: true, results });
     }
 
     // ---------- THERAPISTS ----------
