@@ -281,6 +281,17 @@ CREATE TABLE IF NOT EXISTS email_templates (
   updated_by TEXT,
   updated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS enrollment_packets (
+  id SERIAL PRIMARY KEY,
+  client_id INTEGER NOT NULL UNIQUE,
+  signnow_document_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'sent', -- sent | completed | declined | expired
+  sent_at TEXT NOT NULL,
+  last_reminder_at TEXT,
+  reminder_count INTEGER NOT NULL DEFAULT 0,
+  completed_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES clients(id)
+  );
 `;
 
 // Small forward-compatible migrations for columns/tables added after the
@@ -555,6 +566,13 @@ const EMAIL_TEMPLATE_DEFS = [
       "days_remaining", "assigned_bcba_name", "authorization_status", "client_link",
     ],
   },
+  {
+    key: "enrollment_packet_reminder",
+    label: "Enrollment Packet Reminder",
+    category: "Parent Milestone Emails",
+    description: "Sent daily to the parent while the New Patient Enrollment Packet is still unsigned.",
+    fields: ["parent_name", "child_name"],
+  },
 ];
 
 // The CRM's original built-in copy -- used both as the seed data and as a
@@ -601,6 +619,13 @@ const EMAIL_TEMPLATE_DEFAULTS = {
     </ul>
     <p><a href="{{client_link}}">View client authorization record</a></p>
     <p>Please begin or complete the renewal process if this hasn't been started already.</p>`,
+  },
+  enrollment_packet_reminder: {
+    subject: "Action needed: complete {{child_name}}'s enrollment packet — Spectrum Squad",
+    body: `<p>Hi {{parent_name}},</p>
+    <p>We're still waiting on <strong>{{child_name}}'s</strong> New Patient Enrollment Packet. Completing this is an important next step -- we're not able to continue moving {{child_name}} forward toward services without it.</p>
+    <p>Please check your email for the signing link from SignNow (sender: qblake@spectrumsquadlv.com), or reach out to us if you're having trouble finding it or completing it.</p>
+    <p>Thank you,<br/>Spectrum Squad</p>`,
   },
 };
 
@@ -910,6 +935,150 @@ async function checkOverdueTasks() {
 }
 
 const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone };
+// ============================== SIGNNOW ENROLLMENT PACKET ==============================
+// Automatically sends the "Spectrum Squad New Patient Enrollment Packet"
+// via SignNow the moment a new lead is created (see createClientFromPayload
+// below), then polls for completion, sends a daily reminder email while
+// it's outstanding, and marks the client "Not Moving Forward" after 7 days
+// with no signature. No fields are pre-filled -- the parent completes the
+// whole packet themselves; this only handles sending + tracking.
+const SIGNNOW_API_KEY = process.env.SIGNNOW_API_KEY || "";
+const SIGNNOW_ENROLLMENT_TEMPLATE_ID = process.env.SIGNNOW_ENROLLMENT_TEMPLATE_ID || "";
+const SIGNNOW_SENDER_EMAIL = process.env.SIGNNOW_SENDER_EMAIL || "qblake@spectrumsquadlv.com";
+const SIGNNOW_API_BASE = "https://api.signnow.com";
+
+async function signNowRequest(path, options = {}) {
+  const res = await fetch(`${SIGNNOW_API_BASE}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${SIGNNOW_API_KEY}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const text = await res.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch (e) {
+    body = { raw: text };
+  }
+  if (!res.ok) {
+    throw new Error(`SignNow ${path} failed (${res.status}): ${JSON.stringify(body)}`);
+  }
+  return body;
+}
+
+async function sendEnrollmentPacket(client) {
+  if (!SIGNNOW_API_KEY || !SIGNNOW_ENROLLMENT_TEMPLATE_ID) {
+    console.error("SignNow not configured -- skipping enrollment packet for client", client.id);
+    return;
+  }
+  if (!client.parent_email) {
+    console.error("No parent_email on file -- skipping enrollment packet for client", client.id);
+    return;
+  }
+  try {
+    const copy = await signNowRequest(`/template/${SIGNNOW_ENROLLMENT_TEMPLATE_ID}/copy`, {
+      method: "POST",
+      body: JSON.stringify({ document_name: `Enrollment Packet - ${client.child_name}` }),
+    });
+    const documentId = copy.id;
+    await signNowRequest(`/document/${documentId}/invite`, {
+      method: "POST",
+      body: JSON.stringify({
+        to: [{ email: client.parent_email, role: "Recipient 1", order: 1 }],
+        from: SIGNNOW_SENDER_EMAIL,
+      }),
+    });
+    await dbRun(
+      `INSERT INTO enrollment_packets (client_id, signnow_document_id, status, sent_at)
+       VALUES (?, ?, 'sent', ?)
+       ON CONFLICT (client_id) DO NOTHING`,
+      [client.id, documentId, nowISO()]
+    );
+    console.log(`Enrollment packet sent to ${client.parent_email} for client ${client.id}`);
+  } catch (err) {
+    console.error("Failed to send enrollment packet for client", client.id, err.message);
+  }
+}
+
+async function checkEnrollmentPackets() {
+  if (!SIGNNOW_API_KEY) return;
+  const pending = await dbAll("SELECT * FROM enrollment_packets WHERE status = 'sent'");
+  const now = Date.now();
+
+  for (const packet of pending) {
+    let signNowStatus = null;
+    try {
+      const doc = await signNowRequest(`/document/${packet.signnow_document_id}`);
+      const invites = doc.field_invites || doc.requests || [];
+      if (invites.some((i) => String(i.status).toLowerCase() === "fulfilled")) {
+        signNowStatus = "completed";
+      } else if (invites.some((i) => String(i.status).toLowerCase() === "declined")) {
+        signNowStatus = "declined";
+      }
+    } catch (err) {
+      console.error("SignNow status check failed for packet", packet.id, err.message);
+      continue;
+    }
+
+    if (signNowStatus === "completed" || signNowStatus === "declined") {
+      await dbRun("UPDATE enrollment_packets SET status = ?, completed_at = ? WHERE id = ?", [
+        signNowStatus,
+        nowISO(),
+        packet.id,
+      ]);
+      continue;
+    }
+
+    const sentAt = new Date(packet.sent_at).getTime();
+    const daysSinceSent = (now - sentAt) / (1000 * 60 * 60 * 24);
+
+    if (daysSinceSent >= 7) {
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [packet.client_id]);
+      if (client && client.stage !== "not_moving_forward" && client.stage !== "discharged") {
+        await dbRun(
+          "UPDATE clients SET stage = 'not_moving_forward', discharge_reason = ?, updated_at = ? WHERE id = ?",
+          ["Enrollment packet not completed within 7 days", nowISO(), client.id]
+        );
+      }
+      await dbRun("UPDATE enrollment_packets SET status = 'expired' WHERE id = ?", [packet.id]);
+      continue;
+    }
+
+    const lastReminder = packet.last_reminder_at ? new Date(packet.last_reminder_at).getTime() : sentAt;
+    const hoursSinceReminder = (now - lastReminder) / (1000 * 60 * 60);
+    if (hoursSinceReminder >= 24) {
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [packet.client_id]);
+      if (client && client.parent_email) {
+        const template = await emailTemplates.getEmailTemplate("enrollment_packet_reminder");
+        const fields = { parent_name: client.parent_name, child_name: client.child_name };
+        sendEmail({
+          to: client.parent_email,
+          subject: emailTemplates.renderMergeFields(template.subject_template, fields),
+          html: emailTemplates.renderMergeFields(template.body_template, fields),
+          clientId: client.id,
+          type: "enrollment_packet_reminder",
+        }).catch((e) => console.error("sendEmail failed:", e));
+      }
+      await dbRun(
+        "UPDATE enrollment_packets SET last_reminder_at = ?, reminder_count = reminder_count + 1 WHERE id = ?",
+        [nowISO(), packet.id]
+      );
+    }
+  }
+}
+
+// Run shortly after boot (gives Postgres/schema time to be ready), then
+// hourly forever after. Each packet's own timestamps -- not server uptime
+// -- determine what's actually due, so this is safe across redeploys/restarts.
+setTimeout(() => {
+  checkEnrollmentPackets().catch((e) => console.error("checkEnrollmentPackets failed:", e));
+}, 30 * 1000);
+setInterval(() => {
+  checkEnrollmentPackets().catch((e) => console.error("checkEnrollmentPackets failed:", e));
+}, 60 * 60 * 1000);
 
 // ============================== AUTHORIZATION ALERTS ==============================
 // server/authAlerts.js
@@ -1584,7 +1753,9 @@ async function createClientFromPayload(c) {
     ]
   );
   await pipeline.enterStage(row.id, "new_submission");
-  return dbGet("SELECT * FROM clients WHERE id = ?", [row.id]);
+  const client = await dbGet("SELECT * FROM clients WHERE id = ?", [row.id]);
+  sendEnrollmentPacket(client).catch((e) => console.error("sendEnrollmentPacket failed:", e));
+  return client;
 }
 
 // ---- One-time historical backfill (silent -- no live emails) ----
