@@ -821,7 +821,7 @@ async function enterStage(clientId, stageKey) {
   const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
   if (!client) return;
 
-  await dbRun("UPDATE clients SET stage = ?, updated_at = ? WHERE id = ?", [stageKey, nowISO(), clientId]);
+  await dbRun("UPDATE clients SET stage = ?, updated_at = ?, stage_entered_at = ? WHERE id = ?", [stageKey, nowISO(), nowISO(), clientId]);
 
   const tasks = await dbAll("SELECT * FROM stage_tasks WHERE stage_key = ?", [stageKey]);
   for (const task of tasks) {
