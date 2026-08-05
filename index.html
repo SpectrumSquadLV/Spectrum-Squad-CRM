@@ -1029,8 +1029,7 @@ async function openClientModal(id) {
     route();
   });
   backdrop.querySelector("#delete-lead-btn").addEventListener("click", async () => {
-    if (!confirm(`This will permanently delete ${client.child_name}'s record, including all tasks, documents, and notification history. This cannot be undone. Continue?`)) return;
-    const password = await askPassword("Enter password to confirm deletion");
+   const password = await askPassword(`This will permanently delete ${client.child_name}'s record, including all tasks, documents, and notification history. Enter password to confirm.`);
     if (!password) return;
     try {
       await api(`/api/clients/${id}`, { method: "DELETE", body: { password } });
