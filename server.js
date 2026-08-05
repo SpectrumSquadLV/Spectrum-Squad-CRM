@@ -953,6 +953,106 @@ async function checkOverdueTasks() {
 }
 
 const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone };
+// ============================== PIPELINE V2 (MILESTONE DASHBOARD) ==============================
+// Computes the 6-milestone view (New Lead, Intake & Eligibility, Clinical
+// Assessment, Authorization, Ready to Start, Active Services) on top of the
+// existing 10-value `stage` column, plus per-client progress %, missing
+// checklist items, blocker category, owner, and next action. Read-only --
+// does not change how `stage` itself is stored or advanced.
+"use strict";
+
+const MILESTONES = [
+  { key: 1, label: "New Lead", stages: ["new_submission"] },
+  { key: 2, label: "Intake & Eligibility", stages: ["clinical_screener", "insurance_verification", "intake_packet"] },
+  { key: 3, label: "Clinical Assessment", stages: ["assessment_scheduling"] },
+  { key: 4, label: "Authorization", stages: ["authorization"] },
+  { key: 5, label: "Ready to Start", stages: ["first_day_scheduled"] },
+  { key: 6, label: "Active Services", stages: ["active"] },
+];
+
+function milestoneForStage(stageKey) {
+  if (stageKey === "discharged" || stageKey === "not_moving_forward") return null;
+  const m = MILESTONES.find((m) => m.stages.includes(stageKey));
+  return m ? m.key : 1;
+}
+
+const MILESTONE_CHECKLISTS = {
+  1: [
+    { key: "diagnosis_uploaded", label: "Diagnosis uploaded", blocker: "parent" },
+    { key: "insurance_card_uploaded", label: "Insurance card uploaded", blocker: "parent" },
+    { key: "clinical_screener_completed", label: "Clinical screener", blocker: "clinical" },
+  ],
+  2: [
+    { key: "clinical_screener_completed", label: "Clinical screener completed", blocker: "clinical" },
+    { key: "insurance_verification_completed", label: "Insurance verification completed", blocker: "insurance" },
+    { key: "intake_packet_sent", label: "Intake packet sent", blocker: "clinical" },
+    { key: "intake_packet_returned", label: "Intake packet returned", blocker: "parent" },
+  ],
+  3: [
+    { key: "vineland_completed", label: "Vineland", blocker: "clinical" },
+    { key: "intake_assessment_scheduled_date", label: "Intake assessment scheduled", blocker: "clinical" },
+    { key: "intake_assessment_completed", label: "Intake assessment completed", blocker: "clinical" },
+  ],
+  4: [
+    { key: "authorization_submitted", label: "Authorization submitted", blocker: "insurance" },
+    { key: "__authorization_approved", label: "Authorization approved", blocker: "insurance" },
+    { key: "previous_provider_discharge_letter_received", label: "Previous provider discharge letter", blocker: "provider" },
+    { key: "physician_referral_received", label: "Physician referral", blocker: "parent" },
+    { key: "additional_insurance_docs_received", label: "Additional insurance documents", blocker: "parent" },
+  ],
+  5: [
+    { key: "rethink_client_created", label: "Rethink client created", blocker: "clinical" },
+    { key: "__bcba_assigned", label: "BCBA assigned", blocker: "clinical" },
+    { key: "__rbt_assigned", label: "RBT assigned", blocker: "clinical" },
+    { key: "schedule_finalized", label: "Schedule finalized", blocker: "clinical" },
+    { key: "__first_session_scheduled", label: "First ABA session scheduled", blocker: "clinical" },
+  ],
+};
+
+function checklistItemDone(client, item) {
+  if (item.key === "__authorization_approved") return client.authorization_status === "Approved";
+  if (item.key === "__bcba_assigned") return !!client.assigned_bcba_name;
+  if (item.key === "__rbt_assigned") return !!client.assigned_rbt_name;
+  if (item.key === "__first_session_scheduled") return !!client.first_day_date;
+  return !!client[item.key];
+}
+
+function computeMilestoneView(client) {
+  const milestone = milestoneForStage(client.stage);
+  if (milestone === null) {
+    return {
+      milestone: null,
+      milestoneLabel: client.stage === "discharged" ? "Discharged" : "Not Moving Forward",
+      progressPct: 0, missingItems: [], blocker: null, owner: null, nextAction: null, daysInStage: null, priority: null,
+    };
+  }
+  const def = MILESTONES.find((m) => m.key === milestone);
+  const checklist = MILESTONE_CHECKLISTS[milestone] || [];
+  const missing = checklist.filter((item) => !checklistItemDone(client, item));
+  const progressPct = checklist.length ? Math.round(((checklist.length - missing.length) / checklist.length) * 100) : 100;
+
+  let blocker = "ready";
+  if (missing.length) blocker = missing[0].blocker;
+
+  let owner;
+  if (milestone <= 2) owner = client.assigned_intake_coordinator_name || "Unassigned";
+  else owner = client.assigned_bcba_name || "Unassigned";
+
+  const enteredAt = client.stage_entered_at || client.updated_at || client.submitted_at;
+  const daysInStage = enteredAt ? Math.max(0, Math.floor((Date.now() - new Date(enteredAt).getTime()) / 86400000)) : 0;
+
+  let priority = "Low";
+  if (missing.length >= 3 || daysInStage >= 14) priority = "High";
+  else if (missing.length >= 1 || daysInStage >= 7) priority = "Medium";
+
+  const nextAction = missing.length
+    ? `Follow up on: ${missing[0].label.toLowerCase()}.`
+    : "Ready to advance to the next milestone.";
+
+  return { milestone, milestoneLabel: def ? def.label : null, progressPct, missingItems: missing.map((m) => m.label), blocker, owner, nextAction, daysInStage, priority };
+}
+
+const pipelineV2 = { MILESTONES, milestoneForStage, computeMilestoneView };
 // ============================== SIGNNOW ENROLLMENT PACKET ==============================
 // Automatically sends the "Spectrum Squad New Patient Enrollment Packet"
 // via SignNow the moment a new lead is created (see createClientFromPayload
