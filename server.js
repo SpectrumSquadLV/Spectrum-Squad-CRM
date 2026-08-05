@@ -2756,6 +2756,7 @@ const clientFinancialsMatch = pathname.match(/^\/api\/clients\/(\d+)\/financials
     const ownerSettings = await ownerFinancials.getOwnerFinancialSettings();
     const scheduledByClient = await ownerFinancials.getScheduledHoursByClient();
     const result = ownerFinancials.computeClientFinancials(updatedClient, fsRow, ownerSettings, scheduledByClient[id] || 0);
+    result.settings = fsRow || {};
     return json(res, 200, result);
   }
 
