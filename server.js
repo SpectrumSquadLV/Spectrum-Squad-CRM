@@ -332,6 +332,33 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_rbt_name TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS schedule_finalized BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS stage_entered_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_intake_coordinator_name TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS can_view_financials BOOLEAN NOT NULL DEFAULT false;
+
+  CREATE TABLE IF NOT EXISTS client_financial_settings (
+    client_id INTEGER PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
+    authorized_hours_per_week REAL,
+    custom_projected_hours_per_week REAL,
+    hours_source_preference TEXT,
+    service_start_date_override TEXT,
+    service_end_date_override TEXT,
+    lifetime_calc_source TEXT NOT NULL DEFAULT 'estimated_from_schedule',
+    updated_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS owner_financial_settings (
+    id INTEGER PRIMARY KEY,
+    avg_revenue_per_hour REAL NOT NULL DEFAULT 50,
+    avg_net_profit_per_hour REAL NOT NULL DEFAULT 11,
+    monthly_conversion_factor REAL NOT NULL DEFAULT 4.33,
+    default_hours_source TEXT NOT NULL DEFAULT 'scheduled',
+    financial_view_roles TEXT NOT NULL DEFAULT 'owner,super_admin'
+  );
+
+  INSERT INTO owner_financial_settings (id, avg_revenue_per_hour, avg_net_profit_per_hour, monthly_conversion_factor, default_hours_source, financial_view_roles)
+  VALUES (1, 50, 11, 4.33, 'scheduled', 'owner,super_admin')
+  ON CONFLICT (id) DO NOTHING;
+
+  UPDATE users SET role = 'owner' WHERE email = 'admin@spectrumsquadlv.com' AND role = 'admin';
 `;
 
 async function initSchema() {
