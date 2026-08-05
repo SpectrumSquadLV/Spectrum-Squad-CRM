@@ -2321,7 +2321,31 @@ async function handle(req, res, pathname, method, query = {}) {
       );
       return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
     }
+const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
+    if (deleteClientMatch && method === "DELETE") {
+      const clientId = deleteClientMatch[1];
+      const { password } = await readBody(req);
+      if (!password) return json(res, 400, { error: "Password is required" });
 
+      const owner = await auth.findUserByEmail("admin@spectrumsquadlv.com");
+      if (!owner || !verifyPassword(password, owner.password_salt, owner.password_hash)) {
+        return json(res, 403, { error: "Incorrect password" });
+      }
+
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+      if (!client) return json(res, 404, { error: "Not found" });
+
+      await dbRun("DELETE FROM client_tasks WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM schedule_sessions WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM notifications_log WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM client_documents WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM auth_audit_log WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM auth_alerts WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM enrollment_packets WHERE client_id = ?", [clientId]);
+      await dbRun("DELETE FROM clients WHERE id = ?", [clientId]);
+
+      return json(res, 200, { ok: true, deleted: clientId });
+    }
     // ---------- TASKS ----------
     // By default only open (non-completed) tasks are returned, same as
     // before. Pass ?status=all to also include completed tasks (used by
