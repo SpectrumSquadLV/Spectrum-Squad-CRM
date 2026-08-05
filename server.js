@@ -2439,6 +2439,28 @@ async function handle(req, res, pathname, method, query = {}) {
       );
       return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
     }
+if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
+      const clients = await dbAll(
+        "SELECT * FROM clients WHERE stage NOT IN ('discharged','not_moving_forward') ORDER BY submitted_at DESC"
+      );
+      const shaped = clients.map((c) => ({
+        id: c.id,
+        child_name: c.child_name,
+        parent_name: c.parent_name,
+        insurance_provider: c.insurance_provider,
+        service_location: c.service_location,
+        assigned_bcba_name: c.assigned_bcba_name,
+        assigned_intake_coordinator_name: c.assigned_intake_coordinator_name,
+        ...pipelineV2.computeMilestoneView(c),
+      }));
+      return json(res, 200, shaped);
+    }
+
+Commit all 4 as: "Add pipeline v2 milestone logic and API"
+(Note for you, not code -- don't paste this line into the file.)
+
+
+    
 const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     if (deleteClientMatch && method === "DELETE") {
       const clientId = deleteClientMatch[1];
