@@ -989,6 +989,8 @@ async function sendEnrollmentPacket(client) {
       body: JSON.stringify({
         to: [{ email: client.parent_email, role: "Recipient 1", order: 1 }],
         from: SIGNNOW_SENDER_EMAIL,
+        subject: `Please complete ${client.child_name}'s enrollment packet — Spectrum Squad`,
+        message: `Hi ${client.parent_name || "there"}, thank you for choosing Spectrum Squad! Please review and complete ${client.child_name}'s New Patient Enrollment Packet using the link below. If you have any questions, just reply to this email.`,
       }),
     });
     await dbRun(
