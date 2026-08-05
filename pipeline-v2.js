@@ -181,13 +181,19 @@
   }
 
   function boot() {
+    // IMPORTANT: this MutationObserver only re-injects the nav button if the
+    // app's own re-renders wipe it out. It must NOT trigger onHashChange/
+    // loadAndRender, because loadAndRender itself mutates the DOM (it sets
+    // #view-mount's innerHTML) -- if this observer called onHashChange too,
+    // every render would trigger the observer, which would render again,
+    // which would trigger the observer again, forever. Keep these separate.
     const tryInject = () => {
       injectNavButton();
-      if (location.hash === HASH) onHashChange();
     };
     [150, 500, 1200, 2500, 4000].forEach((ms) => setTimeout(tryInject, ms));
     new MutationObserver(tryInject).observe(document.body, { childList: true, subtree: true });
     window.addEventListener("hashchange", onHashChange);
+    if (location.hash === HASH) onHashChange();
   }
 
   boot();
