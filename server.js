@@ -1080,6 +1080,31 @@ return { milestone, milestoneLabel: def ? def.label : null, progressPct, missing
 }
 
 const pipelineV2 = { MILESTONES, milestoneForStage, computeMilestoneView };
+// ============================== OWNER FINANCIALS (PERMISSIONS) ==============================
+  // Mirrors the existing canViewAuth/sanitizeClientForRole pattern used for
+  // authorization fields. Financial figures themselves are computed in a
+  // later phase -- this just adds the permission check + settings lookup
+  // that every financial code path will be gated behind.
+  async function getOwnerFinancialSettings() {
+    let row = await dbGet("SELECT * FROM owner_financial_settings WHERE id = 1");
+    if (!row) {
+      await dbRun(
+        "INSERT INTO owner_financial_settings (id, avg_revenue_per_hour, avg_net_profit_per_hour, monthly_conversion_factor, default_hours_source, financial_view_roles) VALUES (1, 50, 11, 4.33, 'scheduled', 'owner,super_admin') ON CONFLICT (id) DO NOTHING"
+      );
+      row = await dbGet("SELECT * FROM owner_financial_settings WHERE id = 1");
+    }
+    return row;
+  }
+
+  async function canViewFinancials(user) {
+    if (!user) return false;
+    if (user.can_view_financials) return true;
+    const settings = await getOwnerFinancialSettings();
+    const roles = (settings.financial_view_roles || "").split(",").map((r) => r.trim()).filter(Boolean);
+    return roles.includes(user.role);
+  }
+
+  const ownerFinancials = { getOwnerFinancialSettings, canViewFinancials };
 // ============================== SIGNNOW ENROLLMENT PACKET ==============================
 // Automatically sends the "Spectrum Squad New Patient Enrollment Packet"
 // via SignNow the moment a new lead is created (see createClientFromPayload
