@@ -1,0 +1,21 @@
+PHASE 4 -- pipeline-v2.js replacement
+=======================================
+Do this AFTER the server.js edits from phase4-server-instructions.txt are
+live (so the new checklist endpoint exists before the UI tries to call it).
+
+In the GitHub repo, go into the folder that already has pipeline-v2.js.
+Click "Add file" > "Upload files", drag the new pipeline-v2.js on top of
+the old one (same filename, so it replaces it), and commit directly to
+main. Commit message: "Phase 4: checklist checkboxes + pipeline nav reorder"
+
+What changed in this version, so you know what to expect on the site:
+- Each card's missing-items list now shows real checkboxes for anything
+  staff can mark done directly (diagnosis uploaded, screener completed,
+  packet sent/returned, authorization submitted, etc). Checking one saves
+  immediately and refreshes the card.
+- Items that come from other parts of the app (BCBA assigned, authorization
+  approved, RBT assigned, first session scheduled) still show as plain text
+  -- those are set elsewhere and shouldn't be double-entered here.
+- The nav button now reads "Pipeline" instead of "Pipeline v2" and sits
+  near the top of the sidebar instead of the bottom, so it reads as the
+  main pipeline view.
