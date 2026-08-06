@@ -997,11 +997,17 @@ async function hrLoadOffers(mount, id, a) {
     if (o.status === "accepted") html += `<p style="color:#16a34a;font-weight:600">🎉 Accepted by ${hrEsc(o.signed_name || "")} on ${hrFmtDate(o.signed_at)}</p>`;
     if (o.status === "declined") html += `<p class="hr-muted">Declined${o.decline_reason ? ": " + hrEsc(o.decline_reason) : ""}</p>`;
     html += `<div class="hr-row">`;
-    if (o.status === "draft") html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm" id="hr-offer-approve">Approve</button>`;
-    if (o.status === "approved") html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm" id="hr-offer-send">Send to candidate 🎊</button>`;
-    if (["sent", "accepted", "declined"].includes(o.status)) html += `<button class="hr-btn sm ghost" id="hr-offer-copy">Copy offer link</button> <a class="hr-btn sm ghost" href="${hrEsc(o.public_url)}" target="_blank">Preview</a>`;
+    if (o.status === "draft") {
+      html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm" id="hr-offer-approve">Approve</button>`;
+    } else if (o.status === "approved") {
+      html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm" id="hr-offer-send">Send to candidate 🎊</button><button class="hr-btn sm ghost" id="hr-offer-withdraw">Back to draft</button>`;
+    } else if (o.status === "sent") {
+      html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm ghost" id="hr-offer-copy">Copy link</button> <a class="hr-btn sm ghost" href="${hrEsc(o.public_url)}" target="_blank">Preview</a><button class="hr-btn sm danger" id="hr-offer-withdraw">Withdraw</button>`;
+    } else {
+      html += `<button class="hr-btn sm ghost" id="hr-offer-copy">Copy link</button> <a class="hr-btn sm ghost" href="${hrEsc(o.public_url)}" target="_blank">Preview</a>`;
+    }
     html += `<span class="hr-status" id="hr-offer-status"></span></div>`;
-    if (o.status === "sent") html += `<p class="hr-muted" style="margin-top:6px">Sent — waiting on the candidate.</p>`;
+    if (o.status === "sent") html += `<p class="hr-muted" style="margin-top:6px">Sent — waiting on the candidate. You can still <strong>Edit</strong> (updates the live offer) or <strong>Withdraw</strong> it until they respond.</p>`;
   }
   card.innerHTML = html;
 
@@ -1018,6 +1024,11 @@ async function hrLoadOffers(mount, id, a) {
   });
   const cp = card.querySelector("#hr-offer-copy");
   if (cp) cp.addEventListener("click", () => { if (navigator.clipboard) navigator.clipboard.writeText(o.public_url); const st = card.querySelector("#hr-offer-status"); st.textContent = "Copied!"; st.className = "hr-status ok"; });
+  const wd = card.querySelector("#hr-offer-withdraw");
+  if (wd) wd.addEventListener("click", async () => {
+    if (!confirm("Move this offer back to draft so you can edit it? The candidate's current link will stop working until you re-send.")) return;
+    try { await hrApi("/api/hr/offers/" + o.id + "/withdraw", { method: "POST" }); hrLoadOffers(mount, id, a); } catch (e) { alert(e.message); }
+  });
 }
 
 function hrOpenOfferModal(mount, id, a, o) {

@@ -1796,7 +1796,7 @@ module.exports = function initHr(ctx) {
         if (!canSensitive) return json(res, 403, { error: "Not permitted" });
         const o = await dbGet("SELECT * FROM hr_offers WHERE id = ?", [offerIdMatch[1]]);
         if (!o) return json(res, 404, { error: "Not found" });
-        if (!["draft", "approved"].includes(o.status)) return json(res, 409, { error: "This offer has already been sent and can't be edited." });
+        if (["accepted", "declined"].includes(o.status)) return json(res, 409, { error: "This offer was already " + o.status + " and can't be changed." });
         const b = await readBody(req);
         await dbRun(
           `UPDATE hr_offers SET job_title = ?, employment_type = ?, comp_amount = ?, comp_unit = ?, comp_notes = ?,
@@ -1853,6 +1853,18 @@ module.exports = function initHr(ctx) {
         }
         await audit(actor, "offer_sent", "applicant", o.applicant_id, "");
         return json(res, 200, { ok: true, url });
+      }
+
+      const offerWithdrawMatch = pathname.match(/^\/api\/hr\/offers\/(\d+)\/withdraw$/);
+      if (offerWithdrawMatch && method === "POST") {
+        if (!canSensitive) return json(res, 403, { error: "Only the owner can withdraw offers." });
+        const o = await dbGet("SELECT * FROM hr_offers WHERE id = ?", [offerWithdrawMatch[1]]);
+        if (!o) return json(res, 404, { error: "Not found" });
+        if (["accepted", "declined"].includes(o.status)) return json(res, 409, { error: "This offer was already " + o.status + "." });
+        await dbRun("UPDATE hr_offers SET status = 'draft', updated_at = ? WHERE id = ?", [nowISO(), o.id]);
+        await dbRun("UPDATE hr_applicants SET offer_status = 'draft', updated_at = ? WHERE id = ?", [nowISO(), o.applicant_id]).catch(() => {});
+        await audit(actor, "offer_withdrawn", "applicant", o.applicant_id, "");
+        return json(res, 200, { ok: true });
       }
 
       // ---- employees (future HR) ----
