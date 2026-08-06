@@ -143,6 +143,7 @@ const ET_MERGE_FIELD_LABELS = {
   assigned_bcba_name: "Assigned BCBA",
   authorization_status: "Authorization Status",
   client_link: "Link to Client Record",
+  waitlist_reason: "Waitlist Reason",
 };
 
 // ---- rendering ----
@@ -161,7 +162,7 @@ async function etRenderList(mount) {
     if (!byCategory[cat]) byCategory[cat] = [];
     byCategory[cat].push(t);
   }
-  const order = ["Parent Milestone Emails", "Internal Staff Alerts", "Authorization Alerts"];
+  const order = ["Parent Milestone Emails", "Waitlist Emails", "Internal Staff Alerts", "Authorization Alerts"];
   const categories = Object.keys(byCategory).sort((a, b) => {
     const ia = order.indexOf(a);
     const ib = order.indexOf(b);

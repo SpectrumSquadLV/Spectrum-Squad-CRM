@@ -530,7 +530,7 @@ function renderShell(active) {
   if (canViewAuth()) navItems.push({ key: "auth-alerts", label: "Authorization Alerts", icon: "⏰" });
   if (["owner", "admin", "super_admin", "hr_admin", "hiring_manager", "interviewer"].includes(state.user.role))
     navItems.push({ key: "hr", label: "HR & Recruiting", icon: "👥" });
-  if (state.user.role === "admin") navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
+  if (["owner", "admin", "super_admin"].includes(state.user.role)) navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
 
   root.innerHTML = `
     <div class="app-shell">
@@ -691,21 +691,37 @@ function renderAuthDashboardCard(counts) {
 
 // ---------------- Pipeline (Kanban) ----------------
 async function renderPipeline(mount) {
+  const waitlistCount = state.clients.filter((c) => c.waitlisted).length;
+  const showWaitlistOnly = state.pipelineWaitlistOnly === true;
   mount.innerHTML = `
     <div class="page-header">
       <div><h1>Client Pipeline</h1><p>Color-coded by stage. Click any card for full details and tasks, or drag a card to move it between stages.</p></div>
       <button class="btn" id="new-client-btn">+ New Enrollment</button>
     </div>
+    <div style="display:flex; gap:8px; margin-bottom:14px;">
+      <button class="btn ${showWaitlistOnly ? "secondary" : ""} small" id="filter-all-btn">All clients</button>
+      <button class="btn ${showWaitlistOnly ? "" : "secondary"} small" id="filter-waitlist-btn">⏳ Waitlist (${waitlistCount})</button>
+    </div>
     <div class="kanban" id="kanban"></div>
   `;
   document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
+  document.getElementById("filter-all-btn").addEventListener("click", () => {
+    state.pipelineWaitlistOnly = false;
+    renderPipeline(mount);
+  });
+  document.getElementById("filter-waitlist-btn").addEventListener("click", () => {
+    state.pipelineWaitlistOnly = true;
+    renderPipeline(mount);
+  });
 
   const kanban = document.getElementById("kanban");
   const visibleStages = state.stages.filter((s) => s.key !== "not_moving_forward");
 
   kanban.innerHTML = visibleStages
     .map((stage) => {
-      const clients = state.clients.filter((c) => c.stage === stage.key);
+      const clients = state.clients.filter(
+        (c) => c.stage === stage.key && (!showWaitlistOnly || c.waitlisted)
+      );
       return `
       <div class="kanban-col" data-stage="${stage.key}">
         <div class="kanban-col-header">
@@ -715,7 +731,7 @@ async function renderPipeline(mount) {
         ${clients
           .map(
             (c) => `<div class="client-card" draggable="true" style="border-left-color:${stage.color}" data-client="${c.id}">
-              <div class="name">${c.child_name}</div>
+              <div class="name">${c.child_name} ${c.waitlisted ? `<span class="tag" style="background:#fef3c7; color:#92400e;">⏳ Waitlist</span>` : ""}</div>
               <div class="meta">${c.parent_name || "—"} · ${c.service_location || "—"}</div>
               <div class="tags">
                 ${c.desired_schedule ? `<span class="tag">${c.desired_schedule}</span>` : ""}
@@ -909,6 +925,7 @@ async function openClientModal(id) {
         <div>
           <h2>${client.child_name}</h2>
           <span class="badge" style="background:${stage.color}">${stage.label}</span>
+          ${client.waitlisted ? `<span class="badge" style="background:#c98a1b;">⏳ Waitlist</span>` : ""}
         </div>
         <button class="close-btn">✕</button>
       </div>
@@ -960,6 +977,24 @@ async function openClientModal(id) {
               .join("")
           : `<div class="empty-state">No tasks yet.</div>`
       }
+
+      <div class="section-title">Waitlist</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        ${
+          client.waitlisted
+            ? `<span class="tag" style="background:#fef3c7; color:#92400e;">On waitlist since ${client.waitlisted_at ? fmtDate(client.waitlisted_at) : "—"}</span>
+               <button class="btn secondary small" id="waitlist-remove-btn">Remove from waitlist</button>`
+            : `<button class="btn secondary small" id="waitlist-add-btn">Place on waitlist</button>`
+        }
+      </div>
+      ${
+        client.waitlisted && client.waitlist_reason
+          ? `<div style="font-size:12.5px; color:var(--text-muted); margin-top:6px;">Reason: ${client.waitlist_reason}</div>`
+          : ""
+      }
+      <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">
+        ${client.parent_email ? "An automated email is sent to the parent when a client is placed on or removed from the waitlist." : "No parent email on file — no automated email will be sent."}
+      </div>
 
       <div class="section-title">Advance / Close Out</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -1014,6 +1049,43 @@ async function openClientModal(id) {
       route();
     });
   });
+
+  const waitlistAddBtn = backdrop.querySelector("#waitlist-add-btn");
+  if (waitlistAddBtn) {
+    waitlistAddBtn.addEventListener("click", async () => {
+      const reason = await askReason("Reason for waitlist (optional — visible to staff only, not sent to the family)");
+      if (reason === null) return; // cancelled
+      const emailNote = client.parent_email
+        ? `\n\nAn automated "you're on the waitlist" email will be sent to ${client.parent_email}.`
+        : "\n\nNote: no parent email is on file, so no email will be sent.";
+      if (!confirm(`Place ${client.child_name} on the waitlist?${emailNote}`)) return;
+      try {
+        await api(`/api/clients/${id}/waitlist`, { method: "POST", body: { waitlisted: true, reason } });
+        close();
+        await loadClients();
+        route();
+      } catch (e) {
+        alert("Could not update waitlist: " + e.message);
+      }
+    });
+  }
+  const waitlistRemoveBtn = backdrop.querySelector("#waitlist-remove-btn");
+  if (waitlistRemoveBtn) {
+    waitlistRemoveBtn.addEventListener("click", async () => {
+      const emailNote = client.parent_email
+        ? `\n\nAn automated "a spot has opened" email will be sent to ${client.parent_email}.`
+        : "\n\nNote: no parent email is on file, so no email will be sent.";
+      if (!confirm(`Remove ${client.child_name} from the waitlist?${emailNote}`)) return;
+      try {
+        await api(`/api/clients/${id}/waitlist`, { method: "POST", body: { waitlisted: false } });
+        close();
+        await loadClients();
+        route();
+      } catch (e) {
+        alert("Could not update waitlist: " + e.message);
+      }
+    });
+  }
 
   backdrop.querySelector("#advance-btn").addEventListener("click", async () => {
     await api(`/api/clients/${id}/advance`, { method: "POST", body: {} });
@@ -1518,9 +1590,19 @@ async function renderOutbox(mount) {
 }
 
 // ---------------- Admin ----------------
+function adminEsc(str) {
+  const div = document.createElement("div");
+  div.textContent = str == null ? "" : String(str);
+  return div.innerHTML;
+}
+
 async function renderAdmin(mount) {
   mount.innerHTML = `
-    <div class="page-header"><div><h1>Admin Settings</h1><p>Department alert routing and overdue-check controls.</p></div></div>
+    <div class="page-header"><div><h1>Admin Settings</h1><p>Team members, department alert routing, and overdue-check controls.</p></div></div>
+    <div class="card" style="margin-bottom:20px;" id="team-card">
+      <div class="section-title" style="margin-top:0;">Team Members</div>
+      <div id="team-body" style="font-size:13px; color:var(--text-muted);">Loading…</div>
+    </div>
     <div class="card" style="margin-bottom:20px;">
       <div class="section-title" style="margin-top:0;">Department Notification Emails</div>
       ${state.departments
@@ -1528,7 +1610,7 @@ async function renderAdmin(mount) {
           (d) => `<div class="task-row">
           <div class="info"><span class="badge" style="background:${d.color}">${d.name}</span></div>
           <div style="display:flex; gap:8px;">
-            <input data-dept-email="${d.id}" value="${d.notify_email || ""}" style="width:240px;" />
+            <input data-dept-email="${d.id}" value="${adminEsc(d.notify_email || "")}" style="width:240px;" />
             <button class="btn small secondary" data-save-dept="${d.id}">Save</button>
           </div>
         </div>`
@@ -1556,6 +1638,186 @@ async function renderAdmin(mount) {
   mount.querySelector("#run-sweep").addEventListener("click", async () => {
     const { flagged } = await api("/api/admin/check-overdue", { method: "POST" });
     document.getElementById("sweep-result").textContent = `${flagged} task(s) newly flagged overdue.`;
+  });
+
+  await renderTeamSection(mount);
+}
+
+async function renderTeamSection(mount) {
+  const body = mount.querySelector("#team-body");
+  if (!body) return;
+  let data;
+  try {
+    data = await api("/api/admin/users");
+  } catch (e) {
+    body.innerHTML = `<div class="empty-state">Couldn't load team members: ${adminEsc(e.message)}</div>`;
+    return;
+  }
+  const users = data.users || [];
+  const roles = data.roles || [];
+  const roleOptions = (selected) =>
+    roles.map((r) => `<option value="${r.key}" ${r.key === selected ? "selected" : ""}>${adminEsc(r.label)}</option>`).join("");
+  const deptOptions = (selected) =>
+    `<option value="">— No department —</option>` +
+    state.departments.map((d) => `<option value="${d.id}" ${String(d.id) === String(selected) ? "selected" : ""}>${adminEsc(d.name)}</option>`).join("");
+  const roleLabel = (key) => (roles.find((r) => r.key === key) || {}).label || key;
+
+  body.innerHTML = `
+    <p style="margin:0 0 14px;">Add teammates, choose what each person can access, reset a password, or remove someone. New users sign in at the same login page with the temporary password you set — they should change it after their first sign-in.</p>
+
+    <div style="overflow-x:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:640px;">
+        <thead>
+          <tr style="text-align:left; color:var(--text-muted); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em;">
+            <th style="padding:8px 10px; border-bottom:2px solid var(--border,#e5e7eb);">Name / Email</th>
+            <th style="padding:8px 10px; border-bottom:2px solid var(--border,#e5e7eb);">Role (what they can see)</th>
+            <th style="padding:8px 10px; border-bottom:2px solid var(--border,#e5e7eb);">Department</th>
+            <th style="padding:8px 10px; border-bottom:2px solid var(--border,#e5e7eb);">Financials</th>
+            <th style="padding:8px 10px; border-bottom:2px solid var(--border,#e5e7eb);"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            users
+              .map(
+                (u) => `<tr data-user-row="${u.id}">
+              <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3);">
+                <div><strong>${adminEsc(u.name)}</strong>${String(u.id) === String(state.user.id) ? ` <span class="tag">you</span>` : ""}</div>
+                <div style="color:var(--text-muted); font-size:12px;">${adminEsc(u.email)}</div>
+              </td>
+              <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3);">
+                <select data-user-role="${u.id}" style="min-width:150px;">${roleOptions(u.role)}</select>
+              </td>
+              <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3);">
+                <select data-user-dept="${u.id}" style="min-width:150px;">${deptOptions(u.department_id)}</select>
+              </td>
+              <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3); text-align:center;">
+                <input type="checkbox" data-user-fin="${u.id}" ${u.can_view_financials ? "checked" : ""} title="Can view financial data" />
+              </td>
+              <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3); white-space:nowrap;">
+                <button class="btn small" data-save-user="${u.id}">Save</button>
+                <button class="btn small secondary" data-reset-user="${u.id}">Reset password</button>
+                ${String(u.id) === String(state.user.id) ? "" : `<button class="btn small secondary" data-delete-user="${u.id}" style="color:#b91c1c;">Remove</button>`}
+              </td>
+            </tr>`
+              )
+              .join("") || `<tr><td colspan="5" style="padding:14px;">No team members yet.</td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>
+
+    <div style="margin-top:8px; font-size:12px;" id="team-status"></div>
+
+    <div class="section-title">Add a Team Member</div>
+    <div class="form-grid" style="gap:10px;">
+      <div class="field"><label>Full name</label><input id="new-user-name" placeholder="Jane Smith" /></div>
+      <div class="field"><label>Email</label><input id="new-user-email" type="email" placeholder="jane@spectrumsquadlv.com" /></div>
+      <div class="field"><label>Temporary password (min 8 chars)</label><input id="new-user-password" type="text" placeholder="e.g. Welcome2Spectrum!" /></div>
+      <div class="field"><label>Role</label><select id="new-user-role">${roleOptions("intake")}</select></div>
+      <div class="field"><label>Department (optional)</label><select id="new-user-dept">${deptOptions("")}</select></div>
+      <div class="field"><label style="display:flex; align-items:center; gap:6px; margin-top:22px;"><input type="checkbox" id="new-user-fin" /> Can view financial data</label></div>
+    </div>
+    <div style="margin-top:12px;"><button class="btn" id="add-user-btn">+ Add Team Member</button> <span id="add-user-status" style="font-size:13px; margin-left:8px;"></span></div>
+
+    <div class="section-title">What each role can see</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:8px;">
+      ${roles
+        .map(
+          (r) => `<div style="border:1px solid var(--border,#e5e7eb); border-radius:8px; padding:10px 12px;">
+            <div style="font-weight:600; font-size:13px;">${adminEsc(r.label)}${r.privileged ? ` <span class="tag" style="background:#eef0fb; color:#29225c;">full access</span>` : ""}</div>
+            <div style="font-size:12.5px; color:var(--text-muted); margin-top:3px;">${adminEsc(r.description)}</div>
+          </div>`
+        )
+        .join("")}
+    </div>
+  `;
+
+  const setStatus = (msg, ok) => {
+    const el = body.querySelector("#team-status");
+    if (el) {
+      el.textContent = msg;
+      el.style.color = ok ? "#16a34a" : "#b91c1c";
+    }
+  };
+
+  body.querySelectorAll("[data-save-user]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.saveUser;
+      const role = body.querySelector(`[data-user-role="${id}"]`).value;
+      const deptVal = body.querySelector(`[data-user-dept="${id}"]`).value;
+      const fin = body.querySelector(`[data-user-fin="${id}"]`).checked;
+      btn.disabled = true;
+      try {
+        await api(`/api/admin/users/${id}`, {
+          method: "PATCH",
+          body: { role, department_id: deptVal || null, can_view_financials: fin },
+        });
+        setStatus("Saved ✓", true);
+      } catch (e) {
+        setStatus(e.message, false);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+
+  body.querySelectorAll("[data-reset-user]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.resetUser;
+      const pw = prompt("Enter a new temporary password for this user (min 8 characters):");
+      if (!pw) return;
+      if (pw.length < 8) {
+        setStatus("Password must be at least 8 characters.", false);
+        return;
+      }
+      try {
+        await api(`/api/admin/users/${id}`, { method: "PATCH", body: { password: pw } });
+        setStatus("Password reset ✓ — share the new temporary password with them.", true);
+      } catch (e) {
+        setStatus(e.message, false);
+      }
+    });
+  });
+
+  body.querySelectorAll("[data-delete-user]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.deleteUser;
+      const row = body.querySelector(`[data-user-row="${id}"]`);
+      const name = row ? row.querySelector("strong").textContent : "this user";
+      if (!confirm(`Remove ${name}? They will no longer be able to sign in. This cannot be undone.`)) return;
+      try {
+        await api(`/api/admin/users/${id}`, { method: "DELETE" });
+        await renderTeamSection(mount);
+      } catch (e) {
+        setStatus(e.message, false);
+      }
+    });
+  });
+
+  const addBtn = body.querySelector("#add-user-btn");
+  addBtn.addEventListener("click", async () => {
+    const name = body.querySelector("#new-user-name").value.trim();
+    const email = body.querySelector("#new-user-email").value.trim();
+    const password = body.querySelector("#new-user-password").value;
+    const role = body.querySelector("#new-user-role").value;
+    const deptVal = body.querySelector("#new-user-dept").value;
+    const fin = body.querySelector("#new-user-fin").checked;
+    const status = body.querySelector("#add-user-status");
+    status.textContent = "";
+    addBtn.disabled = true;
+    try {
+      await api("/api/admin/users", {
+        method: "POST",
+        body: { name, email, password, role, department_id: deptVal || null, can_view_financials: fin },
+      });
+      await renderTeamSection(mount);
+    } catch (e) {
+      status.textContent = e.message;
+      status.style.color = "#b91c1c";
+    } finally {
+      addBtn.disabled = false;
+    }
   });
 }
 
