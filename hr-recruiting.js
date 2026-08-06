@@ -1030,7 +1030,7 @@ function hrOpenOfferModal(mount, id, a, o) {
     <h2>${o ? "Edit" : "Create"} offer</h2>
     <div class="hr-field"><label>Job title</label><input id="of-title" value="${hrEsc(p.job_title || a.position_title || "")}"/></div>
     <div class="hr-2col">
-      <div class="hr-field"><label>Compensation amount</label><input id="of-amt" type="number" value="${hrEsc(p.comp_amount == null ? "" : p.comp_amount)}"/></div>
+      <div class="hr-field"><label>Compensation amount</label><input id="of-amt" type="text" inputmode="decimal" placeholder="e.g. 24 or 85000" value="${hrEsc(p.comp_amount == null ? "" : p.comp_amount)}"/></div>
       <div class="hr-field"><label>Per</label><select id="of-unit"><option value="year"${p.comp_unit === "year" ? " selected" : ""}>Year</option><option value="hour"${p.comp_unit === "hour" ? " selected" : ""}>Hour</option></select></div>
     </div>
     <div class="hr-2col">
