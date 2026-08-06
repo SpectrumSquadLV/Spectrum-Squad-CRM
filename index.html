@@ -1056,6 +1056,12 @@ async function openClientModal(id) {
           : `<div class="empty-state">No documents uploaded yet.</div>`
       }
 
+      <div style="margin-top:10px;">
+        <button class="btn small secondary" id="send-eligibility-btn">✉ Send Benefits &amp; Eligibility Check</button>
+        <span id="eligibility-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Emails the patient's name, DOB, insurance details, and any insurance card on file to your billing/verification contact. Sent automatically at enrollment — use this to re-send once the card is uploaded.</div>
+      </div>
+
       <div class="section-title">Stage Tasks</div>
       ${
         tasks.length
@@ -1139,6 +1145,25 @@ async function openClientModal(id) {
 
   wireAuthSection(backdrop, id);
   wireCaseNotes(backdrop, id);
+
+  const eligBtn = backdrop.querySelector("#send-eligibility-btn");
+  if (eligBtn) {
+    eligBtn.addEventListener("click", async () => {
+      const statusEl = backdrop.querySelector("#eligibility-status");
+      eligBtn.disabled = true;
+      statusEl.textContent = "Sending…";
+      try {
+        const result = await api(`/api/clients/${id}/eligibility-check`, { method: "POST" });
+        statusEl.textContent =
+          (result.delivered === "sent" ? "Sent ✓" : result.delivered === "simulated" ? "Simulated ✓" : "Failed") +
+          (result.attachments ? ` (${result.attachments} attachment${result.attachments > 1 ? "s" : ""})` : " — no card on file yet");
+      } catch (e) {
+        statusEl.textContent = e.message || "Could not send.";
+      } finally {
+        eligBtn.disabled = false;
+      }
+    });
+  }
 
   backdrop.querySelectorAll("[data-complete-task]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -1735,6 +1760,19 @@ async function renderAdmin(mount) {
       <div id="team-body" style="font-size:13px; color:var(--text-muted);">Loading…</div>
     </div>
     <div class="card" style="margin-bottom:20px;">
+      <div class="section-title" style="margin-top:0;">Automations</div>
+      <div class="task-row">
+        <div class="info">
+          <strong>Benefits &amp; Eligibility Check recipient</strong>
+          <div class="due">When a new enrollment comes in, the patient's name, DOB, insurance details, and insurance card are automatically emailed here with the subject "Benefits &amp; Eligibility Check".</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="elig-email" type="email" placeholder="billing@example.com" style="width:260px;" />
+          <button class="btn small secondary" id="save-elig-email">Save</button>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:20px;">
       <div class="section-title" style="margin-top:0;">Department Notification Emails</div>
       ${state.departments
         .map(
@@ -1770,6 +1808,29 @@ async function renderAdmin(mount) {
     const { flagged } = await api("/api/admin/check-overdue", { method: "POST" });
     document.getElementById("sweep-result").textContent = `${flagged} task(s) newly flagged overdue.`;
   });
+
+  // Automations settings
+  try {
+    const settings = await api("/api/admin/settings");
+    const eligInput = mount.querySelector("#elig-email");
+    if (eligInput) eligInput.value = settings.eligibility_check_email || "";
+  } catch (e) {}
+  const saveEligBtn = mount.querySelector("#save-elig-email");
+  if (saveEligBtn) {
+    saveEligBtn.addEventListener("click", async () => {
+      const email = mount.querySelector("#elig-email").value.trim();
+      saveEligBtn.disabled = true;
+      try {
+        await api("/api/admin/settings", { method: "PATCH", body: { eligibility_check_email: email } });
+        saveEligBtn.textContent = "Saved ✓";
+        setTimeout(() => (saveEligBtn.textContent = "Save"), 1500);
+      } catch (e) {
+        alert(e.message || "Could not save.");
+      } finally {
+        saveEligBtn.disabled = false;
+      }
+    });
+  }
 
   await renderTeamSection(mount);
 }
