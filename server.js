@@ -2173,6 +2173,10 @@ async function handle(req, res, pathname, method, query = {}) {
 
   const cookies = auth.parseCookies(req);
   const user = await auth.getUserFromToken(cookies.session);
+  if (pathname.startsWith("/api/screener/")) {
+    const handled = await screener.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
 
   // Email images are embedded in emails opened by parents/staff in their own
   // mail client (no session cookie present), so this one path must stay
