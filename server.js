@@ -3513,7 +3513,10 @@ function serveStatic(req, res, pathname) {
     res.end(data);
   });
 }
-
+// ===== SCREENER add-on: clinical screener automation (send, remind, host, save) =====
+const screener = require("./screener")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, PUBLIC_DIR,
+});
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
