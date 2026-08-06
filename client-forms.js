@@ -339,8 +339,9 @@ module.exports = function initClientForms(ctx) {
     for (const r of requests) {
       if (!latestByClient[r.client_id] || r.id > latestByClient[r.client_id].id) latestByClient[r.client_id] = r;
     }
+    // Count every family who has committed to a schedule (and isn't discharged
+    // -- the SQL already excludes terminal stages), so you can plan hires ahead.
     const clientDemands = Object.values(latestByClient)
-      .filter((r) => DEMAND_STAGES.includes(r.stage))
       .map((r) => {
         let slots = [];
         try { slots = JSON.parse(r.selected_slots || "[]"); } catch (e) {}
@@ -441,7 +442,7 @@ module.exports = function initClientForms(ctx) {
       })),
       unstaffedNote:
         clientDemands.length === 0
-          ? "No parent-submitted schedules yet for clients in the assessment→active stages. Once parents pick their times, this estimate will populate."
+          ? "No parent-submitted schedules yet. Once a parent picks their times (sent after the clinical screener), this estimate will populate."
           : null,
     };
   }
