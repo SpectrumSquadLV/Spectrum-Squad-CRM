@@ -1000,6 +1000,66 @@ async function wireCaseNotes(backdrop, clientId) {
   await loadNotes();
 }
 
+async function wireScheduleRequest(backdrop, clientId, client) {
+  const section = backdrop.querySelector("#schedule-req-section");
+  if (!section) return;
+  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+  const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(); } catch (e) { return iso || ""; } };
+  const DAYN = { 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri" };
+  const hourLabel = (h) => { const ap = h < 12 ? "am" : "pm"; let hh = h % 12; if (hh === 0) hh = 12; return hh + ap; };
+
+  async function load() {
+    let reqs = [];
+    try { reqs = await api(`/api/client-forms/schedule/${clientId}`); } catch (e) {}
+    const pill = (s) => {
+      const map = { sent: ["#fef3c7", "#92400e", "Sent"], viewed: ["#e0e7ff", "#3730a3", "Viewed"], submitted: ["#dcfce7", "#166534", "Submitted ✓"] };
+      const m = map[s] || ["#eee", "#555", s];
+      return `<span class="tag" style="background:${m[0]}; color:${m[1]};">${m[2]}</span>`;
+    };
+    const summary = (r) => {
+      if (r.status !== "submitted" || !r.selected_slots) return "";
+      let slots = [];
+      try { slots = JSON.parse(r.selected_slots); } catch (e) { return ""; }
+      const byDay = {};
+      slots.forEach((s) => { const [d, h] = s.split("-").map(Number); (byDay[d] = byDay[d] || []).push(h); });
+      const parts = Object.keys(byDay).sort().map((d) => `${DAYN[d]}: ${byDay[d].sort((a, b) => a - b).map(hourLabel).join(", ")}`);
+      return `<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">${r.total_hours} hrs/wk — ${parts.join(" · ")}</div>`;
+    };
+    const list = reqs.length
+      ? reqs.map((r) => `<div class="task-row" style="align-items:flex-start;">
+          <div class="info" style="flex:1;"><strong>Schedule request</strong> ${pill(r.status)}
+            <div class="due">Sent ${fmtWhen(r.sent_at)}${r.status === "submitted" ? ` · submitted ${fmtWhen(r.submitted_at)}` : ""}</div>
+            ${summary(r)}
+          </div>
+          <a class="btn small secondary" href="/schedule-request/?token=${encodeURIComponent(r.token)}" target="_blank" rel="noopener">Open</a>
+        </div>`).join("")
+      : `<div class="empty-state">No schedule request sent yet.</div>`;
+
+    section.innerHTML = `${list}
+      <div style="margin-top:8px;">
+        <button class="btn small" id="send-sched-btn">${reqs.some((r) => r.status !== "submitted") ? "Re-send schedule form" : "Send schedule form"}</button>
+        <span id="sched-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Sent automatically once the clinical screener is completed. Parents pick Mon–Fri 8am–7pm (min 15 hrs, max 8/day).</div>
+      </div>`;
+
+    section.querySelector("#send-sched-btn").addEventListener("click", async () => {
+      const btn = section.querySelector("#send-sched-btn");
+      const statusEl = section.querySelector("#sched-status");
+      btn.disabled = true;
+      statusEl.textContent = "Sending…";
+      try {
+        const result = await api("/api/client-forms/schedule", { method: "POST", body: { client_id: clientId } });
+        statusEl.textContent = result.emailed ? "Sent to parent ✓" : "Created ✓ (no parent email on file)";
+        await load();
+      } catch (e) {
+        statusEl.textContent = e.message || "Could not send.";
+        btn.disabled = false;
+      }
+    });
+  }
+  await load();
+}
+
 async function wireFinancialForm(backdrop, clientId) {
   const section = backdrop.querySelector("#financial-form-section");
   if (!section) return;
@@ -1194,6 +1254,9 @@ async function openClientModal(id) {
       <div class="section-title">Financial Obligation Form</div>
       <div id="financial-form-section"><div class="empty-state">Loading…</div></div>
 
+      <div class="section-title">Parent Schedule Request</div>
+      <div id="schedule-req-section"><div class="empty-state">Loading…</div></div>
+
       <div class="section-title">Stage Tasks</div>
       ${
         tasks.length
@@ -1278,6 +1341,7 @@ async function openClientModal(id) {
   wireAuthSection(backdrop, id);
   wireCaseNotes(backdrop, id);
   wireFinancialForm(backdrop, id);
+  wireScheduleRequest(backdrop, id, client);
 
   const saveAsmtBtn = backdrop.querySelector("#save-assessment-btn");
   if (saveAsmtBtn) {
@@ -1804,6 +1868,17 @@ async function renderSchedule(mount) {
       </table>
     </div>
 
+    <div class="card" style="margin-bottom:20px;">
+      <div class="section-title" style="margin-top:0;">Hiring &amp; Staffing Estimator</div>
+      <p style="color:var(--text-muted); font-size:13px; margin-top:0;">Based on the schedules parents have picked, this estimates how many people you need to hire and shows a proposed weekly schedule for each hypothetical staff member — so you can offer jobs with a clear schedule in hand.</p>
+      <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; margin-bottom:12px;">
+        <div class="field" style="max-width:180px;"><label>RBT hours/week (capacity)</label><input type="number" id="est-rbt-cap" value="30" min="5" max="40" /></div>
+        <div class="field" style="max-width:180px;"><label>RBTs per BCBA</label><input type="number" id="est-bcba-ratio" value="6" min="1" max="20" /></div>
+        <button class="btn small secondary" id="est-refresh">Update estimate</button>
+      </div>
+      <div id="staffing-estimator"><div class="empty-state">Loading…</div></div>
+    </div>
+
     <div class="card">
       <div class="section-title" style="margin-top:0;">Weekly Grid</div>
       <div class="schedule-grid">
@@ -1815,6 +1890,63 @@ async function renderSchedule(mount) {
   `;
 
   document.getElementById("add-session-btn").addEventListener("click", () => openAddSessionModal(activeClients));
+  renderStaffingEstimator(mount);
+  mount.querySelector("#est-refresh").addEventListener("click", () => renderStaffingEstimator(mount));
+}
+
+async function renderStaffingEstimator(mount) {
+  const box = mount.querySelector("#staffing-estimator");
+  if (!box) return;
+  const cap = mount.querySelector("#est-rbt-cap").value || 30;
+  const ratio = mount.querySelector("#est-bcba-ratio").value || 6;
+  box.innerHTML = `<div class="empty-state">Calculating…</div>`;
+  let d;
+  try {
+    d = await api(`/api/client-forms/staffing-estimate?rbtCapacity=${encodeURIComponent(cap)}&bcbaPerRbt=${encodeURIComponent(ratio)}`);
+  } catch (e) {
+    box.innerHTML = `<div class="empty-state">Couldn't load estimate: ${e.message}</div>`;
+    return;
+  }
+  if (d.unstaffedNote) {
+    box.innerHTML = `<div class="empty-state">${d.unstaffedNote}</div>`;
+    return;
+  }
+  const DAYN = { 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri" };
+  const hourLabel = (h) => { const ap = h < 12 ? "am" : "pm"; let hh = h % 12; if (hh === 0) hh = 12; return hh + ap; };
+  const tile = (label, val, sub) => `<div style="flex:1; min-width:130px; background:var(--bg,#f7f7fb); border:1px solid var(--border,#e5e7eb); border-radius:12px; padding:14px 16px;">
+    <div style="font-size:26px; font-weight:800; color:var(--brand-navy,#29225c);">${val}</div>
+    <div style="font-size:12.5px; color:var(--text-muted);">${label}</div>${sub ? `<div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${sub}</div>` : ""}</div>`;
+
+  const staffCards = d.staff.map((m) => {
+    // Build a compact per-staff weekly grid.
+    const byDayHour = {};
+    m.grid.forEach((g) => { byDayHour[g.slot] = g.child_name; });
+    const hours = [];
+    for (let h = 8; h < 19; h++) hours.push(h);
+    const rows = hours.map((h) => {
+      const cells = [1, 2, 3, 4, 5].map((day) => {
+        const name = byDayHour[`${day}-${h}`];
+        return `<td style="border:1px solid #eee; padding:2px 4px; font-size:10.5px; text-align:center; background:${name ? "#fff5e0" : "#fff"};">${name ? name.split(" ")[0] : ""}</td>`;
+      }).join("");
+      return `<tr><td style="border:1px solid #eee; padding:2px 4px; font-size:10px; color:#888; white-space:nowrap;">${hourLabel(h)}</td>${cells}</tr>`;
+    }).join("");
+    return `<div style="border:1px solid var(--border,#e5e7eb); border-radius:12px; padding:12px; min-width:280px;">
+      <div style="font-weight:700; margin-bottom:6px;">${m.name} <span class="tag">${m.total} hrs/wk · ${m.clientCount} client${m.clientCount > 1 ? "s" : ""}</span></div>
+      <div style="overflow-x:auto;"><table style="border-collapse:collapse; width:100%;">
+        <thead><tr><th></th>${[1,2,3,4,5].map((day) => `<th style="font-size:10.5px; padding:2px 4px; color:#888;">${DAYN[day]}</th>`).join("")}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </div>`;
+  }).join("");
+
+  box.innerHTML = `
+    <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+      ${tile("RBTs to hire", d.rbtsNeeded, `at ${d.rbtCapacity} hrs/wk each`)}
+      ${tile("BCBAs to hire", d.bcbasNeeded, `1 per ${d.bcbaPerRbt} RBTs`)}
+      ${tile("Total client hours/wk", d.totalHours, `${d.clientCount} client${d.clientCount === 1 ? "" : "s"} with schedules`)}
+    </div>
+    <div style="font-weight:600; font-size:13px; margin-bottom:8px;">Proposed staff schedules</div>
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">${staffCards}</div>`;
 }
 
 function hoursBetween(start, end) {
