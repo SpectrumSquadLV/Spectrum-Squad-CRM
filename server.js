@@ -2247,6 +2247,14 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // HR & Recruiting add-on owns all /api/hr/* routes (it enforces its own
+  // public/authenticated split internally, so it is dispatched before the
+  // global 401 gate below).
+  if (pathname.startsWith("/api/hr/")) {
+    const handled = await hr.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // Email images are embedded in emails opened by parents/staff in their own
   // mail client (no session cookie present), so this one path must stay
   // publicly readable regardless of the generated filename.
@@ -3615,6 +3623,10 @@ function serveStatic(req, res, pathname) {
 const screener = require("./screener")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, PUBLIC_DIR,
 });
+// ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
+const hr = require("./hr")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR,
+});
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
@@ -3633,6 +3645,11 @@ const server = http.createServer(async (req, res) => {
     if (await screener.servePage(req, res, pathname)) return;
 }
 
+  // HR: serve the public careers page at /careers, /careers/:slug, /apply/:token
+  if (pathname === "/careers" || pathname.startsWith("/careers/") || pathname.startsWith("/apply/")) {
+    if (await hr.servePage(req, res, pathname)) return;
+  }
+
   serveStatic(req, res, pathname);
 });
 
@@ -3644,6 +3661,8 @@ const server = http.createServer(async (req, res) => {
 async function start() {
   await initSchema();
   await emailTemplates.seedEmailTemplates();
+  await hr.initTables().catch((e) => console.error("HR initTables failed:", e));
+  await hr.seed().catch((e) => console.error("HR seed failed:", e));
   await ensureSeeded();
   await pipeline.checkOverdueTasks();
   await authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
