@@ -3228,9 +3228,15 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
     ];
     const fields = Object.keys(body).filter((k) => allowedChecklistFields.includes(k));
     if (!fields.length) return json(res, 400, { error: "No editable fields provided" });
+    const wasScreenerDone = client.clinical_screener_completed === true;
     const setClause = fields.map((f) => `${f} = ?`).join(", ");
     await dbRun(`UPDATE clients SET ${setClause}, updated_at = ? WHERE id = ?`, [...fields.map((f) => body[f]), nowISO(), id]);
     const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+    // When the clinical screener is first marked complete, invite the parent to
+    // pick their child's schedule (Phase 4). Fire-and-forget; dedupes internally.
+    if (!wasScreenerDone && updated.clinical_screener_completed === true) {
+      clientForms.sendScheduleRequest(updated).catch((e) => console.error("sendScheduleRequest failed:", e));
+    }
     return json(res, 200, { id: updated.id, ...pipelineV2.computeMilestoneView(updated) });
   }
 
@@ -4268,8 +4274,11 @@ const server = http.createServer(async (req, res) => {
     if (await hr.servePage(req, res, pathname)) return;
   }
 
-  // Client-facing form pages (financial responsibility, etc.)
-  if (pathname === "/financial-form" || pathname.startsWith("/financial-form/")) {
+  // Client-facing form pages (financial responsibility, schedule picker, etc.)
+  if (
+    pathname === "/financial-form" || pathname.startsWith("/financial-form/") ||
+    pathname === "/schedule-request" || pathname.startsWith("/schedule-request/")
+  ) {
     if (await clientForms.servePage(req, res, pathname)) return;
   }
 
