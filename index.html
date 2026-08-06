@@ -658,12 +658,42 @@ async function renderDashboard(mount) {
         }
       </div>
     </div>
+    <div class="card" style="margin-top:20px;">
+      <div class="section-title" style="margin-top:0;">Clients by Insurance Provider</div>
+      ${renderInsuranceChart(dash.byInsurance || [])}
+    </div>
   `;
 
   document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
   mount.querySelectorAll("[data-auth-bucket]").forEach((el) => {
     el.addEventListener("click", () => (location.hash = "#/auth-alerts/" + el.dataset.authBucket));
   });
+}
+
+function renderInsuranceChart(rows) {
+  if (!rows.length) return `<div class="empty-state">No active clients yet.</div>`;
+  const palette = ["#29225c", "#e0a430", "#5fa8a0", "#6660a8", "#c98a1b", "#3f8f89", "#8a7fd0", "#22c55e", "#ef4444", "#64748b"];
+  const max = Math.max(...rows.map((r) => r.n), 1);
+  const total = rows.reduce((s, r) => s + r.n, 0);
+  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+  return `<div style="display:flex; flex-direction:column; gap:10px;">
+    ${rows
+      .map((r, i) => {
+        const pct = Math.round((r.n / max) * 100);
+        const share = total ? Math.round((r.n / total) * 100) : 0;
+        const color = palette[i % palette.length];
+        return `<div>
+          <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:3px;">
+            <span>${esc(r.provider)}</span>
+            <strong>${r.n} <span style="color:var(--text-muted); font-weight:400;">(${share}%)</span></strong>
+          </div>
+          <div style="background:#eef0f5; border-radius:999px; height:14px; overflow:hidden;">
+            <div style="width:${pct}%; background:${color}; height:14px; border-radius:999px; min-width:2px;"></div>
+          </div>
+        </div>`;
+      })
+      .join("")}
+  </div>`;
 }
 
 function renderAuthDashboardCard(counts) {
