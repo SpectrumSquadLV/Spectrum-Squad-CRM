@@ -2485,7 +2485,104 @@ Match categories:
     return (m ? m[1] : s).toLowerCase().trim();
   }
 
+  // Recognizes Indeed / LinkedIn application-notification emails. In these the
+  // sender is the platform (e.g. noreply@indeed.com), so the candidate's real
+  // name/email/phone must be parsed out of the body. Heuristic by necessity —
+  // formats vary — so unparsed fields fall back gracefully and a human can fix.
+  function parsePlatformApplication(payload) {
+    const fromLower = (payload.from || "").toLowerCase();
+    const subject = payload.subject || "";
+    const bodyText = payload.text || stripTags(payload.html || "");
+    let source = null;
+    if (/indeed\.com/.test(fromLower) || /\bindeed\b/i.test(subject)) source = "indeed";
+    else if (/linkedin\.com/.test(fromLower) || /\blinkedin\b/i.test(subject)) source = "linkedin";
+    else if (payload.source === "indeed" || payload.source === "linkedin") source = payload.source;
+    if (!source) return null;
+
+    const full = subject + "\n" + bodyText;
+    const emails = (full.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || [])
+      .filter((e) => !/indeed\.com|linkedin\.com|noreply|no-reply|donotreply/i.test(e));
+    const email = emails[0] || null;
+    const phoneM = full.match(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+    const phone = phoneM ? phoneM[0] : null;
+
+    let name = null;
+    // Constrain inner spacing to spaces/tabs so the name doesn't run across a
+    // newline into the next label (e.g. "Taylor Morgan\nEmail:").
+    let m = bodyText.match(/\b(?:name|applicant|candidate)[ \t]*[:\-][ \t]*([A-Za-z][A-Za-z'.\-]+(?:[ \t]+[A-Za-z][A-Za-z'.\-]+){0,3})/i);
+    if (m) name = m[1].trim();
+    if (!name) { m = subject.match(/^(.+?)\s+(?:has\s+)?applied\b/i); if (m) name = m[1].trim(); }
+    if (!name) { m = subject.match(/application from\s+(.+?)(?:\s*[-–—:]|$)/i); if (m) name = m[1].trim(); }
+
+    let title = null;
+    m = subject.match(/(?:applied to|application for|new application(?:\s+received)?)\s*[:\-]?\s*(.+?)(?:\s*[-–—]\s*|$)/i);
+    if (m) title = m[1].trim();
+    if (!title) { m = bodyText.match(/\b(?:job title|position|applied to|job)\s*[:\-]\s*(.+)/i); if (m) title = m[1].trim(); }
+
+    return { source, full_name: name, email, phone, job_title: title, cover_letter: bodyText.slice(0, 3000) };
+  }
+
+  async function matchPosition(text) {
+    const t = (text || "").toLowerCase();
+    if (!t.trim()) return null;
+    const rows = await dbAll("SELECT id, title, role_type FROM hr_positions WHERE status <> 'closed'", []);
+    for (const p of rows) {
+      if (p.title && t.includes(p.title.toLowerCase())) return p;
+    }
+    if (/\bbcba\b|behavior analyst/.test(t)) { const b = rows.find((p) => p.role_type === "bcba"); if (b) return b; }
+    if (/\brbt\b|behavior technician/.test(t)) { const r = rows.find((p) => p.role_type === "rbt"); if (r) return r; }
+    return null;
+  }
+
+  async function handlePlatformApplication(platform, payload) {
+    const email = (platform.email || "").toLowerCase().trim() || null;
+    const phone = (platform.phone || "").replace(/[^0-9]/g, "") || null;
+    const position = await matchPosition((platform.job_title || "") + " " + (payload.subject || ""));
+
+    let applicant = null;
+    if (email || phone) {
+      applicant = await dbGet(
+        "SELECT * FROM hr_applicants WHERE (email IS NOT NULL AND email = ?) OR (phone IS NOT NULL AND phone = ?) ORDER BY id LIMIT 1",
+        [email, phone]
+      );
+    }
+    let created = false;
+    if (!applicant) {
+      const result = await createApplicant(
+        {
+          full_name: platform.full_name || email || (platform.source === "linkedin" ? "LinkedIn Applicant" : "Indeed Applicant"),
+          email,
+          phone,
+          source: platform.source,
+          position_id: position ? position.id : null,
+          cover_letter: platform.cover_letter,
+        },
+        platform.source
+      );
+      applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [result.id]);
+      created = true;
+    }
+
+    await dbRun(
+      `INSERT INTO hr_applicant_messages (applicant_id, direction, channel, from_addr, to_addr, subject, body, status, created_at)
+       VALUES (?, 'inbound', 'email', ?, ?, ?, ?, 'received', ?)`,
+      [applicant.id, email || extractEmail(payload.from), payload.to || null, payload.subject || `${platform.source} application`, payload.html || `<p>${escapeHtml(platform.cover_letter || "")}</p>`, nowISO()]
+    );
+    for (const att of payload.attachments || []) {
+      if (att && att.content_base64 && /\.(pdf|docx|doc)$/i.test(att.filename || "")) {
+        await saveApplicantDocument(applicant.id, "resume", att, platform.source).catch((e) => console.error("platform resume save failed:", e.message));
+      }
+    }
+    await audit(platform.source, created ? "applicant_created_platform" : "platform_reapplication", "applicant", applicant.id, `source=${platform.source} matched_position=${position ? position.title : "none"}`);
+    return { ok: true, applicant_id: applicant.id, created, source: platform.source, matched_position: position ? position.title : null };
+  }
+
   async function handleInbound(payload) {
+    // Platform application notifications (Indeed/LinkedIn) are parsed specially
+    // because the sender is the platform, not the candidate.
+    const platform = parsePlatformApplication(payload);
+    if (platform) return handlePlatformApplication(platform, payload);
+
     const fromEmail = extractEmail(payload.from);
     if (!fromEmail) return { ok: false, error: "No sender address" };
     const subject = payload.subject || "(no subject)";
@@ -3584,6 +3681,7 @@ Write body as plain text with line breaks (no HTML).`;
       followupMessage, enrollFollowupSequence, processFollowups, missingQuestions,
       handleInbound, draftReply, parseCsv, extractEmail,
       detectTimecardAnomalies, importTimecard, buildDailySummary,
+      parsePlatformApplication, matchPosition, handlePlatformApplication,
     },
   };
 };
