@@ -37,14 +37,16 @@
 // admin/billing can edit or trigger a sync, only admin can change API
 // credentials. Any other role (intake, scheduling -- and any future RBT
 // login) gets no access, per the "RBTs: No access" requirement.
+// Financials are owner-only: only the Owner (and a co-owner Super Admin) may
+// see or manage any financial data. Every other role gets no access at all.
 function canViewFinancial() {
-  return typeof state !== "undefined" && !!state.user && ["admin", "billing", "clinical"].includes(state.user.role);
+  return typeof state !== "undefined" && !!state.user && ["owner", "super_admin"].includes(state.user.role);
 }
 function canEditFinancial() {
-  return typeof state !== "undefined" && !!state.user && ["admin", "billing"].includes(state.user.role);
+  return typeof state !== "undefined" && !!state.user && ["owner", "super_admin"].includes(state.user.role);
 }
 function canAdminFinancial() {
-  return typeof state !== "undefined" && !!state.user && state.user.role === "admin";
+  return typeof state !== "undefined" && !!state.user && ["owner", "super_admin"].includes(state.user.role);
 }
 
 const FINANCIAL_TABS = [

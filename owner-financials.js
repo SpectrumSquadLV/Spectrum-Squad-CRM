@@ -514,7 +514,7 @@
             "</select>" +
           "</label>" +
           '<div style="font-size:12.5px;font-weight:700;margin-bottom:6px;">Who can view client financials</div>' +
-          '<div id="ofin-s-roles">' + roleCheckboxesHTML(roles) + "</div>" +
+          '<div style="font-size:12px;color:var(--text-muted);background:var(--bg,#f7f7fb);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">🔒 Financials are private to you. Only the Owner (and a co-owner Super Admin) can see any financial data anywhere in the app — it is completely hidden from all other staff.</div>' +
           '<div class="ofin-s-error" style="display:none;font-size:11px;color:#a3282e;margin-top:10px;"></div>' +
           '<button type="button" id="ofin-s-save" style="margin-top:16px;background:var(--brand-navy,var(--brand));color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer;">Save settings</button>' +
           '<span id="ofin-s-saved" style="display:none;margin-left:10px;font-size:12px;color:#177a3c;">Saved.</span>' +
@@ -529,15 +529,13 @@
     const errorBox = mount.querySelector(".ofin-s-error");
     if (!saveBtn) return;
     saveBtn.addEventListener("click", async () => {
-      const roles = Array.from(mount.querySelectorAll(".ofin-role-cb"))
-        .filter((cb) => cb.checked || cb.disabled) // disabled checkboxes are the always-included owner role
-        .map((cb) => cb.value);
+      // Financials are owner-only and locked server-side; this list is fixed.
       const payload = {
         avg_revenue_per_hour: Number(mount.querySelector("#ofin-s-revenue").value),
         avg_net_profit_per_hour: Number(mount.querySelector("#ofin-s-profit").value),
         monthly_conversion_factor: Number(mount.querySelector("#ofin-s-monthly").value),
         default_hours_source: mount.querySelector("#ofin-s-default-source").value,
-        financial_view_roles: roles.join(","),
+        financial_view_roles: "owner,super_admin",
       };
       saveBtn.disabled = true;
       savedMsg.style.display = "none";

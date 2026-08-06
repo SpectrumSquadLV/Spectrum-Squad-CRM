@@ -372,6 +372,12 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS can_view_financials BOOLEAN NOT NULL 
   ON CONFLICT (id) DO NOTHING;
 
   UPDATE users SET role = 'owner' WHERE email = 'admin@spectrumsquadlv.com' AND role = 'admin';
+
+  -- Financials are owner-only. Clear any per-user financial-view flag that may
+  -- have been granted to a non-owner account, and reset the stored view-roles
+  -- list so nothing outside owner/super_admin can ever be shown financial data.
+  UPDATE users SET can_view_financials = false WHERE role NOT IN ('owner', 'super_admin');
+  UPDATE owner_financial_settings SET financial_view_roles = 'owner,super_admin';
 `;
 
 async function initSchema() {
@@ -1235,12 +1241,14 @@ const pipelineV2 = { MILESTONES, milestoneForStage, computeMilestoneView };
     return row;
   }
 
+  // Financials are private to the business owner. Only the Owner (and a
+  // Super Admin, which is defined as a co-owner login) may see any financial
+  // data anywhere in the app. This intentionally ignores the per-user
+  // can_view_financials flag and the configurable role list -- financials must
+  // stay completely hidden from every other role, with no way to grant it by
+  // accident from the Team Members screen.
   async function canViewFinancials(user) {
-    if (!user) return false;
-    if (user.can_view_financials) return true;
-    const settings = await getOwnerFinancialSettings();
-    const roles = (settings.financial_view_roles || "").split(",").map((r) => r.trim()).filter(Boolean);
-    return roles.includes(user.role);
+    return !!user && (user.role === "owner" || user.role === "super_admin");
   }
 
   const FINANCIAL_MISSING_LABELS = {
@@ -1833,9 +1841,12 @@ const CLICKUP_API_BASE = "https://api.clickup.com/api/v2";
 // records or trigger a sync; only admin can change API credentials/workspace
 // config. Any other role (intake, scheduling -- and any future RBT login)
 // gets no access at all, per the spec's "RBTs: No access" requirement.
-const FINANCIAL_VIEW_ROLES = ["admin", "billing", "clinical"];
-const FINANCIAL_EDIT_ROLES = ["admin", "billing"];
-const FINANCIAL_ADMIN_ROLES = ["admin"];
+// Financials (including the Financial Center / ClickUp billing integration)
+// are private to the business owner. Only the Owner and a co-owner Super Admin
+// may view, edit, or administer any of it -- every other role is fully locked out.
+const FINANCIAL_VIEW_ROLES = ["owner", "super_admin"];
+const FINANCIAL_EDIT_ROLES = ["owner", "super_admin"];
+const FINANCIAL_ADMIN_ROLES = ["owner", "super_admin"];
 
 function canViewFinancial(user) {
   return !!user && FINANCIAL_VIEW_ROLES.includes(user.role);
@@ -3430,7 +3441,6 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const password = body.password || "";
       const role = (body.role || "").trim();
       const departmentId = body.department_id ? Number(body.department_id) : null;
-      const canViewFin = body.can_view_financials === true;
 
       if (!name || !email || !password) return json(res, 400, { error: "Name, email, and a temporary password are required." });
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json(res, 400, { error: "Please enter a valid email address." });
@@ -3442,7 +3452,6 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       if (await findUserByEmail(email)) return json(res, 409, { error: "A user with that email already exists." });
 
       const newId = await createUser({ name, email, password, role, department_id: departmentId });
-      if (canViewFin) await dbRun("UPDATE users SET can_view_financials = true WHERE id = ?", [newId]);
       const created = await dbGet(
         "SELECT id, name, email, role, department_id, can_view_financials, created_at FROM users WHERE id = ?",
         [newId]
@@ -3488,11 +3497,6 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       if ("department_id" in body) {
         sets.push("department_id = ?");
         params.push(body.department_id ? Number(body.department_id) : null);
-      }
-
-      if ("can_view_financials" in body) {
-        sets.push("can_view_financials = ?");
-        params.push(body.can_view_financials === true);
       }
 
       if (body.password) {
