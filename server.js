@@ -3645,8 +3645,11 @@ const server = http.createServer(async (req, res) => {
     if (await screener.servePage(req, res, pathname)) return;
 }
 
-  // HR: serve the public careers page at /careers, /careers/:slug, /apply/:token
-  if (pathname === "/careers" || pathname.startsWith("/careers/") || pathname.startsWith("/apply/")) {
+  // HR: serve the public careers + interview scheduling pages
+  if (
+    pathname === "/careers" || pathname.startsWith("/careers/") ||
+    pathname.startsWith("/apply/") || pathname.startsWith("/schedule/")
+  ) {
     if (await hr.servePage(req, res, pathname)) return;
   }
 
@@ -3664,6 +3667,7 @@ async function start() {
   await hr.initTables().catch((e) => console.error("HR initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
+  await hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));
   await ensureSeeded();
   await pipeline.checkOverdueTasks();
   await authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
@@ -3689,6 +3693,11 @@ async function start() {
   // HR recruiting follow-up sequences: send any due warm follow-ups.
   setInterval(() => {
     hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
+  }, 15 * 60 * 1000);
+
+  // HR interview reminders: send 24h / 2h reminders for upcoming interviews.
+  setInterval(() => {
+    hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));
   }, 15 * 60 * 1000);
 
   server.listen(PORT, () => {

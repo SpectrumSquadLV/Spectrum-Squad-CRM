@@ -57,6 +57,11 @@ function hrFmtDate(d) {
   if (isNaN(date.getTime())) return String(d);
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
+function hrFmtDateTime(d) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  return isNaN(dt.getTime()) ? String(d) : dt.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
 function hrStageLabel(key) {
   const s = (HRState.meta && HRState.meta.stages) || [];
   const found = s.find((x) => x.key === key);
@@ -169,6 +174,7 @@ const HR_TABS = [
   { key: "dashboard", label: "Recruiting Dashboard" },
   { key: "pipeline", label: "Applicant Pipeline" },
   { key: "inbox", label: "Recruiting Inbox" },
+  { key: "scheduling", label: "Scheduling" },
   { key: "positions", label: "Positions" },
   { key: "audit", label: "Audit Log" },
 ];
@@ -505,6 +511,95 @@ function hrOpenPositionModal(pos) {
   });
 }
 
+// ---------------- Scheduling ----------------
+async function hrRenderScheduling(body) {
+  const canManage = hrCanManage();
+  const [slots, interviews, positions] = await Promise.all([
+    hrApi("/api/hr/slots"),
+    hrApi("/api/hr/interviews"),
+    canManage ? hrApi("/api/hr/positions") : Promise.resolve([]),
+  ]);
+
+  const slotForm = canManage
+    ? `<div class="hr-card"><h2>Add availability</h2>
+        <div class="hr-2col">
+          <div class="hr-field"><label>Date & time</label><input type="datetime-local" id="sl-when"/></div>
+          <div class="hr-field"><label>Duration (min)</label><input type="number" id="sl-dur" value="30"/></div>
+        </div>
+        <div class="hr-2col">
+          <div class="hr-field"><label>Format</label><select id="sl-mode"><option value="virtual">Virtual</option><option value="in_person">In person</option></select></div>
+          <div class="hr-field"><label>Position (optional)</label><select id="sl-pos"><option value="">Any</option>${positions.map((p) => `<option value="${p.id}">${hrEsc(p.title)}</option>`).join("")}</select></div>
+        </div>
+        <div class="hr-field"><label>Join link or location</label><input id="sl-loc" placeholder="Zoom link, or clinic address"/></div>
+        <div class="hr-field"><label>Interviewer (name or email)</label><input id="sl-int"/></div>
+        <div class="hr-row"><button class="hr-btn" id="sl-add">Add slot</button><span class="hr-status" id="sl-status"></span></div>
+      </div>`
+    : "";
+
+  const slotsHtml = slots.length
+    ? `<table class="hr-table"><thead><tr><th>When</th><th>Format</th><th>Position</th><th>Status</th><th></th></tr></thead><tbody>${slots
+        .map(
+          (s) =>
+            `<tr><td>${hrFmtDateTime(s.start_at)}</td><td>${hrEsc(s.mode === "virtual" ? "Virtual" : "In person")} · ${s.duration_min}m</td><td>${hrEsc(s.position_title || "Any")}</td><td>${
+              s.status === "booked" ? `<span class="hr-badge">booked${s.applicant_name ? " · " + hrEsc(s.applicant_name) : ""}</span>` : '<span class="hr-badge qualified">open</span>'
+            }</td><td>${canManage && s.status === "open" ? `<button class="hr-btn sm ghost" data-slotcancel="${s.id}">Remove</button>` : ""}</td></tr>`
+        )
+        .join("")}</tbody></table>`
+    : `<p class="hr-muted">No upcoming availability. Add some above so candidates can book.</p>`;
+
+  const ivHtml = interviews.length
+    ? `<table class="hr-table"><thead><tr><th>When</th><th>Candidate</th><th>Position</th><th>Status</th><th></th></tr></thead><tbody>${interviews
+        .map(
+          (i) =>
+            `<tr><td>${hrFmtDateTime(i.scheduled_at)}</td><td class="clickable" data-cand="${i.applicant_id}">${hrEsc(i.applicant_name || "")}</td><td>${hrEsc(i.position_title || "")}</td><td><span class="hr-badge ${i.status === "no_show" ? "priority" : i.status === "completed" ? "qualified" : ""}">${hrEsc(i.status)}</span></td><td>${
+              canManage && i.status === "scheduled"
+                ? `<button class="hr-btn sm ghost" data-iv="${i.id}" data-st="completed">Completed</button> <button class="hr-btn sm danger" data-iv="${i.id}" data-st="no_show">No-show</button>`
+                : ""
+            }</td></tr>`
+        )
+        .join("")}</tbody></table>`
+    : `<p class="hr-muted">No interviews yet.</p>`;
+
+  body.innerHTML = `${slotForm}
+    <div class="hr-card"><h2>Upcoming availability</h2>${slotsHtml}</div>
+    <div class="hr-card"><h2>Interviews</h2>${ivHtml}</div>`;
+
+  if (canManage) {
+    const addBtn = document.getElementById("sl-add");
+    addBtn.addEventListener("click", async () => {
+      const st = document.getElementById("sl-status");
+      const whenLocal = document.getElementById("sl-when").value;
+      if (!whenLocal) { st.textContent = "Pick a date & time."; st.className = "hr-status err"; return; }
+      st.textContent = "Adding…"; st.className = "hr-status";
+      try {
+        await hrApi("/api/hr/slots", {
+          method: "POST",
+          body: {
+            start_at: new Date(whenLocal).toISOString(),
+            duration_min: document.getElementById("sl-dur").value,
+            mode: document.getElementById("sl-mode").value,
+            position_id: document.getElementById("sl-pos").value || null,
+            location_or_link: document.getElementById("sl-loc").value,
+            interviewer: document.getElementById("sl-int").value,
+          },
+        });
+        hrRenderScheduling(body);
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+    });
+    body.querySelectorAll("[data-slotcancel]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        try { await hrApi("/api/hr/slots/" + b.dataset.slotcancel + "/cancel", { method: "POST" }); hrRenderScheduling(body); } catch (e) { alert(e.message); }
+      })
+    );
+    body.querySelectorAll("[data-iv]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        try { await hrApi("/api/hr/interviews/" + b.dataset.iv + "/status", { method: "POST", body: { status: b.dataset.st } }); hrRenderScheduling(body); } catch (e) { alert(e.message); }
+      })
+    );
+  }
+  body.querySelectorAll("[data-cand]").forEach((el) => el.addEventListener("click", () => (location.hash = "#/hr/candidate/" + el.dataset.cand)));
+}
+
 // ---------------- Recruiting Inbox ----------------
 async function hrRenderInbox(body) {
   const d = await hrApi("/api/hr/inbox");
@@ -825,6 +920,8 @@ function hrCommsHtml(a) {
     <div class="hr-field" style="margin:6px 0"><input id="hr-msg-subject" placeholder="Subject"/></div>
     <div class="hr-field" style="margin:6px 0"><textarea id="hr-msg-body" placeholder="Write a personal note to the candidate…"></textarea></div>
     <div class="hr-row"><button class="hr-btn sm" id="hr-send-msg">Send email</button><button class="hr-btn sm ghost" id="hr-draft-reply">Draft AI reply</button><span class="hr-status" id="hr-msg-status"></span></div>
+    <div class="hr-muted" style="font-weight:600;margin:16px 0 6px">Interview scheduling</div>
+    <div class="hr-row"><button class="hr-btn sm ghost" id="hr-sched-email">Email scheduling link</button><button class="hr-btn sm ghost" id="hr-sched-copy">Copy scheduling link</button><span class="hr-status" id="hr-sched-status"></span></div>
   </div>`;
 }
 
@@ -1015,6 +1112,29 @@ async function hrRenderCandidate(mount, id) {
       draftBtn.disabled = false;
     });
   }
+  const schedEmailBtn = body.querySelector("#hr-sched-email");
+  if (schedEmailBtn) {
+    schedEmailBtn.addEventListener("click", async () => {
+      const st = body.querySelector("#hr-sched-status");
+      st.textContent = "Sending…"; st.className = "hr-status";
+      try {
+        const r = await hrApi("/api/hr/applicants/" + id + "/schedule-link", { method: "POST", body: { send: true } });
+        st.textContent = r.sent ? "Scheduling link emailed." : "Link ready (no email on file).";
+        st.className = "hr-status ok";
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+    });
+  }
+  const schedCopyBtn = body.querySelector("#hr-sched-copy");
+  if (schedCopyBtn) {
+    schedCopyBtn.addEventListener("click", async () => {
+      const st = body.querySelector("#hr-sched-status");
+      try {
+        const r = await hrApi("/api/hr/applicants/" + id + "/schedule-link", { method: "POST", body: {} });
+        if (navigator.clipboard) navigator.clipboard.writeText(r.url);
+        st.textContent = "Copied: " + r.url; st.className = "hr-status ok";
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+    });
+  }
   const sendMsgBtn = body.querySelector("#hr-send-msg");
   if (sendMsgBtn) {
     sendMsgBtn.addEventListener("click", async () => {
@@ -1088,6 +1208,7 @@ async function hrSyncView() {
         dashboard: hrRenderDashboard,
         pipeline: hrRenderPipeline,
         inbox: hrRenderInbox,
+        scheduling: hrRenderScheduling,
         positions: hrRenderPositions,
         audit: hrRenderAudit,
       };

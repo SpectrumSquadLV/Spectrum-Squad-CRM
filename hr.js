@@ -359,6 +359,30 @@ module.exports = function initHr(ctx) {
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_hr_applicants_email ON hr_applicants(email)`);
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_hr_applicants_phone ON hr_applicants(phone)`);
 
+    // ---- interview scheduling ----
+    await dbRun(`CREATE TABLE IF NOT EXISTS hr_interview_slots (
+      id SERIAL PRIMARY KEY,
+      position_id INTEGER,
+      start_at TEXT NOT NULL,
+      duration_min INTEGER DEFAULT 30,
+      mode TEXT DEFAULT 'virtual',        -- virtual|in_person
+      location_or_link TEXT,
+      interviewer TEXT,
+      status TEXT DEFAULT 'open',          -- open|booked|canceled
+      applicant_id INTEGER,
+      created_by TEXT,
+      created_at TEXT
+    )`);
+    await dbRun(`CREATE TABLE IF NOT EXISTS hr_schedule_links (
+      token TEXT PRIMARY KEY,
+      applicant_id INTEGER NOT NULL,
+      created_at TEXT
+    )`);
+    // hr_interviews already exists; add scheduling/reminder columns idempotently.
+    await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS slot_id INTEGER`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS reminder_24_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS reminder_2_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
+
     console.log("HR & Recruiting schema ready.");
   }
 
@@ -863,6 +887,45 @@ module.exports = function initHr(ctx) {
         return json(res, r.ok ? 200 : 400, r);
       }
 
+      // Public self-service scheduling (tokenized; no session).
+      if (pathname === "/api/hr/public/schedule" && method === "GET") {
+        const link = await dbGet("SELECT * FROM hr_schedule_links WHERE token = ?", [query.token || ""]);
+        if (!link) return json(res, 404, { error: "This scheduling link is invalid or expired." });
+        const applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [link.applicant_id]);
+        if (!applicant) return json(res, 404, { error: "Not found" });
+        const position = applicant.position_id ? await dbGet("SELECT title FROM hr_positions WHERE id = ?", [applicant.position_id]) : null;
+        const current = await dbGet("SELECT * FROM hr_interviews WHERE applicant_id = ? AND status = 'scheduled' ORDER BY id DESC LIMIT 1", [applicant.id]);
+        // Open, future slots matching the position (or unassigned). Only public-safe fields.
+        const slots = await dbAll(
+          `SELECT id, start_at, duration_min, mode FROM hr_interview_slots
+             WHERE status = 'open' AND start_at > ? AND (position_id IS NULL OR position_id = ?)
+             ORDER BY start_at LIMIT 60`,
+          [nowISO(), applicant.position_id || -1]
+        );
+        return json(res, 200, {
+          first_name: firstNameOf(applicant.full_name),
+          position_title: position ? position.title : null,
+          current: current
+            ? { scheduled_at: current.scheduled_at, duration_min: current.duration_min, mode: current.mode, location_or_link: current.location_or_link }
+            : null,
+          slots,
+        });
+      }
+
+      if (pathname === "/api/hr/public/book" && method === "POST") {
+        const b = await readBody(req);
+        if (!b.token || !b.slot_id) return json(res, 400, { error: "token and slot_id are required" });
+        const r = await bookSlot(b.token, Number(b.slot_id));
+        return json(res, r.ok ? 200 : 409, r);
+      }
+
+      if (pathname === "/api/hr/public/cancel" && method === "POST") {
+        const b = await readBody(req);
+        if (!b.token) return json(res, 400, { error: "token is required" });
+        const r = await cancelByToken(b.token);
+        return json(res, r.ok ? 200 : 400, r);
+      }
+
       // -------- AUTHENTICATED ROUTES --------
       if (!hrCanAccess(user)) {
         return json(res, user ? 403 : 401, { error: user ? "Not permitted" : "Not authenticated" });
@@ -1354,6 +1417,102 @@ module.exports = function initHr(ctx) {
       if (notifReadMatch && method === "POST") {
         await dbRun("UPDATE hr_notifications SET read = TRUE WHERE id = ?", [notifReadMatch[1]]);
         return json(res, 200, { ok: true });
+      }
+
+      // ---- interview scheduling (admin) ----
+      if (pathname === "/api/hr/slots" && method === "GET") {
+        const rows = await dbAll(
+          `SELECT s.*, p.title AS position_title, a.full_name AS applicant_name
+             FROM hr_interview_slots s
+             LEFT JOIN hr_positions p ON p.id = s.position_id
+             LEFT JOIN hr_applicants a ON a.id = s.applicant_id
+             WHERE s.status <> 'canceled' AND s.start_at > ?
+             ORDER BY s.start_at`,
+          [nowISO()]
+        );
+        return json(res, 200, rows);
+      }
+      if (pathname === "/api/hr/slots" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        if (!b.start_at) return json(res, 400, { error: "start_at is required" });
+        const row = await dbRun(
+          `INSERT INTO hr_interview_slots (position_id, start_at, duration_min, mode, location_or_link, interviewer, status, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING id`,
+          [b.position_id || null, b.start_at, Number(b.duration_min) || 30, b.mode === "in_person" ? "in_person" : "virtual", b.location_or_link || null, b.interviewer || null, actor, nowISO()]
+        );
+        await audit(actor, "slot_created", "slot", row.rows[0].id, `at=${b.start_at}`);
+        return json(res, 201, { ok: true, id: row.rows[0].id });
+      }
+      const slotCancelMatch = pathname.match(/^\/api\/hr\/slots\/(\d+)\/cancel$/);
+      if (slotCancelMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const slot = await dbGet("SELECT * FROM hr_interview_slots WHERE id = ?", [slotCancelMatch[1]]);
+        if (!slot) return json(res, 404, { error: "Slot not found" });
+        if (slot.status === "booked") return json(res, 409, { error: "Cancel the interview first; this slot is booked." });
+        await dbRun("UPDATE hr_interview_slots SET status = 'canceled' WHERE id = ?", [slot.id]);
+        await audit(actor, "slot_canceled", "slot", slot.id, "");
+        return json(res, 200, { ok: true });
+      }
+
+      if (pathname === "/api/hr/interviews" && method === "GET") {
+        const rows = await dbAll(
+          `SELECT i.*, a.full_name AS applicant_name, p.title AS position_title
+             FROM hr_interviews i
+             LEFT JOIN hr_applicants a ON a.id = i.applicant_id
+             LEFT JOIN hr_positions p ON p.id = a.position_id
+             WHERE i.status IN ('scheduled','completed','no_show')
+             ORDER BY i.scheduled_at DESC LIMIT 100`
+        );
+        return json(res, 200, rows);
+      }
+      const ivStatusMatch = pathname.match(/^\/api\/hr\/interviews\/(\d+)\/status$/);
+      if (ivStatusMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const iv = await dbGet("SELECT * FROM hr_interviews WHERE id = ?", [ivStatusMatch[1]]);
+        if (!iv) return json(res, 404, { error: "Interview not found" });
+        const b = await readBody(req);
+        if (!["completed", "no_show", "canceled"].includes(b.status)) return json(res, 400, { error: "Invalid status" });
+        await dbRun("UPDATE hr_interviews SET status = ?, updated_at = ? WHERE id = ?", [b.status, nowISO(), iv.id]);
+        const applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [iv.applicant_id]);
+        if (applicant) {
+          if (b.status === "completed") {
+            await moveStageInternal(applicant, "interviewed", actor, "Interview completed");
+          } else if (b.status === "canceled") {
+            if (iv.slot_id) await dbRun("UPDATE hr_interview_slots SET status = 'open', applicant_id = NULL WHERE id = ?", [iv.slot_id]);
+            await dbRun("UPDATE hr_applicants SET interview_at = NULL WHERE id = ?", [applicant.id]);
+          } else if (b.status === "no_show") {
+            await moveStageInternal(applicant, "responded", actor, "Interview no-show");
+            await dbRun("UPDATE hr_applicants SET interview_at = NULL WHERE id = ?", [applicant.id]);
+            // No-show follow-up: offer to reschedule.
+            const token = await getOrCreateScheduleLink(applicant.id);
+            await sendApplicantEmail(applicant,
+              "Sorry we missed you — let's find another time",
+              `<p>Hi ${escapeHtml(firstNameOf(applicant.full_name))},</p><p>We had you down for an interview but didn't connect — no worries, it happens! If you're still interested, you can grab a new time here: <a href="${APP_BASE_URL}/schedule/${token}">pick a time</a>.</p><p>Warmly,<br/>The Spectrum Squad Team</p>`,
+              { sentBy: "assistant" }).catch(() => {});
+            await notify({ type: "interview_no_show", applicantId: applicant.id, positionId: applicant.position_id, title: "Interview no-show", body: `${applicant.full_name} did not attend. A reschedule invite was sent.`, severity: "warning" });
+          }
+        }
+        await audit(actor, "interview_status", "applicant", iv.applicant_id, b.status);
+        return json(res, 200, { ok: true });
+      }
+
+      const schedLinkMatch = pathname.match(/^\/api\/hr\/applicants\/(\d+)\/schedule-link$/);
+      if (schedLinkMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const a = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [schedLinkMatch[1]]);
+        if (!a) return json(res, 404, { error: "Applicant not found" });
+        const token = await getOrCreateScheduleLink(a.id);
+        const url = `${APP_BASE_URL}/schedule/${token}`;
+        const b = await readBody(req);
+        if (b.send && a.email) {
+          await sendApplicantEmail(a,
+            "Let's schedule your Spectrum Squad interview",
+            `<p>Hi ${escapeHtml(firstNameOf(a.full_name))},</p><p>We'd love to talk! Please pick a time that works for you here: <a href="${url}">choose a time</a>.</p><p>Warmly,<br/>The Spectrum Squad Team</p>`,
+            { sentBy: "assistant" });
+          await audit(actor, "schedule_link_sent", "applicant", a.id, "");
+        }
+        return json(res, 200, { ok: true, url, sent: !!(b.send && a.email) });
       }
 
       // ---- recruiting inbox: needs-attention + recent messages ----
@@ -2064,6 +2223,176 @@ Write body as plain text with line breaks (no HTML).`;
     });
   }
 
+  // ============================ INTERVIEW SCHEDULING ============================
+  // Standards-based (no scraping, no unauthorized automation): the team posts
+  // availability slots, the candidate self-books via a tokenized public page,
+  // and confirmation emails carry universal Google/Outlook add-to-calendar
+  // links plus reschedule/cancel. calendar_event_id + slot_id are stored so a
+  // real Google/Microsoft Calendar API sync can be layered on later.
+  function icsStamp(iso) {
+    const d = new Date(iso);
+    const p = (n) => String(n).padStart(2, "0");
+    return (
+      d.getUTCFullYear() + p(d.getUTCMonth() + 1) + p(d.getUTCDate()) + "T" +
+      p(d.getUTCHours()) + p(d.getUTCMinutes()) + p(d.getUTCSeconds()) + "Z"
+    );
+  }
+  function calendarLinks(title, startISO, durationMin, details, location) {
+    const endISO = new Date(new Date(startISO).getTime() + (durationMin || 30) * 60000).toISOString();
+    const enc = encodeURIComponent;
+    return {
+      google: `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${enc(title)}&dates=${icsStamp(startISO)}/${icsStamp(endISO)}&details=${enc(details || "")}&location=${enc(location || "")}`,
+      outlook: `https://outlook.live.com/calendar/0/deeplink/compose?subject=${enc(title)}&body=${enc(details || "")}&location=${enc(location || "")}&startdt=${enc(startISO)}&enddt=${enc(endISO)}`,
+    };
+  }
+
+  async function getOrCreateScheduleLink(applicantId) {
+    let row = await dbGet("SELECT token FROM hr_schedule_links WHERE applicant_id = ? ORDER BY created_at LIMIT 1", [applicantId]);
+    if (row) return row.token;
+    const token = newToken();
+    await dbRun("INSERT INTO hr_schedule_links (token, applicant_id, created_at) VALUES (?, ?, ?)", [token, applicantId, nowISO()]);
+    return token;
+  }
+
+  async function sendInterviewConfirmation(applicant, interview, token, kind) {
+    const name = firstNameOf(applicant.full_name);
+    const when = new Date(interview.scheduled_at).toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" });
+    const isVirtual = interview.mode === "virtual";
+    if (kind === "canceled") {
+      return sendApplicantEmail(applicant,
+        "Your Spectrum Squad interview was canceled",
+        `<p>Hi ${escapeHtml(name)},</p><p>Your interview has been canceled. If you'd like to pick a new time, you can do that here: <a href="${APP_BASE_URL}/schedule/${token}">choose a time</a>.</p><p>Warmly,<br/>The Spectrum Squad Team</p>`,
+        { sentBy: "assistant" });
+    }
+    const links = calendarLinks(
+      "Interview with Spectrum Squad",
+      interview.scheduled_at,
+      interview.duration_min || 30,
+      isVirtual ? `Virtual interview. ${interview.location_or_link ? "Join: " + interview.location_or_link : "A join link will be shared."}` : "In-person interview with Spectrum Squad.",
+      isVirtual ? "" : interview.location_or_link || ""
+    );
+    const html =
+      `<p>Hi ${escapeHtml(name)},</p>` +
+      `<p>Your interview with Spectrum Squad is confirmed! 🎉</p>` +
+      `<ul><li><strong>When:</strong> ${escapeHtml(when)}</li>` +
+      `<li><strong>Format:</strong> ${isVirtual ? "Virtual" : "In person"}</li>` +
+      (interview.location_or_link ? `<li><strong>${isVirtual ? "Join link" : "Location"}:</strong> ${escapeHtml(interview.location_or_link)}</li>` : "") +
+      `</ul>` +
+      `<p>Add it to your calendar: <a href="${links.google}">Google Calendar</a> · <a href="${links.outlook}">Outlook</a></p>` +
+      `<p>Need to change it? <a href="${APP_BASE_URL}/schedule/${token}">Reschedule or cancel</a>.</p>` +
+      `<p>We're looking forward to speaking with you!<br/>The Spectrum Squad Team</p>`;
+    return sendApplicantEmail(applicant, "Your Spectrum Squad interview is confirmed 🎉", html, { sentBy: "assistant" });
+  }
+
+  async function alertInterviewer(interview, applicant) {
+    const who = interview.interviewer;
+    await notify({
+      type: "interview_scheduled",
+      applicantId: applicant.id,
+      positionId: applicant.position_id,
+      title: "Interview scheduled",
+      body: `${applicant.full_name} booked ${new Date(interview.scheduled_at).toLocaleString()} (${interview.mode}).`,
+      severity: "info",
+    });
+    if (who && /@/.test(who)) {
+      sendEmail({
+        to: who,
+        subject: `Interview scheduled: ${applicant.full_name}`,
+        html: `<p>${escapeHtml(applicant.full_name)} booked an interview.</p>
+               <ul><li><strong>When:</strong> ${escapeHtml(new Date(interview.scheduled_at).toLocaleString())}</li>
+               <li><strong>Format:</strong> ${escapeHtml(interview.mode)}</li></ul>
+               <p><a href="${APP_BASE_URL}/#/hr/candidate/${applicant.id}">Open candidate in the CRM</a></p>`,
+        type: "recruiting",
+      }).catch((e) => console.error("interviewer alert failed:", e.message));
+    }
+  }
+
+  // Public booking: candidate picks an open slot.
+  async function bookSlot(token, slotId) {
+    const link = await dbGet("SELECT * FROM hr_schedule_links WHERE token = ?", [token]);
+    if (!link) return { ok: false, error: "Invalid scheduling link" };
+    const applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [link.applicant_id]);
+    if (!applicant) return { ok: false, error: "Applicant not found" };
+    const slot = await dbGet("SELECT * FROM hr_interview_slots WHERE id = ?", [slotId]);
+    if (!slot || slot.status !== "open") return { ok: false, error: "That time is no longer available" };
+
+    // Cancel any existing scheduled interview (reschedule case).
+    const existing = await dbGet("SELECT * FROM hr_interviews WHERE applicant_id = ? AND status = 'scheduled' ORDER BY id DESC LIMIT 1", [applicant.id]);
+    if (existing) {
+      await dbRun("UPDATE hr_interviews SET status = 'rescheduled', updated_at = ? WHERE id = ?", [nowISO(), existing.id]);
+      if (existing.slot_id) await dbRun("UPDATE hr_interview_slots SET status = 'open', applicant_id = NULL WHERE id = ?", [existing.slot_id]);
+    }
+
+    await dbRun("UPDATE hr_interview_slots SET status = 'booked', applicant_id = ? WHERE id = ?", [applicant.id, slot.id]);
+    const row = await dbRun(
+      `INSERT INTO hr_interviews (applicant_id, slot_id, scheduled_at, duration_min, mode, location_or_link, interviewer, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?) RETURNING id`,
+      [applicant.id, slot.id, slot.start_at, slot.duration_min, slot.mode, slot.location_or_link, slot.interviewer, nowISO(), nowISO()]
+    );
+    const interview = await dbGet("SELECT * FROM hr_interviews WHERE id = ?", [row.rows[0].id]);
+
+    // Advance stage, stop automation, record.
+    await dbRun("UPDATE hr_applicants SET stage = 'interview_scheduled', interview_at = ?, automation_paused = TRUE, updated_at = ? WHERE id = ?", [slot.start_at, nowISO(), applicant.id]);
+    await dbRun(
+      `INSERT INTO hr_applicant_stage_history (applicant_id, from_stage, to_stage, changed_by, note, changed_at)
+       VALUES (?, ?, 'interview_scheduled', 'candidate', 'Booked interview', ?)`,
+      [applicant.id, applicant.stage, nowISO()]
+    );
+    await cancelPendingFollowups(applicant.id);
+
+    await sendInterviewConfirmation(applicant, interview, token, "confirmed").catch((e) => console.error("confirmation failed:", e.message));
+    await alertInterviewer(interview, applicant);
+    await audit("candidate", "interview_booked", "applicant", applicant.id, `at=${slot.start_at}`);
+    return { ok: true, interview_id: interview.id, scheduled_at: slot.start_at };
+  }
+
+  async function cancelByToken(token) {
+    const link = await dbGet("SELECT * FROM hr_schedule_links WHERE token = ?", [token]);
+    if (!link) return { ok: false, error: "Invalid scheduling link" };
+    const applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [link.applicant_id]);
+    const interview = await dbGet("SELECT * FROM hr_interviews WHERE applicant_id = ? AND status = 'scheduled' ORDER BY id DESC LIMIT 1", [link.applicant_id]);
+    if (!interview) return { ok: false, error: "No scheduled interview to cancel" };
+    await dbRun("UPDATE hr_interviews SET status = 'canceled', updated_at = ? WHERE id = ?", [nowISO(), interview.id]);
+    if (interview.slot_id) await dbRun("UPDATE hr_interview_slots SET status = 'open', applicant_id = NULL WHERE id = ?", [interview.slot_id]);
+    if (applicant) {
+      await dbRun("UPDATE hr_applicants SET stage = 'responded', interview_at = NULL, updated_at = ? WHERE id = ?", [nowISO(), applicant.id]);
+      await sendInterviewConfirmation(applicant, interview, token, "canceled").catch(() => {});
+    }
+    await audit("candidate", "interview_canceled", "applicant", link.applicant_id, "");
+    return { ok: true };
+  }
+
+  // Background: send 24h and 2h reminders for upcoming interviews.
+  async function processReminders() {
+    const now = Date.now();
+    const nowIso = nowISO();
+    let sent = 0;
+    const upcoming = await dbAll("SELECT * FROM hr_interviews WHERE status = 'scheduled' AND scheduled_at > ?", [nowIso]);
+    for (const iv of upcoming) {
+      const start = new Date(iv.scheduled_at).getTime();
+      const hoursOut = (start - now) / 3600000;
+      const applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [iv.applicant_id]);
+      if (!applicant || applicant.do_not_contact) continue;
+      const token = await getOrCreateScheduleLink(applicant.id);
+      const when = new Date(iv.scheduled_at).toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" });
+      const remind = async (label) => {
+        await sendApplicantEmail(applicant,
+          `Reminder: your Spectrum Squad interview is ${label}`,
+          `<p>Hi ${escapeHtml(firstNameOf(applicant.full_name))},</p><p>Just a friendly reminder that your interview is ${label} — <strong>${escapeHtml(when)}</strong>${iv.location_or_link ? ` (${escapeHtml(iv.location_or_link)})` : ""}.</p><p>Need to change it? <a href="${APP_BASE_URL}/schedule/${token}">Reschedule or cancel</a>.</p><p>See you soon!<br/>The Spectrum Squad Team</p>`,
+          { sentBy: "assistant" });
+        sent++;
+      };
+      if (hoursOut <= 2 && !iv.reminder_2_sent) {
+        await remind("in about 2 hours");
+        await dbRun("UPDATE hr_interviews SET reminder_2_sent = TRUE, reminder_24_sent = TRUE WHERE id = ?", [iv.id]);
+      } else if (hoursOut <= 24 && !iv.reminder_24_sent) {
+        await remind("tomorrow");
+        await dbRun("UPDATE hr_interviews SET reminder_24_sent = TRUE WHERE id = ?", [iv.id]);
+      }
+    }
+    return { sent };
+  }
+
   // ============================ DASHBOARDS ============================
   async function recruitingDashboard() {
     const positions = await dbAll("SELECT id, title, status, openings_count, role_type FROM hr_positions");
@@ -2188,7 +2517,69 @@ Write body as plain text with line breaks (no HTML).`;
       res.end(careersHtml());
       return true;
     }
+    if (pathname.startsWith("/schedule/")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(scheduleHtml());
+      return true;
+    }
     return false;
+  }
+
+  function scheduleHtml() {
+    return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Schedule your interview — Spectrum Squad</title>
+<style>
+  :root{--navy:#29225c;--navy-dark:#1c1740;--navy-light:#edecf8;--gold:#e0a430;--bg:#f7f8fb;--surface:#fff;--border:#e5e7eb;--text:#201a4d;--muted:#6b6a86;--radius:14px;}
+  *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+  header{background:linear-gradient(135deg,var(--navy),var(--navy-dark));color:#fff;padding:36px 20px;text-align:center}
+  header h1{margin:6px 0 4px;font-size:24px} header p{margin:0;opacity:.85}
+  .wrap{max-width:640px;margin:0 auto;padding:20px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin:16px 0;box-shadow:0 1px 3px rgba(41,34,92,.08)}
+  .slot{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+  button,.btn{background:var(--navy);color:#fff;border:none;border-radius:10px;padding:10px 16px;font-size:14px;font-weight:600;cursor:pointer}
+  button:hover{background:var(--navy-dark)} .btn-ghost{background:#fff;color:var(--navy);border:1px solid var(--navy)}
+  .muted{color:var(--muted);font-size:14px} .err{color:#b91c1c} .ok{color:#16a34a}
+  .badge{display:inline-block;background:var(--navy-light);color:var(--navy);border-radius:20px;padding:2px 10px;font-size:12px;font-weight:600}
+  .big{font-size:44px;text-align:center}
+</style></head>
+<body>
+<header><h1>Schedule your interview</h1><p>Spectrum Squad</p></header>
+<div class="wrap" id="app"><p class="muted">Loading…</p></div>
+<script>
+(function(){
+  var app=document.getElementById("app");
+  var token=location.pathname.split("/schedule/")[1]||"";
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
+  function api(p,opts){opts=opts||{};return fetch(p,{method:opts.method||"GET",headers:opts.body?{"Content-Type":"application/json"}:undefined,body:opts.body?JSON.stringify(opts.body):undefined}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.error||"Request failed");return d;});});}
+  function fmt(iso){var d=new Date(iso);return isNaN(d)?iso:d.toLocaleString(undefined,{weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});}
+  function load(){
+    api("/api/hr/public/schedule?token="+encodeURIComponent(token)).then(render).catch(function(e){app.innerHTML='<div class="card err">'+esc(e.message)+'</div>';});
+  }
+  function render(d){
+    var html="";
+    if(d.current){
+      html+='<div class="card"><h3 style="margin-top:0">Your interview is booked ✅</h3>'+
+        '<p><span class="badge">'+esc(fmt(d.current.scheduled_at))+'</span> · '+esc(d.current.mode==="virtual"?"Virtual":"In person")+'</p>'+
+        (d.current.location_or_link?'<p class="muted">'+esc(d.current.location_or_link)+'</p>':'')+
+        '<button class="btn-ghost" id="cancel">Cancel / reschedule</button></div>';
+    }
+    html+='<div class="card"><h3 style="margin-top:0">'+(d.current?"Pick a different time":"Choose a time")+'</h3>'+
+      (d.position_title?'<p class="muted">'+esc(d.position_title)+'</p>':'')+
+      (d.slots&&d.slots.length? d.slots.map(function(s){return '<div class="slot"><div><strong>'+esc(fmt(s.start_at))+'</strong><div class="muted">'+esc(s.duration_min)+' min · '+esc(s.mode==="virtual"?"Virtual":"In person")+'</div></div><button data-slot="'+s.id+'">Book</button></div>';}).join(""):'<p class="muted">No times are open right now. We\\'ll be in touch soon!</p>')+
+      '</div>';
+    app.innerHTML=html;
+    Array.prototype.forEach.call(app.querySelectorAll("button[data-slot]"),function(b){b.addEventListener("click",function(){book(b.getAttribute("data-slot"),b);});});
+    var c=document.getElementById("cancel"); if(c) c.addEventListener("click",cancel);
+  }
+  function book(slotId,btn){btn.disabled=true;btn.textContent="Booking…";api("/api/hr/public/book",{method:"POST",body:{token:token,slot_id:slotId}}).then(function(){app.innerHTML='<div class="card" style="text-align:center"><div class="big">✅</div><h2>You\\'re booked!</h2><p class="muted">Check your email for the confirmation and calendar link.</p></div>';window.scrollTo(0,0);}).catch(function(e){alert(e.message);load();});}
+  function cancel(){if(!confirm("Cancel this interview?"))return;api("/api/hr/public/cancel",{method:"POST",body:{token:token}}).then(load).catch(function(e){alert(e.message);});}
+  load();
+})();
+</script>
+</body></html>`;
   }
 
   function careersHtml() {
@@ -2357,6 +2748,7 @@ Write body as plain text with line breaks (no HTML).`;
     handleApi,
     servePage,
     processFollowups,
+    processReminders,
     // exposed for tests / future phases
     _internal: {
       evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,
