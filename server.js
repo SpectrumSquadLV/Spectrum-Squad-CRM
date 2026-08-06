@@ -183,6 +183,16 @@ CREATE TABLE IF NOT EXISTS client_documents (
   FOREIGN KEY (client_id) REFERENCES clients(id)
 );
 
+CREATE TABLE IF NOT EXISTS client_notes (
+  id SERIAL PRIMARY KEY,
+  client_id INTEGER NOT NULL,
+  author_id INTEGER,
+  author_name TEXT,
+  body TEXT NOT NULL,
+  created_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES clients(id)
+);
+
 CREATE TABLE IF NOT EXISTS auth_alerts (
   id SERIAL PRIMARY KEY,
   client_id INTEGER NOT NULL,
@@ -2855,6 +2865,45 @@ async function handle(req, res, pathname, method, query = {}) {
       const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
       return json(res, 200, authAlerts.sanitizeClientForRole(user, updated));
     }
+
+    // ---------- Case notes (running log of staff updates per client) ----------
+    const notesMatch = pathname.match(/^\/api\/clients\/(\d+)\/notes$/);
+    if (notesMatch && method === "GET") {
+      const id = notesMatch[1];
+      const notes = await dbAll(
+        "SELECT id, client_id, author_id, author_name, body, created_at FROM client_notes WHERE client_id = ? ORDER BY created_at DESC, id DESC",
+        [id]
+      );
+      return json(res, 200, notes);
+    }
+    if (notesMatch && method === "POST") {
+      const id = notesMatch[1];
+      const client = await dbGet("SELECT id FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      const body = await readBody(req);
+      const text = (body.body || "").trim();
+      if (!text) return json(res, 400, { error: "Note can't be empty." });
+      const row = await dbGet(
+        `INSERT INTO client_notes (client_id, author_id, author_name, body, created_at)
+         VALUES (?, ?, ?, ?, ?) RETURNING id, client_id, author_id, author_name, body, created_at`,
+        [id, user.id, user.name || user.email || "Staff", text, nowISO()]
+      );
+      return json(res, 201, row);
+    }
+
+    const noteItemMatch = pathname.match(/^\/api\/clients\/(\d+)\/notes\/(\d+)$/);
+    if (noteItemMatch && method === "DELETE") {
+      const noteId = noteItemMatch[2];
+      const note = await dbGet("SELECT * FROM client_notes WHERE id = ?", [noteId]);
+      if (!note) return json(res, 404, { error: "Note not found" });
+      // The note's author or a user-admin (owner/admin/super_admin) may delete it.
+      if (note.author_id !== user.id && !canManageUsers(user)) {
+        return json(res, 403, { error: "You can only delete your own notes." });
+      }
+      await dbRun("DELETE FROM client_notes WHERE id = ?", [noteId]);
+      return json(res, 200, { ok: true });
+    }
+
 if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
       const clients = await dbAll(
         "SELECT * FROM clients WHERE stage NOT IN ('discharged','not_moving_forward') ORDER BY submitted_at DESC"

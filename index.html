@@ -911,6 +911,93 @@ function wireAuthSection(backdrop, clientId) {
 }
 
 // ---------------- Client Modal ----------------
+async function wireCaseNotes(backdrop, clientId) {
+  const listEl = backdrop.querySelector("#case-notes-list");
+  const input = backdrop.querySelector("#case-note-input");
+  const addBtn = backdrop.querySelector("#add-case-note-btn");
+  const statusEl = backdrop.querySelector("#case-note-status");
+  if (!listEl || !addBtn) return;
+
+  const esc = (s) => {
+    const d = document.createElement("div");
+    d.textContent = s == null ? "" : String(s);
+    return d.innerHTML;
+  };
+  const fmtWhen = (iso) => {
+    try {
+      return new Date(iso).toLocaleString();
+    } catch (e) {
+      return iso || "";
+    }
+  };
+
+  async function loadNotes() {
+    let notes;
+    try {
+      notes = await api(`/api/clients/${clientId}/notes`);
+    } catch (e) {
+      listEl.innerHTML = `<div class="empty-state">Couldn't load notes: ${esc(e.message)}</div>`;
+      return;
+    }
+    if (!notes.length) {
+      listEl.innerHTML = `<div class="empty-state">No case notes yet.</div>`;
+      return;
+    }
+    const myId = state.user && state.user.id;
+    const canManage = state.user && ["owner", "admin", "super_admin"].includes(state.user.role);
+    listEl.innerHTML = notes
+      .map(
+        (n) => `
+        <div class="task-row" style="align-items:flex-start;">
+          <div class="info" style="flex:1;">
+            <div style="white-space:pre-wrap;">${esc(n.body)}</div>
+            <div class="due">${esc(n.author_name || "Staff")} · ${fmtWhen(n.created_at)}</div>
+          </div>
+          ${
+            String(n.author_id) === String(myId) || canManage
+              ? `<button class="btn small secondary" data-del-note="${n.id}" style="color:#b91c1c;">Delete</button>`
+              : ""
+          }
+        </div>`
+      )
+      .join("");
+    listEl.querySelectorAll("[data-del-note]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        if (!confirm("Delete this note?")) return;
+        try {
+          await api(`/api/clients/${clientId}/notes/${b.dataset.delNote}`, { method: "DELETE" });
+          await loadNotes();
+        } catch (e) {
+          alert("Could not delete: " + e.message);
+        }
+      });
+    });
+  }
+
+  addBtn.addEventListener("click", async () => {
+    const text = (input.value || "").trim();
+    if (!text) {
+      statusEl.textContent = "Type a note first.";
+      return;
+    }
+    addBtn.disabled = true;
+    statusEl.textContent = "Saving…";
+    try {
+      await api(`/api/clients/${clientId}/notes`, { method: "POST", body: { body: text } });
+      input.value = "";
+      statusEl.textContent = "Added ✓";
+      await loadNotes();
+      setTimeout(() => (statusEl.textContent = ""), 1500);
+    } catch (e) {
+      statusEl.textContent = e.message;
+    } finally {
+      addBtn.disabled = false;
+    }
+  });
+
+  await loadNotes();
+}
+
 async function openClientModal(id) {
   const data = await api(`/api/clients/${id}`);
   const { client, tasks, sessions, notifications, documents } = data;
@@ -942,6 +1029,16 @@ async function openClientModal(id) {
       </div>
 
       ${authSectionHtml(client)}
+
+      <div class="section-title">Case Notes</div>
+      <div class="field full" style="margin-bottom:10px;">
+        <textarea id="case-note-input" rows="3" placeholder="Add a case update, call summary, or note about this family..."></textarea>
+      </div>
+      <div style="margin-bottom:6px;">
+        <button class="btn small" id="add-case-note-btn">Add note</button>
+        <span id="case-note-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
+      </div>
+      <div id="case-notes-list"><div class="empty-state">Loading notes…</div></div>
 
       <div class="section-title">Documents</div>
       ${
@@ -1039,6 +1136,7 @@ async function openClientModal(id) {
   backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
 
   wireAuthSection(backdrop, id);
+  wireCaseNotes(backdrop, id);
 
   backdrop.querySelectorAll("[data-complete-task]").forEach((btn) => {
     btn.addEventListener("click", async () => {
