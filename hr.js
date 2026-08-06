@@ -1974,6 +1974,10 @@ module.exports = function initHr(ctx) {
 
   function numOrNull(v) {
     if (v === undefined || v === null || v === "") return null;
+    // Tolerate "$24.00", "1,200", " 85000 " etc. so a stray symbol never
+    // silently drops the value.
+    if (typeof v === "string") v = v.replace(/[^0-9.\-]/g, "");
+    if (v === "" || v === "-" || v === ".") return null;
     const n = Number(v);
     return isNaN(n) ? null : n;
   }
