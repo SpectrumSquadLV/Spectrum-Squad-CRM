@@ -3193,6 +3193,10 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     // ---------- NOTIFICATIONS / OUTBOX ----------
     if (pathname === "/api/notifications" && method === "GET") {
+      // The Message Outbox is private to the owner (and a co-owner super admin).
+      if (!user || !["owner", "super_admin"].includes(user.role)) {
+        return json(res, 403, { error: "Not permitted to view the message outbox" });
+      }
       return json(
         res,
         200,

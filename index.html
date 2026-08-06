@@ -525,8 +525,10 @@ function renderShell(active) {
     { key: "dashboard", label: "Dashboard", icon: "◧" },
     { key: "tasks", label: "Tasks & Alerts", icon: "✓" },
     { key: "schedule", label: "Therapy Schedule", icon: "▦" },
-    { key: "outbox", label: "Message Outbox", icon: "✉" },
   ];
+  // The Message Outbox is private to the owner (and a co-owner super admin).
+  if (["owner", "super_admin"].includes(state.user.role))
+    navItems.push({ key: "outbox", label: "Message Outbox", icon: "✉" });
   if (canViewAuth()) navItems.push({ key: "auth-alerts", label: "Authorization Alerts", icon: "⏰" });
   if (["owner", "admin", "super_admin", "hr_admin", "hiring_manager", "interviewer"].includes(state.user.role))
     navItems.push({ key: "hr", label: "HR & Recruiting", icon: "👥" });
@@ -1664,6 +1666,12 @@ function openAddSessionModal(activeClients) {
 
 // ---------------- Outbox ----------------
 async function renderOutbox(mount) {
+  if (!state.user || !["owner", "super_admin"].includes(state.user.role)) {
+    mount.innerHTML =
+      '<div class="page-header"><div><h1>Message Outbox</h1></div></div>' +
+      '<div class="empty-state">You don\'t have permission to view this page.</div>';
+    return;
+  }
   const notifications = await api("/api/notifications");
   mount.innerHTML = `
     <div class="page-header"><div><h1>Message Outbox</h1><p>Every automated email the system has sent (or simulated) to staff and parents.</p></div></div>
