@@ -332,6 +332,9 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_rbt_name TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS schedule_finalized BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS stage_entered_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_intake_coordinator_name TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted_at TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlist_reason TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS can_view_financials BOOLEAN NOT NULL DEFAULT false;
 
   CREATE TABLE IF NOT EXISTS client_financial_settings (
@@ -617,6 +620,34 @@ function canEditEmailTemplates(user) {
   return !!user && EMAIL_TEMPLATE_EDIT_ROLES.includes(user.role);
 }
 
+// ---------- User / team management ----------
+// Who can open the Team Members area and add/edit/remove logins.
+const USER_ADMIN_ROLES = ["owner", "admin", "super_admin"];
+// Only the very top roles may create or promote someone TO owner/super_admin,
+// so a regular admin can't silently escalate an account (or themselves).
+const PRIVILEGED_ROLE_ASSIGNERS = ["owner", "super_admin"];
+const PRIVILEGED_ROLES = ["owner", "super_admin"];
+
+// The full menu of roles an admin can assign, with a plain-language summary of
+// what each one can see. Shown as a legend in the Team Members UI.
+const ROLE_CATALOG = [
+  { key: "owner", label: "Owner", privileged: true, description: "Full access to everything, including financials, offers, and sensitive HR information." },
+  { key: "super_admin", label: "Super Admin", privileged: true, description: "Same full access as the Owner — for a trusted second administrator." },
+  { key: "admin", label: "Admin", privileged: false, description: "Manage clients, staff, settings, and email templates. Sees authorization and financial data." },
+  { key: "intake", label: "Intake / Admin", privileged: false, description: "Works the enrollment pipeline: new leads, intake packets, and family communication." },
+  { key: "clinical", label: "Clinical (BCBA)", privileged: false, description: "Clinical stage tasks, authorization alerts, and assessment scheduling." },
+  { key: "billing", label: "Billing / Insurance", privileged: false, description: "Insurance verification, authorizations, and financial data." },
+  { key: "scheduling", label: "Scheduling", privileged: false, description: "Therapy scheduling and first-day coordination." },
+  { key: "hr_admin", label: "HR Admin", privileged: false, description: "Full access to the HR & Recruiting area, including sensitive hiring info." },
+  { key: "hiring_manager", label: "Hiring Manager", privileged: false, description: "HR & Recruiting: requisitions, candidates, and the hiring pipeline." },
+  { key: "interviewer", label: "Interviewer", privileged: false, description: "HR & Recruiting: view assigned candidates and interviews only." },
+];
+const VALID_ROLE_KEYS = ROLE_CATALOG.map((r) => r.key);
+
+function canManageUsers(user) {
+  return !!user && USER_ADMIN_ROLES.includes(user.role);
+}
+
 // Metadata shown in the admin UI: human-readable label/category/description,
 // plus the exact list of merge fields available for that template so the
 // editor can offer an "insert field" picker instead of making the admin guess.
@@ -687,6 +718,20 @@ const EMAIL_TEMPLATE_DEFS = [
     description: "Sent daily to the parent while the New Patient Enrollment Packet is still unsigned.",
     fields: ["parent_name", "child_name"],
   },
+  {
+    key: "client_waitlist",
+    label: "Placed on Waitlist",
+    category: "Waitlist Emails",
+    description: "Sent to the parent when their child is placed on the waitlist.",
+    fields: ["parent_name", "child_name", "today", "waitlist_reason"],
+  },
+  {
+    key: "client_waitlist_opening",
+    label: "Removed from Waitlist / Spot Available",
+    category: "Waitlist Emails",
+    description: "Sent to the parent when their child comes off the waitlist and enrollment can continue.",
+    fields: ["parent_name", "child_name", "today"],
+  },
 ];
 
 // The CRM's original built-in copy -- used both as the seed data and as a
@@ -740,6 +785,21 @@ const EMAIL_TEMPLATE_DEFAULTS = {
     <p>We're still waiting on <strong>{{child_name}}'s</strong> New Patient Enrollment Packet. Completing this is an important next step -- we're not able to continue moving {{child_name}} forward toward services without it.</p>
     <p>Please check your email for the signing link from SignNow (sender: qblake@spectrumsquadlv.com), or reach out to us if you're having trouble finding it or completing it.</p>
     <p>Thank you,<br/>Spectrum Squad</p>`,
+  },
+  client_waitlist: {
+    subject: "An update on {{child_name}}'s enrollment — Spectrum Squad",
+    body: `<p>Hi {{parent_name}},</p>
+    <p>Thank you for your patience as we work to find the right fit for <strong>{{child_name}}</strong>. At this time we've placed {{child_name}} on our <strong>waitlist</strong> for ABA services.</p>
+    <p>Being on the waitlist means we have {{child_name}}'s information on file and will reach out just as soon as a spot opens up that matches your family's needs. You don't need to do anything right now — we'll contact you with next steps.</p>
+    <p>If anything changes with your availability or contact information, please let us know so we can keep {{child_name}}'s file up to date.</p>
+    <p>Warmly,<br/>The Spectrum Squad Team</p>`,
+  },
+  client_waitlist_opening: {
+    subject: "Good news — a spot has opened for {{child_name}}! — Spectrum Squad",
+    body: `<p>Hi {{parent_name}},</p>
+    <p>We're excited to share that a spot has opened up and <strong>{{child_name}}</strong> has come off our waitlist! We're ready to continue moving forward with enrollment.</p>
+    <p>Our team will be in touch shortly with the next steps. If you have any questions in the meantime, just reply to this email.</p>
+    <p>Warmly,<br/>The Spectrum Squad Team</p>`,
   },
 };
 
@@ -2744,6 +2804,57 @@ async function handle(req, res, pathname, method, query = {}) {
       );
       return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
     }
+
+    // Place a client on (or take them off) the waitlist. Placing sends the
+    // automated "you're on the waitlist" email to the parent; removing sends
+    // the "a spot has opened" email. Both templates are editable under
+    // Settings -> Email Templates -> Waitlist Emails.
+    const waitlistMatch = pathname.match(/^\/api\/clients\/(\d+)\/waitlist$/);
+    if (waitlistMatch && method === "POST") {
+      const id = waitlistMatch[1];
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      const body = await readBody(req);
+      const wantWaitlisted = body.waitlisted !== false; // default true
+      const reason = body.reason || null;
+      const wasWaitlisted = client.waitlisted === true || client.waitlisted === "t";
+
+      if (wantWaitlisted) {
+        await dbRun(
+          "UPDATE clients SET waitlisted = true, waitlisted_at = ?, waitlist_reason = ?, updated_at = ? WHERE id = ?",
+          [nowISO(), reason, nowISO(), id]
+        );
+      } else {
+        await dbRun(
+          "UPDATE clients SET waitlisted = false, waitlist_reason = ?, updated_at = ? WHERE id = ?",
+          [reason, nowISO(), id]
+        );
+      }
+
+      // Only email on an actual state change, and only if we have a parent email.
+      if (client.parent_email && wantWaitlisted !== wasWaitlisted) {
+        const templateKey = wantWaitlisted ? "client_waitlist" : "client_waitlist_opening";
+        const template = await emailTemplates.getEmailTemplate(templateKey);
+        if (template) {
+          const fields = {
+            parent_name: client.parent_name,
+            child_name: client.child_name,
+            today: new Date().toLocaleDateString(),
+            waitlist_reason: reason || "",
+          };
+          sendEmail({
+            to: client.parent_email,
+            subject: emailTemplates.renderMergeFields(template.subject_template, fields),
+            html: emailTemplates.renderMergeFields(template.body_template, fields),
+            clientId: client.id,
+            type: "parent_milestone",
+          }).catch((e) => console.error("waitlist sendEmail failed:", e));
+        }
+      }
+
+      const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      return json(res, 200, authAlerts.sanitizeClientForRole(user, updated));
+    }
 if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
       const clients = await dbAll(
         "SELECT * FROM clients WHERE stage NOT IN ('discharged','not_moving_forward') ORDER BY submitted_at DESC"
@@ -3249,6 +3360,124 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     if (pathname === "/api/admin/departments" && method === "PATCH") {
       const { id, notify_email } = await readBody(req);
       await dbRun("UPDATE departments SET notify_email = ? WHERE id = ?", [notify_email, id]);
+      return json(res, 200, { ok: true });
+    }
+
+    // ---------- Team / user management (owner, admin, super_admin) ----------
+    if (pathname === "/api/admin/users" && method === "GET") {
+      if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted to manage users" });
+      const rows = await dbAll(
+        `SELECT id, name, email, role, department_id, can_view_financials, created_at
+         FROM users ORDER BY created_at NULLS LAST, id`
+      );
+      return json(res, 200, { users: rows, roles: ROLE_CATALOG });
+    }
+
+    if (pathname === "/api/admin/users" && method === "POST") {
+      if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted to manage users" });
+      const body = await readBody(req);
+      const name = (body.name || "").trim();
+      const email = (body.email || "").trim().toLowerCase();
+      const password = body.password || "";
+      const role = (body.role || "").trim();
+      const departmentId = body.department_id ? Number(body.department_id) : null;
+      const canViewFin = body.can_view_financials === true;
+
+      if (!name || !email || !password) return json(res, 400, { error: "Name, email, and a temporary password are required." });
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json(res, 400, { error: "Please enter a valid email address." });
+      if (password.length < 8) return json(res, 400, { error: "Temporary password must be at least 8 characters." });
+      if (!VALID_ROLE_KEYS.includes(role)) return json(res, 400, { error: "Please choose a valid role." });
+      if (PRIVILEGED_ROLES.includes(role) && !PRIVILEGED_ROLE_ASSIGNERS.includes(user.role)) {
+        return json(res, 403, { error: "Only an Owner or Super Admin can create Owner / Super Admin accounts." });
+      }
+      if (await findUserByEmail(email)) return json(res, 409, { error: "A user with that email already exists." });
+
+      const newId = await createUser({ name, email, password, role, department_id: departmentId });
+      if (canViewFin) await dbRun("UPDATE users SET can_view_financials = true WHERE id = ?", [newId]);
+      const created = await dbGet(
+        "SELECT id, name, email, role, department_id, can_view_financials, created_at FROM users WHERE id = ?",
+        [newId]
+      );
+      return json(res, 201, created);
+    }
+
+    const userMatch = pathname.match(/^\/api\/admin\/users\/(\d+)$/);
+    if (userMatch && method === "PATCH") {
+      if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted to manage users" });
+      const targetId = Number(userMatch[1]);
+      const target = await dbGet("SELECT * FROM users WHERE id = ?", [targetId]);
+      if (!target) return json(res, 404, { error: "User not found" });
+      const body = await readBody(req);
+
+      const sets = [];
+      const params = [];
+
+      if (typeof body.name === "string" && body.name.trim()) {
+        sets.push("name = ?");
+        params.push(body.name.trim());
+      }
+
+      if (typeof body.role === "string" && body.role) {
+        const newRole = body.role.trim();
+        if (!VALID_ROLE_KEYS.includes(newRole)) return json(res, 400, { error: "Please choose a valid role." });
+        // Guard against privilege escalation and locking everyone out.
+        if (PRIVILEGED_ROLES.includes(newRole) && !PRIVILEGED_ROLE_ASSIGNERS.includes(user.role)) {
+          return json(res, 403, { error: "Only an Owner or Super Admin can grant the Owner / Super Admin role." });
+        }
+        if (PRIVILEGED_ROLES.includes(target.role) && !PRIVILEGED_ROLE_ASSIGNERS.includes(user.role)) {
+          return json(res, 403, { error: "Only an Owner or Super Admin can change an Owner / Super Admin account." });
+        }
+        // Don't allow removing the last Owner.
+        if (target.role === "owner" && newRole !== "owner") {
+          const owners = await dbGet("SELECT COUNT(*) AS n FROM users WHERE role = 'owner'");
+          if (Number(owners.n) <= 1) return json(res, 400, { error: "You can't change the role of the last Owner account." });
+        }
+        sets.push("role = ?");
+        params.push(newRole);
+      }
+
+      if ("department_id" in body) {
+        sets.push("department_id = ?");
+        params.push(body.department_id ? Number(body.department_id) : null);
+      }
+
+      if ("can_view_financials" in body) {
+        sets.push("can_view_financials = ?");
+        params.push(body.can_view_financials === true);
+      }
+
+      if (body.password) {
+        if (String(body.password).length < 8) return json(res, 400, { error: "New password must be at least 8 characters." });
+        const { hash, salt } = hashPassword(String(body.password));
+        sets.push("password_hash = ?", "password_salt = ?");
+        params.push(hash, salt);
+      }
+
+      if (!sets.length) return json(res, 400, { error: "Nothing to update." });
+      params.push(targetId);
+      await dbRun(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`, params);
+      const updated = await dbGet(
+        "SELECT id, name, email, role, department_id, can_view_financials, created_at FROM users WHERE id = ?",
+        [targetId]
+      );
+      return json(res, 200, updated);
+    }
+
+    if (userMatch && method === "DELETE") {
+      if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted to manage users" });
+      const targetId = Number(userMatch[1]);
+      const target = await dbGet("SELECT * FROM users WHERE id = ?", [targetId]);
+      if (!target) return json(res, 404, { error: "User not found" });
+      if (targetId === user.id) return json(res, 400, { error: "You can't delete your own account." });
+      if (PRIVILEGED_ROLES.includes(target.role) && !PRIVILEGED_ROLE_ASSIGNERS.includes(user.role)) {
+        return json(res, 403, { error: "Only an Owner or Super Admin can remove an Owner / Super Admin account." });
+      }
+      if (target.role === "owner") {
+        const owners = await dbGet("SELECT COUNT(*) AS n FROM users WHERE role = 'owner'");
+        if (Number(owners.n) <= 1) return json(res, 400, { error: "You can't delete the last Owner account." });
+      }
+      await dbRun("DELETE FROM sessions WHERE user_id = ?", [targetId]);
+      await dbRun("DELETE FROM users WHERE id = ?", [targetId]);
       return json(res, 200, { ok: true });
     }
 
