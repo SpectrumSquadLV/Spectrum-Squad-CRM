@@ -3537,6 +3537,9 @@ const server = http.createServer(async (req, res) => {
 // SCREENER: serve the public form page at /screener/:token
   if (pathname === "/screener" || pathname.startsWith("/screener/")) {
     if (await screener.servePage(req, res, pathname)) return;
+}
+
+  serveStatic(req, res, pathname);
 });
 
 // Overdue-task + authorization-expiration + ClickUp Financial Center sweeps:
