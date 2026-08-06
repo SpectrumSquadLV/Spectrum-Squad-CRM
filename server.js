@@ -476,7 +476,11 @@ const auth = { createUser, findUserByEmail, login, logout, getUserFromToken, par
 const PROVIDER = (process.env.EMAIL_PROVIDER || "none").toLowerCase(); // resend | sendgrid | none
 const FROM_EMAIL = process.env.EMAIL_FROM || "no-reply@spectrumsquadlv.com";
 
-async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone" }) {
+// Low-level provider delivery. Returns { delivered, errorMsg } WITHOUT writing
+// to notifications_log, so both first-time sends (sendEmail) and manual retries
+// of previously-failed emails (resendFailedEmail) share the exact same provider
+// logic.
+async function deliverEmail({ to, subject, html }) {
   let delivered = "simulated";
   let errorMsg = null;
 
@@ -517,6 +521,12 @@ async function sendEmail({ to, subject, html, clientId = null, type = "parent_mi
     errorMsg = err.message;
   }
 
+  return { delivered, errorMsg };
+}
+
+async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone" }) {
+  const { delivered, errorMsg } = await deliverEmail({ to, subject, html });
+
   await dbRun(
     `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -524,6 +534,62 @@ async function sendEmail({ to, subject, html, clientId = null, type = "parent_mi
   );
 
   return { delivered, errorMsg };
+}
+
+// ---- Failed-email retry ("push" failed emails) --------------------------
+// Admins/owners can review emails the provider rejected or errored on and
+// re-attempt delivery from Settings -> Failed Emails. A resend re-uses the
+// exact subject/body that was originally attempted (merge fields were already
+// substituted at first-send time) and updates the SAME notifications_log row
+// in place, so a recovered email drops off the failed list instead of leaving
+// a duplicate row behind.
+async function listFailedEmails() {
+  return dbAll(
+    `SELECT id, client_id, type, recipient, subject, sent_at, delivered
+       FROM notifications_log
+      WHERE delivered LIKE 'failed%'
+      ORDER BY id DESC`
+  );
+}
+
+async function resendFailedEmail(id, actor) {
+  const row = await dbGet("SELECT * FROM notifications_log WHERE id = ?", [id]);
+  if (!row) return { ok: false, error: "Email not found" };
+  if (!String(row.delivered || "").startsWith("failed")) {
+    return { ok: false, error: "This email is not in a failed state" };
+  }
+
+  const { delivered, errorMsg } = await deliverEmail({
+    to: row.recipient,
+    subject: row.subject,
+    html: row.body,
+  });
+
+  await dbRun("UPDATE notifications_log SET delivered = ?, sent_at = ? WHERE id = ?", [
+    delivered + (errorMsg ? `: ${errorMsg}` : ""),
+    nowISO(),
+    id,
+  ]);
+
+  await logFinancialAudit(
+    actor,
+    "failed_email_resent",
+    `id=${id} to=${row.recipient} result=${delivered}${errorMsg ? " - " + errorMsg : ""}`
+  ).catch(() => {});
+
+  return { ok: delivered !== "failed", id, delivered, errorMsg };
+}
+
+async function resendAllFailedEmails(actor) {
+  const failed = await listFailedEmails();
+  let resent = 0;
+  let stillFailed = 0;
+  for (const row of failed) {
+    const result = await resendFailedEmail(row.id, actor);
+    if (result.ok) resent++;
+    else stillFailed++;
+  }
+  return { ok: true, attempted: failed.length, resent, stillFailed };
 }
 
 function stripHtml(html) {
@@ -542,7 +608,10 @@ function stripHtml(html) {
 // NOTHING) so nothing breaks before an admin has ever touched this page.
 "use strict";
 
-const EMAIL_TEMPLATE_EDIT_ROLES = ["admin"];
+// Highest-privilege roles. Note the seeded owner login (admin@spectrumsquadlv.com)
+// is migrated from role "admin" to "owner" on boot (see initSchema), so "owner"
+// MUST be included here or the actual owner is locked out of template editing.
+const EMAIL_TEMPLATE_EDIT_ROLES = ["owner", "admin", "super_admin"];
 
 function canEditEmailTemplates(user) {
   return !!user && EMAIL_TEMPLATE_EDIT_ROLES.includes(user.role);
@@ -3136,6 +3205,31 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       );
       if (!result.ok) return json(res, 404, result);
       return json(res, 200, await emailTemplates.getEmailTemplate(emailTemplateMatch[1]));
+    }
+
+    // ---------- FAILED EMAILS (retry / "push" failed sends) ----------
+    // Same admin/owner gate as template editing -- controls workspace-wide
+    // messaging to families and staff.
+    if (pathname === "/api/failed-emails" && method === "GET") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      return json(res, 200, await listFailedEmails());
+    }
+
+    if (pathname === "/api/failed-emails/resend-all" && method === "POST") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      return json(res, 200, await resendAllFailedEmails(user.email));
+    }
+
+    const failedEmailResendMatch = pathname.match(/^\/api\/failed-emails\/(\d+)\/resend$/);
+    if (failedEmailResendMatch && method === "POST") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      const result = await resendFailedEmail(Number(failedEmailResendMatch[1]), user.email);
+      // Distinguish client errors (bad id / not failed) from a delivery that
+      // was attempted but the provider still rejected -- the latter returns 200
+      // with ok:false so the UI can surface the specific provider error.
+      if (result.error === "Email not found") return json(res, 404, result);
+      if (result.error) return json(res, 400, result);
+      return json(res, 200, result);
     }
 
     // ---------- ADMIN ----------
