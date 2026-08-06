@@ -2492,6 +2492,13 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Client-facing forms add-on owns /api/client-forms/* (public + staff split
+  // enforced internally), dispatched before the global 401 gate.
+  if (pathname.startsWith("/api/client-forms/")) {
+    const handled = await clientForms.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // Email images are embedded in emails opened by parents/staff in their own
   // mail client (no session cookie present), so this one path must stay
   // publicly readable regardless of the generated filename.
@@ -4114,6 +4121,9 @@ const screener = require("./screener")({
 const hr = require("./hr")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR,
 });
+const clientForms = require("./client-forms")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
+});
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
@@ -4141,6 +4151,11 @@ const server = http.createServer(async (req, res) => {
     if (await hr.servePage(req, res, pathname)) return;
   }
 
+  // Client-facing form pages (financial responsibility, etc.)
+  if (pathname === "/financial-form" || pathname.startsWith("/financial-form/")) {
+    if (await clientForms.servePage(req, res, pathname)) return;
+  }
+
   serveStatic(req, res, pathname);
 });
 
@@ -4153,6 +4168,7 @@ async function start() {
   await initSchema();
   await emailTemplates.seedEmailTemplates();
   await hr.initTables().catch((e) => console.error("HR initTables failed:", e));
+  await clientForms.initTables().catch((e) => console.error("Client Forms initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
   await hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));

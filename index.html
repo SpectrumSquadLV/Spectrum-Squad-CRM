@@ -1000,6 +1000,95 @@ async function wireCaseNotes(backdrop, clientId) {
   await loadNotes();
 }
 
+async function wireFinancialForm(backdrop, clientId) {
+  const section = backdrop.querySelector("#financial-form-section");
+  if (!section) return;
+  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+  const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(); } catch (e) { return iso || ""; } };
+
+  async function load() {
+    let forms = [];
+    try { forms = await api(`/api/client-forms/financial/${clientId}`); } catch (e) {}
+    const statusPill = (s) => {
+      const map = { sent: ["#fef3c7", "#92400e", "Sent"], viewed: ["#e0e7ff", "#3730a3", "Viewed"], signed: ["#dcfce7", "#166534", "Signed ✓"] };
+      const m = map[s] || ["#eee", "#555", s];
+      return `<span class="tag" style="background:${m[0]}; color:${m[1]};">${m[2]}</span>`;
+    };
+    const list = forms.length
+      ? forms.map((f) => `<div class="task-row">
+          <div class="info">
+            <strong>${f.plan_type === "copay" ? "Co-pay" : f.plan_type === "secondary" ? "Secondary insurance" : "MCO"}</strong> ${statusPill(f.status)}
+            <div class="due">Sent ${fmtWhen(f.sent_at)}${f.status === "signed" ? ` · signed by ${esc(f.signed_name)} ${fmtWhen(f.signed_at)}` : ""}</div>
+          </div>
+          <a class="btn small secondary" href="/financial-form/?token=${encodeURIComponent(f.token)}" target="_blank" rel="noopener">View</a>
+        </div>`).join("")
+      : `<div class="empty-state">No financial form sent yet.</div>`;
+
+    section.innerHTML = `
+      ${list}
+      <div style="margin-top:12px; border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:12px 14px;">
+        <div style="font-weight:600; font-size:13px; margin-bottom:8px;">Enter eligibility results &amp; send the form</div>
+        <div class="form-grid" style="gap:10px;">
+          <div class="field"><label>Plan type</label>
+            <select id="ff-plan">
+              <option value="copay">Co-pay / co-insurance</option>
+              <option value="secondary">Secondary insurance</option>
+              <option value="mco">MCO (we cannot bill while covered)</option>
+            </select>
+          </div>
+          <div class="field ff-copay"><label>Co-pay amount</label><input id="ff-copay" type="text" inputmode="decimal" placeholder="$25.00" /></div>
+          <div class="field ff-copay"><label>Co-pay per</label><select id="ff-per"><option value="day">day</option><option value="session">session</option></select></div>
+          <div class="field ff-copay"><label>Co-insurance %</label><input id="ff-coins" type="text" inputmode="decimal" placeholder="20" /></div>
+          <div class="field ff-copay"><label>Out-of-pocket max</label><input id="ff-oop" type="text" inputmode="decimal" placeholder="$6,250.00" /></div>
+          <div class="field ff-copay"><label>Out-of-pocket remaining</label><input id="ff-oopr" type="text" inputmode="decimal" placeholder="$3,850.00" /></div>
+          <div class="field ff-secondary" style="display:none;"><label>Secondary insurance name</label><input id="ff-secname" type="text" placeholder="e.g. Medicaid" /></div>
+          <div class="field ff-mco" style="display:none;"><label>MCO name</label><input id="ff-mconame" type="text" placeholder="e.g. Anthem MCO" /></div>
+        </div>
+        <div class="field full" style="margin-top:8px;"><label>Note to parent (optional)</label><textarea id="ff-notes" rows="2" placeholder="Anything you'd like the family to know..."></textarea></div>
+        <button class="btn small" id="ff-send" style="margin-top:8px;">Send Financial Obligation Form</button>
+        <span id="ff-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
+      </div>`;
+
+    const planSel = section.querySelector("#ff-plan");
+    const syncFields = () => {
+      const v = planSel.value;
+      section.querySelectorAll(".ff-copay").forEach((el) => (el.style.display = v === "copay" || v === "secondary" ? "" : "none"));
+      section.querySelectorAll(".ff-secondary").forEach((el) => (el.style.display = v === "secondary" ? "" : "none"));
+      section.querySelectorAll(".ff-mco").forEach((el) => (el.style.display = v === "mco" ? "" : "none"));
+    };
+    planSel.addEventListener("change", syncFields);
+    syncFields();
+
+    section.querySelector("#ff-send").addEventListener("click", async () => {
+      const btn = section.querySelector("#ff-send");
+      const statusEl = section.querySelector("#ff-status");
+      const body = {
+        client_id: clientId,
+        plan_type: planSel.value,
+        copay_amount: section.querySelector("#ff-copay").value,
+        copay_per: section.querySelector("#ff-per").value,
+        coinsurance_pct: section.querySelector("#ff-coins").value,
+        oop_max: section.querySelector("#ff-oop").value,
+        oop_remaining: section.querySelector("#ff-oopr").value,
+        secondary_insurance_name: section.querySelector("#ff-secname") ? section.querySelector("#ff-secname").value : "",
+        mco_name: section.querySelector("#ff-mconame") ? section.querySelector("#ff-mconame").value : "",
+        notes: section.querySelector("#ff-notes").value,
+      };
+      btn.disabled = true;
+      statusEl.textContent = "Sending…";
+      try {
+        const result = await api("/api/client-forms/financial", { method: "POST", body });
+        statusEl.textContent = result.emailed ? "Sent to parent ✓" : "Created ✓ (no parent email on file)";
+        await load();
+      } catch (e) {
+        statusEl.textContent = e.message || "Could not send.";
+        btn.disabled = false;
+      }
+    });
+  }
+  await load();
+}
+
 async function openClientModal(id) {
   const data = await api(`/api/clients/${id}`);
   const { client, tasks, sessions, notifications, documents } = data;
@@ -1061,6 +1150,9 @@ async function openClientModal(id) {
         <span id="eligibility-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
         <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Emails the patient's name, DOB, insurance details, and any insurance card on file to your billing/verification contact. Sent automatically at enrollment — use this to re-send once the card is uploaded.</div>
       </div>
+
+      <div class="section-title">Financial Obligation Form</div>
+      <div id="financial-form-section"><div class="empty-state">Loading…</div></div>
 
       <div class="section-title">Stage Tasks</div>
       ${
@@ -1145,6 +1237,7 @@ async function openClientModal(id) {
 
   wireAuthSection(backdrop, id);
   wireCaseNotes(backdrop, id);
+  wireFinancialForm(backdrop, id);
 
   const eligBtn = backdrop.querySelector("#send-eligibility-btn");
   if (eligBtn) {
