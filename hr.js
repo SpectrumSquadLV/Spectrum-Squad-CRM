@@ -384,6 +384,14 @@ module.exports = function initHr(ctx) {
       applicant_id INTEGER NOT NULL,
       created_at TEXT
     )`);
+    await dbRun(`CREATE TABLE IF NOT EXISTS hr_timecard_links (
+      token TEXT PRIMARY KEY,
+      timecard_id INTEGER NOT NULL,
+      created_at TEXT
+    )`);
+    // hr_timecards stores the raw import + parsed entries.
+    await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS entries TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS verification_requested_at TEXT`).catch(() => {});
     // hr_interviews already exists; add scheduling/reminder columns idempotently.
     await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS slot_id INTEGER`).catch(() => {});
     await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS reminder_24_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
@@ -952,6 +960,34 @@ module.exports = function initHr(ctx) {
         if (!b.token) return json(res, 400, { error: "token is required" });
         const r = await cancelByToken(b.token);
         return json(res, r.ok ? 200 : 400, r);
+      }
+
+      // Public timecard verification (employee view; tokenized).
+      if (pathname === "/api/hr/public/timecard" && method === "GET") {
+        const link = await dbGet("SELECT * FROM hr_timecard_links WHERE token = ?", [query.token || ""]);
+        if (!link) return json(res, 404, { error: "This verification link is invalid or expired." });
+        const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [link.timecard_id]);
+        if (!tc) return json(res, 404, { error: "Not found" });
+        const emp = tc.employee_id ? await dbGet("SELECT name FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
+        const flags = await dbAll("SELECT id, flag_type, detail, status, employee_explanation FROM hr_timecard_flags WHERE timecard_id = ? ORDER BY id", [tc.employee_id ? link.timecard_id : link.timecard_id]);
+        return json(res, 200, {
+          employee_name: emp ? emp.name : "",
+          pay_period: { start: tc.pay_period_start, end: tc.pay_period_end },
+          entries: parseJson(tc.entries, []),
+          flags,
+        });
+      }
+      if (pathname === "/api/hr/public/timecard/explain" && method === "POST") {
+        const b = await readBody(req);
+        const link = await dbGet("SELECT * FROM hr_timecard_links WHERE token = ?", [b.token || ""]);
+        if (!link) return json(res, 404, { error: "Invalid link" });
+        const flag = await dbGet("SELECT * FROM hr_timecard_flags WHERE id = ? AND timecard_id = ?", [b.flag_id, link.timecard_id]);
+        if (!flag) return json(res, 404, { error: "Flag not found" });
+        await dbRun("UPDATE hr_timecard_flags SET employee_explanation = ?, status = 'explained' WHERE id = ?", [b.explanation || "", flag.id]);
+        await audit("employee", "timecard_explained", "timecard", link.timecard_id, `flag=${flag.id}`);
+        // Notify a supervisor/owner that a correction needs review.
+        await notify({ type: "timecard_correction", title: "Timecard correction submitted", body: `An employee explained a ${flag.flag_type.replace(/_/g, " ")} flag and it needs supervisor review.`, severity: "info" });
+        return json(res, 200, { ok: true });
       }
 
       // -------- AUTHENTICATED ROUTES --------
@@ -1644,6 +1680,109 @@ module.exports = function initHr(ctx) {
         const r = await processFollowups();
         await audit(actor, "followups_run", null, null, `due=${r.due} sent=${r.sent} canceled=${r.canceled}`);
         return json(res, 200, r);
+      }
+
+      // ---- employees (future HR) ----
+      if (pathname === "/api/hr/employees" && method === "GET") {
+        const rows = await dbAll("SELECT * FROM hr_employees ORDER BY name");
+        for (const e of rows) {
+          e.credentials = await dbAll("SELECT id, credential_type, credential_number, expiration_date, status FROM hr_employee_credentials WHERE employee_id = ? ORDER BY expiration_date", [e.id]);
+        }
+        return json(res, 200, rows);
+      }
+      if (pathname === "/api/hr/employees" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        if (!b.name) return json(res, 400, { error: "Name is required" });
+        // Optionally hydrate from a hired applicant.
+        let email = b.email || null;
+        if (b.applicant_id) {
+          const a = await dbGet("SELECT full_name, email FROM hr_applicants WHERE id = ?", [b.applicant_id]);
+          if (a && !email) email = a.email;
+        }
+        const row = await dbRun(
+          `INSERT INTO hr_employees (user_id, applicant_id, name, email, role_title, employment_type, hire_date, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?) RETURNING id`,
+          [b.user_id || null, b.applicant_id || null, b.name, email, b.role_title || null, b.employment_type || null, b.hire_date || null, nowISO()]
+        );
+        await audit(actor, "employee_created", "employee", row.rows[0].id, b.name);
+        return json(res, 201, { ok: true, id: row.rows[0].id });
+      }
+      const empCredMatch = pathname.match(/^\/api\/hr\/employees\/(\d+)\/credentials$/);
+      if (empCredMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        if (!b.credential_type) return json(res, 400, { error: "credential_type is required" });
+        await dbRun(
+          `INSERT INTO hr_employee_credentials (employee_id, credential_type, credential_number, issued_date, expiration_date, status, created_at)
+           VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+          [empCredMatch[1], b.credential_type, b.credential_number || null, b.issued_date || null, b.expiration_date || null, nowISO()]
+        );
+        await audit(actor, "credential_added", "employee", Number(empCredMatch[1]), b.credential_type);
+        return json(res, 201, { ok: true });
+      }
+
+      // ---- timecards (future HR: verification workflow, no payroll writes) ----
+      if (pathname === "/api/hr/timecards" && method === "GET") {
+        const rows = await dbAll(
+          `SELECT t.*, e.name AS employee_name,
+                  (SELECT COUNT(*) FROM hr_timecard_flags f WHERE f.timecard_id = t.id) AS flag_count,
+                  (SELECT COUNT(*) FROM hr_timecard_flags f WHERE f.timecard_id = t.id AND f.status IN ('open','explained')) AS open_flags
+             FROM hr_timecards t LEFT JOIN hr_employees e ON e.id = t.employee_id
+             ORDER BY t.id DESC LIMIT 100`
+        );
+        return json(res, 200, rows);
+      }
+      if (pathname === "/api/hr/timecards/import" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        if (!Array.isArray(b.entries) || !b.entries.length) return json(res, 400, { error: "Provide an 'entries' array" });
+        const r = await importTimecard(b, actor);
+        return json(res, 201, { ok: true, ...r });
+      }
+      const tcIdMatch = pathname.match(/^\/api\/hr\/timecards\/(\d+)$/);
+      if (tcIdMatch && method === "GET") {
+        const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [tcIdMatch[1]]);
+        if (!tc) return json(res, 404, { error: "Not found" });
+        const emp = tc.employee_id ? await dbGet("SELECT * FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
+        const flags = await dbAll("SELECT * FROM hr_timecard_flags WHERE timecard_id = ? ORDER BY id", [tc.id]);
+        return json(res, 200, { ...tc, entries: parseJson(tc.entries, []), employee: emp, flags });
+      }
+      const tcVerifyMatch = pathname.match(/^\/api\/hr\/timecards\/(\d+)\/request-verification$/);
+      if (tcVerifyMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [tcVerifyMatch[1]]);
+        if (!tc) return json(res, 404, { error: "Not found" });
+        const token = await getOrCreateTimecardLink(tc.id);
+        const url = `${APP_BASE_URL}/verify-timecard/${token}`;
+        await dbRun("UPDATE hr_timecards SET verification_requested_at = ? WHERE id = ?", [nowISO(), tc.id]);
+        const emp = tc.employee_id ? await dbGet("SELECT name, email FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
+        let sent = false;
+        if (emp && emp.email) {
+          await sendEmail({
+            to: emp.email,
+            subject: "Please verify your timecard — Spectrum Squad",
+            html: `<p>Hi ${escapeHtml(firstNameOf(emp.name))},</p><p>We noticed a few items on your recent timecard that need a quick look. Please review and add a short explanation where needed: <a href="${url}">verify your timecard</a>.</p><p>Thank you,<br/>Spectrum Squad</p>`,
+            type: "hr_timecard",
+          }).catch((e) => console.error("timecard verify email failed:", e.message));
+          sent = true;
+        }
+        await audit(actor, "timecard_verification_requested", "timecard", tc.id, "");
+        return json(res, 200, { ok: true, url, sent });
+      }
+      const flagResolveMatch = pathname.match(/^\/api\/hr\/timecard-flags\/(\d+)\/resolve$/);
+      if (flagResolveMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const status = ["corrected", "approved"].includes(b.status) ? b.status : "approved";
+        const flag = await dbGet("SELECT * FROM hr_timecard_flags WHERE id = ?", [flagResolveMatch[1]]);
+        if (!flag) return json(res, 404, { error: "Flag not found" });
+        // Human approval only — this NEVER writes to payroll or timecard hours.
+        await dbRun("UPDATE hr_timecard_flags SET status = ?, supervisor = ?, resolved_at = ? WHERE id = ?", [status, actor, nowISO(), flag.id]);
+        const openLeft = Number((await dbGet("SELECT COUNT(*) AS n FROM hr_timecard_flags WHERE timecard_id = ? AND status IN ('open','explained')", [flag.timecard_id])).n);
+        if (openLeft === 0) await dbRun("UPDATE hr_timecards SET status = 'verified' WHERE id = ?", [flag.timecard_id]);
+        await audit(actor, "timecard_flag_resolved", "timecard", flag.timecard_id, `flag=${flag.id} status=${status} (no payroll change)`);
+        return json(res, 200, { ok: true, timecard_status: openLeft === 0 ? "verified" : "flagged" });
       }
 
       // ---- audit log ----
@@ -2568,6 +2707,104 @@ Write body as plain text with line breaks (no HTML).`;
     return { ok: true, sent: true, summary: s };
   }
 
+  // Credential expiration alerts (future HR): notify once/day for employee
+  // credentials expiring within 30 days.
+  async function processCredentialAlerts(force) {
+    if (!force) {
+      const today = new Date().toISOString().slice(0, 10);
+      if ((await getSetting("cred_alert_last", "")) === today) return { skipped: "already" };
+      await setSetting("cred_alert_last", today);
+    }
+    const soon = new Date(Date.now() + 30 * 86400000).toISOString();
+    const rows = await dbAll(
+      `SELECT c.credential_type, c.expiration_date, e.name AS emp_name
+         FROM hr_employee_credentials c JOIN hr_employees e ON e.id = c.employee_id
+         WHERE c.expiration_date IS NOT NULL AND c.expiration_date <= ? AND c.status = 'active'`,
+      [soon]
+    );
+    for (const c of rows) {
+      await notify({
+        type: "credential_expiring",
+        title: "Employee credential expiring soon",
+        body: `${c.emp_name}: ${c.credential_type} expires ${c.expiration_date}.`,
+        severity: "warning",
+        emailOwner: true,
+      });
+    }
+    return { ok: true, alerted: rows.length };
+  }
+
+  // ============================ EMPLOYEES + TIMECARDS (future HR) ============================
+  // Foundation for the HR expansion. The timecard-verification workflow detects
+  // anomalies, asks the employee to explain, and routes to a supervisor for
+  // approval. It NEVER changes payroll or timecards automatically — approval is
+  // an audit action only.
+  function dtms(x) {
+    if (x == null || x === "") return null;
+    const t = new Date(x).getTime();
+    return isNaN(t) ? null : t;
+  }
+
+  // entries: [{ date, clock_in, clock_out, hours?, breaks?:[{start,end}], break_minutes? }]
+  function detectTimecardAnomalies(entries) {
+    const flags = [];
+    for (const e of entries || []) {
+      const label = e.date || "a shift";
+      if (!e.clock_in) flags.push({ flag_type: "missing_clock_in", detail: `No clock-in recorded for ${label}.` });
+      if (!e.clock_out) flags.push({ flag_type: "missing_clock_out", detail: `No clock-out recorded for ${label}.` });
+      let hours = typeof e.hours === "number" ? e.hours : null;
+      const inMs = dtms(e.clock_in);
+      const outMs = dtms(e.clock_out);
+      if (hours == null && inMs != null && outMs != null) hours = (outMs - inMs) / 3600000;
+      const hasBreak = (Array.isArray(e.breaks) && e.breaks.length) || Number(e.break_minutes) > 0;
+      if (hours != null) {
+        if (hours < 0) flags.push({ flag_type: "unusual", detail: `${label}: clock-out is before clock-in.` });
+        else {
+          if (hours > 6 && !hasBreak) flags.push({ flag_type: "missing_break", detail: `${label}: ${hours.toFixed(1)}h shift with no break recorded.` });
+          if (hours > 12) flags.push({ flag_type: "unusual", detail: `${label}: unusually long shift (${hours.toFixed(1)}h).` });
+        }
+      }
+    }
+    return flags;
+  }
+
+  async function importTimecard(input, actor) {
+    const entries = Array.isArray(input.entries) ? input.entries : [];
+    const flags = detectTimecardAnomalies(entries);
+    const status = flags.length ? "flagged" : "imported";
+    const row = await dbRun(
+      `INSERT INTO hr_timecards (employee_id, source, pay_period_start, pay_period_end, raw_json, entries, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      [
+        input.employee_id || null,
+        input.source || "manual",
+        input.pay_period_start || null,
+        input.pay_period_end || null,
+        JSON.stringify(input.raw || input),
+        JSON.stringify(entries),
+        status,
+        nowISO(),
+      ]
+    );
+    const timecardId = row.rows[0].id;
+    for (const f of flags) {
+      await dbRun(
+        `INSERT INTO hr_timecard_flags (timecard_id, flag_type, detail, status, created_at) VALUES (?, ?, ?, 'open', ?)`,
+        [timecardId, f.flag_type, f.detail, nowISO()]
+      );
+    }
+    await audit(actor, "timecard_imported", "timecard", timecardId, `source=${input.source || "manual"} flags=${flags.length}`);
+    return { id: timecardId, flags: flags.length, status };
+  }
+
+  async function getOrCreateTimecardLink(timecardId) {
+    let row = await dbGet("SELECT token FROM hr_timecard_links WHERE timecard_id = ? LIMIT 1", [timecardId]);
+    if (row) return row.token;
+    const token = newToken();
+    await dbRun("INSERT INTO hr_timecard_links (token, timecard_id, created_at) VALUES (?, ?, ?)", [token, timecardId, nowISO()]);
+    return token;
+  }
+
   // ============================ DASHBOARDS ============================
   async function recruitingDashboard() {
     const positions = await dbAll("SELECT id, title, status, openings_count, role_type FROM hr_positions");
@@ -2697,7 +2934,62 @@ Write body as plain text with line breaks (no HTML).`;
       res.end(scheduleHtml());
       return true;
     }
+    if (pathname.startsWith("/verify-timecard/")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(timecardVerifyHtml());
+      return true;
+    }
     return false;
+  }
+
+  function timecardVerifyHtml() {
+    return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Verify your timecard — Spectrum Squad</title>
+<style>
+  :root{--navy:#29225c;--navy-dark:#1c1740;--bg:#f7f8fb;--surface:#fff;--border:#e5e7eb;--muted:#6b6a86;}
+  *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:#201a4d}
+  header{background:linear-gradient(135deg,var(--navy),var(--navy-dark));color:#fff;padding:32px 20px;text-align:center}
+  .wrap{max-width:640px;margin:0 auto;padding:20px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px;margin:14px 0}
+  .flag{border-left:3px solid #e0a430;padding:10px 12px;margin-bottom:12px;background:#fffaf0;border-radius:8px}
+  textarea{width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;min-height:60px}
+  button{background:var(--navy);color:#fff;border:none;border-radius:9px;padding:9px 14px;font-weight:600;cursor:pointer;margin-top:6px}
+  .muted{color:var(--muted);font-size:14px} .ok{color:#16a34a} .err{color:#b91c1c} .done{opacity:.6}
+</style></head>
+<body>
+<header><h1>Verify your timecard</h1><p style="opacity:.85;margin:0">Spectrum Squad</p></header>
+<div class="wrap" id="app"><p class="muted">Loading…</p></div>
+<script>
+(function(){
+  var app=document.getElementById("app");
+  var token=location.pathname.split("/verify-timecard/")[1]||"";
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
+  function api(p,o){o=o||{};return fetch(p,{method:o.method||"GET",headers:o.body?{"Content-Type":"application/json"}:undefined,body:o.body?JSON.stringify(o.body):undefined}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.error||"Request failed");return d;});});}
+  function load(){ api("/api/hr/public/timecard?token="+encodeURIComponent(token)).then(render).catch(function(e){app.innerHTML="<div class=\"card err\">"+esc(e.message)+"</div>";}); }
+  function render(d){
+    var flags=(d.flags||[]).filter(function(f){return f.status!=="approved"&&f.status!=="corrected";});
+    var html="<div class=\"card\"><p>Hi "+esc((d.employee_name||"there").split(" ")[0])+", please review the items below and add a short explanation for each. Your responses go to a supervisor — nothing about your pay changes automatically.</p></div>";
+    if(!flags.length){ html+="<div class=\"card ok\">✅ Nothing needs your attention right now. Thank you!</div>"; app.innerHTML=html; return; }
+    html+=flags.map(function(f){
+      var done=f.status==="explained";
+      return "<div class=\"card flag "+(done?"done":"")+"\" data-flag=\""+f.id+"\"><div><strong>"+esc(f.flag_type.replace(/_/g,\" \"))+"</strong></div><div class=\"muted\">"+esc(f.detail)+"</div>"+
+        (done?"<div class=\"ok\">Explanation submitted ✓</div>":"<textarea placeholder=\"What happened?\"></textarea><div><button>Submit explanation</button></div>")+"</div>";
+    }).join("");
+    app.innerHTML=html;
+    Array.prototype.forEach.call(app.querySelectorAll(".flag button"),function(btn){
+      btn.addEventListener("click",function(){
+        var card=btn.closest(".flag"); var ta=card.querySelector("textarea"); var fid=card.getAttribute("data-flag");
+        if(!ta.value.trim()){ta.focus();return;} btn.disabled=true;btn.textContent="Submitting…";
+        api("/api/hr/public/timecard/explain",{method:"POST",body:{token:token,flag_id:Number(fid),explanation:ta.value.trim()}}).then(load).catch(function(e){alert(e.message);btn.disabled=false;btn.textContent="Submit explanation";});
+      });
+    });
+  }
+  load();
+})();
+</script>
+</body></html>`;
   }
 
   function scheduleHtml() {
@@ -2925,12 +3217,14 @@ Write body as plain text with line breaks (no HTML).`;
     processFollowups,
     processReminders,
     processDailySummary,
+    processCredentialAlerts,
     // exposed for tests / future phases
     _internal: {
       evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,
       hrCanAccess, hrCanManage, hrCanSeeSensitive, runScreening, buildScreeningContent, ASSESSMENT_SCHEMA,
       followupMessage, enrollFollowupSequence, processFollowups, missingQuestions,
       handleInbound, draftReply, parseCsv, extractEmail,
+      detectTimecardAnomalies, importTimecard, buildDailySummary,
     },
   };
 };

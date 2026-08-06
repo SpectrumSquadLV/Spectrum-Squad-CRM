@@ -176,6 +176,7 @@ const HR_TABS = [
   { key: "inbox", label: "Recruiting Inbox" },
   { key: "scheduling", label: "Scheduling" },
   { key: "positions", label: "Positions" },
+  { key: "timecards", label: "Timecards" },
   { key: "audit", label: "Audit Log" },
 ];
 
@@ -1205,6 +1206,141 @@ async function hrRenderCandidate(mount, id) {
   }
 }
 
+// ---------------- Timecards (future HR) ----------------
+async function hrRenderTimecards(body) {
+  const canManage = hrCanManage();
+  const [employees, timecards] = await Promise.all([
+    hrApi("/api/hr/employees").catch(() => []),
+    hrApi("/api/hr/timecards").catch(() => []),
+  ]);
+
+  const empRows = employees.length
+    ? employees
+        .map((e) => {
+          const creds = (e.credentials || [])
+            .map((c) => `<span class="hr-badge">${hrEsc(c.credential_type)}${c.expiration_date ? " · exp " + hrFmtDate(c.expiration_date) : ""}</span>`)
+            .join(" ");
+          return `<div style="padding:8px 0;border-bottom:1px solid #f0f0f3"><strong>${hrEsc(e.name)}</strong> <span class="hr-muted">${hrEsc(e.role_title || "")}</span><div style="margin-top:4px">${creds || '<span class="hr-muted">No credentials on file</span>'} ${canManage ? `<button class="hr-btn sm ghost" data-addcred="${e.id}">+ Credential</button>` : ""}</div></div>`;
+        })
+        .join("")
+    : `<p class="hr-muted">No employees yet.</p>`;
+
+  const tcRows = timecards.length
+    ? `<table class="hr-table"><thead><tr><th>Employee</th><th>Period</th><th>Source</th><th>Status</th><th>Flags</th><th></th></tr></thead><tbody>${timecards
+        .map(
+          (t) =>
+            `<tr><td>${hrEsc(t.employee_name || "—")}</td><td>${hrEsc((t.pay_period_start || "?") + " → " + (t.pay_period_end || "?"))}</td><td>${hrEsc(t.source || "")}</td><td><span class="hr-badge ${Number(t.open_flags) ? "paused" : "qualified"}">${hrEsc(t.status)}</span></td><td>${t.open_flags}/${t.flag_count} open</td><td><button class="hr-btn sm ghost" data-tc="${t.id}">View</button></td></tr>`
+        )
+        .join("")}</tbody></table>`
+    : `<p class="hr-muted">No timecards imported yet.</p>`;
+
+  body.innerHTML = `
+    <div class="hr-alert">This is the future HR / timecard-verification workspace. It flags anomalies and collects employee explanations for supervisor approval — it never changes payroll or timecards automatically. Import can later be wired to Homebase or another approved system.</div>
+    <div class="hr-2col">
+      <div class="hr-card"><h2>Employees</h2>
+        ${canManage ? `<div class="hr-2col"><div class="hr-field"><label>Name</label><input id="emp-name"/></div><div class="hr-field"><label>Email</label><input id="emp-email"/></div></div>
+        <div class="hr-2col"><div class="hr-field"><label>Role title</label><input id="emp-role"/></div><div class="hr-field"><label>Employment type</label><input id="emp-type" placeholder="full_time / part_time"/></div></div>
+        <div class="hr-row"><button class="hr-btn sm" id="emp-add">Add employee</button><span class="hr-status" id="emp-status"></span></div><hr style="border:none;border-top:1px solid #eee;margin:12px 0"/>` : ""}
+        ${empRows}
+      </div>
+      <div class="hr-card"><h2>Import timecard</h2>
+        ${canManage ? `<div class="hr-field"><label>Employee</label><select id="tc-emp"><option value="">—</option>${employees.map((e) => `<option value="${e.id}">${hrEsc(e.name)}</option>`).join("")}</select></div>
+        <div class="hr-2col"><div class="hr-field"><label>Period start</label><input type="date" id="tc-start"/></div><div class="hr-field"><label>Period end</label><input type="date" id="tc-end"/></div></div>
+        <div class="hr-field"><label>Source</label><input id="tc-source" value="manual" placeholder="homebase / manual"/></div>
+        <div class="hr-field"><label>Entries (JSON array)</label><textarea id="tc-entries" style="min-height:120px" placeholder='[{"date":"2026-08-04","clock_in":"2026-08-04T09:00","clock_out":"2026-08-04T18:30"}]'></textarea></div>
+        <div class="hr-row"><button class="hr-btn sm" id="tc-import">Import & scan</button><span class="hr-status" id="tc-status"></span></div>` : `<p class="hr-muted">Managers can import timecards.</p>`}
+      </div>
+    </div>
+    <div class="hr-card"><h2>Timecards</h2>${tcRows}</div>`;
+
+  if (canManage) {
+    document.getElementById("emp-add").addEventListener("click", async () => {
+      const st = document.getElementById("emp-status");
+      const name = document.getElementById("emp-name").value.trim();
+      if (!name) { st.textContent = "Name required."; st.className = "hr-status err"; return; }
+      try {
+        await hrApi("/api/hr/employees", { method: "POST", body: { name, email: document.getElementById("emp-email").value, role_title: document.getElementById("emp-role").value, employment_type: document.getElementById("emp-type").value } });
+        hrRenderTimecards(body);
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+    });
+    body.querySelectorAll("[data-addcred]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        const type = window.prompt("Credential type (e.g. RBT, BCBA, CPR, background_check):", "");
+        if (!type) return;
+        const exp = window.prompt("Expiration date (YYYY-MM-DD, optional):", "");
+        try { await hrApi("/api/hr/employees/" + b.dataset.addcred + "/credentials", { method: "POST", body: { credential_type: type, expiration_date: exp || null } }); hrRenderTimecards(body); } catch (e) { alert(e.message); }
+      })
+    );
+    document.getElementById("tc-import").addEventListener("click", async () => {
+      const st = document.getElementById("tc-status");
+      let entries;
+      try { entries = JSON.parse(document.getElementById("tc-entries").value || "[]"); } catch (e) { st.textContent = "Entries must be valid JSON."; st.className = "hr-status err"; return; }
+      if (!Array.isArray(entries) || !entries.length) { st.textContent = "Provide at least one entry."; st.className = "hr-status err"; return; }
+      st.textContent = "Importing…"; st.className = "hr-status";
+      try {
+        const r = await hrApi("/api/hr/timecards/import", { method: "POST", body: { employee_id: document.getElementById("tc-emp").value || null, source: document.getElementById("tc-source").value, pay_period_start: document.getElementById("tc-start").value, pay_period_end: document.getElementById("tc-end").value, entries } });
+        st.textContent = `Imported — ${r.flags} flag(s) found.`; st.className = "hr-status ok";
+        hrRenderTimecards(body);
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+    });
+  }
+  body.querySelectorAll("[data-tc]").forEach((b) => b.addEventListener("click", () => hrOpenTimecardModal(b.dataset.tc, body)));
+}
+
+function hrOpenTimecardModal(id, tcBody) {
+  const canManage = hrCanManage();
+  hrApi("/api/hr/timecards/" + id).then((tc) => {
+    const flagsHtml = (tc.flags || []).length
+      ? (tc.flags || [])
+          .map(
+            (f) =>
+              `<div class="hr-note" style="border-left:3px solid ${["approved", "corrected"].includes(f.status) ? "#22c55e" : "#e0a430"}">
+                <div><strong>${hrEsc(f.flag_type.replace(/_/g, " "))}</strong> — ${hrEsc(f.status)}</div>
+                <div class="hr-muted">${hrEsc(f.detail)}</div>
+                ${f.employee_explanation ? `<div style="margin-top:4px"><em>Employee:</em> ${hrEsc(f.employee_explanation)}</div>` : ""}
+                ${canManage && !["approved", "corrected"].includes(f.status) ? `<div class="hr-row" style="margin-top:6px"><button class="hr-btn sm" data-resolve="${f.id}" data-st="approved">Approve</button><button class="hr-btn sm ghost" data-resolve="${f.id}" data-st="corrected">Mark corrected</button></div>` : ""}
+              </div>`
+          )
+          .join("")
+      : `<p class="hr-muted">No flags — this timecard looks clean.</p>`;
+    const entriesHtml = (tc.entries || []).length
+      ? `<table class="hr-table"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th></tr></thead><tbody>${(tc.entries || [])
+          .map((e) => `<tr><td>${hrEsc(e.date || "")}</td><td>${hrEsc(e.clock_in || "—")}</td><td>${hrEsc(e.clock_out || "—")}</td><td>${hrEsc(e.hours != null ? e.hours : "")}</td></tr>`)
+          .join("")}</tbody></table>`
+      : "";
+    const back = document.createElement("div");
+    back.className = "hr-modal-back";
+    back.innerHTML = `<div class="hr-modal">
+      <button class="hr-close" id="hr-mclose">×</button>
+      <h2>Timecard — ${hrEsc(tc.employee ? tc.employee.name : "Unassigned")}</h2>
+      <p class="hr-muted">${hrEsc((tc.pay_period_start || "?") + " → " + (tc.pay_period_end || "?"))} · ${hrEsc(tc.source || "")} · <strong>${hrEsc(tc.status)}</strong></p>
+      ${canManage ? `<div class="hr-row" style="margin-bottom:10px"><button class="hr-btn sm ghost" id="tc-verify">Request employee verification</button><span class="hr-status" id="tc-verify-status"></span></div>` : ""}
+      <div class="hr-muted" style="font-weight:600;margin:8px 0 6px">Flags</div>${flagsHtml}
+      ${entriesHtml ? `<div class="hr-muted" style="font-weight:600;margin:14px 0 6px">Entries</div>${entriesHtml}` : ""}
+      <p class="hr-lock" style="margin-top:12px">Approving a flag records supervisor sign-off only — it never changes payroll or timecard hours.</p>
+    </div>`;
+    document.body.appendChild(back);
+    const close = () => back.remove();
+    back.querySelector("#hr-mclose").addEventListener("click", close);
+    back.addEventListener("click", (e) => { if (e.target === back) close(); });
+    back.querySelectorAll("[data-resolve]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        try { await hrApi("/api/hr/timecard-flags/" + b.dataset.resolve + "/resolve", { method: "POST", body: { status: b.dataset.st } }); close(); hrOpenTimecardModal(id, tcBody); if (tcBody) hrRenderTimecards(tcBody); } catch (e) { alert(e.message); }
+      })
+    );
+    const vBtn = back.querySelector("#tc-verify");
+    if (vBtn) vBtn.addEventListener("click", async () => {
+      const st = back.querySelector("#tc-verify-status");
+      st.textContent = "Generating…"; st.className = "hr-status";
+      try {
+        const r = await hrApi("/api/hr/timecards/" + id + "/request-verification", { method: "POST" });
+        if (navigator.clipboard) navigator.clipboard.writeText(r.url);
+        st.textContent = (r.sent ? "Emailed employee. " : "") + "Link copied: " + r.url; st.className = "hr-status ok";
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+    });
+  });
+}
+
 // ---------------- Audit log ----------------
 async function hrRenderAudit(body) {
   if (!hrCanManage()) { body.innerHTML = `<div class="hr-empty">Audit log is available to managers/owner.</div>`; return; }
@@ -1260,6 +1396,7 @@ async function hrSyncView() {
         inbox: hrRenderInbox,
         scheduling: hrRenderScheduling,
         positions: hrRenderPositions,
+        timecards: hrRenderTimecards,
         audit: hrRenderAudit,
       };
       const r = renderers[tab] || hrRenderCommandCenter;

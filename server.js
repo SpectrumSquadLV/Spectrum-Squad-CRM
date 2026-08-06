@@ -3648,7 +3648,8 @@ const server = http.createServer(async (req, res) => {
   // HR: serve the public careers + interview scheduling pages
   if (
     pathname === "/careers" || pathname.startsWith("/careers/") ||
-    pathname.startsWith("/apply/") || pathname.startsWith("/schedule/")
+    pathname.startsWith("/apply/") || pathname.startsWith("/schedule/") ||
+    pathname.startsWith("/verify-timecard/")
   ) {
     if (await hr.servePage(req, res, pathname)) return;
   }
@@ -3703,6 +3704,11 @@ async function start() {
   // HR daily recruiting summary: fires once/day at the configured UTC hour.
   setInterval(() => {
     hr.processDailySummary().catch((e) => console.error("HR daily summary failed:", e));
+  }, 15 * 60 * 1000);
+
+  // HR credential expiration alerts: once/day, notify on soon-to-expire creds.
+  setInterval(() => {
+    hr.processCredentialAlerts().catch((e) => console.error("HR credential alert sweep failed:", e));
   }, 15 * 60 * 1000);
 
   server.listen(PORT, () => {
