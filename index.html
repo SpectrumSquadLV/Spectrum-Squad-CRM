@@ -1770,7 +1770,6 @@ async function renderTeamSection(mount) {
             <th style="padding:8px 10px; border-bottom:2px solid var(--border,#e5e7eb);">Name / Email</th>
             <th style="padding:8px 10px; border-bottom:2px solid var(--border,#e5e7eb);">Role (what they can see)</th>
             <th style="padding:8px 10px; border-bottom:2px solid var(--border,#e5e7eb);">Department</th>
-            <th style="padding:8px 10px; border-bottom:2px solid var(--border,#e5e7eb);">Financials</th>
             <th style="padding:8px 10px; border-bottom:2px solid var(--border,#e5e7eb);"></th>
           </tr>
         </thead>
@@ -1788,9 +1787,6 @@ async function renderTeamSection(mount) {
               </td>
               <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3);">
                 <select data-user-dept="${u.id}" style="min-width:150px;">${deptOptions(u.department_id)}</select>
-              </td>
-              <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3); text-align:center;">
-                <input type="checkbox" data-user-fin="${u.id}" ${u.can_view_financials ? "checked" : ""} title="Can view financial data" />
               </td>
               <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3); white-space:nowrap;">
                 <button class="btn small" data-save-user="${u.id}">Save</button>
@@ -1814,7 +1810,6 @@ async function renderTeamSection(mount) {
       <div class="field"><label>Temporary password (min 8 chars)</label><input id="new-user-password" type="text" placeholder="e.g. Welcome2Spectrum!" /></div>
       <div class="field"><label>Role</label><select id="new-user-role">${roleOptions("intake")}</select></div>
       <div class="field"><label>Department (optional)</label><select id="new-user-dept">${deptOptions("")}</select></div>
-      <div class="field"><label style="display:flex; align-items:center; gap:6px; margin-top:22px;"><input type="checkbox" id="new-user-fin" /> Can view financial data</label></div>
     </div>
     <div style="margin-top:12px;"><button class="btn" id="add-user-btn">+ Add Team Member</button> <span id="add-user-status" style="font-size:13px; margin-left:8px;"></span></div>
 
@@ -1844,12 +1839,11 @@ async function renderTeamSection(mount) {
       const id = btn.dataset.saveUser;
       const role = body.querySelector(`[data-user-role="${id}"]`).value;
       const deptVal = body.querySelector(`[data-user-dept="${id}"]`).value;
-      const fin = body.querySelector(`[data-user-fin="${id}"]`).checked;
       btn.disabled = true;
       try {
         await api(`/api/admin/users/${id}`, {
           method: "PATCH",
-          body: { role, department_id: deptVal || null, can_view_financials: fin },
+          body: { role, department_id: deptVal || null },
         });
         setStatus("Saved ✓", true);
       } catch (e) {
@@ -1900,14 +1894,13 @@ async function renderTeamSection(mount) {
     const password = body.querySelector("#new-user-password").value;
     const role = body.querySelector("#new-user-role").value;
     const deptVal = body.querySelector("#new-user-dept").value;
-    const fin = body.querySelector("#new-user-fin").checked;
     const status = body.querySelector("#add-user-status");
     status.textContent = "";
     addBtn.disabled = true;
     try {
       await api("/api/admin/users", {
         method: "POST",
-        body: { name, email, password, role, department_id: deptVal || null, can_view_financials: fin },
+        body: { name, email, password, role, department_id: deptVal || null },
       });
       await renderTeamSection(mount);
     } catch (e) {
