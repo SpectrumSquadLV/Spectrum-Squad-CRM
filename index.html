@@ -488,7 +488,13 @@ async function route() {
   renderShell(view || "dashboard");
 
   const mount = document.getElementById("view-mount");
-  if (hash.startsWith("#/dashboard") || !view) await renderDashboard(mount);
+  if (hash.startsWith("#/hr")) {
+    // HR & Recruiting add-on owns these routes; it renders directly into the
+    // mount here so there is no race with the client dashboard below.
+    const handled = window.__renderHR ? await window.__renderHR(mount) : false;
+    if (!handled) await renderDashboard(mount);
+  }
+  else if (hash.startsWith("#/dashboard") || !view) await renderDashboard(mount);
   else if (hash.startsWith("#/pipeline")) await renderPipeline(mount);
   else if (hash.startsWith("#/tasks")) await renderTasks(mount);
   else if (hash.startsWith("#/schedule")) await renderSchedule(mount);
@@ -522,6 +528,8 @@ function renderShell(active) {
     { key: "outbox", label: "Message Outbox", icon: "✉" },
   ];
   if (canViewAuth()) navItems.push({ key: "auth-alerts", label: "Authorization Alerts", icon: "⏰" });
+  if (["owner", "admin", "super_admin", "hr_admin", "hiring_manager", "interviewer"].includes(state.user.role))
+    navItems.push({ key: "hr", label: "HR & Recruiting", icon: "👥" });
   if (state.user.role === "admin") navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
 
   root.innerHTML = `
