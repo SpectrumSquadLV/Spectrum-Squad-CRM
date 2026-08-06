@@ -607,14 +607,14 @@ async function deliverEmail({ to, subject, html, attachments }) {
 // Wrap any email body in the Spectrum Squad brand shell: logo header + footer.
 // The logo is served publicly at /logo.png. A marker comment prevents
 // double-wrapping if an already-branded body is passed back in (e.g. resends).
-const BRAND_LOGO_URL = `${APP_BASE_URL}/logo.png`;
 function brandedEmail(innerHtml) {
   if (typeof innerHtml === "string" && innerHtml.includes("data-ss-branded")) return innerHtml;
+  const logoUrl = `${APP_BASE_URL}/logo.png`;
   return `<!-- data-ss-branded -->
   <div style="background:#f5f4fb;padding:24px 12px;font-family:Arial,Helvetica,sans-serif;">
     <div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 3px 14px rgba(41,34,92,.08);">
       <div style="text-align:center;padding:24px 20px 6px;">
-        <img src="${BRAND_LOGO_URL}" alt="Spectrum Squad" width="230" style="max-width:230px;height:auto;border:0;" />
+        <img src="${logoUrl}" alt="Spectrum Squad" width="230" style="max-width:230px;height:auto;border:0;" />
       </div>
       <div style="padding:10px 30px 26px;color:#29225c;font-size:15px;line-height:1.6;">${innerHtml}</div>
       <div style="background:#29225c;color:#cfc9ec;text-align:center;padding:16px 20px;font-size:12px;">
