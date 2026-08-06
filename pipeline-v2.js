@@ -21,6 +21,7 @@
     clinical: { label: "Waiting on clinical", color: "#3b82f6", bg: "#e9f0ff", text: "#1e4fa3" },
     provider: { label: "Waiting on previous provider", color: "#8b5cf6", bg: "#f1ecff", text: "#5b3ec4" },
     ready: { label: "Ready for scheduling", color: "#22c55e", bg: "#e9f9ee", text: "#177a3c" },
+    active: { label: "In active services", color: "#16a34a", bg: "#dcfce7", text: "#166534" },
   };
 
   const PRIORITY_STYLE = {

@@ -1442,6 +1442,7 @@ function computeMilestoneView(client) {
 
   let blocker = "ready";
   if (missing.length) blocker = missing[0].blocker;
+  else if (milestone >= 6) blocker = "active"; // already receiving services -- not "ready for scheduling"
 
   let owner;
   if (milestone <= 2) owner = client.assigned_intake_coordinator_name || "Unassigned";
@@ -1454,7 +1455,9 @@ function computeMilestoneView(client) {
   if (missing.length >= 3 || daysInStage >= 14) priority = "High";
   else if (missing.length >= 1 || daysInStage >= 7) priority = "Medium";
 
-  const nextAction = missing.length
+  const nextAction = milestone >= 6
+    ? "In active services."
+    : missing.length
     ? `Follow up on: ${missing[0].label.toLowerCase()}.`
     : "Ready to advance to the next milestone.";
 
@@ -2626,6 +2629,16 @@ async function handle(req, res, pathname, method, query = {}) {
       );
       const totalClients = (await dbGet("SELECT COUNT(*) AS n FROM clients")).n;
 
+      // Active-pipeline clients grouped by insurance provider (for the dashboard chart).
+      const byInsuranceRaw = await dbAll(
+        `SELECT COALESCE(NULLIF(TRIM(insurance_provider), ''), 'Unknown') AS provider, COUNT(*) AS n
+           FROM clients
+          WHERE stage NOT IN ('discharged','not_moving_forward')
+          GROUP BY COALESCE(NULLIF(TRIM(insurance_provider), ''), 'Unknown')
+          ORDER BY n DESC`
+      );
+      const byInsurance = byInsuranceRaw.map((r) => ({ provider: r.provider, n: Number(r.n) }));
+
       let authCounts = null;
       if (authAlerts.canViewAuth(user)) {
         const activeAuths = await dbAll(
@@ -2656,6 +2669,7 @@ async function handle(req, res, pathname, method, query = {}) {
         upcomingFirstDays,
         totalClients,
         stages: pipeline.STAGES,
+        byInsurance,
         authCounts,
       });
     }
