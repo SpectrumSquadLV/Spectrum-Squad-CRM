@@ -1257,6 +1257,25 @@ async function openClientModal(id) {
       <div class="section-title">Parent Schedule Request</div>
       <div id="schedule-req-section"><div class="empty-state">Loading…</div></div>
 
+      <div class="section-title">Attendance</div>
+      <div style="margin-bottom:8px;">
+        <button class="btn small" id="send-attendance-btn">Send attendance alert</button>
+        <span id="attendance-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Use when attendance has fallen <strong>under 80%</strong>. The parent gets an email with an "I acknowledge" button; acknowledgment shows below.</div>
+      </div>
+      ${
+        (notifications || []).filter((n) => n.type === "attendance_alert").length
+          ? notifications.filter((n) => n.type === "attendance_alert").map((n) => `<div class="task-row">
+              <div class="info"><strong>${n.subject || "Attendance Alert"}</strong>
+                <div class="due">to ${n.recipient || "parent"} · ${fmtDate(n.sent_at)} <span class="delivered-pill ${(n.delivered || "").split(":")[0]}">${(n.delivered || "").split(":")[0]}</span></div>
+              </div>
+              ${n.acknowledged
+                ? `<span class="tag" style="background:#dcfce7; color:#166534;">Acknowledged${n.acknowledged_at ? " " + fmtDate(n.acknowledged_at) : ""}</span>`
+                : `<button class="btn small secondary" data-ack-att="${n.id}">Mark acknowledged</button>`}
+            </div>`).join("")
+          : ""
+      }
+
       <div class="section-title">Stage Tasks</div>
       ${
         tasks.length
@@ -1342,6 +1361,44 @@ async function openClientModal(id) {
   wireCaseNotes(backdrop, id);
   wireFinancialForm(backdrop, id);
   wireScheduleRequest(backdrop, id, client);
+
+  const attBtn = backdrop.querySelector("#send-attendance-btn");
+  if (attBtn) {
+    attBtn.addEventListener("click", async () => {
+      const statusEl = backdrop.querySelector("#attendance-status");
+      const entered = prompt(`Current attendance percentage for ${client.child_name}? (e.g. 65)`, "");
+      if (entered === null) return;
+      const pct = Number(entered);
+      if (!Number.isFinite(pct) || pct < 0 || pct > 100) { statusEl.textContent = "Enter a number 0–100."; return; }
+      if (pct >= 80) {
+        if (!confirm(`Attendance is ${pct}% — at or above 80%. This alert is meant for under 80%. Send it anyway?`)) return;
+      }
+      attBtn.disabled = true;
+      statusEl.textContent = "Sending…";
+      try {
+        const result = await api(`/api/clients/${id}/attendance-alert`, { method: "POST", body: { percentage: pct } });
+        statusEl.textContent = result.delivered === "sent" ? "Sent ✓" : result.delivered === "simulated" ? "Simulated ✓" : "Failed";
+        close();
+        await loadClients();
+        openClientModal(id);
+      } catch (e) {
+        statusEl.textContent = e.message || "Could not send.";
+        attBtn.disabled = false;
+      }
+    });
+  }
+  backdrop.querySelectorAll("[data-ack-att]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await api(`/api/notifications/${btn.dataset.ackAtt}/acknowledge`, { method: "POST" });
+        close();
+        await loadClients();
+        openClientModal(id);
+      } catch (e) {
+        alert("Could not update: " + e.message);
+      }
+    });
+  });
 
   const saveAsmtBtn = backdrop.querySelector("#save-assessment-btn");
   if (saveAsmtBtn) {
