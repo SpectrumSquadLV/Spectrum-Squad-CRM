@@ -332,6 +332,7 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_notes TEXT;
 ALTER TABLE clickup_config ADD COLUMN IF NOT EXISTS last_connection_status TEXT;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged_at TEXT;
+ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS ack_token TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS diagnosis_uploaded BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_card_uploaded BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS clinical_screener_completed BOOLEAN NOT NULL DEFAULT false;
@@ -3526,22 +3527,28 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       }
 
       const subject = `Attendance Update for ${client.child_name}`;
+      const ackToken = crypto.randomBytes(16).toString("hex");
+      const ackLink = `${APP_BASE_URL}/attendance-ack?token=${ackToken}`;
       const html = `
         <p>Hi ${client.parent_name || "there"},</p>
         <p>We wanted to reach out regarding <strong>${client.child_name}</strong>'s attendance. Based on our records, their current session attendance rate is <strong>${pct}%</strong>, which is below the level needed to maintain consistent progress and insurance authorization.</p>
         <p>Missed sessions can affect ${client.child_name}'s treatment progress and may put continued authorization at risk. We ask that you please help ensure ${client.child_name} attends all scheduled sessions going forward.</p>
-        <p>Please reply to this email to let us know you've received this message, or reach out if you'd like to discuss scheduling.</p>
+        <p>Please click below to let us know you've received this message:</p>
+        <p style="text-align:center;margin:24px 0;">
+          <a href="${ackLink}" style="background:#e0a430;color:#29225c;font-weight:700;text-decoration:none;padding:12px 24px;border-radius:999px;font-size:15px;display:inline-block;">✅ I acknowledge this message</a>
+        </p>
+        <p style="font-size:12px;color:#888;">If the button doesn't work, open this link: ${ackLink}</p>
         <p>Thank you,<br/>Spectrum Squad</p>
       `;
 
-      const result = await sendEmail({
-        to: client.parent_email,
-        subject,
-        html,
-        clientId: id,
-        type: "attendance_alert",
-      });
-      return json(res, 200, result);
+      // Send + record with an acknowledgment token so the parent can confirm.
+      const { delivered, errorMsg } = await deliverEmail({ to: client.parent_email, subject, html });
+      await dbRun(
+        `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered, ack_token)
+         VALUES (?, 'attendance_alert', ?, ?, ?, ?, ?, ?)`,
+        [id, client.parent_email, subject, html, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : ""), ackToken]
+      );
+      return json(res, 200, { delivered, errorMsg });
     }
 
     const ackNotificationMatch = pathname.match(/^\/api\/notifications\/(\d+)\/acknowledge$/);
@@ -4280,6 +4287,30 @@ const server = http.createServer(async (req, res) => {
     pathname === "/schedule-request" || pathname.startsWith("/schedule-request/")
   ) {
     if (await clientForms.servePage(req, res, pathname)) return;
+  }
+
+  // Parent attendance acknowledgment: one click from the email marks it
+  // acknowledged and shows a thank-you page.
+  if (pathname === "/attendance-ack") {
+    const token = (parsed.query && parsed.query.token) || "";
+    let ok = false;
+    if (token) {
+      const row = await dbGet("SELECT id FROM notifications_log WHERE ack_token = ?", [token]).catch(() => null);
+      if (row) {
+        await dbRun("UPDATE notifications_log SET acknowledged = true, acknowledged_at = ? WHERE ack_token = ?", [nowISO(), token]).catch(() => {});
+        ok = true;
+      }
+    }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Spectrum Squad</title>
+      <style>body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:linear-gradient(135deg,#f3f0ff,#eafaf6);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#29225c;}
+      .c{background:#fff;border-radius:20px;box-shadow:0 18px 50px rgba(41,34,92,.14);padding:40px 32px;max-width:420px;text-align:center;margin:16px;}
+      .big{font-size:56px}</style></head>
+      <body><div class="c"><div class="big">${ok ? "✅" : "⚠️"}</div>
+      <h1>${ok ? "Thank you!" : "Link not found"}</h1>
+      <p>${ok ? "We've recorded that you received this attendance message. Please reach out anytime to discuss your child's schedule." : "This acknowledgment link is invalid or has already been used. If you have questions, please contact us."}</p>
+      </div></body></html>`);
+    return;
   }
 
   serveStatic(req, res, pathname);
