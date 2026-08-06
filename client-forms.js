@@ -569,7 +569,11 @@ module.exports = function initClientForms(ctx) {
     background:linear-gradient(135deg,#fff4e0 0%,#eafaf6 100%);min-height:100vh;}
   #confetti{position:fixed;inset:0;pointer-events:none;z-index:60}
   .wrap{max-width:720px;margin:0 auto;padding:20px 12px 120px;}
-  .card{background:#fff;border-radius:20px;box-shadow:0 18px 50px rgba(41,34,92,.14);padding:22px 18px;animation:rise .5s ease both;}
+  .brandbar{text-align:center;margin-bottom:12px;}
+  .brandbar img{max-width:220px;width:58%;height:auto;}
+  .card{position:relative;overflow:hidden;background:#fff;border-radius:20px;box-shadow:0 18px 50px rgba(41,34,92,.14);padding:22px 18px;animation:rise .5s ease both;}
+  .card::before{content:"";position:absolute;inset:0;background:url('/logo.png') center 30% no-repeat;background-size:min(70%,360px);opacity:.05;pointer-events:none;z-index:0;}
+  .card > *{position:relative;z-index:1;}
   @keyframes rise{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none}}
   h1{font-size:23px;margin:6px 0;}
   p{line-height:1.55;font-size:14.5px;}
@@ -593,7 +597,7 @@ module.exports = function initClientForms(ctx) {
 </style></head>
 <body>
 <canvas id="confetti"></canvas>
-<div class="wrap"><div class="card" id="card"><p class="err">Loading…</p></div></div>
+<div class="wrap"><div class="brandbar"><img src="/logo.png" alt="Spectrum Squad"/></div><div class="card" id="card"><p class="err">Loading…</p></div></div>
 <div class="bar" id="bar" style="display:none;">
   <div class="count"><span id="cnt">0</span> hrs</div>
   <div class="hint" id="hint"></div>
@@ -675,7 +679,11 @@ function celebrate(){var cv=document.getElementById("confetti"),cx=cv.getContext
     background:linear-gradient(135deg,#f3f0ff 0%,#eafaf6 100%);min-height:100vh;}
   #confetti{position:fixed;inset:0;pointer-events:none;z-index:60}
   .wrap{max-width:640px;margin:0 auto;padding:24px 16px 80px;}
-  .card{background:#fff;border-radius:20px;box-shadow:0 18px 50px rgba(41,34,92,.14);padding:28px 26px;animation:rise .5s ease both;}
+  .brandbar{text-align:center;margin-bottom:14px;}
+  .brandbar img{max-width:230px;width:60%;height:auto;}
+  .card{position:relative;overflow:hidden;background:#fff;border-radius:20px;box-shadow:0 18px 50px rgba(41,34,92,.14);padding:28px 26px;animation:rise .5s ease both;}
+  .card::before{content:"";position:absolute;inset:0;background:url('/logo.png') center 42% no-repeat;background-size:min(78%,400px);opacity:.055;pointer-events:none;z-index:0;}
+  .card > *{position:relative;z-index:1;}
   @keyframes rise{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none}}
   .badge{display:inline-block;background:#eef0fb;color:var(--navy);border-radius:999px;padding:6px 14px;font-size:12.5px;font-weight:700;margin-bottom:14px;}
   h1{font-size:24px;margin:0 0 6px;}
@@ -709,7 +717,7 @@ function celebrate(){var cv=document.getElementById("confetti"),cx=cv.getContext
 </style></head>
 <body>
 <canvas id="confetti"></canvas>
-<div class="wrap"><div class="card" id="card"><p class="err">Loading…</p></div></div>
+<div class="wrap"><div class="brandbar"><img src="/logo.png" alt="Spectrum Squad"/></div><div class="card" id="card"><p class="err">Loading…</p></div></div>
 <script>
 var params=new URLSearchParams(location.search),token=params.get("token");
 var card=document.getElementById("card");
