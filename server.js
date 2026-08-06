@@ -476,7 +476,11 @@ const auth = { createUser, findUserByEmail, login, logout, getUserFromToken, par
 const PROVIDER = (process.env.EMAIL_PROVIDER || "none").toLowerCase(); // resend | sendgrid | none
 const FROM_EMAIL = process.env.EMAIL_FROM || "no-reply@spectrumsquadlv.com";
 
-async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone" }) {
+// Low-level provider delivery. Returns { delivered, errorMsg } WITHOUT writing
+// to notifications_log, so both first-time sends (sendEmail) and manual retries
+// of previously-failed emails (resendFailedEmail) share the exact same provider
+// logic.
+async function deliverEmail({ to, subject, html }) {
   let delivered = "simulated";
   let errorMsg = null;
 
@@ -517,6 +521,12 @@ async function sendEmail({ to, subject, html, clientId = null, type = "parent_mi
     errorMsg = err.message;
   }
 
+  return { delivered, errorMsg };
+}
+
+async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone" }) {
+  const { delivered, errorMsg } = await deliverEmail({ to, subject, html });
+
   await dbRun(
     `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -524,6 +534,62 @@ async function sendEmail({ to, subject, html, clientId = null, type = "parent_mi
   );
 
   return { delivered, errorMsg };
+}
+
+// ---- Failed-email retry ("push" failed emails) --------------------------
+// Admins/owners can review emails the provider rejected or errored on and
+// re-attempt delivery from Settings -> Failed Emails. A resend re-uses the
+// exact subject/body that was originally attempted (merge fields were already
+// substituted at first-send time) and updates the SAME notifications_log row
+// in place, so a recovered email drops off the failed list instead of leaving
+// a duplicate row behind.
+async function listFailedEmails() {
+  return dbAll(
+    `SELECT id, client_id, type, recipient, subject, sent_at, delivered
+       FROM notifications_log
+      WHERE delivered LIKE 'failed%'
+      ORDER BY id DESC`
+  );
+}
+
+async function resendFailedEmail(id, actor) {
+  const row = await dbGet("SELECT * FROM notifications_log WHERE id = ?", [id]);
+  if (!row) return { ok: false, error: "Email not found" };
+  if (!String(row.delivered || "").startsWith("failed")) {
+    return { ok: false, error: "This email is not in a failed state" };
+  }
+
+  const { delivered, errorMsg } = await deliverEmail({
+    to: row.recipient,
+    subject: row.subject,
+    html: row.body,
+  });
+
+  await dbRun("UPDATE notifications_log SET delivered = ?, sent_at = ? WHERE id = ?", [
+    delivered + (errorMsg ? `: ${errorMsg}` : ""),
+    nowISO(),
+    id,
+  ]);
+
+  await logFinancialAudit(
+    actor,
+    "failed_email_resent",
+    `id=${id} to=${row.recipient} result=${delivered}${errorMsg ? " - " + errorMsg : ""}`
+  ).catch(() => {});
+
+  return { ok: delivered !== "failed", id, delivered, errorMsg };
+}
+
+async function resendAllFailedEmails(actor) {
+  const failed = await listFailedEmails();
+  let resent = 0;
+  let stillFailed = 0;
+  for (const row of failed) {
+    const result = await resendFailedEmail(row.id, actor);
+    if (result.ok) resent++;
+    else stillFailed++;
+  }
+  return { ok: true, attempted: failed.length, resent, stillFailed };
 }
 
 function stripHtml(html) {
@@ -542,7 +608,10 @@ function stripHtml(html) {
 // NOTHING) so nothing breaks before an admin has ever touched this page.
 "use strict";
 
-const EMAIL_TEMPLATE_EDIT_ROLES = ["admin"];
+// Highest-privilege roles. Note the seeded owner login (admin@spectrumsquadlv.com)
+// is migrated from role "admin" to "owner" on boot (see initSchema), so "owner"
+// MUST be included here or the actual owner is locked out of template editing.
+const EMAIL_TEMPLATE_EDIT_ROLES = ["owner", "admin", "super_admin"];
 
 function canEditEmailTemplates(user) {
   return !!user && EMAIL_TEMPLATE_EDIT_ROLES.includes(user.role);
@@ -2178,6 +2247,14 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // HR & Recruiting add-on owns all /api/hr/* routes (it enforces its own
+  // public/authenticated split internally, so it is dispatched before the
+  // global 401 gate below).
+  if (pathname.startsWith("/api/hr/")) {
+    const handled = await hr.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // Email images are embedded in emails opened by parents/staff in their own
   // mail client (no session cookie present), so this one path must stay
   // publicly readable regardless of the generated filename.
@@ -3138,6 +3215,31 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       return json(res, 200, await emailTemplates.getEmailTemplate(emailTemplateMatch[1]));
     }
 
+    // ---------- FAILED EMAILS (retry / "push" failed sends) ----------
+    // Same admin/owner gate as template editing -- controls workspace-wide
+    // messaging to families and staff.
+    if (pathname === "/api/failed-emails" && method === "GET") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      return json(res, 200, await listFailedEmails());
+    }
+
+    if (pathname === "/api/failed-emails/resend-all" && method === "POST") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      return json(res, 200, await resendAllFailedEmails(user.email));
+    }
+
+    const failedEmailResendMatch = pathname.match(/^\/api\/failed-emails\/(\d+)\/resend$/);
+    if (failedEmailResendMatch && method === "POST") {
+      if (!emailTemplates.canEditEmailTemplates(user)) return json(res, 403, { error: "Not permitted" });
+      const result = await resendFailedEmail(Number(failedEmailResendMatch[1]), user.email);
+      // Distinguish client errors (bad id / not failed) from a delivery that
+      // was attempted but the provider still rejected -- the latter returns 200
+      // with ok:false so the UI can surface the specific provider error.
+      if (result.error === "Email not found") return json(res, 404, result);
+      if (result.error) return json(res, 400, result);
+      return json(res, 200, result);
+    }
+
     // ---------- ADMIN ----------
     if (pathname === "/api/admin/check-overdue" && method === "POST") {
       const n = await pipeline.checkOverdueTasks();
@@ -3521,6 +3623,10 @@ function serveStatic(req, res, pathname) {
 const screener = require("./screener")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, PUBLIC_DIR,
 });
+// ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
+const hr = require("./hr")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR,
+});
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
@@ -3539,6 +3645,15 @@ const server = http.createServer(async (req, res) => {
     if (await screener.servePage(req, res, pathname)) return;
 }
 
+  // HR: serve the public careers + interview scheduling pages
+  if (
+    pathname === "/careers" || pathname.startsWith("/careers/") ||
+    pathname.startsWith("/apply/") || pathname.startsWith("/schedule/") ||
+    pathname.startsWith("/verify-timecard/") || pathname.startsWith("/offer/")
+  ) {
+    if (await hr.servePage(req, res, pathname)) return;
+  }
+
   serveStatic(req, res, pathname);
 });
 
@@ -3550,6 +3665,10 @@ const server = http.createServer(async (req, res) => {
 async function start() {
   await initSchema();
   await emailTemplates.seedEmailTemplates();
+  await hr.initTables().catch((e) => console.error("HR initTables failed:", e));
+  await hr.seed().catch((e) => console.error("HR seed failed:", e));
+  await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
+  await hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));
   await ensureSeeded();
   await pipeline.checkOverdueTasks();
   await authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
@@ -3570,6 +3689,26 @@ async function start() {
   // -> Integration Settings.
   setInterval(() => {
     clickupIntegration.syncNow("scheduled").catch((e) => console.error("ClickUp sync failed:", e));
+  }, 15 * 60 * 1000);
+
+  // HR recruiting follow-up sequences: send any due warm follow-ups.
+  setInterval(() => {
+    hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
+  }, 15 * 60 * 1000);
+
+  // HR interview reminders: send 24h / 2h reminders for upcoming interviews.
+  setInterval(() => {
+    hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));
+  }, 15 * 60 * 1000);
+
+  // HR daily recruiting summary: fires once/day at the configured UTC hour.
+  setInterval(() => {
+    hr.processDailySummary().catch((e) => console.error("HR daily summary failed:", e));
+  }, 15 * 60 * 1000);
+
+  // HR credential expiration alerts: once/day, notify on soon-to-expire creds.
+  setInterval(() => {
+    hr.processCredentialAlerts().catch((e) => console.error("HR credential alert sweep failed:", e));
   }, 15 * 60 * 1000);
 
   server.listen(PORT, () => {

@@ -9,9 +9,15 @@
 // ---- permission check (bare `state`, not `window.state` -- classic
 // <script> tags share one global lexical environment, but `const state`
 // declared in index.html's inline script is never attached to `window`). ----
+// Highest-privilege roles. Must mirror the server's EMAIL_TEMPLATE_EDIT_ROLES.
+// "owner" is essential: the seeded owner account is migrated from "admin" to
+// "owner" server-side, so leaving it out would hide this whole area from the
+// actual owner.
+const ET_EDIT_ROLES = ["owner", "admin", "super_admin"];
+
 function etCanEdit() {
   try {
-    return !!(state && state.user && state.user.role === "admin");
+    return !!(state && state.user && ET_EDIT_ROLES.includes(state.user.role));
   } catch (e) {
     return false;
   }
@@ -43,23 +49,30 @@ function etEscapeHtml(str) {
 }
 
 // ---- nav item injection ----
+const ET_NAV_ITEMS = [
+  { key: "email-templates", label: "Email Templates", hash: "#/email-templates" },
+  { key: "failed-emails", label: "Failed Emails", hash: "#/failed-emails" },
+];
+
 function etSyncNavButton() {
   const nav = document.querySelector(".sidebar nav");
   if (!nav) return;
-  if (!etCanEdit()) {
-    const existing = nav.querySelector('[data-nav="email-templates"]');
-    if (existing) existing.remove();
-    return;
+  for (const item of ET_NAV_ITEMS) {
+    if (!etCanEdit()) {
+      const existing = nav.querySelector(`[data-nav="${item.key}"]`);
+      if (existing) existing.remove();
+      continue;
+    }
+    if (nav.querySelector(`[data-nav="${item.key}"]`)) continue;
+    const btn = document.createElement("button");
+    btn.className = "nav-item";
+    btn.dataset.nav = item.key;
+    btn.textContent = item.label;
+    btn.addEventListener("click", () => {
+      location.hash = item.hash;
+    });
+    nav.appendChild(btn);
   }
-  if (nav.querySelector('[data-nav="email-templates"]')) return;
-  const btn = document.createElement("button");
-  btn.className = "nav-item";
-  btn.dataset.nav = "email-templates";
-  btn.textContent = "Email Templates";
-  btn.addEventListener("click", () => {
-    location.hash = "#/email-templates";
-  });
-  nav.appendChild(btn);
 }
 
 // ---- styles (own <style> block, doesn't touch index.html's existing one) ----
@@ -100,6 +113,15 @@ function etInjectStyles() {
     .et-preview-subject { padding: 10px 14px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-size: 13.5px; }
     .et-preview-frame { width: 100%; height: 360px; border: none; }
     input[type="file"].et-hidden-file { display: none; }
+    .et-fe-hint { font-size: 13px; color: #6b7280; margin: 0 0 14px; max-width: 680px; line-height: 1.5; }
+    .et-fe-empty { padding: 40px; text-align: center; color: #16a34a; font-size: 15px; border: 1px dashed #d1d5db; border-radius: 8px; }
+    .et-fe-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .et-fe-table th { text-align: left; padding: 8px 10px; border-bottom: 2px solid #e5e7eb; color: #6b7280; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+    .et-fe-table td { padding: 9px 10px; border-bottom: 1px solid #f0f0f3; vertical-align: top; }
+    .et-fe-when { white-space: nowrap; color: #6b7280; }
+    .et-fe-err { color: #b91c1c; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .et-fe-table .et-fe-resend { padding: 5px 12px; font-size: 12.5px; }
+    .et-fe-resend[disabled] { opacity: 0.6; cursor: default; }
   `;
   document.head.appendChild(style);
 }
@@ -355,6 +377,120 @@ async function etRenderEditor(mount, key) {
   });
 }
 
+// ---- Failed Emails page (retry / "push" failed sends) ----
+function etFormatDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
+}
+
+// Stored "delivered" values look like "failed" or "failed: <provider error>".
+function etFailureReason(delivered) {
+  const text = String(delivered || "").replace(/^failed:?\s*/, "").trim();
+  return text || "Unknown error";
+}
+
+function etFeStatus(msg, ok) {
+  const s = document.getElementById("et-fe-status");
+  if (!s) return;
+  s.textContent = msg || "";
+  s.className = "et-status-msg " + (ok ? "ok" : "err");
+  if (msg) setTimeout(() => { if (s) s.textContent = ""; }, 5000);
+}
+
+async function etLoadFailedList() {
+  const body = document.getElementById("et-fe-body");
+  if (!body) return;
+  body.textContent = "Loading…";
+  let rows;
+  try {
+    rows = await etApi("/api/failed-emails");
+  } catch (e) {
+    body.textContent = "Failed to load: " + e.message;
+    return;
+  }
+  if (!rows.length) {
+    body.innerHTML = `<div class="et-fe-empty">No failed emails — everything has gone out successfully.</div>`;
+    return;
+  }
+  let html = `<table class="et-fe-table"><thead><tr>
+    <th>When</th><th>To</th><th>Type</th><th>Subject</th><th>Error</th><th></th>
+  </tr></thead><tbody>`;
+  for (const r of rows) {
+    const reason = etFailureReason(r.delivered);
+    html += `<tr>
+      <td class="et-fe-when">${etEscapeHtml(etFormatDate(r.sent_at))}</td>
+      <td>${etEscapeHtml(r.recipient)}</td>
+      <td>${etEscapeHtml(r.type || "")}</td>
+      <td>${etEscapeHtml(r.subject || "")}</td>
+      <td class="et-fe-err" title="${etEscapeHtml(reason)}">${etEscapeHtml(reason)}</td>
+      <td><button class="et-edit-btn et-fe-resend" data-id="${etEscapeHtml(r.id)}">Resend</button></td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+  body.innerHTML = html;
+  body.querySelectorAll(".et-fe-resend").forEach((btn) => {
+    btn.addEventListener("click", () => etResendOne(btn.dataset.id, btn));
+  });
+}
+
+async function etResendOne(id, btn) {
+  btn.disabled = true;
+  btn.textContent = "Sending…";
+  try {
+    const result = await etApi("/api/failed-emails/" + encodeURIComponent(id) + "/resend", { method: "POST" });
+    if (result.ok) {
+      etFeStatus("Email resent successfully.", true);
+    } else {
+      etFeStatus("Still failing: " + (result.errorMsg || result.error || "unknown error"), false);
+    }
+  } catch (e) {
+    etFeStatus("Resend failed: " + e.message, false);
+  }
+  await etLoadFailedList();
+}
+
+async function etRenderFailedEmails(mount) {
+  mount.innerHTML = `<div class="et-wrap" id="et-view-content">
+    <div class="et-header"><h1>Failed Emails</h1></div>
+    <p class="et-fe-hint">These are emails the CRM tried to send but the mail provider rejected or errored on. Fix the underlying problem if needed (a bad address, or the email provider configuration), then push them out again. A resend re-uses the original message content and, when successful, clears it from this list.</p>
+    <div class="et-actions" style="margin-top:0;">
+      <button class="et-save-btn" id="et-fe-resend-all" style="background:#29225c;">Resend All</button>
+      <button class="et-preview-btn" id="et-fe-refresh">Refresh</button>
+      <span class="et-status-msg" id="et-fe-status"></span>
+    </div>
+    <div id="et-fe-body" style="margin-top:16px;">Loading…</div>
+  </div>`;
+
+  document.getElementById("et-fe-refresh").addEventListener("click", () => etLoadFailedList());
+
+  document.getElementById("et-fe-resend-all").addEventListener("click", async () => {
+    const btn = document.getElementById("et-fe-resend-all");
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Resending…";
+    try {
+      const result = await etApi("/api/failed-emails/resend-all", { method: "POST" });
+      if (!result.attempted) {
+        etFeStatus("Nothing to resend.", true);
+      } else {
+        etFeStatus(
+          `Resent ${result.resent} of ${result.attempted}.` +
+            (result.stillFailed ? ` ${result.stillFailed} still failing.` : ""),
+          result.stillFailed === 0
+        );
+      }
+    } catch (e) {
+      etFeStatus("Resend all failed: " + e.message, false);
+    }
+    btn.disabled = false;
+    btn.textContent = orig;
+    await etLoadFailedList();
+  });
+
+  await etLoadFailedList();
+}
+
 // ---- self-healing view sync (checks a live DOM marker instead of a static
 // flag, so it correctly re-renders if the native app's own async route()
 // resolves after us and silently overwrites #view-mount -- see the same fix
@@ -363,7 +499,9 @@ let etRenderInFlight = false;
 
 async function etSyncView() {
   const hash = location.hash || "";
-  if (!hash.startsWith("#/email-templates")) return;
+  const isTemplates = hash.startsWith("#/email-templates");
+  const isFailed = hash.startsWith("#/failed-emails");
+  if (!isTemplates && !isFailed) return;
   if (!etCanEdit()) return;
   if (etRenderInFlight) return;
 
@@ -371,19 +509,29 @@ async function etSyncView() {
   if (!mount) return;
 
   const alreadyRendered = mount.querySelector("#et-view-content");
-  const parts = hash.replace(/^#\//, "").split("/"); // ["email-templates"] or ["email-templates", key]
-  const desiredKey = parts[1] || null;
+
+  // Distinct render key per view so switching between the list, an editor, and
+  // the failed-emails page always triggers a re-render.
+  let desiredKey;
+  if (isFailed) {
+    desiredKey = "__failed__";
+  } else {
+    const parts = hash.replace(/^#\//, "").split("/"); // ["email-templates"] or ["email-templates", key]
+    desiredKey = parts[1] ? "tpl:" + parts[1] : "__list__";
+  }
   const renderedKey = mount.dataset.etKey || null;
 
-  if (alreadyRendered && renderedKey === (desiredKey || "__list__")) return;
+  if (alreadyRendered && renderedKey === desiredKey) return;
 
   etRenderInFlight = true;
   try {
-    mount.dataset.etKey = desiredKey || "__list__";
-    if (desiredKey) {
-      await etRenderEditor(mount, desiredKey);
-    } else {
+    mount.dataset.etKey = desiredKey;
+    if (isFailed) {
+      await etRenderFailedEmails(mount);
+    } else if (desiredKey === "__list__") {
       await etRenderList(mount);
+    } else {
+      await etRenderEditor(mount, desiredKey.slice(4)); // strip "tpl:"
     }
   } finally {
     etRenderInFlight = false;
