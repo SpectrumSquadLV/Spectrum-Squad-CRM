@@ -499,6 +499,7 @@ async function route() {
   else if (hash.startsWith("#/tasks")) await renderTasks(mount);
   else if (hash.startsWith("#/schedule")) await renderSchedule(mount);
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
+  else if (hash.startsWith("#/staff")) await renderStaff(mount);
   else if (hash.startsWith("#/auth-alerts")) await renderAuthAlerts(mount, param);
   else if (hash.startsWith("#/admin")) await renderAdmin(mount);
   else await renderDashboard(mount);
@@ -532,6 +533,8 @@ function renderShell(active) {
   if (canViewAuth()) navItems.push({ key: "auth-alerts", label: "Authorization Alerts", icon: "⏰" });
   if (["owner", "admin", "super_admin", "hr_admin", "hiring_manager", "interviewer"].includes(state.user.role))
     navItems.push({ key: "hr", label: "HR & Recruiting", icon: "👥" });
+  if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
+    navItems.push({ key: "staff", label: "Staff", icon: "🧑‍⚕️" });
   if (["owner", "admin", "super_admin"].includes(state.user.role)) navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
 
   root.innerHTML = `
@@ -2357,6 +2360,217 @@ async function renderOutbox(mount) {
         setTimeout(() => (btn.textContent = original), 1500);
       }
     });
+  });
+}
+
+// ---------------- Staff ----------------
+function staffEsc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+
+function tenureFrom(hireDate) {
+  if (!hireDate) return "—";
+  const start = new Date(hireDate);
+  if (isNaN(start)) return "—";
+  const now = new Date();
+  let months = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+  if (now.getDate() < start.getDate()) months--;
+  if (months < 0) return "—";
+  const y = Math.floor(months / 12), m = months % 12;
+  if (y === 0 && m === 0) {
+    const days = Math.max(0, Math.floor((now - start) / 86400000));
+    return days <= 1 ? "New" : days + " days";
+  }
+  return (y ? y + " yr " : "") + (m ? m + " mo" : "").trim() || (y + " yr");
+}
+
+// Minimal CSV parser (handles quoted fields, commas, and quoted newlines).
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = "", inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === ",") { row.push(field); field = ""; }
+      else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+      else if (c === "\r") { /* skip */ }
+      else field += c;
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((c) => String(c).trim() !== ""));
+}
+
+const STAFF_IMPORT_FIELDS = [
+  { key: "name", label: "Full name", required: true },
+  { key: "email", label: "Email" },
+  { key: "phone", label: "Phone" },
+  { key: "address", label: "Address" },
+  { key: "certifications", label: "Certification(s)" },
+  { key: "role_title", label: "Title / role" },
+  { key: "hire_date", label: "Hire date" },
+  { key: "rethink_id", label: "Rethink ID" },
+];
+
+async function renderStaff(mount) {
+  let staff = [];
+  try { staff = await api("/api/hr/employees"); } catch (e) {
+    mount.innerHTML = `<div class="page-header"><div><h1>Staff</h1></div></div><div class="empty-state">Couldn't load staff: ${staffEsc(e.message)}</div>`;
+    return;
+  }
+  mount.innerHTML = `
+    <div class="page-header">
+      <div><h1>Staff</h1><p>Team directory — contact info, certifications, timecards, and length of employment.</p></div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn secondary" id="staff-import-btn">⬆ Import Rethink sheet</button>
+        <button class="btn" id="staff-add-btn">+ Add Staff</button>
+      </div>
+    </div>
+    <div class="card">
+      <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:760px;">
+          <thead><tr style="text-align:left; color:var(--text-muted); font-size:11.5px; text-transform:uppercase;">
+            <th style="padding:8px 10px;">Name</th><th style="padding:8px 10px;">Title</th><th style="padding:8px 10px;">Phone</th>
+            <th style="padding:8px 10px;">Certifications</th><th style="padding:8px 10px;">Time w/ Spectrum</th><th style="padding:8px 10px;">Status</th>
+          </tr></thead>
+          <tbody>
+            ${staff.length ? staff.map((e) => `<tr data-staff="${e.id}" style="cursor:pointer;">
+              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><strong>${staffEsc(e.name)}</strong><div style="color:var(--text-muted); font-size:12px;">${staffEsc(e.email || "")}</div></td>
+              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.role_title || "—")}</td>
+              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.phone || "—")}</td>
+              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.certifications || (e.credentials || []).map((c) => c.credential_type).join(", ") || "—")}</td>
+              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${tenureFrom(e.hire_date)}</td>
+              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><span class="tag">${staffEsc(e.status || "active")}</span></td>
+            </tr>`).join("") : `<tr><td colspan="6"><div class="empty-state">No staff yet. Add one or import your Rethink sheet.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  mount.querySelector("#staff-add-btn").addEventListener("click", () => openStaffModal(null, mount));
+  mount.querySelector("#staff-import-btn").addEventListener("click", () => openStaffImportModal(mount));
+  mount.querySelectorAll("[data-staff]").forEach((tr) => tr.addEventListener("click", () => openStaffModal(tr.dataset.staff, mount)));
+}
+
+async function openStaffModal(id, pageMount) {
+  let emp = { status: "active" };
+  if (id) { try { emp = await api(`/api/hr/employees/${id}`); } catch (e) {} }
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  const field = (k, label, type) => `<div class="field"><label>${label}</label><input data-f="${k}" ${type ? `type="${type}"` : ""} value="${staffEsc(emp[k] || "")}" /></div>`;
+  backdrop.innerHTML = `
+    <div class="modal" style="width:560px;">
+      <div class="modal-header"><h2>${id ? staffEsc(emp.name) : "Add Staff"}</h2><button class="close-btn">✕</button></div>
+      <div class="form-grid" style="gap:10px;">
+        ${field("name", "Full name")}
+        ${field("role_title", "Title / role")}
+        ${field("email", "Email", "email")}
+        ${field("phone", "Phone")}
+        <div class="field full"><label>Address</label><input data-f="address" value="${staffEsc(emp.address || "")}" /></div>
+        <div class="field full"><label>Certification(s)</label><input data-f="certifications" value="${staffEsc(emp.certifications || "")}" placeholder="e.g. RBT, CPR/BLS" /></div>
+        ${field("hire_date", "Hire date", "date")}
+        <div class="field"><label>Status</label><select data-f="status">
+          ${["active", "onboarding", "leave", "terminated"].map((s) => `<option value="${s}" ${emp.status === s ? "selected" : ""}>${s}</option>`).join("")}
+        </select></div>
+      </div>
+      ${id ? `<div style="font-size:12.5px; color:var(--text-muted); margin-top:6px;">Length of employment: <strong>${tenureFrom(emp.hire_date)}</strong></div>` : ""}
+      <div style="margin-top:16px; display:flex; gap:8px;">
+        <button class="btn" id="staff-save">${id ? "Save" : "Add"}</button>
+        <span id="staff-save-status" style="font-size:12.5px; color:var(--text-muted); align-self:center;"></span>
+      </div>
+      ${id ? `<div class="section-title">Timecards</div><div id="staff-timecards">${
+        (emp.timecards || []).length
+          ? emp.timecards.map((t) => `<div class="task-row"><div class="info"><strong>${t.pay_period_start ? fmtDate(t.pay_period_start) : "Period"} – ${t.pay_period_end ? fmtDate(t.pay_period_end) : ""}</strong><div class="due">Status: ${staffEsc(t.status)}${Number(t.open_flags) ? ` · ${t.open_flags} open flag(s)` : ""}</div></div><button class="btn small secondary" data-req-sig="${t.id}">Request signature</button></div>`).join("")
+          : `<div class="empty-state">No timecards yet. Import a payroll export to create them.</div>`
+      }</div>` : ""}
+    </div>`;
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".close-btn").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+  backdrop.querySelector("#staff-save").addEventListener("click", async () => {
+    const body = {};
+    backdrop.querySelectorAll("[data-f]").forEach((el) => { body[el.dataset.f] = el.value || null; });
+    if (!body.name) { backdrop.querySelector("#staff-save-status").textContent = "Name is required."; return; }
+    try {
+      if (id) await api(`/api/hr/employees/${id}`, { method: "PATCH", body });
+      else await api("/api/hr/employees", { method: "POST", body });
+      close();
+      renderStaff(pageMount);
+    } catch (e) { backdrop.querySelector("#staff-save-status").textContent = e.message || "Could not save."; }
+  });
+  backdrop.querySelectorAll("[data-req-sig]").forEach((btn) => btn.addEventListener("click", async () => {
+    btn.disabled = true; btn.textContent = "Sending…";
+    try { const r = await api(`/api/hr/timecards/${btn.dataset.reqSig}/request-verification`, { method: "POST" }); btn.textContent = r.sent ? "Sent ✓" : "Link created"; }
+    catch (e) { btn.textContent = "Failed"; alert(e.message); }
+  }));
+}
+
+function openStaffImportModal(pageMount) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal" style="width:640px;">
+      <div class="modal-header"><h2>Import Rethink Payroll Sheet</h2><button class="close-btn">✕</button></div>
+      <p style="font-size:13px; color:var(--text-muted); margin-top:0;">Upload the Rethink sheet as a <strong>CSV</strong> (in Excel/Sheets: File → Save As / Download → CSV). Pay/wage columns are ignored — only contact info, certifications, and hire dates are imported.</p>
+      <input type="file" id="staff-csv" accept=".csv,text/csv" />
+      <div id="staff-map" style="margin-top:14px;"></div>
+      <div id="staff-import-status" style="font-size:12.5px; margin-top:8px; color:var(--text-muted);"></div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".close-btn").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+
+  let headers = [], dataRows = [];
+  backdrop.querySelector("#staff-csv").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const rows = parseCSV(String(reader.result));
+      if (rows.length < 2) { backdrop.querySelector("#staff-map").innerHTML = `<div class="empty-state">That file has no data rows.</div>`; return; }
+      headers = rows[0].map((h) => h.trim());
+      dataRows = rows.slice(1);
+      const guess = (field) => {
+        const lc = headers.map((h) => h.toLowerCase());
+        const patterns = {
+          name: ["name", "employee", "staff"], email: ["email", "e-mail"], phone: ["phone", "mobile", "cell"],
+          address: ["address", "street"], certifications: ["cert", "credential", "license"],
+          role_title: ["title", "role", "position", "job"], hire_date: ["hire", "start date", "hired"], rethink_id: ["rethink", "employee id", "emp id", "id"],
+        }[field] || [];
+        const idx = lc.findIndex((h) => patterns.some((p) => h.includes(p)));
+        return idx;
+      };
+      const opts = (sel) => `<option value="-1">— none —</option>` + headers.map((h, i) => `<option value="${i}" ${i === sel ? "selected" : ""}>${staffEsc(h)}</option>`).join("");
+      backdrop.querySelector("#staff-map").innerHTML = `
+        <div style="font-size:12.5px; font-weight:600; margin-bottom:8px;">Match your columns (${dataRows.length} rows found):</div>
+        <div class="form-grid" style="gap:8px;">
+          ${STAFF_IMPORT_FIELDS.map((f) => `<div class="field"><label>${f.label}${f.required ? " *" : ""}</label><select data-map="${f.key}">${opts(guess(f.key))}</select></div>`).join("")}
+        </div>
+        <div style="margin-top:12px;"><button class="btn" id="staff-do-import">Import ${dataRows.length} staff</button></div>`;
+      backdrop.querySelector("#staff-do-import").addEventListener("click", async () => {
+        const map = {};
+        backdrop.querySelectorAll("[data-map]").forEach((s) => { map[s.dataset.map] = Number(s.value); });
+        if (map.name == null || map.name < 0) { backdrop.querySelector("#staff-import-status").textContent = "Please map the Full name column."; return; }
+        const out = dataRows.map((r) => {
+          const rec = {};
+          STAFF_IMPORT_FIELDS.forEach((f) => { const idx = map[f.key]; if (idx != null && idx >= 0) rec[f.key] = (r[idx] || "").trim(); });
+          return rec;
+        }).filter((r) => r.name);
+        const btn = backdrop.querySelector("#staff-do-import");
+        btn.disabled = true;
+        backdrop.querySelector("#staff-import-status").textContent = "Importing…";
+        try {
+          const res = await api("/api/hr/employees/import", { method: "POST", body: { rows: out } });
+          backdrop.querySelector("#staff-import-status").textContent = `Done — ${res.created} added, ${res.updated} updated.`;
+          setTimeout(() => { close(); renderStaff(pageMount); }, 900);
+        } catch (err) { btn.disabled = false; backdrop.querySelector("#staff-import-status").textContent = err.message || "Import failed."; }
+      });
+    };
+    reader.readAsText(file);
   });
 }
 
