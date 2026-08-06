@@ -274,7 +274,12 @@ async function hrRenderCommandCenter(body) {
 
 // ---------------- Recruiting Dashboard ----------------
 async function hrRenderDashboard(body) {
-  const d = await hrApi("/api/hr/dashboard");
+  const canManage = hrCanManage();
+  const [d, notifs, settings] = await Promise.all([
+    hrApi("/api/hr/dashboard"),
+    hrApi("/api/hr/notifications").catch(() => []),
+    hrApi("/api/hr/settings").catch(() => ({ daily_summary_enabled: true, daily_summary_hour: 13 })),
+  ]);
   const stat = (n, l) => `<div class="hr-stat"><div class="n">${n}</div><div class="l">${hrEsc(l)}</div></div>`;
   const bars = (rows, keyer) =>
     rows && rows.length
@@ -304,7 +309,52 @@ async function hrRenderDashboard(body) {
     <div class="hr-2col">
       <div class="hr-card"><h2>Applicants by source</h2>${bars(d.applicants_by_source, (r) => hrSourceLabel(r.source))}</div>
       <div class="hr-card"><h2>Applicants by position</h2>${bars(d.applicants_by_position, (r) => r.title)}</div>
+    </div>
+    <div class="hr-2col">
+      <div class="hr-card">
+        <h2>Notifications ${notifs.filter((x) => !x.read).length ? `<span class="hr-badge urgent">${notifs.filter((x) => !x.read).length} new</span>` : ""}</h2>
+        ${
+          notifs.length
+            ? notifs.slice(0, 12).map((x) => `<div class="hr-note ${x.read ? "" : ""}" style="border-left:3px solid ${x.severity === "urgent" ? "#ef4444" : x.severity === "warning" ? "#e0a430" : "#5fa8a0"}">
+                <div${x.read ? "" : ' style="font-weight:600"'}>${hrEsc(x.title)}${x.applicant_id ? ` <a href="#/hr/candidate/${x.applicant_id}">→</a>` : ""}</div>
+                <div class="hr-muted">${hrEsc(x.body || "")}</div>
+                <div class="who">${hrFmtDateTime(x.created_at)}</div></div>`).join("")
+            : `<p class="hr-muted">No notifications yet.</p>`
+        }
+        ${notifs.some((x) => !x.read) ? `<button class="hr-btn sm ghost" id="hr-notif-readall" style="margin-top:8px">Mark all read</button>` : ""}
+      </div>
+      <div class="hr-card">
+        <h2>Daily recruiting summary</h2>
+        <p class="hr-muted">Emailed to the owner each day with new applicants, priority candidates, responses, interviews, and recommended actions.</p>
+        <div class="hr-field"><label><input type="checkbox" id="hr-sum-enabled" ${settings.daily_summary_enabled ? "checked" : ""} ${canManage ? "" : "disabled"}/> Send daily summary</label></div>
+        <div class="hr-field"><label>Send at (hour, UTC)</label><input type="number" id="hr-sum-hour" min="0" max="23" value="${hrEsc(settings.daily_summary_hour)}" ${canManage ? "" : "disabled"} style="max-width:120px"/></div>
+        ${canManage ? `<div class="hr-row"><button class="hr-btn sm" id="hr-sum-save">Save</button><button class="hr-btn sm ghost" id="hr-sum-now">Send now</button><span class="hr-status" id="hr-sum-status"></span></div>` : ""}
+      </div>
     </div>`;
+
+  const readAll = document.getElementById("hr-notif-readall");
+  if (readAll) readAll.addEventListener("click", async () => { try { await hrApi("/api/hr/notifications/read-all", { method: "POST" }); hrRenderDashboard(body); } catch (e) { alert(e.message); } });
+  if (canManage) {
+    const saveBtn = document.getElementById("hr-sum-save");
+    if (saveBtn) saveBtn.addEventListener("click", async () => {
+      const st = document.getElementById("hr-sum-status");
+      st.textContent = "Saving…"; st.className = "hr-status";
+      try {
+        await hrApi("/api/hr/settings", { method: "PUT", body: { daily_summary_enabled: document.getElementById("hr-sum-enabled").checked, daily_summary_hour: document.getElementById("hr-sum-hour").value } });
+        st.textContent = "Saved."; st.className = "hr-status ok";
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+    });
+    const nowBtn = document.getElementById("hr-sum-now");
+    if (nowBtn) nowBtn.addEventListener("click", async () => {
+      const st = document.getElementById("hr-sum-status");
+      st.textContent = "Sending…"; st.className = "hr-status";
+      try {
+        const r = await hrApi("/api/hr/admin/send-summary", { method: "POST" });
+        st.textContent = r.sent ? "Summary sent to the owner." : ("Not sent: " + (r.skipped || "unknown"));
+        st.className = "hr-status " + (r.sent ? "ok" : "err");
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+    });
+  }
 }
 
 // ---------------- Positions ----------------

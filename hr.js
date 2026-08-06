@@ -293,6 +293,12 @@ module.exports = function initHr(ctx) {
       created_at TEXT
     )`);
 
+    await dbRun(`CREATE TABLE IF NOT EXISTS hr_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TEXT
+    )`);
+
     // ---- future HR system (created now so no restructuring later; unused
     //      by the recruiting UI yet) ----
     await dbRun(`CREATE TABLE IF NOT EXISTS hr_employees (
@@ -555,12 +561,34 @@ module.exports = function initHr(ctx) {
     ).catch((e) => console.error("hr audit failed:", e.message));
   }
 
-  async function notify({ type, applicantId = null, positionId = null, title, body, severity = "info", targetRole = "owner" }) {
+  async function notify({ type, applicantId = null, positionId = null, title, body, severity = "info", targetRole = "owner", emailOwner = false }) {
     await dbRun(
       `INSERT INTO hr_notifications (type, applicant_id, position_id, title, body, severity, target_role, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [type, applicantId, positionId, title, body, severity, targetRole, nowISO()]
     ).catch((e) => console.error("hr notify failed:", e.message));
+    if (emailOwner) {
+      const to = await ownerEmail();
+      if (to) {
+        sendEmail({
+          to,
+          subject: `[Spectrum Squad HR] ${title}`,
+          html: `<p>${escapeHtml(body || title)}</p>${applicantId ? `<p><a href="${APP_BASE_URL}/#/hr/candidate/${applicantId}">Open candidate in the CRM</a></p>` : ""}`,
+          type: "hr_notification",
+        }).catch((e) => console.error("notify email failed:", e.message));
+      }
+    }
+  }
+
+  async function getSetting(key, def) {
+    const r = await dbGet("SELECT value FROM hr_settings WHERE key = ?", [key]);
+    return r && r.value != null ? r.value : def;
+  }
+  async function setSetting(key, value) {
+    await dbRun(
+      "INSERT INTO hr_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+      [key, String(value), nowISO()]
+    );
   }
 
   async function ownerEmail() {
@@ -1257,6 +1285,17 @@ module.exports = function initHr(ctx) {
           [a.id, a.stage, b.stage, actor, b.note || null, now]
         );
         await audit(actor, "stage_changed", "applicant", a.id, `${a.stage} -> ${b.stage}`);
+        if (b.stage === "offer_approval") {
+          await notify({
+            type: "offer_approval",
+            applicantId: a.id,
+            positionId: a.position_id,
+            title: "Offer requires approval",
+            body: `${a.full_name} has reached Offer Approval and needs your sign-off.`,
+            severity: "urgent",
+            emailOwner: true,
+          });
+        }
         return json(res, 200, { ok: true });
       }
 
@@ -1417,6 +1456,34 @@ module.exports = function initHr(ctx) {
       if (notifReadMatch && method === "POST") {
         await dbRun("UPDATE hr_notifications SET read = TRUE WHERE id = ?", [notifReadMatch[1]]);
         return json(res, 200, { ok: true });
+      }
+      if (pathname === "/api/hr/notifications/read-all" && method === "POST") {
+        await dbRun("UPDATE hr_notifications SET read = TRUE WHERE read = FALSE", []);
+        return json(res, 200, { ok: true });
+      }
+
+      // ---- settings + daily summary ----
+      if (pathname === "/api/hr/settings" && method === "GET") {
+        return json(res, 200, {
+          daily_summary_enabled: (await getSetting("daily_summary_enabled", "true")) === "true",
+          daily_summary_hour: parseInt(await getSetting("daily_summary_hour", "13"), 10),
+        });
+      }
+      if (pathname === "/api/hr/settings" && method === "PUT") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        if (b.daily_summary_enabled !== undefined) await setSetting("daily_summary_enabled", b.daily_summary_enabled ? "true" : "false");
+        if (b.daily_summary_hour !== undefined) {
+          const h = Math.max(0, Math.min(23, parseInt(b.daily_summary_hour, 10) || 0));
+          await setSetting("daily_summary_hour", h);
+        }
+        await audit(actor, "settings_updated", null, null, "daily_summary");
+        return json(res, 200, { ok: true });
+      }
+      if (pathname === "/api/hr/admin/send-summary" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const r = await processDailySummary(true);
+        return json(res, 200, r);
       }
 
       // ---- interview scheduling (admin) ----
@@ -1836,6 +1903,18 @@ Match categories:
 
     await audit(actor, "ai_screening_run", "applicant", applicant.id, `match=${a.match_category} model=${result.model}`);
 
+    const missingText = (a.missing_information || []).join(" ").toLowerCase();
+    if (/credential|certif|licens|rbt|bcba|lba|background/.test(missingText)) {
+      await notify({
+        type: "credential_missing",
+        applicantId: applicant.id,
+        positionId: applicant.position_id,
+        title: "Credential info missing",
+        body: `${applicant.full_name}: ${(a.missing_information || []).slice(0, 3).join("; ")}`,
+        severity: "info",
+      });
+    }
+
     // Priority BCBA -> alert the owner, same as the intake rules path.
     if (priority && position && position.role_type === "bcba") {
       await notify({
@@ -1971,6 +2050,16 @@ Match categories:
       ]
     );
     await dbRun("UPDATE hr_applicants SET last_contacted_at = ?, updated_at = ? WHERE id = ?", [nowISO(), nowISO(), applicant.id]);
+    if (result.delivered === "failed") {
+      await notify({
+        type: "followup_failed",
+        applicantId: applicant.id,
+        title: "Recruiting email failed to send",
+        body: `An email to ${applicant.full_name} (${applicant.email}) failed: ${result.errorMsg || "unknown error"}.`,
+        severity: "warning",
+        emailOwner: true,
+      });
+    }
     return result;
   }
 
@@ -2132,6 +2221,18 @@ Match categories:
         body: `${applicant.full_name} replied: ${subject}`,
         severity: "info",
       });
+      // Compensation questions should reach a human, not be auto-answered.
+      if (/\b(salary|compensation|pay rate|hourly rate|how much (do|does|will)|what.s the pay|wage)\b/i.test(bodyText)) {
+        await notify({
+          type: "comp_question",
+          applicantId: applicant.id,
+          positionId: applicant.position_id,
+          title: "Candidate asked about compensation",
+          body: `${applicant.full_name} asked about compensation — a person should respond.`,
+          severity: "warning",
+          emailOwner: true,
+        });
+      }
     }
 
     if (unsub) {
@@ -2357,6 +2458,15 @@ Write body as plain text with line breaks (no HTML).`;
     if (applicant) {
       await dbRun("UPDATE hr_applicants SET stage = 'responded', interview_at = NULL, updated_at = ? WHERE id = ?", [nowISO(), applicant.id]);
       await sendInterviewConfirmation(applicant, interview, token, "canceled").catch(() => {});
+      await notify({
+        type: "interview_canceled",
+        applicantId: applicant.id,
+        positionId: applicant.position_id,
+        title: "Interview canceled",
+        body: `${applicant.full_name} canceled their interview.`,
+        severity: "warning",
+        emailOwner: true,
+      });
     }
     await audit("candidate", "interview_canceled", "applicant", link.applicant_id, "");
     return { ok: true };
@@ -2391,6 +2501,71 @@ Write body as plain text with line breaks (no HTML).`;
       }
     }
     return { sent };
+  }
+
+  // ============================ DAILY SUMMARY ============================
+  async function buildDailySummary() {
+    const since = new Date(Date.now() - 24 * 3600000).toISOString();
+    const n = async (sql, p) => Number((await dbGet(sql, p)).n);
+    const newApplicants = await n("SELECT COUNT(*) AS n FROM hr_applicants WHERE applied_at >= ?", [since]);
+    const priority = await n("SELECT COUNT(*) AS n FROM hr_applicants WHERE priority_flag = TRUE AND stage NOT IN ('hired','not_selected','withdrawn')", []);
+    const responses = await n("SELECT COUNT(*) AS n FROM hr_applicants WHERE last_response_at >= ?", [since]);
+    const interviewsScheduled = await n("SELECT COUNT(*) AS n FROM hr_interviews WHERE created_at >= ? AND status = 'scheduled'", [since]);
+    const awaitingDecision = await n("SELECT COUNT(*) AS n FROM hr_applicants WHERE stage IN ('interviewed','credentials_references','offer_approval')", []);
+    const followupsDue = await n("SELECT COUNT(*) AS n FROM hr_applicants WHERE next_followup_at IS NOT NULL AND next_followup_at <= ?", [nowISO()]);
+    const bottlenecks = (await dbAll(
+      "SELECT stage, COUNT(*) AS n FROM hr_applicants WHERE stage NOT IN ('hired','not_selected','withdrawn','talent_pool') GROUP BY stage ORDER BY n DESC LIMIT 5",
+      []
+    )).map((r) => ({ stage: r.stage, count: Number(r.n) }));
+    const waiting = await dbAll(
+      `SELECT id, full_name FROM hr_applicants
+         WHERE (priority_flag = TRUE OR match_category = 'qualified') AND last_contacted_at IS NULL
+           AND applied_at <= ? AND stage NOT IN ('hired','not_selected','withdrawn') LIMIT 20`,
+      [since]
+    );
+    const actions = [];
+    if (waiting.length) actions.push(`Respond to ${waiting.length} qualified candidate(s) waiting over a day: ${waiting.map((w) => w.full_name).join(", ")}.`);
+    if (priority) actions.push(`Review ${priority} priority BCBA candidate(s).`);
+    if (followupsDue) actions.push(`${followupsDue} follow-up(s) are due.`);
+    if (awaitingDecision) actions.push(`${awaitingDecision} candidate(s) are awaiting a decision.`);
+    if (!actions.length) actions.push("No urgent recruiting actions today — nice work!");
+    return { newApplicants, priority, responses, interviewsScheduled, awaitingDecision, followupsDue, bottlenecks, waiting, actions };
+  }
+
+  function dailySummaryHtml(s) {
+    const stat = (n, l) => `<td style="padding:8px 14px;text-align:center"><div style="font-size:22px;font-weight:700;color:#29225c">${n}</div><div style="font-size:12px;color:#6b6a86">${l}</div></td>`;
+    return (
+      `<h2 style="color:#29225c">Your daily recruiting summary</h2>` +
+      `<table style="border-collapse:collapse;margin:10px 0"><tr>${stat(s.newApplicants, "New applicants")}${stat(s.priority, "Priority BCBA")}${stat(s.responses, "Responses")}${stat(s.interviewsScheduled, "Interviews set")}${stat(s.awaitingDecision, "Awaiting decision")}${stat(s.followupsDue, "Follow-ups due")}</tr></table>` +
+      `<h3 style="color:#29225c;margin-bottom:4px">Recommended actions</h3><ul>${s.actions.map((a) => `<li>${escapeHtml(a)}</li>`).join("")}</ul>` +
+      (s.bottlenecks.length ? `<h3 style="color:#29225c;margin-bottom:4px">Pipeline</h3><ul>${s.bottlenecks.map((b) => `<li>${escapeHtml(b.stage)}: ${b.count}</li>`).join("")}</ul>` : "") +
+      `<p><a href="${APP_BASE_URL}/#/hr/command-center">Open the BCBA Command Center</a></p>`
+    );
+  }
+
+  async function sendDailySummary(to) {
+    const s = await buildDailySummary();
+    await sendEmail({ to, subject: "Spectrum Squad — Daily Recruiting Summary", html: dailySummaryHtml(s), type: "hr_daily_summary" });
+    return s;
+  }
+
+  // Sweep: send the summary once per day at the configured UTC hour.
+  async function processDailySummary(force) {
+    const enabled = (await getSetting("daily_summary_enabled", "true")) === "true";
+    if (!force && !enabled) return { skipped: "disabled" };
+    const to = await ownerEmail();
+    if (!to) return { skipped: "no_owner" };
+    if (!force) {
+      const hour = parseInt(await getSetting("daily_summary_hour", "13"), 10); // default 13:00 UTC (~6-8am US)
+      const d = new Date();
+      if (d.getUTCHours() !== hour) return { skipped: "not_hour" };
+      const today = d.toISOString().slice(0, 10);
+      if ((await getSetting("daily_summary_last_sent", "")) === today) return { skipped: "already_sent" };
+      await setSetting("daily_summary_last_sent", today);
+    }
+    const s = await sendDailySummary(to);
+    await audit("system", "daily_summary_sent", null, null, `to=${to}`);
+    return { ok: true, sent: true, summary: s };
   }
 
   // ============================ DASHBOARDS ============================
@@ -2749,6 +2924,7 @@ Write body as plain text with line breaks (no HTML).`;
     servePage,
     processFollowups,
     processReminders,
+    processDailySummary,
     // exposed for tests / future phases
     _internal: {
       evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,

@@ -3700,6 +3700,11 @@ async function start() {
     hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));
   }, 15 * 60 * 1000);
 
+  // HR daily recruiting summary: fires once/day at the configured UTC hour.
+  setInterval(() => {
+    hr.processDailySummary().catch((e) => console.error("HR daily summary failed:", e));
+  }, 15 * 60 * 1000);
+
   server.listen(PORT, () => {
     console.log(`Spectrum Squad CRM running at http://localhost:${PORT}`);
     console.log(`Demo login: admin@spectrumsquadlv.com / ChangeMe123!`);
