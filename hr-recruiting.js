@@ -1464,51 +1464,69 @@ async function hrRenderAudit(body) {
     : `<div class="hr-empty">No audit entries yet.</div>`;
 }
 
-// ---------------- view sync (self-healing, like email-templates.js) ----------------
+// ---------------- view rendering ----------------
 let hrRenderInFlight = false;
 
+function hrRenderKeyFor(hash) {
+  const parts = hash.replace(/^#\//, "").split("/");
+  if (parts[1] === "candidate" && parts[2]) return "cand:" + parts[2];
+  return "tab:" + (parts[1] || "command-center");
+}
+
+// Core render: draws the current #/hr hash into the given mount element.
+async function hrDoRender(mount) {
+  const hash = location.hash || "";
+  const parts = hash.replace(/^#\//, "").split("/"); // ["hr", tabOrCandidate, maybeId]
+  mount.dataset.hrKey = hrRenderKeyFor(hash);
+  if (parts[1] === "candidate" && parts[2]) {
+    await hrRenderCandidate(mount, parts[2]);
+    return;
+  }
+  const tab = parts[1] || "command-center";
+  const renderers = {
+    "command-center": hrRenderCommandCenter,
+    dashboard: hrRenderDashboard,
+    pipeline: hrRenderPipeline,
+    inbox: hrRenderInbox,
+    scheduling: hrRenderScheduling,
+    positions: hrRenderPositions,
+    timecards: hrRenderTimecards,
+    audit: hrRenderAudit,
+  };
+  await hrRenderShell(mount, tab, renderers[tab] || hrRenderCommandCenter);
+}
+
+// Primary entry point: the native router calls this directly for #/hr routes,
+// handing us the real #view-mount inline (no race with the native dashboard).
+// Returns true if HR handled the route (i.e. the user may access it).
+window.__renderHR = async function (mount) {
+  if (!hrCanSee()) return false;
+  if (hrRenderInFlight) return true;
+  hrRenderInFlight = true;
+  try {
+    await hrDoRender(mount);
+  } catch (e) {
+    console.error("HR render error:", e);
+    if (mount) mount.innerHTML = '<div class="hr-wrap"><div class="hr-err">Something went wrong loading HR &amp; Recruiting. Please refresh.</div></div>';
+  } finally {
+    hrRenderInFlight = false;
+  }
+  return true;
+};
+
+// Fallback self-heal for when the native app re-renders #view-mount while we're
+// on an #/hr route (the native router hook above is the primary path).
 async function hrSyncView() {
   const hash = location.hash || "";
   if (!hash.startsWith("#/hr")) return;
   if (!hrCanSee()) return;
   if (hrRenderInFlight) return;
-
   const mount = document.getElementById("view-mount") || document.getElementById("app");
   if (!mount) return;
-
-  // parse: #/hr, #/hr/<tab>, #/hr/candidate/<id>
-  const parts = hash.replace(/^#\//, "").split("/"); // ["hr", tabOrCandidate, maybeId]
-  let renderKey, tab, candidateId;
-  if (parts[1] === "candidate" && parts[2]) {
-    candidateId = parts[2];
-    renderKey = "cand:" + candidateId;
-  } else {
-    tab = parts[1] || "command-center";
-    renderKey = "tab:" + tab;
-  }
-
-  const already = mount.querySelector("#hr-view-content");
-  if (already && mount.dataset.hrKey === renderKey) return;
-
+  if (mount.querySelector("#hr-view-content") && mount.dataset.hrKey === hrRenderKeyFor(hash)) return;
   hrRenderInFlight = true;
   try {
-    mount.dataset.hrKey = renderKey;
-    if (candidateId) {
-      await hrRenderCandidate(mount, candidateId);
-    } else {
-      const renderers = {
-        "command-center": hrRenderCommandCenter,
-        dashboard: hrRenderDashboard,
-        pipeline: hrRenderPipeline,
-        inbox: hrRenderInbox,
-        scheduling: hrRenderScheduling,
-        positions: hrRenderPositions,
-        timecards: hrRenderTimecards,
-        audit: hrRenderAudit,
-      };
-      const r = renderers[tab] || hrRenderCommandCenter;
-      await hrRenderShell(mount, tab, r);
-    }
+    await hrDoRender(mount);
   } catch (e) {
     console.error("HR view error:", e);
   } finally {
