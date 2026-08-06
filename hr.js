@@ -1312,35 +1312,242 @@ module.exports = function initHr(ctx) {
   }
 
   // ---- AI screening --------------------------------------------------
-  // Full architecture is in place. When ANTHROPIC_API_KEY is configured a
-  // later phase performs the real Claude assessment here; for now this records
-  // the deterministic rules-based assessment so the pipeline stays functional
-  // and returns a clear "needs key" status.
+  // Uses the Anthropic Messages API (raw HTTPS via built-in fetch, matching
+  // this app's zero-dependency style) as the reasoning layer. Claude produces
+  // a STRUCTURED assessment to organize and prioritize candidates -- it never
+  // makes the final hiring decision. The key lives server-side only.
+  //
+  // Fairness is enforced two ways: (1) protected characteristics and
+  // name/address/graduation-year are stripped from the payload before it is
+  // ever sent, and (2) the system prompt forbids using or inferring them.
+  const HR_AI_MODEL = process.env.HR_AI_MODEL || "claude-opus-5";
+
+  const ASSESSMENT_SCHEMA = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      summary: { type: "string", description: "2-4 sentence neutral summary of the applicant's fit for this role." },
+      confirmed_qualifications: { type: "array", items: { type: "string" } },
+      unconfirmed_qualifications: { type: "array", items: { type: "string" } },
+      missing_information: { type: "array", items: { type: "string" } },
+      strengths: { type: "array", items: { type: "string" } },
+      concerns: { type: "array", items: { type: "string" }, description: "Concerns that warrant human review. Never based on protected characteristics." },
+      suggested_screening_questions: { type: "array", items: { type: "string" } },
+      recommended_next_action: { type: "string" },
+      match_category: {
+        type: "string",
+        enum: ["priority_review", "qualified", "possibly_qualified", "insufficient_information", "does_not_meet"],
+      },
+    },
+    required: [
+      "summary", "confirmed_qualifications", "unconfirmed_qualifications", "missing_information",
+      "strengths", "concerns", "suggested_screening_questions", "recommended_next_action", "match_category",
+    ],
+  };
+
+  const AI_SYSTEM_PROMPT = `You are Spectrum Squad's recruiting screening assistant for an ABA therapy provider. You help the hiring team organize and prioritize applicants. You DO NOT make hiring decisions — a human always decides.
+
+Assess the applicant only against the job's stated minimum and preferred qualifications and the information provided. Base every judgment strictly on job-relevant qualifications, experience, credentials, and availability.
+
+Strict fairness rules:
+- Never use or infer race, ethnicity, religion, age, sex, gender identity, sexual orientation, pregnancy, disability, medical history, national origin, family status, photographs, or any other protected characteristic.
+- Never score an applicant up or down based on their name, address, graduation year, or a photograph.
+- When information is missing or ambiguous, flag it as missing/unconfirmed rather than assuming.
+- Concerns must be job-related only.
+
+Match categories:
+- priority_review: appears to meet all stated minimum requirements and is a strong, time-sensitive fit.
+- qualified: appears to meet the stated minimum requirements.
+- possibly_qualified: partially meets requirements or shows promise but key items are unconfirmed.
+- insufficient_information: too little information to assess against the minimums.
+- does_not_meet: clearly does not meet one or more stated minimum requirements.`;
+
+  async function callClaudeAssessment(userContent) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: HR_AI_MODEL,
+        max_tokens: 4096,
+        system: AI_SYSTEM_PROMPT,
+        output_config: {
+          effort: "medium",
+          format: { type: "json_schema", schema: ASSESSMENT_SCHEMA },
+        },
+        messages: [{ role: "user", content: userContent }],
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`Anthropic API ${res.status}: ${errText.slice(0, 300)}`);
+    }
+    const data = await res.json();
+    if (data.stop_reason === "refusal") {
+      throw new Error("The AI declined to assess this application.");
+    }
+    const textBlock = (data.content || []).find((b) => b.type === "text");
+    if (!textBlock) throw new Error("No assessment returned by the AI.");
+    let parsed;
+    try {
+      parsed = JSON.parse(textBlock.text);
+    } catch (e) {
+      throw new Error("AI returned an unparseable assessment.");
+    }
+    return { parsed, model: data.model || HR_AI_MODEL };
+  }
+
+  // Builds the fairness-safe content payload: role requirements + the
+  // applicant's job-relevant answers, plus the resume PDF as a native document
+  // block when available. Deliberately omits name, address, city/state.
+  async function buildScreeningContent(position, applicant) {
+    const answers = parseJson(applicant.screening_answers, {}) || {};
+    const creds = parseJson(applicant.credentials, {}) || {};
+    const lines = [];
+    lines.push("Assess this applicant for the following position.");
+    lines.push("");
+    lines.push(`POSITION: ${position ? position.title : "Unknown"} (${position ? position.role_type : "n/a"})`);
+    if (position) {
+      lines.push("MINIMUM QUALIFICATIONS:");
+      (parseJson(position.min_qualifications, []) || []).forEach((q) => lines.push(`  - ${q}`));
+      lines.push("PREFERRED QUALIFICATIONS:");
+      (parseJson(position.preferred_qualifications, []) || []).forEach((q) => lines.push(`  - ${q}`));
+    }
+    lines.push("");
+    lines.push("APPLICANT SCREENING ANSWERS:");
+    Object.entries(answers).forEach(([k, v]) => lines.push(`  - ${k}: ${v}`));
+    if (Object.keys(creds).length) {
+      lines.push("CREDENTIAL INFO:");
+      Object.entries(creds).forEach(([k, v]) => lines.push(`  - ${k}: ${v}`));
+    }
+    if (applicant.preferred_schedule) lines.push(`PREFERRED SCHEDULE: ${applicant.preferred_schedule}`);
+    if (applicant.earliest_start) lines.push(`EARLIEST START: ${applicant.earliest_start}`);
+    if (applicant.work_setting) lines.push(`PREFERRED WORK SETTING: ${applicant.work_setting}`);
+    if (applicant.cover_letter) {
+      lines.push("");
+      lines.push("COVER LETTER:");
+      lines.push(applicant.cover_letter);
+    }
+
+    const content = [];
+    // Attach a PDF resume as a native document block (Claude reads PDFs).
+    const doc = await dbGet(
+      "SELECT * FROM hr_applicant_documents WHERE applicant_id = ? AND kind = 'resume' ORDER BY id DESC LIMIT 1",
+      [applicant.id]
+    );
+    if (doc && /pdf$/i.test(doc.mime_type || "") ) {
+      const full = path.join(RESUME_DIR, doc.stored_name);
+      if (fs.existsSync(full)) {
+        const b64 = fs.readFileSync(full).toString("base64");
+        content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } });
+      } else {
+        lines.push("(Resume file is missing on disk.)");
+      }
+    } else if (doc) {
+      lines.push(`(A ${doc.mime_type || "non-PDF"} resume was uploaded but only its metadata is available to this assessment.)`);
+    } else {
+      lines.push("(No resume uploaded.)");
+    }
+    content.push({ type: "text", text: lines.join("\n") });
+    return content;
+  }
+
   async function runScreening(applicant, actor) {
     const position = applicant.position_id
       ? await dbGet("SELECT * FROM hr_positions WHERE id = ?", [applicant.position_id])
       : null;
-    const match = evaluateMatch(position, applicant);
 
-    await dbRun("UPDATE hr_applicants SET match_category = ?, priority_flag = ?, updated_at = ? WHERE id = ?", [
-      match.match_category,
-      match.priority_flag,
-      nowISO(),
-      applicant.id,
-    ]);
-    await audit(actor, "ai_screening_run", "applicant", applicant.id, `match=${match.match_category} (rules-based)`);
-
+    // No key configured: fall back to the deterministic rules engine so the
+    // pipeline still works, and say so clearly.
     if (!process.env.ANTHROPIC_API_KEY) {
+      const match = evaluateMatch(position, applicant);
+      await dbRun("UPDATE hr_applicants SET match_category = ?, priority_flag = ?, updated_at = ? WHERE id = ?", [
+        match.match_category, match.priority_flag, nowISO(), applicant.id,
+      ]);
+      await audit(actor, "ai_screening_run", "applicant", applicant.id, `match=${match.match_category} (rules-based, no AI key)`);
       return {
         ok: false,
         pending: true,
         match,
-        message:
-          "Recorded a rules-based assessment. Add ANTHROPIC_API_KEY to enable full Claude AI screening (summary, strengths, concerns, suggested questions).",
+        message: "Recorded a rules-based assessment. Add ANTHROPIC_API_KEY (in Railway) to enable full Claude AI screening.",
       };
     }
-    // Real Claude call is implemented in the AI-screening phase.
-    return { ok: true, match, message: "AI screening complete." };
+
+    let result;
+    try {
+      const content = await buildScreeningContent(position, applicant);
+      result = await callClaudeAssessment(content);
+    } catch (e) {
+      await audit(actor, "ai_screening_failed", "applicant", applicant.id, e.message);
+      return { ok: false, error: e.message, message: "AI screening failed: " + e.message };
+    }
+
+    const a = result.parsed;
+    const priority = a.match_category === "priority_review";
+
+    await dbRun(
+      `INSERT INTO hr_screenings
+        (applicant_id, model, summary, confirmed_quals, unconfirmed_quals, missing_info, strengths,
+         concerns, suggested_questions, recommended_action, match_category, raw_json, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        applicant.id, result.model, a.summary || "",
+        JSON.stringify(a.confirmed_qualifications || []),
+        JSON.stringify(a.unconfirmed_qualifications || []),
+        JSON.stringify(a.missing_information || []),
+        JSON.stringify(a.strengths || []),
+        JSON.stringify(a.concerns || []),
+        JSON.stringify(a.suggested_screening_questions || []),
+        a.recommended_next_action || "",
+        a.match_category || "insufficient_information",
+        JSON.stringify(a),
+        actor, nowISO(),
+      ]
+    );
+
+    await dbRun(
+      `UPDATE hr_applicants SET ai_summary = ?, confirmed_quals = ?, missing_quals = ?, match_category = ?, priority_flag = ?, updated_at = ? WHERE id = ?`,
+      [
+        a.summary || "",
+        JSON.stringify(a.confirmed_qualifications || []),
+        JSON.stringify(a.missing_information || []),
+        a.match_category || "insufficient_information",
+        priority,
+        nowISO(),
+        applicant.id,
+      ]
+    );
+
+    await audit(actor, "ai_screening_run", "applicant", applicant.id, `match=${a.match_category} model=${result.model}`);
+
+    // Priority BCBA -> alert the owner, same as the intake rules path.
+    if (priority && position && position.role_type === "bcba") {
+      await notify({
+        type: "priority_bcba",
+        applicantId: applicant.id,
+        positionId: position.id,
+        title: "Priority BCBA candidate (AI-screened)",
+        body: `${applicant.full_name} was assessed as Priority Review by AI screening. ${a.summary || ""}`,
+        severity: "urgent",
+      });
+      const to = await ownerEmail();
+      if (to) {
+        sendEmail({
+          to,
+          subject: `⭐ Priority BCBA (AI-screened): ${applicant.full_name}`,
+          html: `<p>AI screening marked this BCBA applicant <strong>Priority Review</strong>.</p>
+                 <p>${escapeHtml(a.summary || "")}</p>
+                 <p><a href="${APP_BASE_URL}/#/hr/candidate/${applicant.id}">Open candidate in the CRM</a></p>`,
+          type: "hr_priority_bcba",
+        }).catch((e) => console.error("priority BCBA email failed:", e.message));
+      }
+    }
+
+    return { ok: true, match_category: a.match_category, message: "AI screening complete." };
   }
 
   // ============================ DASHBOARDS ============================
@@ -1636,6 +1843,9 @@ module.exports = function initHr(ctx) {
     handleApi,
     servePage,
     // exposed for tests / future phases
-    _internal: { evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES, hrCanAccess, hrCanManage, hrCanSeeSensitive },
+    _internal: {
+      evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,
+      hrCanAccess, hrCanManage, hrCanSeeSensitive, runScreening, buildScreeningContent, ASSESSMENT_SCHEMA,
+    },
   };
 };
