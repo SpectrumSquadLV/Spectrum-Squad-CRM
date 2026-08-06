@@ -1121,6 +1121,40 @@ async function openClientModal(id) {
 
       ${authSectionHtml(client)}
 
+      <div class="section-title">Assessment</div>
+      <div class="form-grid" style="gap:10px;">
+        <div class="field"><label>In-clinic / in-home assessment date</label><input type="date" id="asmt-date" value="${(client.in_clinic_assessment_date || "").slice(0, 10)}" /></div>
+        <div class="field"><label>Location</label>
+          <select id="asmt-loc">
+            <option value="">—</option>
+            <option value="in_clinic" ${client.assessment_location === "in_clinic" ? "selected" : ""}>In-clinic</option>
+            <option value="in_home" ${client.assessment_location === "in_home" ? "selected" : ""}>In-home</option>
+          </select>
+        </div>
+      </div>
+      <div style="font-size:12px; color:var(--text-muted); margin:2px 0 10px;">Used to observe ${client.child_name} and build the treatment plan. If no date is set, a reminder is emailed to the parent automatically.</div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:8px;">
+        ${[
+          ["pddbi", "PDDBI"],
+          ["srs2", "SRS-2"],
+          ["psi", "Parent Stress Index"],
+          ["vineland_tricare", "Vineland (for TRICARE)"],
+        ]
+          .map(
+            ([key, label]) => `<div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:10px 12px;">
+              <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600;">
+                <input type="checkbox" data-asmt-done="${key}" ${client[key + "_completed"] ? "checked" : ""} /> ${label}
+              </label>
+              <input type="date" data-asmt-date="${key}" value="${(client[key + "_date"] || "").slice(0, 10)}" style="margin-top:8px; width:100%;" />
+            </div>`
+          )
+          .join("")}
+      </div>
+      <div style="margin-top:10px;">
+        <button class="btn small" id="save-assessment-btn">Save assessment</button>
+        <span id="assessment-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
+      </div>
+
       <div class="section-title">Case Notes</div>
       <div class="field full" style="margin-bottom:10px;">
         <textarea id="case-note-input" rows="3" placeholder="Add a case update, call summary, or note about this family..."></textarea>
@@ -1138,12 +1172,18 @@ async function openClientModal(id) {
               .map(
                 (d) => `<div class="doc-row">
                   <div class="doc-info"><span class="doc-icon">${docIcon(d.mime_type)}</span><div><div><strong>${d.label}</strong></div><div class="doc-filename">${d.filename}</div></div></div>
-                  ${docLinkHtml(d)}
+                  <div style="display:flex; gap:6px; align-items:center;">${docLinkHtml(d)}<button class="btn small secondary" data-del-doc="${d.id}" style="color:#b91c1c;">Delete</button></div>
                 </div>`
               )
               .join("")
           : `<div class="empty-state">No documents uploaded yet.</div>`
       }
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <input type="file" id="doc-file-input" style="font-size:12.5px;" />
+        <input type="text" id="doc-label-input" placeholder="Label (optional)" style="width:180px;" />
+        <button class="btn small" id="upload-doc-btn">Upload document</button>
+        <span id="upload-doc-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+      </div>
 
       <div style="margin-top:10px;">
         <button class="btn small secondary" id="send-eligibility-btn">✉ Send Benefits &amp; Eligibility Check</button>
@@ -1238,6 +1278,81 @@ async function openClientModal(id) {
   wireAuthSection(backdrop, id);
   wireCaseNotes(backdrop, id);
   wireFinancialForm(backdrop, id);
+
+  const saveAsmtBtn = backdrop.querySelector("#save-assessment-btn");
+  if (saveAsmtBtn) {
+    saveAsmtBtn.addEventListener("click", async () => {
+      const statusEl = backdrop.querySelector("#assessment-status");
+      const body = {
+        in_clinic_assessment_date: backdrop.querySelector("#asmt-date").value || null,
+        assessment_location: backdrop.querySelector("#asmt-loc").value || null,
+      };
+      backdrop.querySelectorAll("[data-asmt-done]").forEach((cb) => {
+        body[cb.dataset.asmtDone + "_completed"] = cb.checked;
+      });
+      backdrop.querySelectorAll("[data-asmt-date]").forEach((inp) => {
+        body[inp.dataset.asmtDate + "_date"] = inp.value || null;
+      });
+      saveAsmtBtn.disabled = true;
+      statusEl.textContent = "Saving…";
+      try {
+        await api(`/api/clients/${id}`, { method: "PATCH", body });
+        statusEl.textContent = "Saved ✓";
+        setTimeout(() => (statusEl.textContent = ""), 1500);
+      } catch (e) {
+        statusEl.textContent = e.message || "Could not save.";
+      } finally {
+        saveAsmtBtn.disabled = false;
+      }
+    });
+  }
+
+  const uploadBtn = backdrop.querySelector("#upload-doc-btn");
+  if (uploadBtn) {
+    uploadBtn.addEventListener("click", async () => {
+      const fileInput = backdrop.querySelector("#doc-file-input");
+      const labelInput = backdrop.querySelector("#doc-label-input");
+      const statusEl = backdrop.querySelector("#upload-doc-status");
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) { statusEl.textContent = "Choose a file first."; return; }
+      if (file.size > 15 * 1024 * 1024) { statusEl.textContent = "File too large (15MB max)."; return; }
+      uploadBtn.disabled = true;
+      statusEl.textContent = "Uploading…";
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        const base64 = String(dataUrl).split(",")[1];
+        await api(`/api/clients/${id}/documents`, {
+          method: "POST",
+          body: { filename: file.name, mime_type: file.type || "application/octet-stream", label: labelInput.value.trim() || file.name, content_base64: base64 },
+        });
+        close();
+        await loadClients();
+        openClientModal(id);
+      } catch (e) {
+        statusEl.textContent = e.message || "Upload failed.";
+        uploadBtn.disabled = false;
+      }
+    });
+  }
+
+  backdrop.querySelectorAll("[data-del-doc]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Delete this document?")) return;
+      try {
+        await api(`/api/clients/${id}/documents/${btn.dataset.delDoc}`, { method: "DELETE" });
+        close();
+        await loadClients();
+        openClientModal(id);
+      } catch (e) {
+        alert("Could not delete: " + e.message);
+      }
+    });
+  });
 
   const eligBtn = backdrop.querySelector("#send-eligibility-btn");
   if (eligBtn) {

@@ -353,6 +353,21 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_intake_coordinator_name TE
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlist_reason TEXT;
+-- In-clinic / in-home assessment (observation used to build the treatment plan)
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS in_clinic_assessment_date TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS assessment_location TEXT; -- in_clinic | in_home
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS assessment_reminder_sent_at TEXT;
+-- Standardized assessment battery: each has its own checkmark + date.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS pddbi_completed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS pddbi_date TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS srs2_completed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS srs2_date TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS psi_completed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS psi_date TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_tricare_completed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_tricare_date TEXT;
+-- Rename the old Vineland stage task to the In-Clinic Assessment.
+UPDATE stage_tasks SET label = 'Schedule In-Clinic Assessment' WHERE stage_key = 'assessment_scheduling' AND label = 'Schedule Vineland / Intake Assessment';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS can_view_financials BOOLEAN NOT NULL DEFAULT false;
 
   CREATE TABLE IF NOT EXISTS client_financial_settings (
@@ -890,6 +905,13 @@ const EMAIL_TEMPLATE_DEFS = [
     fields: ["parent_name", "child_name"],
   },
   {
+    key: "assessment_reminder",
+    label: "Assessment Scheduling Reminder",
+    category: "Parent Milestone Emails",
+    description: "Sent to the parent when their child has reached the assessment stage but no in-clinic/in-home assessment date is on file yet.",
+    fields: ["parent_name", "child_name", "today"],
+  },
+  {
     key: "client_waitlist",
     label: "Placed on Waitlist",
     category: "Waitlist Emails",
@@ -956,6 +978,13 @@ const EMAIL_TEMPLATE_DEFAULTS = {
     <p>We're still waiting on <strong>{{child_name}}'s</strong> New Patient Enrollment Packet. Completing this is an important next step -- we're not able to continue moving {{child_name}} forward toward services without it.</p>
     <p>Please check your email for the signing link from SignNow (sender: qblake@spectrumsquadlv.com), or reach out to us if you're having trouble finding it or completing it.</p>
     <p>Thank you,<br/>Spectrum Squad</p>`,
+  },
+  assessment_reminder: {
+    subject: "Let's schedule {{child_name}}'s assessment — Spectrum Squad",
+    body: `<p>Hi {{parent_name}},</p>
+    <p>We're ready for the next step in {{child_name}}'s care: an in-clinic or in-home assessment. This is where our team observes {{child_name}} so we can build a treatment plan that's just right for them.</p>
+    <p>We don't have an assessment date scheduled yet. Please reach out so we can find a time that works for your family — the sooner we complete this, the sooner {{child_name}} can begin services.</p>
+    <p>Thank you,<br/>The Spectrum Squad Team</p>`,
   },
   client_waitlist: {
     subject: "An update on {{child_name}}'s enrollment — Spectrum Squad",
@@ -1118,7 +1147,7 @@ const STAGES = [
   { key: "clinical_screener", label: "Clinical Screener", color: "#3f8f89" },
   { key: "insurance_verification", label: "Insurance Verification", color: "#6660a8" },
   { key: "intake_packet", label: "Intake Packet", color: "#5fa8a0" },
-  { key: "assessment_scheduling", label: "Assessment (Vineland/Intake)", color: "#29225c" },
+  { key: "assessment_scheduling", label: "In-Clinic Assessment", color: "#29225c" },
   { key: "authorization", label: "Authorization Pending", color: "#c98a1b" },
   { key: "first_day_scheduled", label: "First Day Scheduling", color: "#e0a430" },
   { key: "active", label: "Active Therapy", color: "#22c55e" },
@@ -1279,7 +1308,38 @@ async function checkOverdueTasks() {
   return overdue.length;
 }
 
-const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone };
+// Remind parents to schedule the in-clinic / in-home assessment. Fires for any
+// active client that has reached the assessment stage but has no assessment
+// date on file, throttled to once every 3 days per client.
+async function processAssessmentReminders() {
+  const clients = await dbAll(
+    `SELECT * FROM clients
+      WHERE stage = 'assessment_scheduling'
+        AND (in_clinic_assessment_date IS NULL OR in_clinic_assessment_date = '')
+        AND parent_email IS NOT NULL AND parent_email <> ''`
+  );
+  const now = Date.now();
+  const THROTTLE_MS = 3 * 24 * 60 * 60 * 1000;
+  let sent = 0;
+  for (const c of clients) {
+    if (c.assessment_reminder_sent_at && now - new Date(c.assessment_reminder_sent_at).getTime() < THROTTLE_MS) continue;
+    const template = await emailTemplates.getEmailTemplate("assessment_reminder");
+    if (!template) continue;
+    const fields = { parent_name: c.parent_name, child_name: c.child_name, today: new Date().toLocaleDateString() };
+    await sendEmail({
+      to: c.parent_email,
+      subject: emailTemplates.renderMergeFields(template.subject_template, fields),
+      html: emailTemplates.renderMergeFields(template.body_template, fields),
+      clientId: c.id,
+      type: "assessment_reminder",
+    }).catch((e) => console.error("assessment reminder failed:", e));
+    await dbRun("UPDATE clients SET assessment_reminder_sent_at = ? WHERE id = ?", [nowISO(), c.id]);
+    sent++;
+  }
+  return sent;
+}
+
+const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone, processAssessmentReminders };
 // ============================== PIPELINE V2 (MILESTONE DASHBOARD) ==============================
 // Computes the 6-milestone view (New Lead, Intake & Eligibility, Clinical
 // Assessment, Authorization, Ready to Start, Active Services) on top of the
@@ -2952,6 +3012,10 @@ async function handle(req, res, pathname, method, query = {}) {
         "address", "service_location", "school_status", "start_urgency", "insurance_provider",
         "num_insurances", "has_asd_diagnosis", "has_iep", "prior_aba_nv", "preferred_contact",
         "desired_schedule", "rethink_status", "notes", "first_day_date", "discharge_reason",
+        // Assessment scheduling + battery (Phase 3)
+        "in_clinic_assessment_date", "assessment_location",
+        "pddbi_completed", "pddbi_date", "srs2_completed", "srs2_date",
+        "psi_completed", "psi_date", "vineland_tricare_completed", "vineland_tricare_date",
       ];
       const fields = Object.keys(updates).filter((k) => allowed.includes(k));
       if (fields.length) {
@@ -3075,6 +3139,59 @@ async function handle(req, res, pathname, method, query = {}) {
         return json(res, 403, { error: "You can only delete your own notes." });
       }
       await dbRun("DELETE FROM client_notes WHERE id = ?", [noteId]);
+      return json(res, 200, { ok: true });
+    }
+
+    // ---------- In-app document upload (store additional documents) ----------
+    const docsMatch = pathname.match(/^\/api\/clients\/(\d+)\/documents$/);
+    if (docsMatch && method === "POST") {
+      const id = Number(docsMatch[1]);
+      const client = await dbGet("SELECT id FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      const body = await readBody(req);
+      const label = (body.label || body.filename || "Document").trim();
+      if (body.external_url) {
+        const row = await dbGet(
+          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
+           VALUES (?, ?, ?, ?, NULL, 'link', ?, ?) RETURNING id`,
+          [id, label, body.filename || body.external_url, body.mime_type || null, body.external_url, nowISO()]
+        );
+        return json(res, 201, { id: row.id, doc_type: "link" });
+      }
+      if (!body.content_base64 || !body.filename) {
+        return json(res, 400, { error: "A file (or a link) is required." });
+      }
+      let buffer;
+      try {
+        buffer = Buffer.from(body.content_base64, "base64");
+      } catch (e) {
+        return json(res, 400, { error: "Invalid file data." });
+      }
+      if (buffer.length > 15 * 1024 * 1024) return json(res, 400, { error: "File is too large (15MB max)." });
+      const safeName = String(body.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+      const storedName = `${id}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
+      try {
+        fs.writeFileSync(path.join(DOCS_DIR, storedName), buffer);
+      } catch (e) {
+        return json(res, 500, { error: "Could not save file." });
+      }
+      const row = await dbGet(
+        `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
+         VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?) RETURNING id`,
+        [id, label, body.filename, body.mime_type || "application/octet-stream", storedName, nowISO()]
+      );
+      return json(res, 201, { id: row.id, doc_type: "hosted" });
+    }
+
+    const docItemMatch = pathname.match(/^\/api\/clients\/(\d+)\/documents\/(\d+)$/);
+    if (docItemMatch && method === "DELETE") {
+      const docId = Number(docItemMatch[2]);
+      const doc = await dbGet("SELECT * FROM client_documents WHERE id = ? AND client_id = ?", [docId, Number(docItemMatch[1])]);
+      if (!doc) return json(res, 404, { error: "Document not found" });
+      if (doc.doc_type === "hosted" && doc.file_path) {
+        try { fs.unlinkSync(path.join(DOCS_DIR, doc.file_path)); } catch (e) {}
+      }
+      await dbRun("DELETE FROM client_documents WHERE id = ?", [docId]);
       return json(res, 200, { ok: true });
     }
 
@@ -4180,6 +4297,12 @@ async function start() {
   setInterval(() => {
     pipeline.checkOverdueTasks().catch((e) => console.error("Overdue sweep failed:", e));
   }, 30 * 60 * 1000);
+
+  // Assessment-scheduling reminders to parents (also runs on boot below).
+  pipeline.processAssessmentReminders().catch((e) => console.error("Assessment reminder sweep failed:", e));
+  setInterval(() => {
+    pipeline.processAssessmentReminders().catch((e) => console.error("Assessment reminder sweep failed:", e));
+  }, 24 * 60 * 60 * 1000);
 
   // Daily authorization-expiration check (also runs once on boot above).
   setInterval(() => {
