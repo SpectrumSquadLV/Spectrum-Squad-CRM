@@ -704,6 +704,58 @@ function hrScreeningHtml(a) {
   </div>`;
 }
 
+// Recruiting communication panel: automation state, conversation history,
+// scheduled follow-ups, and human-takeover controls.
+function hrCommsHtml(a) {
+  const msgs = a.messages || [];
+  const followups = a.followups || [];
+  const msgsHtml = msgs.length
+    ? msgs
+        .map((m) => {
+          const inbound = m.direction === "inbound";
+          const who = inbound ? "Candidate" : (m.ai_generated || m.sent_by === "assistant" ? "Assistant" : "Team");
+          const snippet = String(m.body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
+          return `<div class="hr-note" style="border-left:3px solid ${inbound ? "#5fa8a0" : "#29225c"}">
+            <div style="font-weight:600">${hrEsc(m.subject || "(no subject)")}</div>
+            <div>${hrEsc(snippet)}${snippet.length >= 160 ? "…" : ""}</div>
+            <div class="who">${hrEsc(who)} · ${hrEsc(m.channel || "email")} · ${hrEsc(m.status || "")} · ${hrFmtDate(m.created_at)}</div>
+          </div>`;
+        })
+        .join("")
+    : `<p class="hr-muted">No messages yet.</p>`;
+  const fuHtml = followups.length
+    ? `<table class="hr-table"><thead><tr><th>Step</th><th>Scheduled</th><th>Status</th></tr></thead><tbody>${followups
+        .map(
+          (f) =>
+            `<tr><td>${hrEsc(f.step)} <span class="hr-muted">(${hrEsc(f.sequence)})</span></td><td>${hrFmtDate(f.scheduled_at)}</td><td>${hrEsc(f.status)}</td></tr>`
+        )
+        .join("")}</tbody></table>`
+    : `<p class="hr-muted">No scheduled follow-ups.</p>`;
+  const statusLine = a.do_not_contact
+    ? `<span class="hr-badge priority">Do not contact</span>`
+    : a.automation_paused
+    ? `<span class="hr-badge paused">Automation paused</span>`
+    : `<span class="hr-badge qualified">Automation active</span>`;
+  return `<div class="hr-card"><h2>Recruiting communication</h2>
+    <div class="hr-row" style="margin-bottom:6px">${statusLine}
+      ${a.next_followup_at ? `<span class="hr-muted">Next follow-up: ${hrFmtDate(a.next_followup_at)}</span>` : ""}
+      ${a.last_response_at ? `<span class="hr-muted">Responded: ${hrFmtDate(a.last_response_at)}</span>` : ""}
+    </div>
+    <div class="hr-row" style="margin:8px 0 14px">
+      <button class="hr-btn sm ghost" id="hr-pause-toggle" data-paused="${a.automation_paused ? "true" : "false"}">${a.automation_paused ? "Resume automation" : "Pause automation"}</button>
+      <button class="hr-btn sm ghost" id="hr-log-response">Log candidate response</button>
+    </div>
+    <div class="hr-muted" style="font-weight:600;margin-bottom:6px">Conversation history</div>
+    ${msgsHtml}
+    <div class="hr-muted" style="font-weight:600;margin:14px 0 6px">Scheduled follow-ups</div>
+    ${fuHtml}
+    <div class="hr-muted" style="font-weight:600;margin:16px 0 6px">Send a message (takes over automation)</div>
+    <div class="hr-field" style="margin:6px 0"><input id="hr-msg-subject" placeholder="Subject"/></div>
+    <div class="hr-field" style="margin:6px 0"><textarea id="hr-msg-body" placeholder="Write a personal note to the candidate…"></textarea></div>
+    <div class="hr-row"><button class="hr-btn sm" id="hr-send-msg">Send email</button><span class="hr-status" id="hr-msg-status"></span></div>
+  </div>`;
+}
+
 // ---------------- Candidate profile ----------------
 async function hrRenderCandidate(mount, id) {
   mount.innerHTML = `<div class="hr-wrap" id="hr-view-content">
@@ -773,6 +825,7 @@ async function hrRenderCandidate(mount, id) {
     <div class="hr-card"><h2>Screening answers</h2>${answersHtml}</div>
     ${a.cover_letter ? `<div class="hr-card"><h2>Cover letter</h2><div style="white-space:pre-wrap">${hrEsc(a.cover_letter)}</div></div>` : ""}
     ${hrScreeningHtml(a)}
+    ${canManage ? hrCommsHtml(a) : ""}
     <div class="hr-card"><h2>Internal notes ${!canSens ? '<span class="hr-lock">(private notes & ratings owner-only)</span>' : ""}</h2>
       ${notesHtml}
       <div class="hr-field" style="margin-top:10px"><textarea id="hr-note-body" placeholder="Add a note…"></textarea></div>
@@ -852,6 +905,47 @@ async function hrRenderCandidate(mount, id) {
       } catch (e) { alert(e.message); }
     })
   );
+
+  // ---- recruiting communication controls ----
+  const pauseBtn = body.querySelector("#hr-pause-toggle");
+  if (pauseBtn) {
+    pauseBtn.addEventListener("click", async () => {
+      const paused = pauseBtn.dataset.paused !== "true"; // toggle
+      try {
+        await hrApi("/api/hr/applicants/" + id + "/pause-automation", { method: "POST", body: { paused } });
+        hrRenderCandidate(mount, id);
+      } catch (e) { alert(e.message); }
+    });
+  }
+  const respBtn = body.querySelector("#hr-log-response");
+  if (respBtn) {
+    respBtn.addEventListener("click", async () => {
+      const note = window.prompt("Paste or summarize the candidate's response (optional). This pauses automation.", "");
+      if (note === null) return;
+      try {
+        await hrApi("/api/hr/applicants/" + id + "/log-response", { method: "POST", body: { body: note } });
+        hrRenderCandidate(mount, id);
+      } catch (e) { alert(e.message); }
+    });
+  }
+  const sendMsgBtn = body.querySelector("#hr-send-msg");
+  if (sendMsgBtn) {
+    sendMsgBtn.addEventListener("click", async () => {
+      const subject = body.querySelector("#hr-msg-subject").value.trim();
+      const msgBody = body.querySelector("#hr-msg-body").value.trim();
+      const st = body.querySelector("#hr-msg-status");
+      if (!subject || !msgBody) { st.textContent = "Subject and message are required."; st.className = "hr-status err"; return; }
+      st.textContent = "Sending…"; st.className = "hr-status"; sendMsgBtn.disabled = true;
+      try {
+        const r = await hrApi("/api/hr/applicants/" + id + "/send-message", { method: "POST", body: { subject, body: msgBody } });
+        if (r.ok) {
+          hrRenderCandidate(mount, id);
+        } else {
+          st.textContent = "Not sent: " + (r.skipped || r.delivered || "unknown"); st.className = "hr-status err"; sendMsgBtn.disabled = false;
+        }
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; sendMsgBtn.disabled = false; }
+    });
+  }
 }
 
 // ---------------- Audit log ----------------

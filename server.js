@@ -3663,6 +3663,7 @@ async function start() {
   await emailTemplates.seedEmailTemplates();
   await hr.initTables().catch((e) => console.error("HR initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
+  await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
   await ensureSeeded();
   await pipeline.checkOverdueTasks();
   await authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
@@ -3683,6 +3684,11 @@ async function start() {
   // -> Integration Settings.
   setInterval(() => {
     clickupIntegration.syncNow("scheduled").catch((e) => console.error("ClickUp sync failed:", e));
+  }, 15 * 60 * 1000);
+
+  // HR recruiting follow-up sequences: send any due warm follow-ups.
+  setInterval(() => {
+    hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
   }, 15 * 60 * 1000);
 
   server.listen(PORT, () => {

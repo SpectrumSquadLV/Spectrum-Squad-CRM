@@ -765,6 +765,22 @@ module.exports = function initHr(ctx) {
       });
     }
 
+    // Kick off the warm, automated follow-up sequence (consent-gated, and only
+    // when the module's follow-up helpers are present — always, here).
+    await enrollFollowupSequence(
+      {
+        id: applicantId,
+        email,
+        full_name: input.full_name,
+        do_not_contact: false,
+        consent_email: input.consent_email === true || input.consent_email === "true",
+        priority_flag: match.priority_flag,
+        position_id: input.position_id || null,
+        screening_answers: JSON.stringify(input.screening_answers || {}),
+      },
+      position
+    ).catch((e) => console.error("enrollFollowupSequence failed:", e.message));
+
     return { id: applicantId, match, duplicateOf };
   }
 
@@ -1100,6 +1116,10 @@ module.exports = function initHr(ctx) {
           "SELECT * FROM hr_screenings WHERE applicant_id = ? ORDER BY id DESC",
           [a.id]
         );
+        profile.followups = await dbAll(
+          "SELECT id, sequence, step, scheduled_at, sent_at, status FROM hr_followups WHERE applicant_id = ? ORDER BY id",
+          [a.id]
+        );
 
         // Sensitive fields: comp expectation, private notes, ratings, offers.
         if (canSensitive) {
@@ -1203,8 +1223,65 @@ module.exports = function initHr(ctx) {
            VALUES (?, ?, ?, ?, ?, ?)`,
           [a.id, a.stage, stage, actor, b.reason || null, now]
         );
+        await cancelPendingFollowups(a.id);
         await audit(actor, "applicant_dispositioned", "applicant", a.id, `${stage}: ${b.reason || ""}`);
         return json(res, 200, { ok: true });
+      }
+
+      // ---- follow-up automation controls ----
+      const appPauseMatch = pathname.match(/^\/api\/hr\/applicants\/(\d+)\/pause-automation$/);
+      if (appPauseMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const paused = b.paused !== false;
+        await dbRun("UPDATE hr_applicants SET automation_paused = ?, updated_at = ? WHERE id = ?", [paused, nowISO(), appPauseMatch[1]]);
+        if (paused) await cancelPendingFollowups(Number(appPauseMatch[1]));
+        await audit(actor, paused ? "automation_paused" : "automation_resumed", "applicant", Number(appPauseMatch[1]), "");
+        return json(res, 200, { ok: true, paused });
+      }
+
+      const appRespMatch = pathname.match(/^\/api\/hr\/applicants\/(\d+)\/log-response$/);
+      if (appRespMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const a = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [appRespMatch[1]]);
+        if (!a) return json(res, 404, { error: "Applicant not found" });
+        const b = await readBody(req);
+        const now = nowISO();
+        await dbRun("UPDATE hr_applicants SET last_response_at = ?, automation_paused = TRUE, updated_at = ? WHERE id = ?", [now, now, a.id]);
+        await cancelPendingFollowups(a.id);
+        await dbRun(
+          `INSERT INTO hr_applicant_messages (applicant_id, direction, channel, from_addr, subject, body, status, sent_by, created_at)
+           VALUES (?, 'inbound', 'email', ?, ?, ?, 'received', ?, ?)`,
+          [a.id, a.email, "Candidate response", b.body || `(response logged by ${actor})`, actor, now]
+        );
+        if (["new_applicant", "ai_screening", "needs_human_review", "contacted"].includes(a.stage)) {
+          await moveStageInternal(a, "responded", actor, "Candidate responded");
+        }
+        await audit(actor, "response_logged", "applicant", a.id, "");
+        return json(res, 200, { ok: true });
+      }
+
+      const appSendMatch = pathname.match(/^\/api\/hr\/applicants\/(\d+)\/send-message$/);
+      if (appSendMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const a = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [appSendMatch[1]]);
+        if (!a) return json(res, 404, { error: "Applicant not found" });
+        if (!a.email) return json(res, 400, { error: "Applicant has no email address" });
+        const b = await readBody(req);
+        if (!b.subject || !b.body) return json(res, 400, { error: "Subject and body are required" });
+        // A human taking over pauses automation so sequences don't collide.
+        await dbRun("UPDATE hr_applicants SET automation_paused = TRUE, updated_at = ? WHERE id = ?", [nowISO(), a.id]);
+        await cancelPendingFollowups(a.id);
+        const html = /<[a-z][\s\S]*>/i.test(b.body)
+          ? b.body
+          : b.body.split("\n").map((l) => `<p>${escapeHtml(l)}</p>`).join("");
+        const result = await sendApplicantEmail(a, b.subject, html, { sentBy: actor });
+        await audit(actor, "manual_message_sent", "applicant", a.id, `delivered=${result.delivered || result.skipped}`);
+        return json(res, result.delivered === "failed" ? 502 : 200, {
+          ok: result.delivered !== "failed" && !result.skipped,
+          delivered: result.delivered,
+          skipped: result.skipped,
+        });
       }
 
       // ---- resume upload / download ----
@@ -1265,6 +1342,14 @@ module.exports = function initHr(ctx) {
       if (notifReadMatch && method === "POST") {
         await dbRun("UPDATE hr_notifications SET read = TRUE WHERE id = ?", [notifReadMatch[1]]);
         return json(res, 200, { ok: true });
+      }
+
+      // ---- run the follow-up processor on demand (also runs on an interval) ----
+      if (pathname === "/api/hr/admin/run-followups" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const r = await processFollowups();
+        await audit(actor, "followups_run", null, null, `due=${r.due} sent=${r.sent} canceled=${r.canceled}`);
+        return json(res, 200, r);
       }
 
       // ---- audit log ----
@@ -1548,6 +1633,213 @@ Match categories:
     }
 
     return { ok: true, match_category: a.match_category, message: "AI screening complete." };
+  }
+
+  // ============================ FOLLOW-UP AUTOMATION ============================
+  // Warm, personal, sequenced outreach. The assistant always identifies itself
+  // honestly. Automation stops the moment a candidate responds, a human takes
+  // over, or the candidate opts out. Every message is recorded with its
+  // delivery status, and steps are one-per-row so nothing is sent twice.
+  function futureISO(ms) {
+    return new Date(Date.now() + ms).toISOString();
+  }
+  const HR_HOUR = 3600 * 1000;
+
+  function firstNameOf(fullName) {
+    return String(fullName || "there").trim().split(/\s+/)[0] || "there";
+  }
+
+  function missingQuestions(position, screeningAnswers) {
+    if (!position) return [];
+    const qs = parseJson(position.screening_questions, []) || [];
+    const answers = parseJson(screeningAnswers, {}) || {};
+    return qs.filter((q) => !String(answers[q.id] || "").trim()).map((q) => q.label);
+  }
+
+  // Returns { subject, html } for a given step. Tone is warm and conversational.
+  function followupMessage(step, sequence, applicant, position) {
+    const name = firstNameOf(applicant.full_name);
+    const title = (position && position.title) || "the role";
+    const isPriority = sequence === "priority_bcba";
+    const missing = missingQuestions(position, applicant.screening_answers);
+    const missingBlock = missing.length
+      ? `<p>When you have a moment, could you share:</p><ul>${missing.slice(0, 2).map((q) => `<li>${escapeHtml(q)}</li>`).join("")}</ul>`
+      : "";
+    const signoff = `<p>Just hit reply and it comes straight to our team.</p><p>Warmly,<br/>The Spectrum Squad Team</p>`;
+    const intro = `<p>Quick intro: I'm Spectrum Squad's recruiting assistant. I help our team coordinate applications, answer basic questions, and schedule interviews — and a real person on our team is reviewing your application too.</p>`;
+
+    switch (step) {
+      case "acknowledgment":
+        return {
+          subject: `Thanks for applying to Spectrum Squad, ${name}! 🎉`,
+          html:
+            `<p>Hi ${escapeHtml(name)},</p>` +
+            `<p>Thank you so much for applying for our <strong>${escapeHtml(title)}</strong> role — we're genuinely excited you're interested in joining Spectrum Squad!</p>` +
+            intro +
+            (isPriority
+              ? `<p>Your background looks like a great match, so we'd love to move quickly. ${missing.length ? "A couple of quick questions will help us fast-track you:" : "Someone from our team will reach out very soon to find a time to talk."}</p>`
+              : "") +
+            missingBlock +
+            (!isPriority && !missing.length ? `<p>Your application looks complete — our team will be in touch soon.</p>` : "") +
+            signoff,
+        };
+      case "followup_1":
+        return {
+          subject: isPriority ? `Still excited to connect, ${name}!` : `Following up on your Spectrum Squad application`,
+          html:
+            `<p>Hi ${escapeHtml(name)},</p>` +
+            `<p>${isPriority ? "We're really enthusiastic about your application" : "Just floating this back to the top of your inbox"} for the <strong>${escapeHtml(title)}</strong> role.</p>` +
+            (missing.length ? missingBlock : `<p>Is there a day or time that works well for a quick call this week?</p>`) +
+            signoff,
+        };
+      case "followup_2":
+        return {
+          subject: `Checking in — Spectrum Squad`,
+          html:
+            `<p>Hi ${escapeHtml(name)},</p>` +
+            `<p>I wanted to gently check in — we'd still love to connect about the <strong>${escapeHtml(title)}</strong> role. No pressure at all; even a one-line reply helps us know where you're at.</p>` +
+            missingBlock +
+            signoff,
+        };
+      case "followup_3":
+        return {
+          subject: `One last note from Spectrum Squad`,
+          html:
+            `<p>Hi ${escapeHtml(name)},</p>` +
+            `<p>This is my last check-in for now on the <strong>${escapeHtml(title)}</strong> role. If the timing isn't right, no worries at all — we'll keep your information on file and reach out if something opens up that fits.</p>` +
+            `<p>If you'd still like to move forward, just reply and we'll pick right back up!</p>` +
+            `<p>Warmly,<br/>The Spectrum Squad Team</p>`,
+        };
+      default:
+        return { subject: `A note from Spectrum Squad`, html: `<p>Hi ${escapeHtml(name)},</p>${signoff}` };
+    }
+  }
+
+  // Sends an email to a candidate, records it, and updates last_contacted_at.
+  // Honors do-not-contact. Returns the sendEmail result (or a skip marker).
+  async function sendApplicantEmail(applicant, subject, html, opts = {}) {
+    if (!applicant.email) return { skipped: "no_email" };
+    if (applicant.do_not_contact) return { skipped: "do_not_contact" };
+    let result;
+    try {
+      result = await sendEmail({ to: applicant.email, subject, html, clientId: null, type: "recruiting" });
+    } catch (e) {
+      result = { delivered: "failed", errorMsg: e.message };
+    }
+    await dbRun(
+      `INSERT INTO hr_applicant_messages
+        (applicant_id, direction, channel, from_addr, to_addr, subject, body, status, error, ai_generated, sent_by, created_at)
+       VALUES (?, 'outbound', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        applicant.id,
+        process.env.EMAIL_FROM || "careers@spectrumsquadlv.com",
+        applicant.email,
+        subject,
+        html,
+        result.delivered || "unknown",
+        result.errorMsg || null,
+        opts.aiGenerated ? true : false,
+        opts.sentBy || "assistant",
+        nowISO(),
+      ]
+    );
+    await dbRun("UPDATE hr_applicants SET last_contacted_at = ?, updated_at = ? WHERE id = ?", [nowISO(), nowISO(), applicant.id]);
+    return result;
+  }
+
+  async function cancelPendingFollowups(applicantId) {
+    await dbRun("UPDATE hr_followups SET status = 'canceled' WHERE applicant_id = ? AND status = 'pending'", [applicantId]);
+    await dbRun("UPDATE hr_applicants SET next_followup_at = NULL WHERE id = ?", [applicantId]);
+  }
+
+  // Records a stage transition (used by automation and disposition).
+  async function moveStageInternal(applicant, toStage, actor, note) {
+    const now = nowISO();
+    await dbRun("UPDATE hr_applicants SET stage = ?, updated_at = ? WHERE id = ?", [toStage, now, applicant.id]);
+    await dbRun(
+      `INSERT INTO hr_applicant_stage_history (applicant_id, from_stage, to_stage, changed_by, note, changed_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [applicant.id, applicant.stage, toStage, actor, note || null, now]
+    );
+  }
+
+  // Enroll a newly-created applicant: send the warm acknowledgment now and
+  // schedule the follow-up steps. Only runs with email consent and an address.
+  async function enrollFollowupSequence(applicant, position) {
+    if (!applicant.email || applicant.do_not_contact) return;
+    if (!(applicant.consent_email === true || applicant.consent_email === "true")) return;
+
+    const isPriority = !!applicant.priority_flag && position && position.role_type === "bcba";
+    const sequence = isPriority ? "priority_bcba" : "default";
+
+    const ack = followupMessage("acknowledgment", sequence, applicant, position);
+    await sendApplicantEmail(applicant, ack.subject, ack.html, { step: "acknowledgment", sentBy: "assistant" });
+
+    const steps = isPriority
+      ? [["followup_1", 24 * HR_HOUR]]
+      : [["followup_1", 24 * HR_HOUR], ["followup_2", 72 * HR_HOUR], ["followup_3", 168 * HR_HOUR]];
+    for (const [step, ms] of steps) {
+      await dbRun(
+        `INSERT INTO hr_followups (applicant_id, sequence, step, scheduled_at, status, created_at)
+         VALUES (?, ?, ?, ?, 'pending', ?)`,
+        [applicant.id, sequence, step, futureISO(ms), nowISO()]
+      );
+    }
+    await dbRun("UPDATE hr_applicants SET next_followup_at = ? WHERE id = ?", [futureISO(steps[0][1]), applicant.id]);
+    await audit("assistant", "sequence_enrolled", "applicant", applicant.id, `sequence=${sequence}`);
+  }
+
+  // Background processor: sends any follow-ups that are due, honoring all stop
+  // conditions, and disposition after the final step. Safe to call on an
+  // interval or manually.
+  async function processFollowups(limit = 100) {
+    const now = nowISO();
+    const due = await dbAll(
+      "SELECT * FROM hr_followups WHERE status = 'pending' AND scheduled_at <= ? ORDER BY scheduled_at LIMIT ?",
+      [now, limit]
+    );
+    let sent = 0;
+    let canceled = 0;
+    for (const f of due) {
+      const applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [f.applicant_id]);
+      if (!applicant) {
+        await dbRun("UPDATE hr_followups SET status = 'canceled' WHERE id = ?", [f.id]);
+        canceled++;
+        continue;
+      }
+      // Stop conditions: opted out, paused, already responded, or closed.
+      const stopped =
+        applicant.do_not_contact ||
+        applicant.automation_paused ||
+        applicant.last_response_at ||
+        ["hired", "not_selected", "withdrawn", "talent_pool"].includes(applicant.stage);
+      if (stopped) {
+        await cancelPendingFollowups(applicant.id);
+        canceled++;
+        continue;
+      }
+      const position = applicant.position_id ? await dbGet("SELECT * FROM hr_positions WHERE id = ?", [applicant.position_id]) : null;
+      const msg = followupMessage(f.step, f.sequence, applicant, position);
+      const res = await sendApplicantEmail(applicant, msg.subject, msg.html, { step: f.step, sentBy: "assistant" });
+      await dbRun("UPDATE hr_followups SET status = ?, sent_at = ? WHERE id = ?", [res && res.skipped ? "canceled" : "sent", nowISO(), f.id]);
+      await audit("assistant", "followup_sent", "applicant", applicant.id, `step=${f.step} delivered=${(res && res.delivered) || res.skipped || "n/a"}`);
+      sent++;
+
+      const remaining = await dbGet("SELECT COUNT(*) AS n FROM hr_followups WHERE applicant_id = ? AND status = 'pending'", [applicant.id]);
+      if (Number(remaining.n) === 0) {
+        // Final step just went out: disposition based on consent.
+        if (applicant.consent_email) {
+          await moveStageInternal(applicant, "talent_pool", "assistant", "Automated sequence complete — moved to Talent Pool");
+        } else {
+          await dbRun("UPDATE hr_applicants SET disposition_reason = ? WHERE id = ?", ["Sequence complete (no consent for future contact)", applicant.id]);
+        }
+        await dbRun("UPDATE hr_applicants SET next_followup_at = NULL WHERE id = ?", [applicant.id]);
+      } else {
+        const next = await dbGet("SELECT MIN(scheduled_at) AS s FROM hr_followups WHERE applicant_id = ? AND status = 'pending'", [applicant.id]);
+        await dbRun("UPDATE hr_applicants SET next_followup_at = ? WHERE id = ?", [next.s, applicant.id]);
+      }
+    }
+    return { due: due.length, sent, canceled };
   }
 
   // ============================ DASHBOARDS ============================
@@ -1842,10 +2134,12 @@ Match categories:
     seed,
     handleApi,
     servePage,
+    processFollowups,
     // exposed for tests / future phases
     _internal: {
       evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,
       hrCanAccess, hrCanManage, hrCanSeeSensitive, runScreening, buildScreeningContent, ASSESSMENT_SCHEMA,
+      followupMessage, enrollFollowupSequence, processFollowups, missingQuestions,
     },
   };
 };
