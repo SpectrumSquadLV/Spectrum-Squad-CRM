@@ -40,7 +40,7 @@
     const btn = document.createElement("button");
     btn.className = "nav-item";
     btn.id = "pv2-nav-btn";
-    btn.textContent = "◱ Pipeline";
+btn.textContent = "▤ Client Pipeline";
     btn.addEventListener("click", () => {
       location.hash = HASH;
     });
