@@ -193,6 +193,22 @@ CREATE TABLE IF NOT EXISTS client_notes (
   FOREIGN KEY (client_id) REFERENCES clients(id)
 );
 
+-- Staff to-do items: assignable to any user, with a due date + email reminder.
+CREATE TABLE IF NOT EXISTS staff_tasks (
+  id SERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  assigned_user_id INTEGER,
+  assigned_name TEXT,
+  client_id INTEGER,
+  due_date TEXT,
+  status TEXT NOT NULL DEFAULT 'open', -- open | done
+  reminder_sent_at TEXT,
+  created_by TEXT,
+  created_at TEXT,
+  completed_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS auth_alerts (
   id SERIAL PRIMARY KEY,
   client_id INTEGER NOT NULL,
@@ -1362,6 +1378,61 @@ async function processAssessmentReminders() {
 }
 
 const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone, processAssessmentReminders };
+
+// ---- Staff to-do tasks (assignable, with due dates + email reminders) ----
+async function createStaffTask({ title, description, assigned_user_id, assigned_name, client_id, due_date, created_by }) {
+  // If assigned by name only, try to resolve to a user for reminders.
+  let uid = assigned_user_id || null;
+  let uname = assigned_name || null;
+  if (!uid && uname) {
+    const u = await dbGet("SELECT id, name FROM users WHERE lower(name) = lower(?) LIMIT 1", [uname]);
+    if (u) uid = u.id;
+  }
+  if (uid && !uname) {
+    const u = await dbGet("SELECT name FROM users WHERE id = ?", [uid]);
+    if (u) uname = u.name;
+  }
+  const row = await dbGet(
+    `INSERT INTO staff_tasks (title, description, assigned_user_id, assigned_name, client_id, due_date, status, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING *`,
+    [title, description || null, uid, uname, client_id || null, due_date || null, created_by || "system", nowISO()]
+  );
+  return row;
+}
+
+// Email the assignee when a staff task is due today or overdue (once).
+async function processStaffTaskReminders() {
+  const today = new Date().toISOString().slice(0, 10);
+  const due = await dbAll(
+    `SELECT st.*, u.email AS assignee_email, c.child_name
+       FROM staff_tasks st
+       LEFT JOIN users u ON u.id = st.assigned_user_id
+       LEFT JOIN clients c ON c.id = st.client_id
+      WHERE st.status = 'open' AND st.due_date IS NOT NULL
+        AND st.due_date <= ? AND st.reminder_sent_at IS NULL`,
+    [today + "T23:59:59.999Z"]
+  );
+  let sent = 0;
+  for (const t of due) {
+    if (t.assignee_email) {
+      await sendEmail({
+        to: t.assignee_email,
+        subject: `Task due: ${t.title}`,
+        html: `<p>Hi ${t.assigned_name || "there"},</p>
+          <p>This is a reminder that a task assigned to you is due${t.due_date ? " (" + new Date(t.due_date).toLocaleDateString() + ")" : ""}:</p>
+          <p style="font-size:16px;"><strong>${t.title}</strong></p>
+          ${t.description ? `<p>${t.description}</p>` : ""}
+          ${t.child_name ? `<p>Client: <strong>${t.child_name}</strong></p>` : ""}
+          <p>Please log in to the CRM to mark it complete once done.</p>`,
+        type: "staff_task_reminder",
+      }).catch((e) => console.error("staff task reminder failed:", e));
+    }
+    await dbRun("UPDATE staff_tasks SET reminder_sent_at = ? WHERE id = ?", [nowISO(), t.id]);
+    sent++;
+  }
+  return sent;
+}
+
 // ============================== PIPELINE V2 (MILESTONE DASHBOARD) ==============================
 // Computes the 6-milestone view (New Lead, Intake & Eligibility, Clinical
 // Assessment, Authorization, Ready to Start, Active Services) on top of the
@@ -3265,6 +3336,7 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
     const fields = Object.keys(body).filter((k) => allowedChecklistFields.includes(k));
     if (!fields.length) return json(res, 400, { error: "No editable fields provided" });
     const wasScreenerDone = client.clinical_screener_completed === true;
+    const wasAssessmentDone = client.intake_assessment_completed === true;
     const setClause = fields.map((f) => `${f} = ?`).join(", ");
     await dbRun(`UPDATE clients SET ${setClause}, updated_at = ? WHERE id = ?`, [...fields.map((f) => body[f]), nowISO(), id]);
     const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
@@ -3272,6 +3344,24 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
     // pick their child's schedule (Phase 4). Fire-and-forget; dedupes internally.
     if (!wasScreenerDone && updated.clinical_screener_completed === true) {
       clientForms.sendScheduleRequest(updated).catch((e) => console.error("sendScheduleRequest failed:", e));
+    }
+    // When the in-clinic assessment is first marked complete, create a task for
+    // the assigned BCBA to write the treatment plan (due in 5 business days).
+    if (!wasAssessmentDone && updated.intake_assessment_completed === true) {
+      const existingTp = await dbGet(
+        "SELECT id FROM staff_tasks WHERE client_id = ? AND title LIKE 'Write treatment plan%' LIMIT 1",
+        [id]
+      ).catch(() => null);
+      if (!existingTp) {
+        createStaffTask({
+          title: `Write treatment plan for ${updated.child_name}`,
+          description: "The in-clinic assessment is complete. Please write the treatment plan.",
+          assigned_name: updated.assigned_bcba_name || null,
+          client_id: Number(id),
+          due_date: addBusinessDays(new Date(), 5).toISOString().slice(0, 10),
+          created_by: "system",
+        }).catch((e) => console.error("treatment-plan task failed:", e));
+      }
     }
     return json(res, 200, { id: updated.id, ...pipelineV2.computeMilestoneView(updated) });
   }
@@ -3413,6 +3503,74 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     // By default only open (non-completed) tasks are returned, same as
     // before. Pass ?status=all to also include completed tasks (used by
     // the "Show completed" toggle so completed tasks can be marked undone).
+    // Lightweight user list for assignment dropdowns (any authenticated staff).
+    if (pathname === "/api/staff" && method === "GET") {
+      const rows = await dbAll("SELECT id, name, role FROM users ORDER BY name");
+      return json(res, 200, rows);
+    }
+
+    // ---------- Staff to-do tasks (assignable, due dates, reminders) ----------
+    if (pathname === "/api/staff-tasks" && method === "GET") {
+      const scope = query.scope || "all";
+      let where = "";
+      const params = [];
+      if (scope === "mine") { where = "WHERE st.assigned_user_id = ?"; params.push(user.id); }
+      else if (query.status === "open") { where = "WHERE st.status = 'open'"; }
+      const rows = await dbAll(
+        `SELECT st.*, c.child_name FROM staff_tasks st
+         LEFT JOIN clients c ON c.id = st.client_id
+         ${where}
+         ORDER BY (st.status = 'done'), st.due_date NULLS LAST, st.id DESC`,
+        params
+      );
+      return json(res, 200, rows);
+    }
+    if (pathname === "/api/staff-tasks" && method === "POST") {
+      const body = await readBody(req);
+      const title = (body.title || "").trim();
+      if (!title) return json(res, 400, { error: "A task title is required." });
+      const row = await createStaffTask({
+        title,
+        description: body.description,
+        assigned_user_id: body.assigned_user_id ? Number(body.assigned_user_id) : null,
+        assigned_name: body.assigned_name,
+        client_id: body.client_id ? Number(body.client_id) : null,
+        due_date: body.due_date || null,
+        created_by: user.email,
+      });
+      return json(res, 201, row);
+    }
+    const staffTaskMatch = pathname.match(/^\/api\/staff-tasks\/(\d+)$/);
+    if (staffTaskMatch && method === "PATCH") {
+      const id = Number(staffTaskMatch[1]);
+      const body = await readBody(req);
+      const sets = [];
+      const params = [];
+      if (typeof body.title === "string" && body.title.trim()) { sets.push("title = ?"); params.push(body.title.trim()); }
+      if ("description" in body) { sets.push("description = ?"); params.push(body.description || null); }
+      if ("due_date" in body) { sets.push("due_date = ?", "reminder_sent_at = NULL"); params.push(body.due_date || null); }
+      if ("assigned_user_id" in body) {
+        const uid = body.assigned_user_id ? Number(body.assigned_user_id) : null;
+        let uname = null;
+        if (uid) { const u = await dbGet("SELECT name FROM users WHERE id = ?", [uid]); uname = u ? u.name : null; }
+        sets.push("assigned_user_id = ?", "assigned_name = ?", "reminder_sent_at = NULL");
+        params.push(uid, uname);
+      }
+      if ("status" in body) {
+        const done = body.status === "done";
+        sets.push("status = ?", "completed_at = ?");
+        params.push(done ? "done" : "open", done ? nowISO() : null);
+      }
+      if (!sets.length) return json(res, 400, { error: "Nothing to update." });
+      params.push(id);
+      await dbRun(`UPDATE staff_tasks SET ${sets.join(", ")} WHERE id = ?`, params);
+      return json(res, 200, await dbGet("SELECT * FROM staff_tasks WHERE id = ?", [id]));
+    }
+    if (staffTaskMatch && method === "DELETE") {
+      await dbRun("DELETE FROM staff_tasks WHERE id = ?", [Number(staffTaskMatch[1])]);
+      return json(res, 200, { ok: true });
+    }
+
     if (pathname === "/api/tasks" && method === "GET") {
       const showAll = query.status === "all";
       const tasks = await dbAll(
@@ -3501,6 +3659,29 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         [s.client_id, s.therapist_id, s.day_of_week, s.start_time, s.end_time, s.session_type || "ABA Therapy", nowISO()]
       );
       return json(res, 201, { id: row.id });
+    }
+
+    // Move a session (drag-and-drop): change day and/or time, with a conflict check.
+    const patchSessionMatch = pathname.match(/^\/api\/schedule\/(\d+)$/);
+    if (patchSessionMatch && method === "PATCH") {
+      const id = Number(patchSessionMatch[1]);
+      const existing = await dbGet("SELECT * FROM schedule_sessions WHERE id = ?", [id]);
+      if (!existing) return json(res, 404, { error: "Session not found" });
+      const b = await readBody(req);
+      const day = b.day_of_week != null ? Number(b.day_of_week) : existing.day_of_week;
+      const start = b.start_time || existing.start_time;
+      const end = b.end_time || existing.end_time;
+      const conflicts = await dbAll(
+        `SELECT * FROM schedule_sessions WHERE therapist_id = ? AND day_of_week = ? AND id <> ?
+         AND NOT (end_time <= ? OR start_time >= ?)`,
+        [existing.therapist_id, day, id, start, end]
+      );
+      if (conflicts.length) return json(res, 409, { error: "That therapist already has a session in that time slot." });
+      await dbRun(
+        "UPDATE schedule_sessions SET day_of_week = ?, start_time = ?, end_time = ? WHERE id = ?",
+        [day, start, end, id]
+      );
+      return json(res, 200, { ok: true });
     }
 
     const deleteSessionMatch = pathname.match(/^\/api\/schedule\/(\d+)$/);
@@ -4380,6 +4561,12 @@ async function start() {
   setInterval(() => {
     pipeline.processAssessmentReminders().catch((e) => console.error("Assessment reminder sweep failed:", e));
   }, 24 * 60 * 60 * 1000);
+
+  // Staff task due-date reminders (email the assignee), also on boot.
+  processStaffTaskReminders().catch((e) => console.error("Staff task reminder sweep failed:", e));
+  setInterval(() => {
+    processStaffTaskReminders().catch((e) => console.error("Staff task reminder sweep failed:", e));
+  }, 6 * 60 * 60 * 1000);
 
   // Daily authorization-expiration check (also runs once on boot above).
   setInterval(() => {

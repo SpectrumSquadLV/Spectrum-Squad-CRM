@@ -1671,11 +1671,98 @@ function openNewClientModal() {
 
 // ---------------- Tasks ----------------
 let tasksShowCompleted = false;
+async function renderStaffTasks(mount) {
+  const body = mount.querySelector("#staff-tasks-body");
+  if (!body) return;
+  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+  let staff = [], tasks = [];
+  try { [staff, tasks] = await Promise.all([api("/api/staff"), api("/api/staff-tasks")]); } catch (e) {
+    body.innerHTML = `<div class="empty-state">Couldn't load staff tasks: ${esc(e.message)}</div>`;
+    return;
+  }
+  const staffOpts = staff.map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join("");
+  const clientOpts = (state.clients || []).map((c) => `<option value="${c.id}">${esc(c.child_name)}</option>`).join("");
+  const overdue = (t) => t.status !== "done" && t.due_date && new Date(t.due_date) < new Date(new Date().toDateString());
+
+  body.innerHTML = `
+    <div class="form-grid" style="gap:10px;">
+      <div class="field"><label>Task</label><input id="stask-title" placeholder="e.g. Call insurance about auth" /></div>
+      <div class="field"><label>Assign to</label><select id="stask-assignee"><option value="">— Choose staff —</option>${staffOpts}</select></div>
+      <div class="field"><label>Due date</label><input id="stask-due" type="date" /></div>
+      <div class="field"><label>Related client (optional)</label><select id="stask-client"><option value="">— None —</option>${clientOpts}</select></div>
+    </div>
+    <div class="field full" style="margin-top:8px;"><label>Details (optional)</label><textarea id="stask-desc" rows="2" placeholder="Any details or context..."></textarea></div>
+    <div style="margin-top:8px;"><button class="btn small" id="stask-add">+ Assign task</button> <span id="stask-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span></div>
+
+    <div style="margin-top:16px; overflow-x:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:620px;">
+        <thead><tr style="text-align:left; color:var(--text-muted); font-size:11.5px; text-transform:uppercase;">
+          <th style="padding:6px 8px;">Task</th><th style="padding:6px 8px;">Assigned to</th><th style="padding:6px 8px;">Client</th><th style="padding:6px 8px;">Due</th><th style="padding:6px 8px;"></th>
+        </tr></thead>
+        <tbody>
+          ${
+            tasks.length
+              ? tasks.map((t) => `<tr style="${t.status === "done" ? "opacity:.55;" : ""}">
+                  <td style="padding:7px 8px;"><strong>${esc(t.title)}</strong>${t.description ? `<div style="color:var(--text-muted); font-size:12px;">${esc(t.description)}</div>` : ""}</td>
+                  <td style="padding:7px 8px;">${esc(t.assigned_name || "—")}</td>
+                  <td style="padding:7px 8px;">${esc(t.child_name || "—")}</td>
+                  <td style="padding:7px 8px; ${overdue(t) ? "color:#b91c1c; font-weight:700;" : ""}">${t.due_date ? fmtDate(t.due_date) : "—"}${overdue(t) ? " ⚠" : ""}</td>
+                  <td style="padding:7px 8px; white-space:nowrap;">
+                    ${t.status === "done"
+                      ? `<button class="btn small secondary" data-stask-reopen="${t.id}">Reopen</button>`
+                      : `<button class="btn small" data-stask-done="${t.id}">Done</button>`}
+                    <button class="btn small secondary" data-stask-del="${t.id}" style="color:#b91c1c;">Delete</button>
+                  </td>
+                </tr>`).join("")
+              : `<tr><td colspan="5"><div class="empty-state">No staff tasks yet.</div></td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>`;
+
+  const statusEl = body.querySelector("#stask-status");
+  body.querySelector("#stask-add").addEventListener("click", async () => {
+    const title = body.querySelector("#stask-title").value.trim();
+    if (!title) { statusEl.textContent = "Enter a task title."; return; }
+    const btn = body.querySelector("#stask-add");
+    btn.disabled = true;
+    statusEl.textContent = "Saving…";
+    try {
+      await api("/api/staff-tasks", { method: "POST", body: {
+        title,
+        assigned_user_id: body.querySelector("#stask-assignee").value || null,
+        due_date: body.querySelector("#stask-due").value || null,
+        client_id: body.querySelector("#stask-client").value || null,
+        description: body.querySelector("#stask-desc").value || null,
+      } });
+      await renderStaffTasks(mount);
+    } catch (e) {
+      statusEl.textContent = e.message || "Could not save.";
+      btn.disabled = false;
+    }
+  });
+  body.querySelectorAll("[data-stask-done]").forEach((b) => b.addEventListener("click", async () => {
+    await api(`/api/staff-tasks/${b.dataset.staskDone}`, { method: "PATCH", body: { status: "done" } }); renderStaffTasks(mount);
+  }));
+  body.querySelectorAll("[data-stask-reopen]").forEach((b) => b.addEventListener("click", async () => {
+    await api(`/api/staff-tasks/${b.dataset.staskReopen}`, { method: "PATCH", body: { status: "open" } }); renderStaffTasks(mount);
+  }));
+  body.querySelectorAll("[data-stask-del]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Delete this task?")) return;
+    await api(`/api/staff-tasks/${b.dataset.staskDel}`, { method: "DELETE" }); renderStaffTasks(mount);
+  }));
+}
+
 async function renderTasks(mount) {
   const tasks = await api(`/api/tasks${tasksShowCompleted ? "?status=all" : ""}`);
   mount.innerHTML = `
-    <div class="page-header"><div><h1>Tasks & Alerts</h1><p>Every open task across the pipeline, oldest due date first.</p></div></div>
+    <div class="page-header"><div><h1>Tasks & Alerts</h1><p>Assign tasks to staff, and track pipeline tasks across every client.</p></div></div>
+    <div class="card" id="staff-tasks-card" style="margin-bottom:20px;">
+      <div class="section-title" style="margin-top:0;">Staff Tasks</div>
+      <div id="staff-tasks-body"><div class="empty-state">Loading…</div></div>
+    </div>
     <div class="card">
+      <div class="section-title" style="margin-top:0;">Pipeline Tasks</div>
       <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
         <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted);">
           <input type="checkbox" id="tasks-show-completed" ${tasksShowCompleted ? "checked" : ""} />
@@ -1714,6 +1801,8 @@ async function renderTasks(mount) {
       </table>
     </div>
   `;
+
+  renderStaffTasks(mount);
 
   mount.querySelector("#tasks-show-completed").addEventListener("change", (e) => {
     tasksShowCompleted = e.target.checked;
@@ -1968,6 +2057,9 @@ async function renderSchedule(mount) {
 
     <div class="card">
       <div class="section-title" style="margin-top:0;">Weekly Grid</div>
+      <p style="color:var(--text-muted); font-size:12.5px; margin-top:0;">Drag an appointment to move it · ⧉ duplicate (then click an empty slot to drop the copy) · ✕ delete. Appointments are color-coded by client.</p>
+      <div id="grid-legend" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;"></div>
+      <div id="paste-hint" style="display:none; background:#fff4dd; color:#a56b00; border-radius:8px; padding:6px 10px; font-size:12.5px; margin-bottom:10px;"></div>
       <div class="schedule-grid">
         <div></div>
         ${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d) => `<div class="day-head">${d}</div>`).join("")}
@@ -1979,6 +2071,95 @@ async function renderSchedule(mount) {
   document.getElementById("add-session-btn").addEventListener("click", () => openAddSessionModal(activeClients));
   renderStaffingEstimator(mount);
   mount.querySelector("#est-refresh").addEventListener("click", () => renderStaffingEstimator(mount));
+  wireScheduleGrid(mount, sessions);
+}
+
+function wireScheduleGrid(mount, sessions) {
+  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+  // Color legend of clients that appear on the grid.
+  const seen = {};
+  sessions.forEach((s) => { if (!seen[s.client_id]) seen[s.client_id] = { name: s.child_name, color: s.client_color || "#29225c" }; });
+  const legend = mount.querySelector("#grid-legend");
+  if (legend) {
+    legend.innerHTML = Object.values(seen).map((c) =>
+      `<span style="display:inline-flex; align-items:center; gap:5px; font-size:12px;"><span style="width:12px; height:12px; border-radius:3px; background:${c.color}; display:inline-block;"></span>${esc(c.name)}</span>`
+    ).join("") || `<span style="color:var(--text-muted); font-size:12px;">No appointments yet.</span>`;
+  }
+
+  const durationMin = (start, end) => {
+    const [sh, sm] = start.split(":").map(Number);
+    const [eh, em] = end.split(":").map(Number);
+    return (eh * 60 + em) - (sh * 60 + sm);
+  };
+  const hhmm = (mins) => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+
+  let clipboard = null;
+  const pasteHint = mount.querySelector("#paste-hint");
+  const setHint = (msg) => { if (pasteHint) { pasteHint.style.display = msg ? "block" : "none"; pasteHint.textContent = msg || ""; } };
+
+  const refresh = () => renderSchedule(mount);
+
+  // Delete
+  mount.querySelectorAll("[data-del-session]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm("Delete this appointment?")) return;
+      try { await api(`/api/schedule/${btn.dataset.delSession}`, { method: "DELETE" }); refresh(); }
+      catch (err) { alert("Could not delete: " + err.message); }
+    });
+  });
+
+  // Duplicate -> clipboard
+  mount.querySelectorAll("[data-dup]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const block = btn.closest(".session-block");
+      clipboard = {
+        client_id: block.dataset.client, therapist_id: block.dataset.therapist,
+        start_time: block.dataset.start, end_time: block.dataset.end, session_type: block.dataset.type,
+        dur: durationMin(block.dataset.start, block.dataset.end),
+      };
+      setHint("📋 Copied. Click an empty slot to place the copy (or click here to cancel).");
+    });
+  });
+  if (pasteHint) pasteHint.addEventListener("click", () => { clipboard = null; setHint(""); });
+
+  // Drag to move
+  let dragId = null;
+  mount.querySelectorAll(".session-block").forEach((block) => {
+    block.addEventListener("dragstart", (e) => { dragId = block.dataset.session; e.dataTransfer.effectAllowed = "move"; });
+  });
+  mount.querySelectorAll(".schedule-cell").forEach((cell) => {
+    cell.addEventListener("dragover", (e) => { e.preventDefault(); cell.style.outline = "2px dashed var(--brand-gold, #e0a430)"; });
+    cell.addEventListener("dragleave", () => { cell.style.outline = ""; });
+    cell.addEventListener("drop", async (e) => {
+      e.preventDefault(); cell.style.outline = "";
+      if (!dragId) return;
+      const day = Number(cell.dataset.day), hour = Number(cell.dataset.hour);
+      const block = mount.querySelector(`.session-block[data-session="${dragId}"]`);
+      const dur = durationMin(block.dataset.start, block.dataset.end);
+      const startMin = hour * 60;
+      try {
+        await api(`/api/schedule/${dragId}`, { method: "PATCH", body: { day_of_week: day, start_time: hhmm(startMin), end_time: hhmm(startMin + dur) } });
+        refresh();
+      } catch (err) { alert(err.message || "Could not move (time conflict?)"); }
+      dragId = null;
+    });
+    // Paste a duplicated appointment into an empty slot
+    cell.addEventListener("click", async (e) => {
+      if (!clipboard) return;
+      if (e.target.closest(".session-block")) return; // clicked an existing block
+      const day = Number(cell.dataset.day), hour = Number(cell.dataset.hour);
+      const startMin = hour * 60;
+      try {
+        await api("/api/schedule", { method: "POST", body: {
+          client_id: clipboard.client_id, therapist_id: clipboard.therapist_id,
+          day_of_week: day, start_time: hhmm(startMin), end_time: hhmm(startMin + clipboard.dur), session_type: clipboard.session_type,
+        } });
+        clipboard = null; setHint(""); refresh();
+      } catch (err) { alert(err.message || "Could not place copy (time conflict?)"); }
+    });
+  });
 }
 
 async function renderStaffingEstimator(mount) {
@@ -2043,7 +2224,8 @@ function hoursBetween(start, end) {
 }
 
 function renderScheduleRows(sessions) {
-  const hours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+  const hours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
   return hours
     .map((h) => {
       const label = `<div class="time-label">${h}:00</div>`;
@@ -2053,17 +2235,23 @@ function renderScheduleRows(sessions) {
             const startH = parseInt(s.start_time.split(":")[0], 10);
             return s.day_of_week === day && startH === h;
           });
-          return `<div class="schedule-cell">${inSlot
+          return `<div class="schedule-cell" data-day="${day}" data-hour="${h}">${inSlot
             .map(
-              (s) => `<div class="session-block" style="background:${s.client_color || "var(--brand)"}" title="${s.child_name} with ${s.therapist_name}, delete?" data-session="${s.id}">${s.child_name}<br/>${s.start_time}-${s.end_time}</div>`
+              (s) => `<div class="session-block" draggable="true" style="background:${s.client_color || "var(--brand)"}; position:relative; cursor:grab;"
+                title="${esc(s.child_name)} with ${esc(s.therapist_name)} · drag to move"
+                data-session="${s.id}" data-client="${s.client_id}" data-therapist="${s.therapist_id}" data-start="${s.start_time}" data-end="${s.end_time}" data-type="${esc(s.session_type || "ABA Therapy")}">
+                <div style="position:absolute; top:1px; right:2px; display:flex; gap:2px;">
+                  <button class="sb-dup" data-dup="${s.id}" title="Duplicate" style="background:rgba(255,255,255,.35); border:none; border-radius:4px; color:#fff; font-size:10px; line-height:1; padding:1px 3px; cursor:pointer;">⧉</button>
+                  <button class="sb-del" data-del-session="${s.id}" title="Delete" style="background:rgba(0,0,0,.25); border:none; border-radius:4px; color:#fff; font-size:10px; line-height:1; padding:1px 4px; cursor:pointer;">✕</button>
+                </div>
+                ${esc(s.child_name)}<br/>${s.start_time}-${s.end_time}</div>`
             )
             .join("")}</div>`;
         })
         .join("");
       return label + cells;
     })
-    .join("")
-    .replace(/data-session="(\d+)"/g, 'data-session="$1" style="cursor:pointer"');
+    .join("");
 }
 
 function openAddSessionModal(activeClients) {
