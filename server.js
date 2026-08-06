@@ -281,6 +281,14 @@ CREATE TABLE IF NOT EXISTS financial_audit_log (
   created_at TEXT
 );
 
+-- Generic key/value store for owner-configurable settings (e.g. the address
+-- Benefits & Eligibility Check emails are sent to).
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS email_templates (
   id SERIAL PRIMARY KEY,
   template_key TEXT UNIQUE NOT NULL,
@@ -378,6 +386,11 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS can_view_financials BOOLEAN NOT NULL 
   -- list so nothing outside owner/super_admin can ever be shown financial data.
   UPDATE users SET can_view_financials = false WHERE role NOT IN ('owner', 'super_admin');
   UPDATE owner_financial_settings SET financial_view_roles = 'owner,super_admin';
+
+  -- Default recipient for automatic Benefits & Eligibility Check emails.
+  INSERT INTO app_settings (key, value, updated_at)
+  VALUES ('eligibility_check_email', 'vb@cubetherapybilling.com', now()::text)
+  ON CONFLICT (key) DO NOTHING;
 `;
 
 async function initSchema() {
@@ -388,6 +401,19 @@ async function initSchema() {
 
 function nowISO() {
   return new Date().toISOString();
+}
+
+// ---- App settings (owner-configurable key/value store) ----
+async function getAppSetting(key, fallback = null) {
+  const row = await dbGet("SELECT value FROM app_settings WHERE key = ?", [key]);
+  return row && row.value != null ? row.value : fallback;
+}
+async function setAppSetting(key, value) {
+  await dbRun(
+    `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
+    [key, value, nowISO()]
+  );
 }
 
 // ---- Document storage (Railway volume mounted at /app/data) ----
@@ -499,7 +525,8 @@ const FROM_EMAIL = process.env.EMAIL_FROM || "no-reply@spectrumsquadlv.com";
 // to notifications_log, so both first-time sends (sendEmail) and manual retries
 // of previously-failed emails (resendFailedEmail) share the exact same provider
 // logic.
-async function deliverEmail({ to, subject, html }) {
+async function deliverEmail({ to, subject, html, attachments }) {
+  // attachments: optional array of { filename, content(base64 string), contentType }
   let delivered = "simulated";
   let errorMsg = null;
 
@@ -511,7 +538,15 @@ async function deliverEmail({ to, subject, html }) {
           Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ from: FROM_EMAIL, to: [to], subject, html }),
+        body: JSON.stringify({
+          from: FROM_EMAIL,
+          to: [to],
+          subject,
+          html,
+          ...(attachments && attachments.length
+            ? { attachments: attachments.map((a) => ({ filename: a.filename, content: a.content })) }
+            : {}),
+        }),
       });
       delivered = res.ok ? "sent" : "failed";
       if (!res.ok) errorMsg = await res.text();
@@ -527,6 +562,16 @@ async function deliverEmail({ to, subject, html }) {
           from: { email: FROM_EMAIL },
           subject,
           content: [{ type: "text/html", value: html }],
+          ...(attachments && attachments.length
+            ? {
+                attachments: attachments.map((a) => ({
+                  content: a.content,
+                  filename: a.filename,
+                  type: a.contentType || "application/octet-stream",
+                  disposition: "attachment",
+                })),
+              }
+            : {}),
         }),
       });
       delivered = res.ok ? "sent" : "failed";
@@ -543,8 +588,8 @@ async function deliverEmail({ to, subject, html }) {
   return { delivered, errorMsg };
 }
 
-async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone" }) {
-  const { delivered, errorMsg } = await deliverEmail({ to, subject, html });
+async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone", attachments = null }) {
+  const { delivered, errorMsg } = await deliverEmail({ to, subject, html, attachments });
 
   await dbRun(
     `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered)
@@ -553,6 +598,86 @@ async function sendEmail({ to, subject, html, clientId = null, type = "parent_mi
   );
 
   return { delivered, errorMsg };
+}
+
+// ---- Benefits & Eligibility Check -----------------------------------------
+// When a new patient enrolls, send the billing/verification contact the info
+// they need to run an eligibility check: child name, DOB, insurance details,
+// and the insurance card itself (attached when a card image is on file). The
+// recipient address is owner-configurable in Admin Settings.
+function looksLikeInsuranceCard(doc) {
+  const s = `${doc.label || ""} ${doc.filename || ""}`.toLowerCase();
+  return /insur|card|member|benefit|policy/.test(s);
+}
+
+async function sendEligibilityCheck(client, actor) {
+  const to = await getAppSetting("eligibility_check_email", "");
+  if (!to) {
+    console.log("Eligibility check email skipped: no recipient configured.");
+    return { ok: false, error: "No recipient configured" };
+  }
+
+  const docs = await dbAll("SELECT * FROM client_documents WHERE client_id = ?", [client.id]);
+  const cardDocs = docs.filter(looksLikeInsuranceCard);
+  const attachments = [];
+  const linkCards = [];
+  for (const d of cardDocs) {
+    if (d.doc_type === "hosted" && d.file_path) {
+      try {
+        const buf = fs.readFileSync(path.join(DOCS_DIR, d.file_path));
+        attachments.push({
+          filename: d.filename || "insurance-card",
+          content: buf.toString("base64"),
+          contentType: d.mime_type || "application/octet-stream",
+        });
+      } catch (e) {
+        console.error("Could not attach insurance card:", e.message);
+      }
+    } else if (d.doc_type === "link" && d.external_url) {
+      linkCards.push(d);
+    }
+  }
+
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const row = (label, val) => `<tr><td style="padding:6px 12px;color:#555;">${label}</td><td style="padding:6px 12px;font-weight:600;">${esc(val || "—")}</td></tr>`;
+  const cardNote = attachments.length
+    ? `<p>The insurance card ${attachments.length > 1 ? "images are" : "image is"} attached to this email.</p>`
+    : linkCards.length
+    ? `<p>Insurance card link(s): ${linkCards.map((d) => `<a href="${esc(d.external_url)}">${esc(d.label || d.filename)}</a>`).join(", ")}</p>`
+    : `<p><em>No insurance card image is on file yet. Once it's uploaded to the client's record, you can re-send this from the CRM.</em></p>`;
+
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+      <h2 style="color:#29225c;">Benefits &amp; Eligibility Check</h2>
+      <p>Please run a benefits &amp; eligibility check for the following new patient:</p>
+      <table style="border-collapse:collapse;font-size:14px;">
+        ${row("Patient name", client.child_name)}
+        ${row("Date of birth", client.dob)}
+        ${row("Insurance provider", client.insurance_provider)}
+        ${row("Number of insurances", client.num_insurances)}
+        ${row("Parent / guardian", client.parent_name)}
+        ${row("Parent phone", client.parent_phone)}
+        ${row("Parent email", client.parent_email)}
+        ${row("Service location", client.service_location)}
+      </table>
+      ${cardNote}
+      <p style="color:#888;font-size:12px;">Sent automatically by the Spectrum Squad CRM.</p>
+    </div>`;
+
+  const result = await sendEmail({
+    to,
+    subject: "Benefits & Eligibility Check",
+    html,
+    clientId: client.id,
+    type: "eligibility_check",
+    attachments,
+  });
+  await logFinancialAudit(
+    actor || "system",
+    "eligibility_check_sent",
+    `client=${client.id} to=${to} attachments=${attachments.length} result=${result.delivered}`
+  ).catch(() => {});
+  return { ok: result.delivered !== "failed", ...result, attachments: attachments.length };
 }
 
 // ---- Failed-email retry ("push" failed emails) --------------------------
@@ -2279,6 +2404,7 @@ async function createClientFromPayload(c) {
   await pipeline.enterStage(row.id, "new_submission");
   const client = await dbGet("SELECT * FROM clients WHERE id = ?", [row.id]);
   sendEnrollmentPacket(client).catch((e) => console.error("sendEnrollmentPacket failed:", e));
+  sendEligibilityCheck(client, "system").catch((e) => console.error("sendEligibilityCheck failed:", e));
   return client;
 }
 
@@ -3234,6 +3360,17 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       );
     }
 
+    // Manually (re)send the Benefits & Eligibility Check for a client -- used
+    // once the insurance card has been uploaded, so billing gets the attachment.
+    const eligibilityMatch = pathname.match(/^\/api\/clients\/(\d+)\/eligibility-check$/);
+    if (eligibilityMatch && method === "POST") {
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [eligibilityMatch[1]]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      const result = await sendEligibilityCheck(client, user.email);
+      if (!result.ok && result.error) return json(res, 400, result);
+      return json(res, 200, result);
+    }
+
     const notifResendMatch = pathname.match(/^\/api\/notifications\/(\d+)\/resend$/);
     if (notifResendMatch && method === "POST") {
       // Outbox is owner-only; resending from it is too.
@@ -3466,6 +3603,29 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const { id, notify_email } = await readBody(req);
       await dbRun("UPDATE departments SET notify_email = ? WHERE id = ?", [notify_email, id]);
       return json(res, 200, { ok: true });
+    }
+
+    // Owner-configurable app settings (currently just the eligibility-check
+    // recipient). Owner/admin/super_admin only.
+    if (pathname === "/api/admin/settings" && method === "GET") {
+      if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted" });
+      return json(res, 200, {
+        eligibility_check_email: await getAppSetting("eligibility_check_email", ""),
+      });
+    }
+    if (pathname === "/api/admin/settings" && method === "PATCH") {
+      if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted" });
+      const body = await readBody(req);
+      if ("eligibility_check_email" in body) {
+        const email = (body.eligibility_check_email || "").trim();
+        if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+          return json(res, 400, { error: "Please enter a valid email address." });
+        }
+        await setAppSetting("eligibility_check_email", email);
+      }
+      return json(res, 200, {
+        eligibility_check_email: await getAppSetting("eligibility_check_email", ""),
+      });
     }
 
     // ---------- Team / user management (owner, admin, super_admin) ----------
