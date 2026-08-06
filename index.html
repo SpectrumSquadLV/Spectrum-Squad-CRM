@@ -1674,16 +1674,21 @@ async function renderOutbox(mount) {
   }
   const notifications = await api("/api/notifications");
   mount.innerHTML = `
-    <div class="page-header"><div><h1>Message Outbox</h1><p>Every automated email the system has sent (or simulated) to staff and parents.</p></div></div>
+    <div class="page-header"><div><h1>Message Outbox</h1><p>Every automated email the system has sent (or simulated) to staff and parents. Use <strong>Resend</strong> to push any single message again — only that one recipient gets it.</p></div></div>
     <div class="card">
       ${
         notifications.length
           ? notifications
               .map(
                 (n) => `<div class="outbox-item">
-                <div class="subject">${n.subject}</div>
-                <div class="meta">to <strong>${n.recipient}</strong> · ${n.type.replace("_", " ")} · ${fmtDate(n.sent_at)}
-                  <span class="delivered-pill ${n.delivered.split(":")[0]}">${n.delivered.split(":")[0]}</span>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+                  <div style="flex:1;">
+                    <div class="subject">${n.subject}</div>
+                    <div class="meta">to <strong>${n.recipient}</strong> · ${n.type.replace("_", " ")} · ${fmtDate(n.sent_at)}
+                      <span class="delivered-pill ${n.delivered.split(":")[0]}">${n.delivered.split(":")[0]}</span>
+                    </div>
+                  </div>
+                  ${n.recipient ? `<button class="btn small secondary" data-resend-notif="${n.id}">Resend</button>` : ""}
                 </div>
                 <div class="body">${n.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()}</div>
               </div>`
@@ -1693,6 +1698,26 @@ async function renderOutbox(mount) {
       }
     </div>
   `;
+
+  mount.querySelectorAll("[data-resend-notif]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.resendNotif;
+      if (!confirm("Resend this email to " + (btn.closest(".outbox-item").querySelector(".meta strong")?.textContent || "the recipient") + "? Only this one recipient will get it.")) return;
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = "Sending…";
+      try {
+        const result = await api(`/api/notifications/${id}/resend`, { method: "POST" });
+        btn.textContent = result.delivered === "sent" ? "Sent ✓" : (result.delivered === "simulated" ? "Simulated ✓" : "Failed");
+        setTimeout(() => renderOutbox(mount), 1200);
+      } catch (e) {
+        btn.textContent = "Failed";
+        alert("Could not resend: " + e.message);
+        btn.disabled = false;
+        setTimeout(() => (btn.textContent = original), 1500);
+      }
+    });
+  });
 }
 
 // ---------------- Admin ----------------
