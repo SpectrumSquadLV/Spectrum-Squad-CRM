@@ -611,6 +611,36 @@ async function resendAllFailedEmails(actor) {
   return { ok: true, attempted: failed.length, resent, stillFailed };
 }
 
+// Resend ANY single logged email (not just failed ones) to its original
+// recipient, re-using the exact subject/body that was sent. This powers the
+// per-message "Resend" button in the Message Outbox, so the owner can push out
+// one email again individually instead of re-triggering a whole batch.
+async function resendNotificationEmail(id, actor) {
+  const row = await dbGet("SELECT * FROM notifications_log WHERE id = ?", [id]);
+  if (!row) return { ok: false, error: "Email not found" };
+  if (!row.recipient) return { ok: false, error: "This message has no recipient on file" };
+
+  const { delivered, errorMsg } = await deliverEmail({
+    to: row.recipient,
+    subject: row.subject,
+    html: row.body,
+  });
+
+  await dbRun("UPDATE notifications_log SET delivered = ?, sent_at = ? WHERE id = ?", [
+    delivered + (errorMsg ? `: ${errorMsg}` : ""),
+    nowISO(),
+    id,
+  ]);
+
+  await logFinancialAudit(
+    actor,
+    "notification_resent",
+    `id=${id} to=${row.recipient} result=${delivered}${errorMsg ? " - " + errorMsg : ""}`
+  ).catch(() => {});
+
+  return { ok: delivered !== "failed", id, delivered, errorMsg };
+}
+
 function stripHtml(html) {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -3202,6 +3232,17 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         200,
         await dbAll("SELECT * FROM notifications_log ORDER BY sent_at DESC LIMIT 100")
       );
+    }
+
+    const notifResendMatch = pathname.match(/^\/api\/notifications\/(\d+)\/resend$/);
+    if (notifResendMatch && method === "POST") {
+      // Outbox is owner-only; resending from it is too.
+      if (!user || !["owner", "super_admin"].includes(user.role)) {
+        return json(res, 403, { error: "Not permitted" });
+      }
+      const result = await resendNotificationEmail(Number(notifResendMatch[1]), user.email);
+      if (result.error) return json(res, 404, result);
+      return json(res, 200, result);
     }
 
     const attendanceAlertMatch = pathname.match(/^\/api\/clients\/(\d+)\/attendance-alert$/);
