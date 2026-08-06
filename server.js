@@ -604,13 +604,34 @@ async function deliverEmail({ to, subject, html, attachments }) {
   return { delivered, errorMsg };
 }
 
+// Wrap any email body in the Spectrum Squad brand shell: logo header + footer.
+// The logo is served publicly at /logo.png. A marker comment prevents
+// double-wrapping if an already-branded body is passed back in (e.g. resends).
+const BRAND_LOGO_URL = `${APP_BASE_URL}/logo.png`;
+function brandedEmail(innerHtml) {
+  if (typeof innerHtml === "string" && innerHtml.includes("data-ss-branded")) return innerHtml;
+  return `<!-- data-ss-branded -->
+  <div style="background:#f5f4fb;padding:24px 12px;font-family:Arial,Helvetica,sans-serif;">
+    <div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 3px 14px rgba(41,34,92,.08);">
+      <div style="text-align:center;padding:24px 20px 6px;">
+        <img src="${BRAND_LOGO_URL}" alt="Spectrum Squad" width="230" style="max-width:230px;height:auto;border:0;" />
+      </div>
+      <div style="padding:10px 30px 26px;color:#29225c;font-size:15px;line-height:1.6;">${innerHtml}</div>
+      <div style="background:#29225c;color:#cfc9ec;text-align:center;padding:16px 20px;font-size:12px;">
+        Spectrum Squad &middot; Compassionate ABA Therapy
+      </div>
+    </div>
+  </div>`;
+}
+
 async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone", attachments = null }) {
-  const { delivered, errorMsg } = await deliverEmail({ to, subject, html, attachments });
+  const branded = brandedEmail(html);
+  const { delivered, errorMsg } = await deliverEmail({ to, subject, html: branded, attachments });
 
   await dbRun(
     `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [clientId, type, to, subject, html, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : "")]
+    [clientId, type, to, subject, branded, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : "")]
   );
 
   return { delivered, errorMsg };
@@ -3542,11 +3563,12 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       `;
 
       // Send + record with an acknowledgment token so the parent can confirm.
-      const { delivered, errorMsg } = await deliverEmail({ to: client.parent_email, subject, html });
+      const brandedHtml = brandedEmail(html);
+      const { delivered, errorMsg } = await deliverEmail({ to: client.parent_email, subject, html: brandedHtml });
       await dbRun(
         `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered, ack_token)
          VALUES (?, 'attendance_alert', ?, ?, ?, ?, ?, ?)`,
-        [id, client.parent_email, subject, html, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : ""), ackToken]
+        [id, client.parent_email, subject, brandedHtml, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : ""), ackToken]
       );
       return json(res, 200, { delivered, errorMsg });
     }
@@ -4305,8 +4327,9 @@ const server = http.createServer(async (req, res) => {
     res.end(`<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Spectrum Squad</title>
       <style>body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:linear-gradient(135deg,#f3f0ff,#eafaf6);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#29225c;}
       .c{background:#fff;border-radius:20px;box-shadow:0 18px 50px rgba(41,34,92,.14);padding:40px 32px;max-width:420px;text-align:center;margin:16px;}
+      .c img.logo{max-width:200px;width:70%;height:auto;margin-bottom:12px;}
       .big{font-size:56px}</style></head>
-      <body><div class="c"><div class="big">${ok ? "✅" : "⚠️"}</div>
+      <body><div class="c"><img class="logo" src="/logo.png" alt="Spectrum Squad"/><div class="big">${ok ? "✅" : "⚠️"}</div>
       <h1>${ok ? "Thank you!" : "Link not found"}</h1>
       <p>${ok ? "We've recorded that you received this attendance message. Please reach out anytime to discuss your child's schedule." : "This acknowledgment link is invalid or has already been used. If you have questions, please contact us."}</p>
       </div></body></html>`);

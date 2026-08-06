@@ -537,7 +537,7 @@ function renderShell(active) {
   root.innerHTML = `
     <div class="app-shell">
       <div class="sidebar">
-        <div class="brand"><span class="brand-mark">🧩</span> <span class="brand-word">Spectrum Squad</span></div>
+        <div class="brand"><img src="/logo.png" alt="Spectrum Squad" style="max-width:170px; width:100%; height:auto;" /></div>
         <nav>
           ${navItems
             .map(
@@ -570,8 +570,8 @@ function renderLogin() {
   root.innerHTML = `
     <div class="login-wrap">
       <div class="login-card">
-        <h1>Spectrum Squad</h1>
-        <p class="sub">Client Pipeline & Scheduling CRM</p>
+        <img src="/logo.png" alt="Spectrum Squad" style="display:block; max-width:220px; width:70%; height:auto; margin:0 auto 10px;" />
+        <p class="sub" style="text-align:center;">Client Pipeline & Scheduling CRM</p>
         <div id="login-error" class="login-error"></div>
         <form id="login-form">
           <div class="field">

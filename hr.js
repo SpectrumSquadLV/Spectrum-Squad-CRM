@@ -3310,12 +3310,15 @@ Write body as plain text with line breaks (no HTML).`;
   .countdown{text-align:center;color:#b4571a;font-size:13.5px;font-weight:600;margin-top:8px}
   .big{font-size:64px} .err{color:#b91c1c;text-align:center}
   .hidden{display:none}
+  body::before{content:"";position:fixed;inset:0;background:url('/logo.png') center 32% no-repeat;background-size:min(62vw,420px);opacity:.05;pointer-events:none;z-index:1}
+  .brandbar{text-align:center;margin-bottom:8px}
+  .brandbar img{max-width:220px;width:58%;height:auto}
   @media(max-width:520px){.terms{grid-template-columns:1fr}}
 </style></head>
 <body>
 <canvas id="confetti"></canvas>
 <div class="balloons" id="balloons"></div>
-<div class="wrap" id="app"><p class="center muted">Loading your offer…</p></div>
+<div class="wrap"><div class="brandbar"><img src="/logo.png" alt="Spectrum Squad"/></div><div id="app"><p class="center muted">Loading your offer…</p></div></div>
 <script>
 (function(){
   var app=document.getElementById("app");
@@ -3432,7 +3435,7 @@ Write body as plain text with line breaks (no HTML).`;
 </style></head>
 <body>
 <header><h1>Verify your timecard</h1><p style="opacity:.85;margin:0">Spectrum Squad</p></header>
-<div class="wrap" id="app"><p class="muted">Loading…</p></div>
+<div class="wrap"><div style="text-align:center;margin-bottom:10px;"><img src="/logo.png" alt="Spectrum Squad" style="max-width:210px;width:60%;height:auto;"/></div><div id="app"><p class="muted">Loading…</p></div></div>
 <script>
 (function(){
   var app=document.getElementById("app");
@@ -3486,7 +3489,7 @@ Write body as plain text with line breaks (no HTML).`;
 </style></head>
 <body>
 <header><h1>Schedule your interview</h1><p>Spectrum Squad</p></header>
-<div class="wrap" id="app"><p class="muted">Loading…</p></div>
+<div class="wrap"><div style="text-align:center;margin-bottom:10px;"><img src="/logo.png" alt="Spectrum Squad" style="max-width:210px;width:60%;height:auto;"/></div><div id="app"><p class="muted">Loading…</p></div></div>
 <script>
 (function(){
   var app=document.getElementById("app");
@@ -3561,7 +3564,7 @@ Write body as plain text with line breaks (no HTML).`;
 </style></head>
 <body>
 <header>
-  <div class="mark">🧩</div>
+  <div class="mark"><img src="/logo.png" alt="Spectrum Squad" style="max-width:240px;width:70%;height:auto;background:#fff;padding:12px 16px;border-radius:14px;"/></div>
   <h1>Join the Spectrum Squad</h1>
   <p>Help children thrive through compassionate, evidence-based ABA care.</p>
 </header>
