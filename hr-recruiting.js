@@ -976,6 +976,110 @@ function hrCommsHtml(a) {
   </div>`;
 }
 
+// ---------------- Offers (owner-only) ----------------
+async function hrLoadOffers(mount, id, a) {
+  const card = mount.querySelector("#hr-offer-card");
+  if (!card) return;
+  let offers;
+  try {
+    offers = await hrApi("/api/hr/applicants/" + id + "/offers");
+  } catch (e) {
+    card.innerHTML = `<h2>Offer</h2><div class="hr-err">${hrEsc(e.message)}</div>`;
+    return;
+  }
+  const o = offers[0];
+  let html = "<h2>Offer 🎁</h2>";
+  if (!o) {
+    html += `<p class="hr-muted">No offer yet. Create a delightful, interactive offer the candidate can open, sign, and celebrate.</p><button class="hr-btn" id="hr-offer-new">Create offer</button>`;
+  } else {
+    const money = o.comp_amount != null ? "$" + Number(o.comp_amount).toLocaleString() + (o.comp_unit === "hour" ? "/hr" : "/yr") : "—";
+    html += `<div class="hr-row" style="margin-bottom:8px"><span class="hr-badge ${o.status === "accepted" ? "qualified" : o.status === "declined" ? "priority" : ""}">${hrEsc(o.status)}</span> <span class="hr-muted">${hrEsc(o.job_title || "")} · ${money}</span></div>`;
+    if (o.status === "accepted") html += `<p style="color:#16a34a;font-weight:600">🎉 Accepted by ${hrEsc(o.signed_name || "")} on ${hrFmtDate(o.signed_at)}</p>`;
+    if (o.status === "declined") html += `<p class="hr-muted">Declined${o.decline_reason ? ": " + hrEsc(o.decline_reason) : ""}</p>`;
+    html += `<div class="hr-row">`;
+    if (o.status === "draft") html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm" id="hr-offer-approve">Approve</button>`;
+    if (o.status === "approved") html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm" id="hr-offer-send">Send to candidate 🎊</button>`;
+    if (["sent", "accepted", "declined"].includes(o.status)) html += `<button class="hr-btn sm ghost" id="hr-offer-copy">Copy offer link</button> <a class="hr-btn sm ghost" href="${hrEsc(o.public_url)}" target="_blank">Preview</a>`;
+    html += `<span class="hr-status" id="hr-offer-status"></span></div>`;
+    if (o.status === "sent") html += `<p class="hr-muted" style="margin-top:6px">Sent — waiting on the candidate.</p>`;
+  }
+  card.innerHTML = html;
+
+  const nb = card.querySelector("#hr-offer-new");
+  if (nb) nb.addEventListener("click", () => hrOpenOfferModal(mount, id, a, null));
+  const eb = card.querySelector("#hr-offer-edit");
+  if (eb) eb.addEventListener("click", () => hrOpenOfferModal(mount, id, a, o));
+  const ap = card.querySelector("#hr-offer-approve");
+  if (ap) ap.addEventListener("click", async () => { try { await hrApi("/api/hr/offers/" + o.id + "/approve", { method: "POST" }); hrLoadOffers(mount, id, a); } catch (e) { alert(e.message); } });
+  const sn = card.querySelector("#hr-offer-send");
+  if (sn) sn.addEventListener("click", async () => {
+    const st = card.querySelector("#hr-offer-status"); st.textContent = "Sending…"; st.className = "hr-status";
+    try { await hrApi("/api/hr/offers/" + o.id + "/send", { method: "POST" }); hrLoadOffers(mount, id, a); } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+  });
+  const cp = card.querySelector("#hr-offer-copy");
+  if (cp) cp.addEventListener("click", () => { if (navigator.clipboard) navigator.clipboard.writeText(o.public_url); const st = card.querySelector("#hr-offer-status"); st.textContent = "Copied!"; st.className = "hr-status ok"; });
+}
+
+function hrOpenOfferModal(mount, id, a, o) {
+  const p = o || {};
+  const defaultHighlights = ["Supportive, collaborative clinical team", "Flexible schedule", "Meaningful work changing kids' lives", "Room to grow"];
+  const back = document.createElement("div");
+  back.className = "hr-modal-back";
+  back.innerHTML = `<div class="hr-modal">
+    <button class="hr-close" id="hr-mclose">×</button>
+    <h2>${o ? "Edit" : "Create"} offer</h2>
+    <div class="hr-field"><label>Job title</label><input id="of-title" value="${hrEsc(p.job_title || a.position_title || "")}"/></div>
+    <div class="hr-2col">
+      <div class="hr-field"><label>Compensation amount</label><input id="of-amt" type="number" value="${hrEsc(p.comp_amount == null ? "" : p.comp_amount)}"/></div>
+      <div class="hr-field"><label>Per</label><select id="of-unit"><option value="year"${p.comp_unit === "year" ? " selected" : ""}>Year</option><option value="hour"${p.comp_unit === "hour" ? " selected" : ""}>Hour</option></select></div>
+    </div>
+    <div class="hr-2col">
+      <div class="hr-field"><label>Employment type</label><input id="of-type" value="${hrEsc(p.employment_type || "")}" placeholder="Full-time"/></div>
+      <div class="hr-field"><label>Start date</label><input id="of-start" type="date" value="${hrEsc(p.start_date || "")}"/></div>
+    </div>
+    <div class="hr-2col">
+      <div class="hr-field"><label>Reports to</label><input id="of-sup" value="${hrEsc(p.supervisor || "")}"/></div>
+      <div class="hr-field"><label>Location</label><input id="of-loc" value="${hrEsc(p.location || "")}"/></div>
+    </div>
+    <div class="hr-field"><label>Details / notes (optional)</label><input id="of-notes" value="${hrEsc(p.comp_notes || "")}" placeholder="e.g. plus benefits & PTO"/></div>
+    <div class="hr-field"><label>Highlights / perks (one per line)</label><textarea id="of-high">${hrEsc((p.highlights && p.highlights.length ? p.highlights : defaultHighlights).join("\n"))}</textarea></div>
+    <div class="hr-field"><label>Personal message</label><textarea id="of-msg" placeholder="We can't wait to have you on the team!">${hrEsc(p.custom_message || "")}</textarea></div>
+    <div class="hr-field"><label>Expires in (days, optional)</label><input id="of-exp" type="number" placeholder="7"/></div>
+    <div class="hr-row"><button class="hr-btn" id="of-save">${o ? "Save" : "Create offer"}</button><button class="hr-btn ghost" id="of-cancel">Cancel</button><span class="hr-status" id="of-status"></span></div>
+  </div>`;
+  document.body.appendChild(back);
+  const close = () => back.remove();
+  back.querySelector("#hr-mclose").addEventListener("click", close);
+  back.querySelector("#of-cancel").addEventListener("click", close);
+  back.addEventListener("click", (e) => { if (e.target === back) close(); });
+  back.querySelector("#of-save").addEventListener("click", async () => {
+    const st = back.querySelector("#of-status");
+    const title = back.querySelector("#of-title").value.trim();
+    if (!title) { st.textContent = "Job title is required."; st.className = "hr-status err"; return; }
+    const days = parseInt(back.querySelector("#of-exp").value, 10);
+    const body = {
+      job_title: title,
+      comp_amount: back.querySelector("#of-amt").value || null,
+      comp_unit: back.querySelector("#of-unit").value,
+      employment_type: back.querySelector("#of-type").value,
+      start_date: back.querySelector("#of-start").value,
+      supervisor: back.querySelector("#of-sup").value,
+      location: back.querySelector("#of-loc").value,
+      comp_notes: back.querySelector("#of-notes").value,
+      highlights: back.querySelector("#of-high").value.split("\n").map((s) => s.trim()).filter(Boolean),
+      custom_message: back.querySelector("#of-msg").value,
+    };
+    if (days > 0) body.expires_at = new Date(Date.now() + days * 86400000).toISOString();
+    st.textContent = "Saving…"; st.className = "hr-status";
+    try {
+      if (o) await hrApi("/api/hr/offers/" + o.id, { method: "PUT", body });
+      else await hrApi("/api/hr/applicants/" + id + "/offers", { method: "POST", body });
+      close();
+      hrLoadOffers(mount, id, a);
+    } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+  });
+}
+
 // ---------------- Candidate profile ----------------
 async function hrRenderCandidate(mount, id) {
   mount.innerHTML = `<div class="hr-wrap" id="hr-view-content">
@@ -1055,6 +1159,7 @@ async function hrRenderCandidate(mount, id) {
         <span class="hr-status" id="hr-note-status"></span>
       </div>
     </div>
+    ${canSens ? `<div class="hr-card" id="hr-offer-card"><h2>Offer</h2><p class="hr-muted">Loading…</p></div>` : ""}
     ${canManage ? `<div class="hr-card"><h2>Disposition</h2><div class="hr-row">
       <button class="hr-btn sm danger" data-disp="not_selected">Not selected</button>
       <button class="hr-btn sm ghost" data-disp="withdrawn">Withdrawn</button>
@@ -1125,6 +1230,8 @@ async function hrRenderCandidate(mount, id) {
       } catch (e) { alert(e.message); }
     })
   );
+
+  if (canSens) hrLoadOffers(mount, id, a);
 
   // ---- recruiting communication controls ----
   const pauseBtn = body.querySelector("#hr-pause-toggle");

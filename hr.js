@@ -299,6 +299,33 @@ module.exports = function initHr(ctx) {
       updated_at TEXT
     )`);
 
+    await dbRun(`CREATE TABLE IF NOT EXISTS hr_offers (
+      id SERIAL PRIMARY KEY,
+      applicant_id INTEGER NOT NULL,
+      position_id INTEGER,
+      job_title TEXT,
+      employment_type TEXT,
+      comp_amount NUMERIC,
+      comp_unit TEXT DEFAULT 'year',
+      comp_notes TEXT,
+      start_date TEXT,
+      supervisor TEXT,
+      location TEXT,
+      highlights TEXT DEFAULT '[]',
+      custom_message TEXT,
+      expires_at TEXT,
+      status TEXT DEFAULT 'draft',   -- draft|approved|sent|accepted|declined|expired
+      token TEXT UNIQUE,
+      signed_name TEXT,
+      signed_at TEXT,
+      decline_reason TEXT,
+      created_by TEXT,
+      approved_by TEXT,
+      sent_at TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    )`);
+
     // ---- future HR system (created now so no restructuring later; unused
     //      by the recruiting UI yet) ----
     await dbRun(`CREATE TABLE IF NOT EXISTS hr_employees (
@@ -987,6 +1014,57 @@ module.exports = function initHr(ctx) {
         await audit("employee", "timecard_explained", "timecard", link.timecard_id, `flag=${flag.id}`);
         // Notify a supervisor/owner that a correction needs review.
         await notify({ type: "timecard_correction", title: "Timecard correction submitted", body: `An employee explained a ${flag.flag_type.replace(/_/g, " ")} flag and it needs supervisor review.`, severity: "info" });
+        return json(res, 200, { ok: true });
+      }
+
+      // Public interactive offer (candidate view; tokenized).
+      if (pathname === "/api/hr/public/offer" && method === "GET") {
+        const o = await dbGet("SELECT * FROM hr_offers WHERE token = ?", [query.token || ""]);
+        if (!o || !["sent", "accepted", "declined"].includes(o.status)) return json(res, 404, { error: "This offer link is invalid or not yet available." });
+        const applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [o.applicant_id]);
+        const position = o.position_id ? await dbGet("SELECT * FROM hr_positions WHERE id = ?", [o.position_id]) : null;
+        return json(res, 200, shapeOfferPublic(o, applicant, position));
+      }
+      if (pathname === "/api/hr/public/offer/accept" && method === "POST") {
+        const b = await readBody(req);
+        const o = await dbGet("SELECT * FROM hr_offers WHERE token = ?", [b.token || ""]);
+        if (!o) return json(res, 404, { error: "Invalid offer" });
+        if (o.status === "accepted") return json(res, 200, { ok: true, already: true });
+        if (o.status !== "sent") return json(res, 409, { error: "This offer can no longer be accepted." });
+        if (offerIsExpired(o)) return json(res, 409, { error: "This offer has expired — please reach out to us." });
+        if (!b.signed_name || !b.signed_name.trim()) return json(res, 400, { error: "Please type your name to sign." });
+        const now = nowISO();
+        await dbRun("UPDATE hr_offers SET status = 'accepted', signed_name = ?, signed_at = ?, updated_at = ? WHERE id = ?", [b.signed_name.trim(), now, now, o.id]);
+        const applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [o.applicant_id]);
+        if (applicant) {
+          await moveStageInternal(applicant, "hired", "candidate", "Accepted offer");
+          await dbRun("UPDATE hr_applicants SET offer_status = 'accepted', final_decision = 'hired', automation_paused = TRUE, updated_at = ? WHERE id = ?", [now, applicant.id]);
+          await cancelPendingFollowups(applicant.id);
+          await notify({
+            type: "offer_accepted",
+            applicantId: applicant.id,
+            positionId: applicant.position_id,
+            title: "🎉 Offer accepted!",
+            body: `${applicant.full_name} accepted the offer for ${o.job_title || "the role"}. Welcome to the team!`,
+            severity: "urgent",
+            emailOwner: true,
+          });
+        }
+        await audit("candidate", "offer_accepted", "applicant", o.applicant_id, `signed=${b.signed_name.trim()}`);
+        return json(res, 200, { ok: true });
+      }
+      if (pathname === "/api/hr/public/offer/decline" && method === "POST") {
+        const b = await readBody(req);
+        const o = await dbGet("SELECT * FROM hr_offers WHERE token = ?", [b.token || ""]);
+        if (!o) return json(res, 404, { error: "Invalid offer" });
+        if (o.status !== "sent") return json(res, 409, { error: "This offer is no longer active." });
+        await dbRun("UPDATE hr_offers SET status = 'declined', decline_reason = ?, updated_at = ? WHERE id = ?", [b.reason || null, nowISO(), o.id]);
+        const applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [o.applicant_id]);
+        if (applicant) {
+          await dbRun("UPDATE hr_applicants SET offer_status = 'declined', updated_at = ? WHERE id = ?", [nowISO(), applicant.id]);
+          await notify({ type: "offer_declined", applicantId: applicant.id, positionId: applicant.position_id, title: "Offer declined", body: `${applicant.full_name} declined the offer${b.reason ? ": " + b.reason : "."}`, severity: "warning", emailOwner: true });
+        }
+        await audit("candidate", "offer_declined", "applicant", o.applicant_id, b.reason || "");
         return json(res, 200, { ok: true });
       }
 
@@ -1680,6 +1758,101 @@ module.exports = function initHr(ctx) {
         const r = await processFollowups();
         await audit(actor, "followups_run", null, null, `due=${r.due} sent=${r.sent} canceled=${r.canceled}`);
         return json(res, 200, r);
+      }
+
+      // ---- offers (owner-only; offers are sensitive) ----
+      const offerListMatch = pathname.match(/^\/api\/hr\/applicants\/(\d+)\/offers$/);
+      if (offerListMatch && method === "GET") {
+        if (!canSensitive) return json(res, 403, { error: "Offers are visible to the owner only." });
+        const rows = await dbAll("SELECT * FROM hr_offers WHERE applicant_id = ? ORDER BY id DESC", [offerListMatch[1]]);
+        return json(res, 200, rows.map((o) => ({ ...o, highlights: parseJson(o.highlights, []), public_url: o.token ? `${APP_BASE_URL}/offer/${o.token}` : null, expired: offerIsExpired(o) })));
+      }
+      if (offerListMatch && method === "POST") {
+        if (!canSensitive) return json(res, 403, { error: "Only the owner can create offers." });
+        const a = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [offerListMatch[1]]);
+        if (!a) return json(res, 404, { error: "Applicant not found" });
+        const b = await readBody(req);
+        const token = newToken();
+        const now = nowISO();
+        const row = await dbRun(
+          `INSERT INTO hr_offers (applicant_id, position_id, job_title, employment_type, comp_amount, comp_unit, comp_notes,
+             start_date, supervisor, location, highlights, custom_message, expires_at, status, token, created_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?) RETURNING id`,
+          [a.id, a.position_id, b.job_title || null, b.employment_type || null, numOrNull(b.comp_amount), b.comp_unit || "year", b.comp_notes || null,
+           b.start_date || null, b.supervisor || null, b.location || null, JSON.stringify(b.highlights || []), b.custom_message || null, b.expires_at || null, token, actor, now, now]
+        );
+        await audit(actor, "offer_created", "applicant", a.id, "");
+        return json(res, 201, { ok: true, id: row.rows[0].id });
+      }
+
+      const offerIdMatch = pathname.match(/^\/api\/hr\/offers\/(\d+)$/);
+      if (offerIdMatch && method === "GET") {
+        if (!canSensitive) return json(res, 403, { error: "Not permitted" });
+        const o = await dbGet("SELECT * FROM hr_offers WHERE id = ?", [offerIdMatch[1]]);
+        if (!o) return json(res, 404, { error: "Not found" });
+        return json(res, 200, { ...o, highlights: parseJson(o.highlights, []), public_url: `${APP_BASE_URL}/offer/${o.token}`, expired: offerIsExpired(o) });
+      }
+      if (offerIdMatch && method === "PUT") {
+        if (!canSensitive) return json(res, 403, { error: "Not permitted" });
+        const o = await dbGet("SELECT * FROM hr_offers WHERE id = ?", [offerIdMatch[1]]);
+        if (!o) return json(res, 404, { error: "Not found" });
+        if (!["draft", "approved"].includes(o.status)) return json(res, 409, { error: "This offer has already been sent and can't be edited." });
+        const b = await readBody(req);
+        await dbRun(
+          `UPDATE hr_offers SET job_title = ?, employment_type = ?, comp_amount = ?, comp_unit = ?, comp_notes = ?,
+             start_date = ?, supervisor = ?, location = ?, highlights = ?, custom_message = ?, expires_at = ?, updated_at = ? WHERE id = ?`,
+          [
+            b.job_title != null ? b.job_title : o.job_title,
+            b.employment_type != null ? b.employment_type : o.employment_type,
+            b.comp_amount !== undefined ? numOrNull(b.comp_amount) : o.comp_amount,
+            b.comp_unit != null ? b.comp_unit : o.comp_unit,
+            b.comp_notes !== undefined ? b.comp_notes : o.comp_notes,
+            b.start_date !== undefined ? b.start_date : o.start_date,
+            b.supervisor !== undefined ? b.supervisor : o.supervisor,
+            b.location !== undefined ? b.location : o.location,
+            JSON.stringify(b.highlights != null ? b.highlights : parseJson(o.highlights, [])),
+            b.custom_message !== undefined ? b.custom_message : o.custom_message,
+            b.expires_at !== undefined ? b.expires_at : o.expires_at,
+            nowISO(), o.id,
+          ]
+        );
+        await audit(actor, "offer_updated", "applicant", o.applicant_id, "");
+        return json(res, 200, { ok: true });
+      }
+
+      const offerApproveMatch = pathname.match(/^\/api\/hr\/offers\/(\d+)\/approve$/);
+      if (offerApproveMatch && method === "POST") {
+        if (!canSensitive) return json(res, 403, { error: "Only the owner can approve offers." });
+        const o = await dbGet("SELECT * FROM hr_offers WHERE id = ?", [offerApproveMatch[1]]);
+        if (!o) return json(res, 404, { error: "Not found" });
+        await dbRun("UPDATE hr_offers SET status = 'approved', approved_by = ?, updated_at = ? WHERE id = ?", [actor, nowISO(), o.id]);
+        await audit(actor, "offer_approved", "applicant", o.applicant_id, "");
+        return json(res, 200, { ok: true });
+      }
+
+      const offerSendMatch = pathname.match(/^\/api\/hr\/offers\/(\d+)\/send$/);
+      if (offerSendMatch && method === "POST") {
+        if (!canSensitive) return json(res, 403, { error: "Only the owner can send offers." });
+        const o = await dbGet("SELECT * FROM hr_offers WHERE id = ?", [offerSendMatch[1]]);
+        if (!o) return json(res, 404, { error: "Not found" });
+        if (!["approved", "sent"].includes(o.status)) return json(res, 409, { error: "Approve the offer before sending it." });
+        const a = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [o.applicant_id]);
+        const now = nowISO();
+        await dbRun("UPDATE hr_offers SET status = 'sent', sent_at = ?, updated_at = ? WHERE id = ?", [now, now, o.id]);
+        const url = `${APP_BASE_URL}/offer/${o.token}`;
+        if (a) {
+          await moveStageInternal(a, "offer_sent", actor, "Offer sent");
+          await dbRun("UPDATE hr_applicants SET offer_status = 'sent', automation_paused = TRUE, updated_at = ? WHERE id = ?", [now, a.id]);
+          await cancelPendingFollowups(a.id);
+          if (a.email) {
+            await sendApplicantEmail(a,
+              `🎉 An offer from Spectrum Squad, ${firstNameOf(a.full_name)}!`,
+              `<p>Hi ${escapeHtml(firstNameOf(a.full_name))},</p><p>We're thrilled to offer you a role on the Spectrum Squad team! We put together something special for you — <a href="${url}"><strong>open your offer here</strong></a> 🎁</p><p>We can't wait to hear from you!<br/>The Spectrum Squad Team</p>`,
+              { sentBy: "assistant" });
+          }
+        }
+        await audit(actor, "offer_sent", "applicant", o.applicant_id, "");
+        return json(res, 200, { ok: true, url });
       }
 
       // ---- employees (future HR) ----
@@ -2805,6 +2978,30 @@ Write body as plain text with line breaks (no HTML).`;
     return token;
   }
 
+  // ============================ OFFERS ============================
+  function offerIsExpired(o) {
+    return o && o.status === "sent" && o.expires_at && new Date(o.expires_at).getTime() < Date.now();
+  }
+  function shapeOfferPublic(o, applicant, position) {
+    return {
+      first_name: firstNameOf(applicant.full_name),
+      full_name: applicant.full_name,
+      job_title: o.job_title || (position ? position.title : "the role"),
+      employment_type: o.employment_type,
+      comp_amount: o.comp_amount,
+      comp_unit: o.comp_unit,
+      comp_notes: o.comp_notes,
+      start_date: o.start_date,
+      supervisor: o.supervisor,
+      location: o.location || (position ? position.locations : ""),
+      highlights: parseJson(o.highlights, []),
+      custom_message: o.custom_message,
+      expires_at: o.expires_at,
+      status: offerIsExpired(o) ? "expired" : o.status,
+      signed_name: o.signed_name,
+    };
+  }
+
   // ============================ DASHBOARDS ============================
   async function recruitingDashboard() {
     const positions = await dbAll("SELECT id, title, status, openings_count, role_type FROM hr_positions");
@@ -2939,7 +3136,169 @@ Write body as plain text with line breaks (no HTML).`;
       res.end(timecardVerifyHtml());
       return true;
     }
+    if (pathname.startsWith("/offer/")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(offerHtml());
+      return true;
+    }
     return false;
+  }
+
+  // The cute, interactive offer page. Fully client-rendered (no ${} in this
+  // template on purpose) — it fetches the offer by token and walks the
+  // candidate through an envelope reveal, the offer, a type-to-sign accept, and
+  // a confetti celebration.
+  function offerHtml() {
+    return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Your offer — Spectrum Squad</title>
+<style>
+  :root{--navy:#29225c;--navy-dark:#1c1740;--gold:#e0a430;--teal:#5fa8a0;--surface:#fff;--text:#201a4d;--muted:#6b6a86;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--text);
+    background:linear-gradient(160deg,#efe9ff 0%,#f7f8fb 45%,#e8f5f2 100%);min-height:100vh;overflow-x:hidden}
+  #confetti{position:fixed;inset:0;pointer-events:none;z-index:50}
+  .balloons{position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:0}
+  .balloon{position:absolute;bottom:-80px;font-size:34px;animation:float linear infinite;opacity:.5}
+  @keyframes float{to{transform:translateY(-115vh) rotate(20deg)}}
+  .wrap{position:relative;z-index:10;max-width:640px;margin:0 auto;padding:26px 18px 60px}
+  .center{text-align:center}
+  .env{cursor:pointer;user-select:none;margin:36px auto;width:260px;max-width:80%;transition:transform .3s}
+  .env:hover{transform:scale(1.04)}
+  .env .flap{font-size:120px;line-height:1;filter:drop-shadow(0 10px 18px rgba(41,34,92,.25))}
+  .pulse{animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+  h1{font-size:26px;margin:10px 0} h2{color:var(--navy)}
+  .tap{display:inline-block;margin-top:6px;color:var(--navy);font-weight:700}
+  .card{background:var(--surface);border:1px solid #e7e4f5;border-radius:20px;padding:24px;margin:18px 0;
+    box-shadow:0 18px 50px rgba(41,34,92,.14);animation:rise .6s cubic-bezier(.2,.8,.2,1) both}
+  @keyframes rise{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none}}
+  .role{font-size:24px;font-weight:800;color:var(--navy);text-align:center;margin:4px 0 2px}
+  .sub{text-align:center;color:var(--muted);margin-bottom:14px}
+  .terms{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}
+  .term{background:#f6f4ff;border-radius:14px;padding:12px 14px}
+  .term .k{font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  .term .v{font-size:17px;font-weight:700;color:var(--navy);margin-top:2px}
+  .term.wide{grid-column:1 / -1}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:6px 0 4px}
+  .chip{background:#fff4dd;color:#a56b00;border-radius:20px;padding:6px 12px;font-size:13.5px;font-weight:600;
+    animation:pop .4s both}
+  @keyframes pop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
+  .msg{background:#eef7f5;border-left:4px solid var(--teal);border-radius:10px;padding:12px 14px;margin:14px 0;white-space:pre-wrap}
+  .btn{display:block;width:100%;background:linear-gradient(135deg,var(--gold),#f0b64a);color:#3a2a00;border:none;
+    border-radius:14px;padding:16px;font-size:18px;font-weight:800;cursor:pointer;box-shadow:0 8px 20px rgba(224,164,48,.4);
+    transition:transform .15s} .btn:hover{transform:translateY(-2px)} .btn[disabled]{opacity:.6;cursor:default;transform:none}
+  .btn-navy{background:linear-gradient(135deg,var(--navy),#4a3f96);color:#fff;box-shadow:0 8px 20px rgba(41,34,92,.35)}
+  input.sign{width:100%;padding:14px;border:2px dashed var(--navy);border-radius:12px;font-size:20px;
+    font-family:"Segoe Script","Brush Script MT",cursive;text-align:center;margin:10px 0}
+  .muted{color:var(--muted);font-size:13.5px} .link{background:none;border:none;color:var(--muted);text-decoration:underline;cursor:pointer;font-size:13.5px;margin-top:14px}
+  .countdown{text-align:center;color:#b4571a;font-size:13.5px;font-weight:600;margin-top:8px}
+  .big{font-size:64px} .err{color:#b91c1c;text-align:center}
+  .hidden{display:none}
+  @media(max-width:520px){.terms{grid-template-columns:1fr}}
+</style></head>
+<body>
+<canvas id="confetti"></canvas>
+<div class="balloons" id="balloons"></div>
+<div class="wrap" id="app"><p class="center muted">Loading your offer…</p></div>
+<script>
+(function(){
+  var app=document.getElementById("app");
+  var token=location.pathname.split("/offer/")[1]||"";
+  var data=null;
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
+  function api(p,o){o=o||{};return fetch(p,{method:o.method||"GET",headers:o.body?{"Content-Type":"application/json"}:undefined,body:o.body?JSON.stringify(o.body):undefined}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.error||"Request failed");return d;});});}
+  function money(a,u){if(a==null||a==="")return null;var n=Number(a);var s=isNaN(n)?a:"$"+n.toLocaleString();return s+(u==="hour"?"/hr":u==="year"?"/yr":"");}
+  function fmtDate(d){if(!d)return null;var x=new Date(d);return isNaN(x)?d:x.toLocaleDateString(undefined,{month:"long",day:"numeric",year:"numeric"});}
+
+  // ---- balloons ----
+  var EMO=["🎈","🎉","⭐","💜","🎊","✨"];
+  (function(){var b=document.getElementById("balloons");for(var i=0;i<14;i++){var s=document.createElement("span");s.className="balloon";s.textContent=EMO[i%EMO.length];s.style.left=(Math.random()*100)+"%";s.style.animationDuration=(9+Math.random()*10)+"s";s.style.animationDelay=(-Math.random()*12)+"s";s.style.fontSize=(24+Math.random()*26)+"px";b.appendChild(s);}})();
+
+  // ---- confetti ----
+  var cv=document.getElementById("confetti"),ctx=cv.getContext("2d"),parts=[],raf=null;
+  function size(){cv.width=innerWidth;cv.height=innerHeight;} size(); addEventListener("resize",size);
+  var COL=["#e0a430","#29225c","#5fa8a0","#ef6f6c","#8b7ff0","#ffd166"];
+  function spawn(n,spread){for(var i=0;i<n;i++){parts.push({x:innerWidth/2+(Math.random()-.5)*spread,y:innerHeight*0.35,vx:(Math.random()-.5)*9,vy:-6-Math.random()*9,g:.22+Math.random()*.15,s:6+Math.random()*7,c:COL[(Math.random()*COL.length)|0],r:Math.random()*6,vr:(Math.random()-.5)*.4});}}
+  function rain(n){for(var i=0;i<n;i++){parts.push({x:Math.random()*innerWidth,y:-20,vx:(Math.random()-.5)*3,vy:2+Math.random()*4,g:.05,s:6+Math.random()*7,c:COL[(Math.random()*COL.length)|0],r:Math.random()*6,vr:(Math.random()-.5)*.4});}}
+  function tick(){ctx.clearRect(0,0,cv.width,cv.height);for(var i=parts.length-1;i>=0;i--){var p=parts[i];p.vy+=p.g;p.x+=p.vx;p.y+=p.vy;p.r+=p.vr;ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.r);ctx.fillStyle=p.c;ctx.fillRect(-p.s/2,-p.s/2,p.s,p.s*.6);ctx.restore();if(p.y>innerHeight+30)parts.splice(i,1);}if(parts.length){raf=requestAnimationFrame(tick);}else{raf=null;}}
+  function go(){if(!raf)raf=requestAnimationFrame(tick);}
+  function celebrate(){spawn(140,300);go();}
+  function celebrateBig(){spawn(160,360);var t=0,iv=setInterval(function(){rain(30);go();if(++t>10)clearInterval(iv);},250);go();}
+
+  function load(){api("/api/hr/public/offer?token="+encodeURIComponent(token)).then(function(d){data=d;route();}).catch(function(e){app.innerHTML="<div class=\\"card err\\">"+esc(e.message)+"</div>";});}
+  function route(){
+    if(data.status==="accepted"){return accepted(true);}
+    if(data.status==="declined"){app.innerHTML="<div class=\\"card center\\"><div class=\\"big\\">💜</div><h2>Thanks for letting us know</h2><p class=\\"muted\\">We appreciate you considering Spectrum Squad. The door is always open!</p></div>";return;}
+    if(data.status==="expired"){app.innerHTML="<div class=\\"card center\\"><div class=\\"big\\">⏳</div><h2>This offer has expired</h2><p class=\\"muted\\">Please reach out to us and we\\'ll be happy to help.</p></div>";return;}
+    envelope();
+  }
+  function envelope(){
+    app.innerHTML="<div class=\\"center\\"><h1>Hi "+esc(data.first_name)+" — you\\'ve got something special! </h1><div class=\\"env pulse\\" id=\\"env\\"><div class=\\"flap\\">💌</div><div class=\\"tap\\">Tap to open your offer</div></div></div>";
+    document.getElementById("env").addEventListener("click",function(){celebrate();reveal();});
+  }
+  function reveal(){
+    var terms="";
+    function term(k,v,wide){return v?"<div class=\\"term"+(wide?" wide":"")+"\\"><div class=\\"k\\">"+esc(k)+"</div><div class=\\"v\\">"+esc(v)+"</div></div>":"";}
+    terms+=term("Compensation",money(data.comp_amount,data.comp_unit));
+    terms+=term("Start date",fmtDate(data.start_date));
+    terms+=term("Type",data.employment_type);
+    terms+=term("Location",data.location);
+    terms+=term("Reports to",data.supervisor);
+    if(data.comp_notes)terms+=term("Details",data.comp_notes,true);
+    var chips=(data.highlights||[]).map(function(h,i){return "<span class=\\"chip\\" style=\\"animation-delay:"+(i*90)+"ms\\">"+esc(h)+"</span>";}).join("");
+    var html="<div class=\\"card\\"><div class=\\"center\\"><div class=\\"big\\">🎉</div><h1 style=\\"margin:0\\">We want you on the Squad!</h1></div>"+
+      "<div class=\\"role\\">"+esc(data.job_title)+"</div><div class=\\"sub\\">A formal offer from Spectrum Squad</div>"+
+      (chips?"<div class=\\"chips\\">"+chips+"</div>":"")+
+      "<div class=\\"terms\\">"+terms+"</div>"+
+      (data.custom_message?"<div class=\\"msg\\">"+esc(data.custom_message)+"</div>":"")+
+      "<div id=\\"accept-zone\\"></div>"+
+      (data.expires_at?"<div class=\\"countdown\\" id=\\"cd\\"></div>":"")+
+      "<div class=\\"center\\"><button class=\\"link\\" id=\\"decline\\">This isn\\'t the right fit for me</button></div></div>";
+    app.innerHTML=html;
+    renderAcceptZone();
+    if(data.expires_at)startCountdown();
+    document.getElementById("decline").addEventListener("click",decline);
+  }
+  function renderAcceptZone(){
+    var z=document.getElementById("accept-zone");
+    z.innerHTML="<button class=\\"btn\\" id=\\"accept\\">Accept this offer 🎊</button>";
+    document.getElementById("accept").addEventListener("click",function(){
+      z.innerHTML="<p class=\\"muted center\\" style=\\"margin-bottom:2px\\">Type your full name to sign &amp; accept:</p>"+
+        "<input class=\\"sign\\" id=\\"sign\\" placeholder=\\"Your full name\\" value=\\""+esc(data.full_name||"")+"\\"/>"+
+        "<button class=\\"btn btn-navy\\" id=\\"sign-btn\\">Sign &amp; accept 🖊️</button><div class=\\"err\\" id=\\"sign-err\\"></div>";
+      var inp=document.getElementById("sign");inp.focus();inp.select();
+      document.getElementById("sign-btn").addEventListener("click",function(){
+        var name=inp.value.trim();var er=document.getElementById("sign-err");
+        if(!name){er.textContent="Please type your name to sign.";return;}
+        var btn=document.getElementById("sign-btn");btn.disabled=true;btn.textContent="Signing…";
+        api("/api/hr/public/offer/accept",{method:"POST",body:{token:token,signed_name:name}}).then(function(){data.signed_name=name;accepted(false);}).catch(function(e){er.textContent=e.message;btn.disabled=false;btn.textContent="Sign & accept 🖊️";});
+      });
+    });
+  }
+  function accepted(revisit){
+    if(!revisit)celebrateBig(); else celebrate();
+    app.innerHTML="<div class=\\"card center\\"><div class=\\"big\\">🎊</div><h1>Welcome to the Spectrum Squad, "+esc((data.signed_name||data.first_name||"").split(" ")[0])+"!</h1>"+
+      "<p>We are so excited to have you. You\\'ll hear from our team soon with next steps.</p>"+
+      "<p class=\\"muted\\">Signed by "+esc(data.signed_name||"")+" ✓</p></div>";
+    window.scrollTo(0,0);
+  }
+  function decline(){
+    if(!confirm("Are you sure you\\'d like to decline this offer?"))return;
+    var reason=prompt("Anything you\\'d like us to know? (optional)","")||"";
+    api("/api/hr/public/offer/decline",{method:"POST",body:{token:token,reason:reason}}).then(function(){data.status="declined";route();}).catch(function(e){alert(e.message);});
+  }
+  function startCountdown(){
+    var el=document.getElementById("cd");var end=new Date(data.expires_at).getTime();
+    function upd(){var ms=end-Date.now();if(ms<=0){el.textContent="This offer has expired.";return;}var days=Math.floor(ms/86400000),hrs=Math.floor(ms%86400000/3600000);el.textContent="⏳ Respond within "+days+"d "+hrs+"h";}
+    upd();setInterval(upd,60000);
+  }
+  load();
+})();
+</script>
+</body></html>`;
   }
 
   function timecardVerifyHtml() {

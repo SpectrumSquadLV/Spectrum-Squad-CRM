@@ -3649,7 +3649,7 @@ const server = http.createServer(async (req, res) => {
   if (
     pathname === "/careers" || pathname.startsWith("/careers/") ||
     pathname.startsWith("/apply/") || pathname.startsWith("/schedule/") ||
-    pathname.startsWith("/verify-timecard/")
+    pathname.startsWith("/verify-timecard/") || pathname.startsWith("/offer/")
   ) {
     if (await hr.servePage(req, res, pathname)) return;
   }
