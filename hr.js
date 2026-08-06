@@ -419,6 +419,11 @@ module.exports = function initHr(ctx) {
     // hr_timecards stores the raw import + parsed entries.
     await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS entries TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS verification_requested_at TEXT`).catch(() => {});
+    // Staff directory fields (populated from the Rethink payroll sheet -- no pay).
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS phone TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS address TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS certifications TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS rethink_id TEXT`).catch(() => {});
     // hr_interviews already exists; add scheduling/reminder columns idempotently.
     await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS slot_id INTEGER`).catch(() => {});
     await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS reminder_24_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
@@ -1893,6 +1898,75 @@ module.exports = function initHr(ctx) {
         await audit(actor, "employee_created", "employee", row.rows[0].id, b.name);
         return json(res, 201, { ok: true, id: row.rows[0].id });
       }
+      // Staff detail (with credentials + their timecards) for the Staff directory.
+      const empDetailMatch = pathname.match(/^\/api\/hr\/employees\/(\d+)$/);
+      if (empDetailMatch && method === "GET") {
+        const emp = await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empDetailMatch[1]]);
+        if (!emp) return json(res, 404, { error: "Not found" });
+        emp.credentials = await dbAll("SELECT id, credential_type, credential_number, expiration_date, status FROM hr_employee_credentials WHERE employee_id = ? ORDER BY expiration_date", [emp.id]);
+        emp.timecards = await dbAll(
+          `SELECT t.*, (SELECT COUNT(*) FROM hr_timecard_flags f WHERE f.timecard_id = t.id AND f.status IN ('open','explained')) AS open_flags
+             FROM hr_timecards t WHERE t.employee_id = ? ORDER BY t.id DESC LIMIT 30`,
+          [emp.id]
+        );
+        return json(res, 200, emp);
+      }
+      if (empDetailMatch && method === "PATCH") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const allowed = ["name", "email", "role_title", "employment_type", "hire_date", "phone", "address", "certifications", "status", "rethink_id"];
+        const fields = Object.keys(b).filter((k) => allowed.includes(k));
+        if (!fields.length) return json(res, 400, { error: "Nothing to update" });
+        await dbRun(`UPDATE hr_employees SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`, [...fields.map((f) => b[f]), Number(empDetailMatch[1])]);
+        await audit(actor, "employee_updated", "employee", Number(empDetailMatch[1]), fields.join(","));
+        return json(res, 200, await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empDetailMatch[1]]));
+      }
+
+      // Bulk import staff from the Rethink payroll sheet (NO pay). Upserts by
+      // rethink_id, else email, else name. Expects b.rows = [{name, email, phone,
+      // address, certifications, hire_date, role_title, rethink_id}, ...].
+      if (pathname === "/api/hr/employees/import" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        if (!Array.isArray(b.rows) || !b.rows.length) return json(res, 400, { error: "Provide a 'rows' array" });
+        let created = 0, updated = 0;
+        for (const r of b.rows) {
+          const name = (r.name || "").trim();
+          if (!name) continue;
+          let existing = null;
+          if (r.rethink_id) existing = await dbGet("SELECT id FROM hr_employees WHERE rethink_id = ?", [String(r.rethink_id)]);
+          if (!existing && r.email) existing = await dbGet("SELECT id FROM hr_employees WHERE lower(email) = lower(?)", [r.email]);
+          if (!existing) existing = await dbGet("SELECT id FROM hr_employees WHERE lower(name) = lower(?)", [name]);
+          const vals = {
+            name,
+            email: r.email || null,
+            phone: r.phone || null,
+            address: r.address || null,
+            certifications: r.certifications || null,
+            hire_date: r.hire_date || null,
+            role_title: r.role_title || null,
+            rethink_id: r.rethink_id ? String(r.rethink_id) : null,
+          };
+          if (existing) {
+            // Only overwrite columns we actually received (non-empty).
+            const setCols = Object.keys(vals).filter((k) => vals[k] != null && vals[k] !== "");
+            if (setCols.length) {
+              await dbRun(`UPDATE hr_employees SET ${setCols.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`, [...setCols.map((c) => vals[c]), existing.id]);
+            }
+            updated++;
+          } else {
+            await dbRun(
+              `INSERT INTO hr_employees (name, email, phone, address, certifications, hire_date, role_title, rethink_id, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+              [vals.name, vals.email, vals.phone, vals.address, vals.certifications, vals.hire_date, vals.role_title, vals.rethink_id, nowISO()]
+            );
+            created++;
+          }
+        }
+        await audit(actor, "staff_imported", "employee", 0, `created=${created} updated=${updated}`);
+        return json(res, 200, { ok: true, created, updated });
+      }
+
       const empCredMatch = pathname.match(/^\/api\/hr\/employees\/(\d+)\/credentials$/);
       if (empCredMatch && method === "POST") {
         if (!canManage) return json(res, 403, { error: "Not permitted" });
