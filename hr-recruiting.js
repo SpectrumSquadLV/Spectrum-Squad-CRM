@@ -168,6 +168,7 @@ const HR_TABS = [
   { key: "command-center", label: "BCBA Command Center" },
   { key: "dashboard", label: "Recruiting Dashboard" },
   { key: "pipeline", label: "Applicant Pipeline" },
+  { key: "inbox", label: "Recruiting Inbox" },
   { key: "positions", label: "Positions" },
   { key: "audit", label: "Audit Log" },
 ];
@@ -504,6 +505,40 @@ function hrOpenPositionModal(pos) {
   });
 }
 
+// ---------------- Recruiting Inbox ----------------
+async function hrRenderInbox(body) {
+  const d = await hrApi("/api/hr/inbox");
+  const na = d.needs_attention || [];
+  const recent = d.recent || [];
+  const naHtml = na.length
+    ? `<table class="hr-table"><thead><tr><th>Candidate</th><th>Position</th><th>Stage</th><th>Last response</th><th>Automation</th></tr></thead><tbody>${na
+        .map(
+          (a) =>
+            `<tr class="clickable" data-cand="${a.id}"><td>${hrEsc(a.full_name)}</td><td>${hrEsc(a.position_title || "—")}</td><td>${hrEsc(
+              hrStageLabel(a.stage)
+            )}</td><td>${hrFmtDate(a.last_response_at)}</td><td>${a.automation_paused ? '<span class="hr-badge paused">paused</span>' : '<span class="hr-badge qualified">active</span>'}</td></tr>`
+        )
+        .join("")}</tbody></table>`
+    : `<p class="hr-muted">No candidates are currently awaiting a reply. 🎉</p>`;
+  const recentHtml = recent.length
+    ? `<table class="hr-table"><thead><tr><th>Direction</th><th>Candidate</th><th>Subject</th><th>Status</th><th>When</th></tr></thead><tbody>${recent
+        .map(
+          (m) =>
+            `<tr class="clickable" data-cand="${m.applicant_id}"><td>${m.direction === "inbound" ? "↙ In" : "↗ Out"}</td><td>${hrEsc(
+              m.full_name
+            )}</td><td>${hrEsc(m.subject || "")}</td><td>${hrEsc(m.status || "")}</td><td>${hrFmtDate(m.created_at)}</td></tr>`
+        )
+        .join("")}</tbody></table>`
+    : `<p class="hr-muted">No messages yet.</p>`;
+  body.innerHTML = `
+    <div class="hr-alert">Connect a recruiting mailbox (e.g. careers@spectrumsquad.com) by pointing your provider's inbound webhook at <code>/api/hr/inbound?secret=…</code>. Replies from candidates then land here automatically and pause their follow-up sequence. Set <code>HR_INBOUND_SECRET</code> in Railway.</div>
+    <div class="hr-card"><h2>Awaiting your reply</h2>${naHtml}</div>
+    <div class="hr-card"><h2>Recent conversations</h2>${recentHtml}</div>`;
+  body.querySelectorAll("[data-cand]").forEach((tr) =>
+    tr.addEventListener("click", () => (location.hash = "#/hr/candidate/" + tr.dataset.cand))
+  );
+}
+
 // ---------------- Pipeline (Kanban + Table) ----------------
 async function hrRenderPipeline(body) {
   const applicants = await hrApi("/api/hr/applicants");
@@ -513,7 +548,7 @@ async function hrRenderPipeline(body) {
       <button class="hr-btn sm ${HRState.pipelineView === "kanban" ? "" : "ghost"}" id="hr-view-kanban">Kanban</button>
       <button class="hr-btn sm ${HRState.pipelineView === "table" ? "" : "ghost"}" id="hr-view-table">Table</button>
     </div>
-    ${canManage ? `<button class="hr-btn sm" id="hr-add-applicant">+ Add Applicant</button>` : ""}
+    ${canManage ? `<span class="hr-row"><button class="hr-btn sm ghost" id="hr-import">Import CSV</button><button class="hr-btn sm" id="hr-add-applicant">+ Add Applicant</button></span>` : ""}
   </div>`;
 
   let content;
@@ -528,6 +563,8 @@ async function hrRenderPipeline(body) {
   document.getElementById("hr-view-table").addEventListener("click", () => { HRState.pipelineView = "table"; hrRenderPipeline(body); });
   const addBtn = document.getElementById("hr-add-applicant");
   if (addBtn) addBtn.addEventListener("click", () => hrOpenApplicantModal());
+  const importBtn = document.getElementById("hr-import");
+  if (importBtn) importBtn.addEventListener("click", () => hrOpenImportModal(body));
 
   // wire card/table clicks
   body.querySelectorAll("[data-cand]").forEach((el) =>
@@ -607,6 +644,41 @@ function hrWireKanbanDnd(body) {
       } catch (err) {
         alert("Could not move candidate: " + err.message);
       }
+    });
+  });
+}
+
+function hrOpenImportModal(pipelineBody) {
+  hrApi("/api/hr/positions").then((positions) => {
+    const back = document.createElement("div");
+    back.className = "hr-modal-back";
+    back.innerHTML = `<div class="hr-modal">
+      <button class="hr-close" id="hr-mclose">×</button>
+      <h2>Import candidates (CSV)</h2>
+      <p class="hr-muted">Paste CSV with a header row. Recognized columns: <code>full_name, email, phone, city, state, source</code>. Imported candidates are not auto-emailed.</p>
+      <div class="hr-field"><label>Assign to position (optional)</label><select id="hr-imp-pos"><option value="">—</option>${positions
+        .map((p) => `<option value="${p.id}">${hrEsc(p.title)}</option>`)
+        .join("")}</select></div>
+      <div class="hr-field"><label>CSV</label><textarea id="hr-imp-csv" style="min-height:160px" placeholder="full_name,email,phone,city,state,source
+Jane Doe,jane@example.com,7025551212,Las Vegas,NV,indeed"></textarea></div>
+      <div class="hr-row"><button class="hr-btn" id="hr-imp-go">Import</button><button class="hr-btn ghost" id="hr-imp-cancel">Cancel</button><span class="hr-status" id="hr-imp-status"></span></div>
+    </div>`;
+    document.body.appendChild(back);
+    const close = () => back.remove();
+    back.querySelector("#hr-mclose").addEventListener("click", close);
+    back.querySelector("#hr-imp-cancel").addEventListener("click", close);
+    back.addEventListener("click", (e) => { if (e.target === back) close(); });
+    back.querySelector("#hr-imp-go").addEventListener("click", async () => {
+      const csv = back.querySelector("#hr-imp-csv").value.trim();
+      const st = back.querySelector("#hr-imp-status");
+      if (!csv) { st.textContent = "Paste some CSV first."; st.className = "hr-status err"; return; }
+      st.textContent = "Importing…"; st.className = "hr-status";
+      try {
+        const r = await hrApi("/api/hr/import", { method: "POST", body: { csv, position_id: back.querySelector("#hr-imp-pos").value || null } });
+        st.textContent = `Imported ${r.created}${r.duplicates ? ` (${r.duplicates} possible duplicates)` : ""}.`;
+        st.className = "hr-status ok";
+        setTimeout(() => { close(); if (pipelineBody) hrRenderPipeline(pipelineBody); }, 900);
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
     });
   });
 }
@@ -752,7 +824,7 @@ function hrCommsHtml(a) {
     <div class="hr-muted" style="font-weight:600;margin:16px 0 6px">Send a message (takes over automation)</div>
     <div class="hr-field" style="margin:6px 0"><input id="hr-msg-subject" placeholder="Subject"/></div>
     <div class="hr-field" style="margin:6px 0"><textarea id="hr-msg-body" placeholder="Write a personal note to the candidate…"></textarea></div>
-    <div class="hr-row"><button class="hr-btn sm" id="hr-send-msg">Send email</button><span class="hr-status" id="hr-msg-status"></span></div>
+    <div class="hr-row"><button class="hr-btn sm" id="hr-send-msg">Send email</button><button class="hr-btn sm ghost" id="hr-draft-reply">Draft AI reply</button><span class="hr-status" id="hr-msg-status"></span></div>
   </div>`;
 }
 
@@ -928,6 +1000,21 @@ async function hrRenderCandidate(mount, id) {
       } catch (e) { alert(e.message); }
     });
   }
+  const draftBtn = body.querySelector("#hr-draft-reply");
+  if (draftBtn) {
+    draftBtn.addEventListener("click", async () => {
+      const st = body.querySelector("#hr-msg-status");
+      st.textContent = "Drafting…"; st.className = "hr-status"; draftBtn.disabled = true;
+      try {
+        const d = await hrApi("/api/hr/applicants/" + id + "/draft-reply", { method: "POST" });
+        body.querySelector("#hr-msg-subject").value = d.subject || "";
+        body.querySelector("#hr-msg-body").value = d.body || "";
+        st.textContent = (d.ai ? "AI draft ready — review before sending." : "Draft ready.") + (d.escalate ? " ⚠ Sensitive topic — a person should handle this personally." : "");
+        st.className = "hr-status " + (d.escalate ? "err" : "ok");
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+      draftBtn.disabled = false;
+    });
+  }
   const sendMsgBtn = body.querySelector("#hr-send-msg");
   if (sendMsgBtn) {
     sendMsgBtn.addEventListener("click", async () => {
@@ -1000,6 +1087,7 @@ async function hrSyncView() {
         "command-center": hrRenderCommandCenter,
         dashboard: hrRenderDashboard,
         pipeline: hrRenderPipeline,
+        inbox: hrRenderInbox,
         positions: hrRenderPositions,
         audit: hrRenderAudit,
       };

@@ -851,6 +851,18 @@ module.exports = function initHr(ctx) {
         return json(res, 201, { ok: true, id: result.id, match: result.match });
       }
 
+      // Inbound recruiting email (provider webhook). Secret-gated because it is
+      // public. Point Resend Inbound / SendGrid Inbound Parse / Mailgun here
+      // with the normalized payload { from, to, subject, text, html, attachments }.
+      if (pathname === "/api/hr/inbound" && method === "POST") {
+        const secret = process.env.HR_INBOUND_SECRET || process.env.WEBHOOK_SECRET;
+        const provided = query.secret || req.headers["x-webhook-secret"];
+        if (!secret || provided !== secret) return json(res, 401, { error: "Unauthorized" });
+        const payload = await readBody(req);
+        const r = await handleInbound(payload);
+        return json(res, r.ok ? 200 : 400, r);
+      }
+
       // -------- AUTHENTICATED ROUTES --------
       if (!hrCanAccess(user)) {
         return json(res, user ? 403 : 401, { error: user ? "Not permitted" : "Not authenticated" });
@@ -1342,6 +1354,62 @@ module.exports = function initHr(ctx) {
       if (notifReadMatch && method === "POST") {
         await dbRun("UPDATE hr_notifications SET read = TRUE WHERE id = ?", [notifReadMatch[1]]);
         return json(res, 200, { ok: true });
+      }
+
+      // ---- recruiting inbox: needs-attention + recent messages ----
+      if (pathname === "/api/hr/inbox" && method === "GET") {
+        const needsAttention = await dbAll(
+          `SELECT a.id, a.full_name, a.stage, a.last_response_at, a.automation_paused, p.title AS position_title
+             FROM hr_applicants a LEFT JOIN hr_positions p ON p.id = a.position_id
+             WHERE a.last_response_at IS NOT NULL AND a.stage NOT IN ('hired','not_selected','withdrawn')
+             ORDER BY a.last_response_at DESC LIMIT 50`
+        );
+        const recent = await dbAll(
+          `SELECT m.id, m.applicant_id, m.direction, m.subject, m.status, m.created_at, a.full_name
+             FROM hr_applicant_messages m JOIN hr_applicants a ON a.id = m.applicant_id
+             ORDER BY m.id DESC LIMIT 60`
+        );
+        return json(res, 200, { needs_attention: needsAttention, recent });
+      }
+
+      // ---- AI-drafted reply for a candidate (human approves & sends) ----
+      const appDraftMatch = pathname.match(/^\/api\/hr\/applicants\/(\d+)\/draft-reply$/);
+      if (appDraftMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const a = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [appDraftMatch[1]]);
+        if (!a) return json(res, 404, { error: "Applicant not found" });
+        const draft = await draftReply(a);
+        return json(res, 200, draft);
+      }
+
+      // ---- flexible intake: CSV / bulk import ----
+      if (pathname === "/api/hr/import" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        let candidates = Array.isArray(b.candidates) ? b.candidates : null;
+        if (!candidates && b.csv) candidates = parseCsv(b.csv);
+        if (!Array.isArray(candidates) || !candidates.length) {
+          return json(res, 400, { error: "Provide a non-empty 'candidates' array or 'csv' text." });
+        }
+        let created = 0;
+        let duplicates = 0;
+        let skipped = 0;
+        for (const c of candidates) {
+          const name = c.full_name || c.name || c.email;
+          if (!name && !c.email) { skipped++; continue; }
+          const r = await createApplicant(
+            {
+              full_name: name, email: c.email, phone: c.phone, city: c.city, state: c.state,
+              source: SOURCE_KEYS.includes(c.source) ? c.source : "other",
+              position_id: c.position_id || b.position_id || null,
+            },
+            actor
+          );
+          created++;
+          if (r.duplicateOf) duplicates++;
+        }
+        await audit(actor, "candidates_imported", null, null, `created=${created} dups=${duplicates} skipped=${skipped}`);
+        return json(res, 201, { ok: true, created, duplicates, skipped });
       }
 
       // ---- run the follow-up processor on demand (also runs on an interval) ----
@@ -1842,6 +1910,160 @@ Match categories:
     return { due: due.length, sent, canceled };
   }
 
+  // ============================ RECRUITING INBOX ============================
+  // A provider-agnostic inbound endpoint receives application emails and
+  // replies (Resend Inbound, SendGrid Inbound Parse, Mailgun, etc. all map to
+  // the normalized payload below). Replies are matched to existing candidates
+  // and pause automation; unmatched senders become new candidate records.
+  function stripTags(html) {
+    return String(html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  function extractEmail(from) {
+    const s = String(from || "").trim();
+    const m = s.match(/<([^>]+)>/);
+    return (m ? m[1] : s).toLowerCase().trim();
+  }
+
+  async function handleInbound(payload) {
+    const fromEmail = extractEmail(payload.from);
+    if (!fromEmail) return { ok: false, error: "No sender address" };
+    const subject = payload.subject || "(no subject)";
+    const bodyText = payload.text || stripTags(payload.html || "");
+    const bodyStore = payload.html || (bodyText ? `<p>${escapeHtml(bodyText)}</p>` : "");
+    const unsub = /\b(unsubscribe|stop contacting|do not contact|do-not-contact|remove me|opt out|opt-out)\b/i.test(bodyText);
+
+    let applicant = await dbGet("SELECT * FROM hr_applicants WHERE email = ? ORDER BY id DESC LIMIT 1", [fromEmail]);
+    let created = false;
+    if (!applicant) {
+      const fromName = (payload.from_name || "").trim() || (String(payload.from || "").split("<")[0].trim()) || fromEmail.split("@")[0];
+      const result = await createApplicant(
+        { full_name: fromName, email: fromEmail, source: "email", cover_letter: bodyText.slice(0, 4000) },
+        "inbound"
+      );
+      applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [result.id]);
+      created = true;
+    }
+
+    await dbRun(
+      `INSERT INTO hr_applicant_messages (applicant_id, direction, channel, from_addr, to_addr, subject, body, status, created_at)
+       VALUES (?, 'inbound', 'email', ?, ?, ?, ?, 'received', ?)`,
+      [applicant.id, fromEmail, payload.to || null, subject, bodyStore, nowISO()]
+    );
+
+    // Save resume attachments.
+    for (const att of payload.attachments || []) {
+      if (att && att.content_base64 && /\.(pdf|docx|doc)$/i.test(att.filename || "")) {
+        await saveApplicantDocument(applicant.id, "resume", att, "inbound").catch((e) => console.error("inbound resume save failed:", e.message));
+      }
+    }
+
+    if (!created) {
+      // A reply from an existing candidate: pause automation, mark responded.
+      await dbRun("UPDATE hr_applicants SET last_response_at = ?, automation_paused = TRUE, updated_at = ? WHERE id = ?", [nowISO(), nowISO(), applicant.id]);
+      await cancelPendingFollowups(applicant.id);
+      if (["new_applicant", "ai_screening", "needs_human_review", "contacted"].includes(applicant.stage)) {
+        await moveStageInternal(applicant, "responded", "inbound", "Candidate replied by email");
+      }
+      await notify({
+        type: "candidate_response",
+        applicantId: applicant.id,
+        positionId: applicant.position_id,
+        title: "Candidate replied",
+        body: `${applicant.full_name} replied: ${subject}`,
+        severity: "info",
+      });
+    }
+
+    if (unsub) {
+      await dbRun("UPDATE hr_applicants SET do_not_contact = TRUE WHERE id = ?", [applicant.id]);
+      await cancelPendingFollowups(applicant.id);
+      await audit("inbound", "do_not_contact_set", "applicant", applicant.id, "unsubscribe request detected");
+    }
+
+    await audit("inbound", created ? "applicant_created_inbound" : "inbound_message", "applicant", applicant.id, subject);
+    return { ok: true, applicant_id: applicant.id, created, unsubscribed: unsub };
+  }
+
+  // AI-drafted, human-approved reply. Escalates sensitive topics to a person
+  // and never makes offers, negotiates comp, or sends rejections on its own.
+  async function draftReply(applicant) {
+    const name = firstNameOf(applicant.full_name);
+    const position = applicant.position_id ? await dbGet("SELECT title FROM hr_positions WHERE id = ?", [applicant.position_id]) : null;
+    const fallback = {
+      ok: true,
+      ai: false,
+      subject: "Re: your application to Spectrum Squad",
+      body: `Hi ${name},\n\nThanks so much for your note! I'm Spectrum Squad's recruiting assistant. A member of our team will follow up with you shortly. If you have any quick questions in the meantime, just reply here.\n\nWarmly,\nThe Spectrum Squad Team`,
+      escalate: false,
+    };
+    if (!process.env.ANTHROPIC_API_KEY) return fallback;
+
+    const msgs = await dbAll("SELECT direction, subject, body FROM hr_applicant_messages WHERE applicant_id = ? ORDER BY id DESC LIMIT 8", [applicant.id]);
+    const convo = msgs.slice().reverse().map((m) => `${m.direction === "inbound" ? "Candidate" : "Us"}: ${stripTags(m.body).slice(0, 600)}`).join("\n");
+    const schema = {
+      type: "object",
+      additionalProperties: false,
+      properties: { subject: { type: "string" }, body: { type: "string" }, escalate: { type: "boolean" } },
+      required: ["subject", "body", "escalate"],
+    };
+    const sys = `You are Spectrum Squad's recruiting assistant drafting a warm, concise, personal email reply to a candidate for the "${position ? position.title : "open"}" role. Always identify yourself honestly as the recruiting assistant.
+Never: make employment promises, negotiate or state compensation, send an offer, send a rejection, or offer to contact references.
+Set escalate=true (and keep the reply brief, saying a team member will personally follow up) if the message involves: compensation negotiation, disability accommodations, a complaint, discrimination concerns, legal threats, background checks, offer terms, or anything outside standard job/scheduling information.
+Write body as plain text with line breaks (no HTML).`;
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({
+          model: HR_AI_MODEL,
+          max_tokens: 1500,
+          system: sys,
+          output_config: { effort: "low", format: { type: "json_schema", schema } },
+          messages: [{ role: "user", content: `Candidate: ${name}\nConversation so far:\n${convo}\n\nDraft a reply to their latest message.` }],
+        }),
+      });
+      if (!res.ok) throw new Error("API " + res.status);
+      const data = await res.json();
+      if (data.stop_reason === "refusal") throw new Error("declined");
+      const tb = (data.content || []).find((b) => b.type === "text");
+      const parsed = JSON.parse(tb.text);
+      return { ok: true, ai: true, subject: parsed.subject, body: parsed.body, escalate: !!parsed.escalate };
+    } catch (e) {
+      return { ...fallback, note: "AI draft unavailable: " + e.message };
+    }
+  }
+
+  // ---- flexible intake: CSV / bulk import ----
+  function splitCsvLine(line) {
+    const out = [];
+    let cur = "";
+    let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (q) {
+        if (c === '"') {
+          if (line[i + 1] === '"') { cur += '"'; i++; } else q = false;
+        } else cur += c;
+      } else if (c === '"') q = true;
+      else if (c === ",") { out.push(cur); cur = ""; }
+      else cur += c;
+    }
+    out.push(cur);
+    return out;
+  }
+  function parseCsv(text) {
+    const lines = String(text || "").split(/\r?\n/).filter((l) => l.trim());
+    if (!lines.length) return [];
+    const headers = splitCsvLine(lines[0]).map((h) => h.trim().toLowerCase().replace(/\s+/g, "_"));
+    return lines.slice(1).map((line) => {
+      const cells = splitCsvLine(line);
+      const obj = {};
+      headers.forEach((h, i) => (obj[h] = (cells[i] || "").trim()));
+      return obj;
+    });
+  }
+
   // ============================ DASHBOARDS ============================
   async function recruitingDashboard() {
     const positions = await dbAll("SELECT id, title, status, openings_count, role_type FROM hr_positions");
@@ -2140,6 +2362,7 @@ Match categories:
       evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,
       hrCanAccess, hrCanManage, hrCanSeeSensitive, runScreening, buildScreeningContent, ASSESSMENT_SCHEMA,
       followupMessage, enrollFollowupSequence, processFollowups, missingQuestions,
+      handleInbound, draftReply, parseCsv, extractEmail,
     },
   };
 };
