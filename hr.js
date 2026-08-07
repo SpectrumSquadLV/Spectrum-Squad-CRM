@@ -1085,6 +1085,53 @@ module.exports = function initHr(ctx) {
     return made;
   }
 
+  // 30/60/90-day onboarding milestone emails, keyed off hr_hire_date. Skips
+  // anyone marked Inactive. Each milestone is sent at most once (tracked in
+  // hr_milestones_sent JSON) and logged to the employee activity feed.
+  async function processHrMilestones() {
+    const now = Date.now();
+    const rows = await dbAll(
+      "SELECT id, name, email, hr_hire_date, hr_stage, status, hr_milestones_sent FROM hr_employees WHERE hr_hire_date IS NOT NULL AND hr_hire_date <> ''"
+    );
+    let sent = 0;
+    for (const e of rows) {
+      if ((e.status || "").toLowerCase() === "terminated") continue;
+      if ((e.hr_stage || "") === "Inactive") continue;
+      if (!e.email) continue;
+      const hireMs = new Date(e.hr_hire_date).getTime();
+      if (isNaN(hireMs)) continue;
+      const daysSince = Math.floor((now - hireMs) / 86400000);
+      let doneMap = {};
+      try { doneMap = e.hr_milestones_sent ? JSON.parse(e.hr_milestones_sent) : {}; } catch (x) { doneMap = {}; }
+      for (const m of [30, 60, 90]) {
+        if (daysSince >= m && !doneMap[m]) {
+          const t = await renderHrEmail(`hr_milestone_${m}`, { first_name: firstNameOf(e.name), milestone_days: String(m) });
+          if (t) {
+            await sendEmail({ to: e.email, subject: t.subject, html: t.html, type: "hr_milestone" }).catch((err) => console.error("milestone email:", err.message));
+            doneMap[m] = nowISO();
+            await dbRun("UPDATE hr_employees SET hr_milestones_sent = ? WHERE id = ?", [JSON.stringify(doneMap), e.id]);
+            await logEmpActivity(e.id, `Sent ${m}-day milestone check-in email.`);
+            sent++;
+          }
+        }
+      }
+    }
+    return sent;
+  }
+
+  // Count milestone emails sent in the last 7 days (for the dashboard tile).
+  async function milestonesThisWeek() {
+    const rows = await dbAll("SELECT hr_milestones_sent FROM hr_employees WHERE hr_milestones_sent IS NOT NULL AND hr_milestones_sent <> ''");
+    const cutoff = Date.now() - 7 * 86400000;
+    let n = 0;
+    for (const r of rows) {
+      let m = {};
+      try { m = JSON.parse(r.hr_milestones_sent); } catch (x) { continue; }
+      for (const k of Object.keys(m)) { if (m[k] && new Date(m[k]).getTime() >= cutoff) n++; }
+    }
+    return n;
+  }
+
   // ============================ API ROUTER ============================
   async function handleApi(req, res, pathname, method, query, user) {
     if (!pathname.startsWith("/api/hr/")) return false;
@@ -2254,7 +2301,7 @@ module.exports = function initHr(ctx) {
         return sendFile(res, 200, fs.readFileSync(full), "image/jpeg", "photo");
       }
       if (pathname === "/api/hr/documents-outstanding" && method === "GET") {
-        return json(res, 200, { count: await countDocsOutstanding() });
+        return json(res, 200, { count: await countDocsOutstanding(), milestones_this_week: await milestonesThisWeek() });
       }
 
       // Offer Accepted trigger bundle: fire the selected onboarding actions.
@@ -4493,6 +4540,8 @@ Write body as plain text with line breaks (no HTML).`;
     processDailySummary,
     processCredentialAlerts,
     processHrDocFollowups,
+    processHrMilestones,
+    milestonesThisWeek,
     // exposed for tests / future phases
     _internal: {
       evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,

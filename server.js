@@ -4903,6 +4903,12 @@ async function start() {
     hr.processHrDocFollowups().catch((e) => console.error("HR doc follow-up sweep failed:", e));
   }, 6 * 60 * 60 * 1000);
 
+  // HR 30/60/90-day onboarding milestone emails, also on boot.
+  hr.processHrMilestones().catch((e) => console.error("HR milestone sweep failed:", e));
+  setInterval(() => {
+    hr.processHrMilestones().catch((e) => console.error("HR milestone sweep failed:", e));
+  }, 6 * 60 * 60 * 1000);
+
   server.listen(PORT, () => {
     console.log(`Spectrum Squad CRM running at http://localhost:${PORT}`);
     console.log(`Demo login: admin@spectrumsquadlv.com / ChangeMe123!`);
