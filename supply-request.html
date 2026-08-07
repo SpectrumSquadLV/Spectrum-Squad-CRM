@@ -5,10 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Spectrum Squad — Supply Request</title>
 <style>
-  :root { --indigo:#4f46e5; --ink:#1e293b; --muted:#64748b; --line:#e2e8f0; --bg:#f5f6fb; }
+  :root { --indigo:#1b2a6b; --ink:#1e293b; --muted:#64748b; --line:#e2e8f0; --bg:#f5f6fb; }
   * { box-sizing:border-box; }
   body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; background:var(--bg); color:var(--ink); }
-  .wrap { max-width:560px; margin:0 auto; padding:20px 16px 60px; }
+  /* Faint centered logo watermark behind the content. */
+  body::before { content:""; position:fixed; inset:0; background-image:url("/logo.png"); background-repeat:no-repeat; background-position:center; background-size:min(70vw,420px); opacity:0.05; pointer-events:none; z-index:0; }
+  .wrap { max-width:560px; margin:0 auto; padding:20px 16px 60px; position:relative; z-index:1; }
+  .page-logo { display:block; max-width:190px; width:60%; height:auto; margin:6px auto 14px; }
   .card { background:#fff; border:1px solid var(--line); border-radius:16px; padding:22px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
   .brand { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
   .brand .dot { width:34px; height:34px; border-radius:9px; background:var(--indigo); color:#fff; display:flex; align-items:center; justify-content:center; font-size:18px; }
@@ -40,6 +43,7 @@
 <body>
 <div class="wrap">
   <div class="card">
+    <img src="/logo.png" alt="Spectrum Squad" class="page-logo" />
     <div class="brand"><div class="dot">📦</div><div><h1>Supply Request</h1></div></div>
 
     <!-- ============ SUBMIT VIEW ============ -->

@@ -2272,6 +2272,29 @@ module.exports = function initHr(ctx) {
         return json(res, 200, await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empDetailMatch[1]]));
       }
 
+      // Bulk edit staff: apply the same field(s) to many employees at once, or
+      // bulk-delete. Body: { ids:[...], fields:{status, hr_stage, role_title,
+      // employment_type}, delete:true }.
+      if (pathname === "/api/hr/employees/bulk" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const ids = (Array.isArray(b.ids) ? b.ids : []).map((n) => Number(n)).filter((n) => n > 0);
+        if (!ids.length) return json(res, 400, { error: "No staff selected." });
+        const placeholders = ids.map(() => "?").join(",");
+        if (b.delete) {
+          await dbRun(`DELETE FROM hr_employees WHERE id IN (${placeholders})`, ids);
+          await audit(actor, "employees_bulk_deleted", "employee", null, `ids=${ids.join(",")}`);
+          return json(res, 200, { ok: true, deleted: ids.length });
+        }
+        const allowed = ["status", "hr_stage", "role_title", "employment_type", "hr_pref_location", "hr_pref_language"];
+        const fields = Object.keys(b.fields || {}).filter((k) => allowed.includes(k) && b.fields[k] !== "" && b.fields[k] != null);
+        if (!fields.length) return json(res, 400, { error: "Nothing to update." });
+        const setClause = fields.map((f) => `${f} = ?`).join(", ");
+        await dbRun(`UPDATE hr_employees SET ${setClause} WHERE id IN (${placeholders})`, [...fields.map((f) => b.fields[f]), ...ids]);
+        await audit(actor, "employees_bulk_updated", "employee", null, `ids=${ids.join(",")} fields=${fields.join(",")}`);
+        return json(res, 200, { ok: true, updated: ids.length });
+      }
+
       // ---- Document tracker (six required docs; social/id are status-only) ----
       const docTrackMatch = pathname.match(/^\/api\/hr\/employees\/(\d+)\/doc-tracker$/);
       if (docTrackMatch && method === "GET") {
