@@ -2681,6 +2681,7 @@ async function openStaffModal(id, pageMount) {
           ? emp.timecards.map((t) => `<div class="task-row"><div class="info"><strong>${t.pay_period_start ? fmtDate(t.pay_period_start) : "Period"} – ${t.pay_period_end ? fmtDate(t.pay_period_end) : ""}</strong><div class="due">Status: ${staffEsc(t.status)}${Number(t.open_flags) ? ` · ${t.open_flags} open flag(s)` : ""}</div></div><button class="btn small secondary" data-req-sig="${t.id}">Request signature</button></div>`).join("")
           : `<div class="empty-state">No timecards yet. Import a payroll export to create them.</div>`
       }</div>` : ""}
+      ${id ? `<div class="section-title">Attendance</div><div id="staff-attendance"></div>` : ""}
       ${id ? `<div class="section-title">Availability</div><div id="staff-availability">${renderStaffAvailability(emp)}</div>` : ""}
       ${id ? `<div class="section-title">Activity log</div><div id="staff-activity">${renderStaffActivity(emp)}</div>` : ""}
     </div>`;
@@ -2729,6 +2730,10 @@ async function openStaffModal(id, pageMount) {
   }
 
   if (id) renderStaffDocs(backdrop, id, emp.documents || []);
+  if (id && window.HRAttendance) {
+    const attEl = backdrop.querySelector("#staff-attendance");
+    if (attEl) window.HRAttendance.renderSection(attEl, id, emp.name);
+  }
 }
 
 function renderStaffDocs(backdrop, id, docs) {

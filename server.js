@@ -4798,6 +4798,11 @@ const server = http.createServer(async (req, res) => {
     if (await supply.servePage(req, res, pathname)) return;
   }
 
+  // Public employee attendance-acknowledgment signing page.
+  if (pathname === "/attendance-sign" || pathname.startsWith("/attendance-sign/")) {
+    if (attendance.servePage && await attendance.servePage(req, res, pathname)) return;
+  }
+
   // Parent attendance acknowledgment: one click from the email marks it
   // acknowledged and shows a thank-you page.
   if (pathname === "/attendance-ack") {
