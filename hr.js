@@ -35,6 +35,8 @@ module.exports = function initHr(ctx) {
   const DATA_DIR = path.join(__dirname, "data");
   const RESUME_DIR = path.join(DATA_DIR, "hr-resumes");
   if (!fs.existsSync(RESUME_DIR)) fs.mkdirSync(RESUME_DIR, { recursive: true });
+  const HR_DOC_DIR = path.join(DATA_DIR, "hr-docs");
+  if (!fs.existsSync(HR_DOC_DIR)) fs.mkdirSync(HR_DOC_DIR, { recursive: true });
 
   // ============================ CONSTANTS ============================
 
@@ -57,6 +59,18 @@ module.exports = function initHr(ctx) {
     { key: "talent_pool", label: "Talent Pool", group: "closed" },
   ];
   const STAGE_KEYS = PIPELINE_STAGES.map((s) => s.key);
+
+  // HR module spec: staff lifecycle stages + the six-document tracker.
+  const HR_STAGES = ["Applicant", "Interviewing", "Offer Sent", "Offer Accepted", "Onboarding", "Active", "Inactive"];
+  const HR_DOC_KEYS = [
+    { key: "headshot", label: "Headshot (shoulders up)", file: true },
+    { key: "social", label: "Social Security card", file: false },        // status only
+    { key: "id", label: "Copy of ID", file: false },                      // status only
+    { key: "rbt_state", label: "State RBT license", file: true, expires: true },
+    { key: "rbt_national", label: "National RBT license", file: true, expires: true },
+    { key: "background_check", label: "Background check", file: true },
+  ];
+  const HR_DOC_STATUSES = ["Not Requested", "Requested", "Received", "Verified", "Expired"];
 
   const APPLICATION_SOURCES = [
     { key: "indeed", label: "Indeed" },
@@ -429,6 +443,33 @@ module.exports = function initHr(ctx) {
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS address TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS certifications TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS rethink_id TEXT`).catch(() => {});
+    // HR module spec: staff lifecycle + onboarding fields (all hr_-prefixed).
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_stage TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_offer_accepted_date TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_hire_date TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_photo TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_availability TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_stipulations TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_milestones_sent TEXT`).catch(() => {}); // JSON: {30:ts,60:ts,90:ts}
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_activity TEXT`).catch(() => {});       // JSON array of {at, text}
+    // Document tracker: one row per (employee, doc_key). social/id store status only.
+    await dbRun(`CREATE TABLE IF NOT EXISTS hr_doc_tracker (
+      id SERIAL PRIMARY KEY,
+      employee_id INTEGER NOT NULL,
+      doc_key TEXT NOT NULL,        -- headshot|social|id|rbt_state|rbt_national|background_check
+      status TEXT NOT NULL DEFAULT 'Not Requested', -- Not Requested|Requested|Received|Verified|Expired
+      date_requested TEXT,
+      date_received TEXT,
+      expiration_date TEXT,
+      notes TEXT,
+      stored_name TEXT,            -- file on disk (never set for social/id)
+      filename TEXT,
+      mime_type TEXT,
+      followup_task_made TEXT,     -- timestamp when the 3-day follow-up task was auto-created
+      renewal_task_made TEXT,      -- timestamp when the 60-day renewal task was auto-created
+      updated_at TEXT,
+      UNIQUE (employee_id, doc_key)
+    )`);
     // hr_interviews already exists; add scheduling/reminder columns idempotently.
     await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS slot_id INTEGER`).catch(() => {});
     await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS reminder_24_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
@@ -887,6 +928,128 @@ module.exports = function initHr(ctx) {
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  // ============================ DOCUMENT TRACKER ============================
+  // Create a task in the EXISTING staff-task system (server.js staff_tasks),
+  // so all HR auto-tasks live in one place per the spec.
+  async function hrMakeStaffTask(title, employeeId) {
+    await dbRun(
+      `INSERT INTO staff_tasks (title, description, assigned_user_id, assigned_name, client_id, due_date, status, created_by, created_at)
+       VALUES (?, ?, NULL, NULL, NULL, ?, 'open', 'HR auto', ?)`,
+      [title, employeeId ? `Staff #${employeeId}` : null, nowISO().slice(0, 10), nowISO()]
+    ).catch((e) => console.error("hr staff task insert failed:", e.message));
+  }
+
+  // Return the 6 tracker rows for an employee, filling defaults for any missing.
+  async function getDocTracker(employeeId) {
+    const existing = await dbAll("SELECT * FROM hr_doc_tracker WHERE employee_id = ?", [employeeId]);
+    const byKey = {};
+    existing.forEach((r) => (byKey[r.doc_key] = r));
+    return HR_DOC_KEYS.map((d) => {
+      const r = byKey[d.key] || {};
+      return {
+        doc_key: d.key, label: d.label, file_allowed: d.file, expires: !!d.expires,
+        status: r.status || "Not Requested",
+        date_requested: r.date_requested || null,
+        date_received: r.date_received || null,
+        expiration_date: r.expiration_date || null,
+        notes: r.notes || null,
+        has_file: !!r.stored_name,
+        doc_id: r.id || null,
+      };
+    });
+  }
+
+  async function upsertDocTracker(employeeId, docKey, patch, file) {
+    const def = HR_DOC_KEYS.find((d) => d.key === docKey);
+    if (!def) return { ok: false, error: "Unknown document type" };
+    let stored = null, filename = null, mime = null;
+    if (file && file.content_base64) {
+      if (!def.file) return { ok: false, error: "This document is tracked by status only — no file is stored." };
+      let buf;
+      try { buf = Buffer.from(file.content_base64, "base64"); } catch (e) { return { ok: false, error: "Invalid file data" }; }
+      if (buf.length > 15 * 1024 * 1024) return { ok: false, error: "File too large (15MB max)" };
+      stored = `${employeeId}_${docKey}_${crypto.randomBytes(5).toString("hex")}`;
+      fs.writeFileSync(path.join(HR_DOC_DIR, stored), buf);
+      filename = file.filename || docKey;
+      mime = file.mime_type || "application/octet-stream";
+    }
+    const row = await dbGet("SELECT * FROM hr_doc_tracker WHERE employee_id = ? AND doc_key = ?", [employeeId, docKey]);
+    const fields = {
+      status: patch.status != null ? patch.status : (row ? row.status : "Not Requested"),
+      date_requested: patch.date_requested !== undefined ? patch.date_requested : (row ? row.date_requested : null),
+      date_received: patch.date_received !== undefined ? patch.date_received : (row ? row.date_received : null),
+      expiration_date: patch.expiration_date !== undefined ? patch.expiration_date : (row ? row.expiration_date : null),
+      notes: patch.notes !== undefined ? patch.notes : (row ? row.notes : null),
+    };
+    if (stored) { /* new file overrides */ }
+    if (row) {
+      await dbRun(
+        `UPDATE hr_doc_tracker SET status=?, date_requested=?, date_received=?, expiration_date=?, notes=?,
+           ${stored ? "stored_name=?, filename=?, mime_type=?," : ""} updated_at=? WHERE id=?`,
+        stored
+          ? [fields.status, fields.date_requested, fields.date_received, fields.expiration_date, fields.notes, stored, filename, mime, nowISO(), row.id]
+          : [fields.status, fields.date_requested, fields.date_received, fields.expiration_date, fields.notes, nowISO(), row.id]
+      );
+    } else {
+      await dbRun(
+        `INSERT INTO hr_doc_tracker (employee_id, doc_key, status, date_requested, date_received, expiration_date, notes, stored_name, filename, mime_type, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [employeeId, docKey, fields.status, fields.date_requested, fields.date_received, fields.expiration_date, fields.notes, stored, filename, mime, nowISO()]
+      );
+    }
+    return { ok: true };
+  }
+
+  async function countDocsOutstanding() {
+    // Outstanding = not yet Received/Verified across the six required docs for all active staff.
+    const emps = await dbAll("SELECT id FROM hr_employees WHERE status IS NULL OR status <> 'terminated'");
+    let n = 0;
+    for (const e of emps) {
+      const rows = await dbAll("SELECT doc_key, status FROM hr_doc_tracker WHERE employee_id = ?", [e.id]);
+      const byKey = {}; rows.forEach((r) => (byKey[r.doc_key] = r.status));
+      for (const d of HR_DOC_KEYS) {
+        const st = byKey[d.key] || "Not Requested";
+        if (st !== "Received" && st !== "Verified") n++;
+      }
+    }
+    return n;
+  }
+
+  // Sweep: 3-day follow-up tasks for still-Requested docs; 60-day RBT renewal
+  // tasks + auto-Expire. Uses the existing staff-task system.
+  async function processHrDocFollowups() {
+    const now = Date.now();
+    const rows = await dbAll(
+      `SELECT dt.*, e.name AS emp_name FROM hr_doc_tracker dt JOIN hr_employees e ON e.id = dt.employee_id`
+    );
+    let made = 0;
+    for (const r of rows) {
+      const def = HR_DOC_KEYS.find((d) => d.key === r.doc_key);
+      const label = def ? def.label : r.doc_key;
+      // 3-day follow-up on Requested
+      if (r.status === "Requested" && r.date_requested && !r.followup_task_made) {
+        if (now - new Date(r.date_requested).getTime() > 3 * 86400000) {
+          await hrMakeStaffTask(`Follow up: ${r.emp_name} — ${label}`, r.employee_id);
+          await dbRun("UPDATE hr_doc_tracker SET followup_task_made = ? WHERE id = ?", [nowISO(), r.id]);
+          made++;
+        }
+      }
+      // 60-day RBT license renewal + auto-expire
+      if (def && def.expires && r.expiration_date) {
+        const exp = new Date(r.expiration_date).getTime();
+        const days = Math.floor((exp - now) / 86400000);
+        if (days < 0 && r.status !== "Expired") {
+          await dbRun("UPDATE hr_doc_tracker SET status = 'Expired' WHERE id = ?", [r.id]);
+        } else if (days <= 60 && days >= 0 && !r.renewal_task_made) {
+          await hrMakeStaffTask(`Renewal due: ${r.emp_name} — ${label}`, r.employee_id);
+          await dbRun("UPDATE hr_doc_tracker SET renewal_task_made = ? WHERE id = ?", [nowISO(), r.id]);
+          made++;
+        }
+      }
+    }
+    return made;
   }
 
   // ============================ API ROUTER ============================
@@ -1972,17 +2135,64 @@ module.exports = function initHr(ctx) {
              FROM hr_timecards t WHERE t.employee_id = ? ORDER BY t.id DESC LIMIT 30`,
           [emp.id]
         );
+        emp.documents = await getDocTracker(emp.id);
         return json(res, 200, emp);
       }
       if (empDetailMatch && method === "PATCH") {
         if (!canManage) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
-        const allowed = ["name", "email", "role_title", "employment_type", "hire_date", "phone", "address", "certifications", "status", "rethink_id"];
+        const allowed = ["name", "email", "role_title", "employment_type", "hire_date", "phone", "address", "certifications", "status", "rethink_id",
+          "hr_stage", "hr_hire_date", "hr_offer_accepted_date", "hr_availability", "hr_stipulations"];
         const fields = Object.keys(b).filter((k) => allowed.includes(k));
         if (!fields.length) return json(res, 400, { error: "Nothing to update" });
         await dbRun(`UPDATE hr_employees SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`, [...fields.map((f) => b[f]), Number(empDetailMatch[1])]);
         await audit(actor, "employee_updated", "employee", Number(empDetailMatch[1]), fields.join(","));
         return json(res, 200, await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empDetailMatch[1]]));
+      }
+
+      // ---- Document tracker (six required docs; social/id are status-only) ----
+      const docTrackMatch = pathname.match(/^\/api\/hr\/employees\/(\d+)\/doc-tracker$/);
+      if (docTrackMatch && method === "GET") {
+        return json(res, 200, await getDocTracker(Number(docTrackMatch[1])));
+      }
+      if (docTrackMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const empId = Number(docTrackMatch[1]);
+        const b = await readBody(req);
+        if (!b.doc_key) return json(res, 400, { error: "doc_key is required" });
+        // "Request" shortcut stamps date_requested + sets status Requested.
+        if (b.action === "request") { b.status = "Requested"; b.date_requested = nowISO().slice(0, 10); }
+        const file = b.content_base64 ? { content_base64: b.content_base64, filename: b.filename, mime_type: b.mime_type } : null;
+        const r = await upsertDocTracker(empId, b.doc_key, b, file);
+        if (!r.ok) return json(res, 400, r);
+        // Uploading the headshot auto-populates the profile photo.
+        if (b.doc_key === "headshot" && file) {
+          const rowNow = await dbGet("SELECT stored_name, mime_type FROM hr_doc_tracker WHERE employee_id = ? AND doc_key = 'headshot'", [empId]);
+          if (rowNow && rowNow.stored_name) await dbRun("UPDATE hr_employees SET hr_photo = ? WHERE id = ?", ["doc:" + rowNow.stored_name, empId]);
+        }
+        await audit(actor, "doc_tracker_updated", "employee", empId, b.doc_key + " -> " + (b.status || "updated"));
+        return json(res, 200, { ok: true, documents: await getDocTracker(empId) });
+      }
+      // Download a stored tracker document (or the photo).
+      const docFileMatch = pathname.match(/^\/api\/hr\/employees\/(\d+)\/doc-tracker\/([a-z_]+)\/file$/);
+      if (docFileMatch && method === "GET") {
+        const row = await dbGet("SELECT * FROM hr_doc_tracker WHERE employee_id = ? AND doc_key = ?", [Number(docFileMatch[1]), docFileMatch[2]]);
+        if (!row || !row.stored_name) return json(res, 404, { error: "No file" });
+        const full = path.join(HR_DOC_DIR, row.stored_name);
+        if (!fs.existsSync(full)) return json(res, 404, { error: "File missing" });
+        return sendFile(res, 200, fs.readFileSync(full), row.mime_type || "application/octet-stream", row.filename || row.doc_key);
+      }
+      const photoMatch = pathname.match(/^\/api\/hr\/employees\/(\d+)\/photo$/);
+      if (photoMatch && method === "GET") {
+        const emp = await dbGet("SELECT hr_photo FROM hr_employees WHERE id = ?", [Number(photoMatch[1])]);
+        if (!emp || !emp.hr_photo) return json(res, 404, { error: "No photo" });
+        const stored = emp.hr_photo.startsWith("doc:") ? emp.hr_photo.slice(4) : emp.hr_photo;
+        const full = path.join(HR_DOC_DIR, stored);
+        if (!fs.existsSync(full)) return json(res, 404, { error: "No photo" });
+        return sendFile(res, 200, fs.readFileSync(full), "image/jpeg", "photo");
+      }
+      if (pathname === "/api/hr/documents-outstanding" && method === "GET") {
+        return json(res, 200, { count: await countDocsOutstanding() });
       }
 
       // Bulk import staff from the Rethink payroll sheet (NO pay). Upserts by
@@ -4051,6 +4261,7 @@ Write body as plain text with line breaks (no HTML).`;
     processReminders,
     processDailySummary,
     processCredentialAlerts,
+    processHrDocFollowups,
     // exposed for tests / future phases
     _internal: {
       evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,
