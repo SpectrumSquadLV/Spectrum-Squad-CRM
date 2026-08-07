@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Spectrum Squad — Supply Request</title>
+<style>
+  :root { --indigo:#4f46e5; --ink:#1e293b; --muted:#64748b; --line:#e2e8f0; --bg:#f5f6fb; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:560px; margin:0 auto; padding:20px 16px 60px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; padding:22px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+  .brand { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .brand .dot { width:34px; height:34px; border-radius:9px; background:var(--indigo); color:#fff; display:flex; align-items:center; justify-content:center; font-size:18px; }
+  h1 { font-size:21px; margin:0; }
+  .sub { color:var(--muted); font-size:14px; margin:2px 0 18px; }
+  label { display:block; font-size:13px; font-weight:600; margin:14px 0 5px; }
+  .req::after { content:" *"; color:#dc2626; }
+  input, textarea, select { width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:10px; font-size:15px; font-family:inherit; background:#fff; }
+  input:focus, textarea:focus { outline:2px solid #c7d2fe; border-color:var(--indigo); }
+  .row { display:flex; gap:10px; }
+  .row > div { flex:1; }
+  .hint { font-size:12px; color:var(--muted); margin-top:4px; }
+  button.primary { width:100%; margin-top:20px; background:var(--indigo); color:#fff; border:0; border-radius:10px; padding:14px; font-size:16px; font-weight:700; cursor:pointer; }
+  button.primary:disabled { opacity:.6; cursor:default; }
+  .photo-preview { margin-top:8px; max-width:140px; border-radius:10px; border:1px solid var(--line); display:none; }
+  .msg { padding:12px 14px; border-radius:10px; font-size:14px; margin-top:14px; display:none; }
+  .msg.err { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; }
+  .success { text-align:center; padding:10px 0; }
+  .success .big { width:64px; height:64px; border-radius:50%; background:#dcfce7; color:#16a34a; font-size:34px; display:flex; align-items:center; justify-content:center; margin:6px auto 14px; }
+  .pill { display:inline-block; color:#fff; font-weight:700; padding:5px 14px; border-radius:20px; font-size:13px; }
+  .timeline { margin-top:14px; }
+  .step { display:flex; gap:12px; padding:12px 0; border-bottom:1px solid var(--line); }
+  .step .marker { width:12px; height:12px; border-radius:50%; margin-top:5px; flex:0 0 auto; }
+  .step .when { color:var(--muted); font-size:12px; }
+  .linkbtn { background:none; border:0; color:var(--indigo); font-weight:600; cursor:pointer; font-size:14px; padding:0; }
+  a.track { color:var(--indigo); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="brand"><div class="dot">📦</div><div><h1>Supply Request</h1></div></div>
+
+    <!-- ============ SUBMIT VIEW ============ -->
+    <div id="form-view">
+      <p class="sub">Need something for your clinic? Tell us what, how much, and drop a link or photo. You'll get email updates as it moves along.</p>
+      <label class="req">Your name</label>
+      <input id="f-name" placeholder="First and last name" />
+      <label class="req">Your email</label>
+      <input id="f-email" type="email" placeholder="you@spectrumsquadlv.com" />
+      <div class="hint">We send status updates here — approved, ordered, received.</div>
+      <label>Clinic / site (optional)</label>
+      <input id="f-loc" placeholder="e.g. Henderson office, in-home team" />
+      <label class="req">What item do you need?</label>
+      <input id="f-item" placeholder="e.g. Therapy timers, laminating pouches" />
+      <div class="row">
+        <div>
+          <label>How much / how many?</label>
+          <input id="f-qty" placeholder="e.g. 2 boxes, 5 units" />
+        </div>
+        <div>
+          <label>Priority</label>
+          <select id="f-priority"><option>Normal</option><option>Urgent</option><option>Low</option></select>
+        </div>
+      </div>
+      <label>Link to the item (optional)</label>
+      <input id="f-url" placeholder="Paste an Amazon / store link" />
+      <label>Or add a photo (optional)</label>
+      <input id="f-photo" type="file" accept="image/*" />
+      <img id="f-photo-preview" class="photo-preview" alt="preview" />
+      <label>Anything else? (optional)</label>
+      <textarea id="f-notes" rows="3" placeholder="Size, color, brand, where it goes…"></textarea>
+      <div id="form-msg" class="msg err"></div>
+      <button class="primary" id="submit-btn">Submit request</button>
+    </div>
+
+    <!-- ============ SUCCESS VIEW ============ -->
+    <div id="success-view" style="display:none;">
+      <div class="success">
+        <div class="big">✓</div>
+        <h1>Request submitted!</h1>
+        <p class="sub">We emailed a confirmation and a tracking link to your inbox. You can also bookmark your tracking page below.</p>
+        <a class="track" id="success-link" href="#">View your request status →</a>
+      </div>
+      <button class="primary" id="another-btn" style="background:#64748b;">Submit another request</button>
+    </div>
+
+    <!-- ============ TRACK VIEW ============ -->
+    <div id="track-view" style="display:none;">
+      <div id="track-body"></div>
+      <button class="primary" id="new-from-track" style="background:#64748b;margin-top:24px;">Submit a new request</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var API = "";
+  function $(id) { return document.getElementById(id); }
+  function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+  function statusColor(s){ return {Submitted:"#6366f1",Approved:"#0891b2",Ordered:"#ca8a04",Received:"#16a34a",Denied:"#dc2626"}[s]||"#64748b"; }
+  function fmt(s){ if(!s) return ""; try{ return new Date(s).toLocaleString(); }catch(e){ return s; } }
+
+  var photoBase64 = null, photoMime = null;
+  $("f-photo").addEventListener("change", function (e) {
+    var file = e.target.files[0];
+    if (!file) { photoBase64 = null; $("f-photo-preview").style.display="none"; return; }
+    if (file.size > 6*1024*1024) { showErr("That photo is over 6MB — please pick a smaller one."); e.target.value=""; return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var res = reader.result; // data:...;base64,XXXX
+      photoBase64 = res.split(",")[1]; photoMime = file.type || "image/jpeg";
+      var img = $("f-photo-preview"); img.src = res; img.style.display = "block";
+    };
+    reader.readAsDataURL(file);
+  });
+
+  function showErr(m){ var el=$("form-msg"); el.textContent=m; el.style.display="block"; el.scrollIntoView({behavior:"smooth",block:"center"}); }
+
+  $("submit-btn").addEventListener("click", async function () {
+    $("form-msg").style.display="none";
+    var body = {
+      requester_name: $("f-name").value.trim(),
+      requester_email: $("f-email").value.trim(),
+      location: $("f-loc").value.trim(),
+      item_name: $("f-item").value.trim(),
+      quantity: $("f-qty").value.trim(),
+      priority: $("f-priority").value,
+      item_url: $("f-url").value.trim(),
+      notes: $("f-notes").value.trim(),
+      photo_base64: photoBase64, photo_mime: photoMime,
+    };
+    if (!body.requester_name) return showErr("Please enter your name.");
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.requester_email)) return showErr("Please enter a valid email address.");
+    if (!body.item_name) return showErr("Please tell us what item you need.");
+    var btn = $("submit-btn"); btn.disabled=true; btn.textContent="Submitting…";
+    try {
+      var r = await fetch(API + "/api/supply/public/submit", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      var d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Something went wrong.");
+      $("form-view").style.display="none";
+      $("success-view").style.display="block";
+      $("success-link").href = "/supply-request?track=" + d.token;
+      $("success-link").addEventListener("click", function(ev){ ev.preventDefault(); location.href = "/supply-request?track=" + d.token; });
+    } catch (e) { showErr(e.message); btn.disabled=false; btn.textContent="Submit request"; }
+  });
+
+  $("another-btn").addEventListener("click", function(){ location.href = "/supply-request"; });
+  $("new-from-track").addEventListener("click", function(){ location.href = "/supply-request"; });
+
+  async function renderTrack(token) {
+    $("form-view").style.display="none";
+    $("track-view").style.display="block";
+    var box = $("track-body");
+    box.innerHTML = '<p class="sub">Loading your request…</p>';
+    try {
+      var r = await fetch(API + "/api/supply/public/track/" + encodeURIComponent(token));
+      var d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Not found");
+      var req = d.request, tl = d.timeline || [];
+      var order = ["Submitted","Approved","Ordered","Received"];
+      var steps = tl.map(function (s) {
+        return '<div class="step"><div class="marker" style="background:'+statusColor(s.status)+'"></div><div><div style="font-weight:700;">'+esc(s.status)+'</div>'+(s.note?'<div style="font-size:13px;">'+esc(s.note)+'</div>':'')+'<div class="when">'+fmt(s.at)+'</div></div></div>';
+      }).join("");
+      box.innerHTML =
+        '<div style="text-align:center;margin-bottom:6px;"><span class="pill" style="background:'+statusColor(req.status)+'">'+esc(req.status)+'</span></div>'+
+        '<h1 style="text-align:center;font-size:19px;margin:10px 0 2px;">'+esc(req.item_name)+'</h1>'+
+        '<p class="sub" style="text-align:center;">'+(req.quantity?esc(req.quantity)+' · ':'')+'requested by '+esc(req.requester_name||'you')+'</p>'+
+        (req.item_url?'<p style="text-align:center;"><a class="track" href="'+esc(req.item_url)+'" target="_blank" rel="noopener">View item link →</a></p>':'')+
+        (req.has_photo?'<div style="text-align:center;margin:8px 0;"><img src="'+API+'/api/supply/public/photo/'+encodeURIComponent(req.token)+'" style="max-width:180px;border-radius:12px;border:1px solid var(--line);" /></div>':'')+
+        (req.notes?'<div style="background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;margin-top:8px;">'+esc(req.notes)+'</div>':'')+
+        '<div class="timeline">'+ (steps || '<p class="sub">No updates yet.</p>') +'</div>';
+    } catch (e) {
+      box.innerHTML = '<div class="msg err" style="display:block;">'+esc(e.message)+'</div>';
+    }
+  }
+
+  // Route: ?track=TOKEN shows the tracking view.
+  var params = new URLSearchParams(location.search);
+  var track = params.get("track");
+  if (track) renderTrack(track);
+})();
+</script>
+</body>
+</html>
