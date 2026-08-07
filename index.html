@@ -2542,9 +2542,12 @@ async function renderOutbox(mount) {
                       <span class="delivered-pill ${n.delivered.split(":")[0]}">${n.delivered.split(":")[0]}</span>
                     </div>
                   </div>
-                  ${n.recipient ? `<button class="btn small secondary" data-resend-notif="${n.id}">Resend</button>` : ""}
+                  <div style="display:flex; gap:6px; flex:0 0 auto;">
+                    <button class="btn small secondary" data-view-notif="${n.id}">View</button>
+                    ${n.recipient ? `<button class="btn small secondary" data-resend-notif="${n.id}">Resend</button>` : ""}
+                  </div>
                 </div>
-                <div class="body">${n.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()}</div>
+                <div class="body" data-body-preview="${n.id}">${n.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)}</div>
               </div>`
               )
               .join("")
@@ -2553,6 +2556,25 @@ async function renderOutbox(mount) {
     </div>
   `;
 
+  const notifById = Object.fromEntries(notifications.map((n) => [String(n.id), n]));
+  mount.querySelectorAll("[data-view-notif]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const n = notifById[btn.dataset.viewNotif];
+      if (!n) return;
+      const backdrop = document.createElement("div");
+      backdrop.className = "modal-backdrop";
+      backdrop.innerHTML = `
+        <div class="modal" style="width:680px; max-width:94vw;">
+          <div class="modal-header"><h2 style="font-size:16px;">${adminEsc(n.subject)}</h2><button class="close-btn">✕</button></div>
+          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:10px;">to <strong>${adminEsc(n.recipient || "—")}</strong> · ${adminEsc((n.type || "").replace("_", " "))} · ${fmtDate(n.sent_at)} · <span class="delivered-pill ${(n.delivered || "").split(":")[0]}">${(n.delivered || "").split(":")[0]}</span></div>
+          <div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:14px; max-height:60vh; overflow:auto; background:#fff;">${n.body || "<em>(no body stored)</em>"}</div>
+        </div>`;
+      document.body.appendChild(backdrop);
+      const close = () => backdrop.remove();
+      backdrop.querySelector(".close-btn").addEventListener("click", close);
+      backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    });
+  });
   mount.querySelectorAll("[data-resend-notif]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.resendNotif;
@@ -3117,6 +3139,26 @@ async function renderAdmin(mount) {
           <button class="btn small secondary" id="save-elig-email">Save</button>
         </div>
       </div>
+      <div class="task-row">
+        <div class="info">
+          <strong>Completed clinical screener recipient</strong>
+          <div class="due">When a parent completes a clinical screener, a copy is automatically emailed here (your clinical team). This is an email only — it never creates a task. Separate multiple addresses with commas.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="screener-email" type="text" placeholder="clinical@spectrumsquadlv.com" style="width:260px;" />
+          <button class="btn small secondary" id="save-screener-email">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
+          <strong>Owner notification email</strong>
+          <div class="due">Where owner/system alerts (daily summaries, authorization alerts, etc.) are sent. Leave blank to use your owner account's email.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="owner-email" type="email" placeholder="qblake@spectrumsquadlv.com" style="width:260px;" />
+          <button class="btn small secondary" id="save-owner-email">Save</button>
+        </div>
+      </div>
     </div>
     <div class="card" style="margin-bottom:20px;">
       <div class="section-title" style="margin-top:0;">Department Notification Emails</div>
@@ -3160,23 +3202,28 @@ async function renderAdmin(mount) {
     const settings = await api("/api/admin/settings");
     const eligInput = mount.querySelector("#elig-email");
     if (eligInput) eligInput.value = settings.eligibility_check_email || "";
+    const screenerInput = mount.querySelector("#screener-email");
+    if (screenerInput) screenerInput.value = settings.screener_completed_recipient || "";
+    const ownerInput = mount.querySelector("#owner-email");
+    if (ownerInput) ownerInput.value = settings.owner_notification_email || "";
   } catch (e) {}
-  const saveEligBtn = mount.querySelector("#save-elig-email");
-  if (saveEligBtn) {
-    saveEligBtn.addEventListener("click", async () => {
-      const email = mount.querySelector("#elig-email").value.trim();
-      saveEligBtn.disabled = true;
+  const wireSetting = (btnId, inputId, key) => {
+    const btn = mount.querySelector("#" + btnId);
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      const val = mount.querySelector("#" + inputId).value.trim();
+      btn.disabled = true;
       try {
-        await api("/api/admin/settings", { method: "PATCH", body: { eligibility_check_email: email } });
-        saveEligBtn.textContent = "Saved ✓";
-        setTimeout(() => (saveEligBtn.textContent = "Save"), 1500);
-      } catch (e) {
-        alert(e.message || "Could not save.");
-      } finally {
-        saveEligBtn.disabled = false;
-      }
+        await api("/api/admin/settings", { method: "PATCH", body: { [key]: val } });
+        btn.textContent = "Saved ✓";
+        setTimeout(() => (btn.textContent = "Save"), 1500);
+      } catch (e) { alert(e.message || "Could not save."); }
+      finally { btn.disabled = false; }
     });
-  }
+  };
+  wireSetting("save-elig-email", "elig-email", "eligibility_check_email");
+  wireSetting("save-screener-email", "screener-email", "screener_completed_recipient");
+  wireSetting("save-owner-email", "owner-email", "owner_notification_email");
 
   await renderTeamSection(mount);
 }
