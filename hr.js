@@ -2490,6 +2490,66 @@ module.exports = function initHr(ctx) {
         await audit(actor, "timecard_send_all", "timecard", null, `sent=${sent} skipped=${skipped.length}`);
         return json(res, 200, { ok: true, sent, skipped });
       }
+
+      // Upload a Rethink bi-weekly payroll export (.xlsx as base64). Parses it,
+      // creates one timecard per employee (matched by rethink_id, else name),
+      // and returns a preview. Does NOT send emails — the frontend confirms
+      // then calls /api/hr/timecards/send-all with the pay_period_end.
+      if (pathname === "/api/hr/payroll/import" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        if (!b.content_base64) return json(res, 400, { error: "No file provided." });
+        let buffer;
+        try {
+          let s = String(b.content_base64);
+          const comma = s.indexOf(","); if (s.startsWith("data:") && comma >= 0) s = s.slice(comma + 1);
+          buffer = Buffer.from(s, "base64");
+        } catch (e) { return json(res, 400, { error: "Could not read the uploaded file." }); }
+        let parsed;
+        try { parsed = buildPayrollTimecards(parseXlsx(buffer)); }
+        catch (e) { return json(res, 400, { error: "Could not parse the export: " + e.message }); }
+        if (!parsed.employees.length) return json(res, 400, { error: "No employees found in the export. Is this the Rethink payroll export?" });
+
+        const preview = [];
+        for (const emp of parsed.employees) {
+          // Match: rethink_id first, then case-insensitive full name.
+          let staff = null;
+          if (emp.rethink_id) staff = await dbGet("SELECT id, name, email FROM hr_employees WHERE rethink_id = ?", [emp.rethink_id]);
+          if (!staff && emp.name) staff = await dbGet("SELECT id, name, email FROM hr_employees WHERE LOWER(name) = LOWER(?)", [emp.name]);
+          let timecardId = null;
+          if (staff) {
+            const r = await importTimecard({
+              employee_id: staff.id,
+              source: "rethink_payroll",
+              pay_period_start: parsed.period_start,
+              pay_period_end: parsed.period_end,
+              entries: emp.entries,
+              raw: { rethink_id: emp.rethink_id, total_hours: emp.total_hours, reg_hours: emp.reg_hours, ot_hours: emp.ot_hours },
+            }, actor);
+            timecardId = r.id;
+          }
+          preview.push({
+            name: emp.name || (emp.rethink_id ? `#${emp.rethink_id}` : "Unknown"),
+            rethink_id: emp.rethink_id,
+            total_hours: emp.total_hours,
+            shifts: emp.entries.length,
+            matched: !!staff,
+            has_email: !!(staff && staff.email),
+            timecard_id: timecardId,
+          });
+        }
+        await audit(actor, "payroll_imported", "timecard", null, `period=${parsed.period_end} employees=${preview.length} matched=${preview.filter((p) => p.matched).length}`);
+        return json(res, 200, {
+          ok: true,
+          pay_period_start: parsed.period_start,
+          pay_period_end: parsed.period_end,
+          total_employees: preview.length,
+          matched: preview.filter((p) => p.matched).length,
+          unmatched: preview.filter((p) => !p.matched).map((p) => p.name),
+          no_email: preview.filter((p) => p.matched && !p.has_email).map((p) => p.name),
+          employees: preview,
+        });
+      }
       const flagResolveMatch = pathname.match(/^\/api\/hr\/timecard-flags\/(\d+)\/resolve$/);
       if (flagResolveMatch && method === "POST") {
         if (!canManage) return json(res, 403, { error: "Not permitted" });
@@ -3589,6 +3649,193 @@ Write body as plain text with line breaks (no HTML).`;
     return flags;
   }
 
+  // ---- Rethink payroll-export (.xlsx) parsing ------------------------------
+  // Self-contained: a minimal ZIP reader (xlsx is a zip) + a regex-based
+  // worksheet reader. No external dependency, so it can never break the boot.
+  function unzipXlsx(buffer) {
+    const zlib = require("zlib");
+    let eocd = -1;
+    for (let i = buffer.length - 22; i >= 0; i--) {
+      if (buffer.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error("This file isn't a readable .xlsx (no ZIP directory found).");
+    const cdCount = buffer.readUInt16LE(eocd + 10);
+    const cdOffset = buffer.readUInt32LE(eocd + 16);
+    const files = {};
+    let p = cdOffset;
+    for (let n = 0; n < cdCount; n++) {
+      if (p + 46 > buffer.length || buffer.readUInt32LE(p) !== 0x02014b50) break;
+      const method = buffer.readUInt16LE(p + 10);
+      const compSize = buffer.readUInt32LE(p + 20);
+      const fnLen = buffer.readUInt16LE(p + 28);
+      const extraLen = buffer.readUInt16LE(p + 30);
+      const commentLen = buffer.readUInt16LE(p + 32);
+      const localOffset = buffer.readUInt32LE(p + 42);
+      const name = buffer.toString("utf8", p + 46, p + 46 + fnLen);
+      const lhFnLen = buffer.readUInt16LE(localOffset + 26);
+      const lhExtraLen = buffer.readUInt16LE(localOffset + 28);
+      const dataStart = localOffset + 30 + lhFnLen + lhExtraLen;
+      const comp = buffer.slice(dataStart, dataStart + compSize);
+      try {
+        if (method === 0) files[name] = comp;
+        else if (method === 8) files[name] = zlib.inflateRawSync(comp);
+      } catch (e) { /* skip unreadable entry */ }
+      p += 46 + fnLen + extraLen + commentLen;
+    }
+    return files;
+  }
+
+  function xmlUnescape(s) {
+    return String(s).replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#(\d+);/g, (m, d) => String.fromCharCode(parseInt(d, 10)));
+  }
+  function colToIndex(ref) {
+    const m = ref.match(/^([A-Z]+)/);
+    if (!m) return 0;
+    let n = 0;
+    for (const c of m[1]) n = n * 26 + (c.charCodeAt(0) - 64);
+    return n - 1;
+  }
+  function parseSheetRows(xml, shared) {
+    if (!xml) return [];
+    const rows = [];
+    const rre = /<row[^>]*>([\s\S]*?)<\/row>/g;
+    let rm;
+    while ((rm = rre.exec(xml))) {
+      const cells = [];
+      const cre = /<c\s+r="([A-Z]+\d+)"([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g;
+      let cm;
+      while ((cm = cre.exec(rm[1]))) {
+        const ci = colToIndex(cm[1]);
+        const attrs = cm[2] || "", inner = cm[3] || "";
+        const tMatch = attrs.match(/t="([^"]+)"/);
+        const t = tMatch ? tMatch[1] : "";
+        const vMatch = inner.match(/<v>([\s\S]*?)<\/v>/);
+        let val = "";
+        if (t === "s" && vMatch) val = shared[parseInt(vMatch[1], 10)] || "";
+        else if (t === "inlineStr") { const im = inner.match(/<t[^>]*>([\s\S]*?)<\/t>/); val = im ? xmlUnescape(im[1]) : ""; }
+        else if (vMatch) val = vMatch[1];
+        cells[ci] = val;
+      }
+      rows.push(cells);
+    }
+    return rows;
+  }
+  function parseXlsx(buffer) {
+    const files = unzipXlsx(buffer);
+    const dec = (b) => (b ? b.toString("utf8") : "");
+    const shared = [];
+    const sharedXml = dec(files["xl/sharedStrings.xml"]);
+    const sre = /<si>([\s\S]*?)<\/si>/g; let sm;
+    while ((sm = sre.exec(sharedXml))) {
+      let s = ""; const tre = /<t[^>]*>([\s\S]*?)<\/t>/g; let tm;
+      while ((tm = tre.exec(sm[1]))) s += tm[1];
+      shared.push(xmlUnescape(s));
+    }
+    const rels = dec(files["xl/_rels/workbook.xml.rels"]);
+    const relMap = {};
+    let rr; const relRe = /<Relationship\b([^>]*)\/>/g;
+    while ((rr = relRe.exec(rels))) {
+      const a = rr[1];
+      const id = (a.match(/Id="([^"]+)"/) || [])[1];
+      const target = (a.match(/Target="([^"]+)"/) || [])[1];
+      if (id && target) relMap[id] = target;
+    }
+    const wb = dec(files["xl/workbook.xml"]);
+    const sheets = {};
+    let sh; const shRe = /<sheet\b([^>]*)\/>/g;
+    while ((sh = shRe.exec(wb))) {
+      const a = sh[1];
+      const name = (a.match(/name="([^"]+)"/) || [])[1];
+      const rid = (a.match(/r:id="([^"]+)"/) || [])[1];
+      if (!name || !rid) continue;
+      let target = relMap[rid] || "";
+      if (target && !target.startsWith("xl/")) target = "xl/" + target.replace(/^\//, "");
+      sheets[xmlUnescape(name)] = parseSheetRows(dec(files[target]), shared);
+    }
+    return sheets;
+  }
+
+  function excelSerialToDate(serial) {
+    const n = parseFloat(serial);
+    if (!isFinite(n) || n <= 0) return null;
+    return new Date(Date.UTC(1899, 11, 30) + Math.round(n * 86400000));
+  }
+  function fmtServiceDate(serial) {
+    const d = excelSerialToDate(serial);
+    if (!d) return String(serial || "");
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const mons = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[d.getUTCDay()]}, ${mons[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  }
+
+  // Turn a parsed workbook into per-employee timecard payloads. Reads the
+  // "Summary" sheet for the employee roster + period, and "Time Sheet Entries"
+  // for the per-shift detail. Pay/rate columns are intentionally ignored — the
+  // employee is verifying HOURS, not wages.
+  function buildPayrollTimecards(sheets) {
+    const summary = sheets["Summary"] || [];
+    const meta = summary[0] || [];
+    // Row 0: ["Start Date:", "MM/DD/YYYY", "", "End Date:", "MM/DD/YYYY", ...]
+    let periodStart = "", periodEnd = "";
+    for (let i = 0; i < meta.length; i++) {
+      if (/start date/i.test(String(meta[i]))) periodStart = meta[i + 1] || "";
+      if (/end date/i.test(String(meta[i]))) periodEnd = meta[i + 1] || "";
+    }
+    // Header row is the first row whose first cell is "Id".
+    let hIdx = summary.findIndex((r) => String((r || [])[0] || "").trim().toLowerCase() === "id");
+    if (hIdx < 0) hIdx = 1;
+    const header = summary[hIdx] || [];
+    const col = (name) => header.findIndex((h) => String(h || "").trim().toLowerCase() === name.toLowerCase());
+    const cId = col("Id"), cFirst = col("FirstName"), cLast = col("LastName"), cReg = col("RegHours"), cOt1 = col("OT1Hours"), cOt2 = col("OT2Hours"), cTotal = col("TotalPay");
+
+    const employees = {};
+    for (let i = hIdx + 1; i < summary.length; i++) {
+      const r = summary[i] || [];
+      const id = String(r[cId] || "").trim();
+      if (!id) continue;
+      const reg = parseFloat(r[cReg]) || 0;
+      const ot1 = cOt1 >= 0 ? (parseFloat(r[cOt1]) || 0) : 0;
+      const ot2 = cOt2 >= 0 ? (parseFloat(r[cOt2]) || 0) : 0;
+      employees[id] = {
+        rethink_id: id,
+        first: r[cFirst] || "",
+        last: r[cLast] || "",
+        name: `${r[cFirst] || ""} ${r[cLast] || ""}`.trim(),
+        reg_hours: reg,
+        ot_hours: ot1 + ot2,
+        total_hours: Math.round((reg + ot1 + ot2) * 100) / 100,
+        entries: [],
+      };
+    }
+
+    // Per-shift detail.
+    const tse = sheets["Time Sheet Entries"] || [];
+    let tHdr = tse.findIndex((r) => String((r || [])[1] || "").trim().toLowerCase() === "id");
+    if (tHdr < 0) tHdr = 1;
+    const th = tse[tHdr] || [];
+    const tcol = (name) => th.findIndex((h) => String(h || "").trim().toLowerCase() === name.toLowerCase());
+    const eId = tcol("Id"), eAlert = tcol("Alerts"), eStart = tcol("StartTime"), eEnd = tcol("EndTime"),
+      eDate = tcol("DateOfService"), eActIn = tcol("ActualStartTime"), eActOut = tcol("ActualEndTime"),
+      eDur = tcol("Duration"), eVer = tcol("StaffVerified"), eStatus = tcol("ApptStatus");
+    for (let i = tHdr + 1; i < tse.length; i++) {
+      const r = tse[i] || [];
+      const id = String(r[eId] || "").trim();
+      if (!id || !employees[id]) continue;
+      const scheduled = (r[eStart] || r[eEnd]) ? `${r[eStart] || "?"} – ${r[eEnd] || "?"}` : "";
+      employees[id].entries.push({
+        date: fmtServiceDate(r[eDate]),
+        scheduled,
+        clock_in: r[eActIn] || "",
+        clock_out: r[eActOut] || "",
+        hours: Math.round((parseFloat(r[eDur]) || 0) * 100) / 100,
+        verified: r[eVer] || "",
+        alert: eAlert >= 0 ? (r[eAlert] || "") : "",
+        appt_status: eStatus >= 0 ? (r[eStatus] || "") : "",
+      });
+    }
+    return { period_start: periodStart, period_end: periodEnd, employees: Object.values(employees) };
+  }
+
   async function importTimecard(input, actor) {
     const entries = Array.isArray(input.entries) ? input.entries : [];
     const flags = detectTimecardAnomalies(entries);
@@ -4549,6 +4796,7 @@ Write body as plain text with line breaks (no HTML).`;
       followupMessage, enrollFollowupSequence, processFollowups, missingQuestions,
       handleInbound, draftReply, parseCsv, extractEmail,
       detectTimecardAnomalies, importTimecard, buildDailySummary,
+      parseXlsx, buildPayrollTimecards,
       parsePlatformApplication, matchPosition, handlePlatformApplication,
     },
   };
