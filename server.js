@@ -2870,6 +2870,11 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  if (pathname.startsWith("/api/fin/")) {
+    const handled = await financialAdvisor.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/supply/")) {
     const handled = await supply.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -4815,6 +4820,11 @@ const geoMap = require("./geo-map")({
 const supervision = require("./supervision")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
 });
+// ===== FINANCIAL CENTER ADVISOR add-on: owner-only money advisor from uploaded
+// bank/QuickBooks/payroll data — budgets, wage sim, reconciliation, insights. =====
+const financialAdvisor = require("./financial-advisor")({
+  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json,
+});
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
@@ -4908,6 +4918,7 @@ async function start() {
   await attendance.initTables().catch((e) => console.error("Attendance initTables failed:", e));
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
   await supervision.initTables().catch((e) => console.error("Supervision initTables failed:", e));
+  await financialAdvisor.initTables().catch((e) => console.error("Financial advisor initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
