@@ -467,6 +467,44 @@ module.exports = function initOt(ctx) {
       return (json(res, 200, { statuses: OT_STATUSES, byStatus, total: cards.length }), true);
     }
 
+    // Staff-initiated OT enrollment: creates a New OT Lead and (optionally)
+    // emails the parent the intake link.
+    if (pathname === "/api/ot/enrollment" && method === "POST") {
+      const b = await readBody(req);
+      const child = (b.child_name || "").trim();
+      if (!child) return (json(res, 400, { error: "Child name is required." }), true);
+      const token = newToken();
+      const now = nowISO();
+      const intakeData = JSON.stringify({ child_name: child, parent_name: (b.parent_name || "").trim(), parent_email: (b.parent_email || "").trim(), parent_phone: (b.parent_phone || "").trim() });
+      const row = await dbRun(
+        `INSERT INTO ot_clients (status, intake_token, intake_progress, intake_started_at, intake_opened_at, last_activity_at, intake_data, created_at, updated_at)
+         VALUES ('New OT Lead', ?, 0, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [token, now, now, now, intakeData, now, now]
+      );
+      let emailed = false;
+      if (b.parent_email) {
+        const link = APP_BASE_URL + "/ot-intake?token=" + token;
+        const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const r = await sendEmail({
+          to: (b.parent_email || "").trim(),
+          subject: "Complete your Occupational Therapy intake — Spectrum Squad",
+          html: `<p>Hi ${esc(b.parent_name || "there")},</p><p>Thanks for your interest in Occupational Therapy at Spectrum Squad. Please complete your child's intake form to get started:</p><p><a href="${link}">Start the OT intake</a></p><p>Warmly,<br/>Spectrum Squad</p>`,
+          type: "ot_notification",
+        }).catch(() => null);
+        emailed = !!(r && (r.delivered === "sent" || r.delivered === "simulated"));
+      }
+      return (json(res, 201, { ok: true, id: row.rows[0].id, token, emailed }), true);
+    }
+
+    // OT message outbox: every OT-related email sent (eligibility, reminders,
+    // notifications). Viewable full-body in the OT area.
+    if (pathname === "/api/ot/notifications" && method === "GET") {
+      const rows = await dbAll(
+        "SELECT id, client_id, type, recipient, subject, body, sent_at, delivered FROM notifications_log WHERE type LIKE 'ot%' ORDER BY sent_at DESC LIMIT 200"
+      );
+      return (json(res, 200, rows), true);
+    }
+
     // OT client detail (shared demographics + OT record + docs + history).
     const detailMatch = pathname.match(/^\/api\/ot\/clients\/(\d+)$/);
     if (detailMatch && method === "GET") {

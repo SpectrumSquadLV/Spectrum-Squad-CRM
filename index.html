@@ -582,7 +582,10 @@ function renderShell(active) {
           <button class="logout-btn" id="logout-btn">Log out</button>
         </div>
       </div>
-      <div class="main"><div id="view-mount"></div></div>
+      <div class="main">
+        <img src="/logo.png" alt="" aria-hidden="true" style="position:fixed; top:14px; right:20px; width:120px; height:auto; opacity:0.07; pointer-events:none; z-index:0;" />
+        <div id="view-mount"></div>
+      </div>
     </div>
   `;
   root.querySelectorAll("[data-nav]").forEach((btn) => {
@@ -1540,17 +1543,17 @@ async function openClientModal(id) {
           : ""
       }
 
-      <div class="section-title">Notification History</div>
+      <div class="section-title">Communications &amp; Forms Sent to Parents</div>
+      <p style="font-size:12px; color:var(--text-muted); margin:-4px 0 8px;">Every email, form, and file sent to this family. Click <strong>View</strong> to read the full message. Forms are also linked in their sections above.</p>
       ${
         notifications.length
           ? notifications
-              .slice(0, 6)
               .map(
-                (n) => `<div class="task-row"><div class="info"><strong>${n.subject}</strong><div class="due">to ${n.recipient} · ${fmtDate(n.sent_at)}</div></div>
-                <span class="delivered-pill ${n.delivered.split(":")[0]}">${n.delivered.split(":")[0]}</span></div>`
+                (n) => `<div class="task-row"><div class="info"><strong>${adminEsc(n.subject)}</strong><div class="due">to ${adminEsc(n.recipient || "—")} · ${(n.type || "").replace(/_/g, " ")} · ${fmtDate(n.sent_at)}</div></div>
+                <div style="display:flex; gap:6px; align-items:center;"><span class="delivered-pill ${(n.delivered || "").split(":")[0]}">${(n.delivered || "").split(":")[0]}</span><button class="btn small secondary" data-view-cnotif="${n.id}">View</button></div></div>`
               )
               .join("")
-          : `<div class="empty-state">No notifications yet.</div>`
+          : `<div class="empty-state">No communications sent yet.</div>`
       }
     </div>
   `;
@@ -1670,6 +1673,26 @@ async function openClientModal(id) {
       } catch (e) {
         alert("Could not update: " + e.message);
       }
+    });
+  });
+  // View the full body of any communication sent to the parent.
+  const notifMap = Object.fromEntries((notifications || []).map((n) => [String(n.id), n]));
+  backdrop.querySelectorAll("[data-view-cnotif]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const n = notifMap[btn.dataset.viewCnotif];
+      if (!n) return;
+      const bd = document.createElement("div");
+      bd.className = "modal-backdrop";
+      bd.innerHTML = `
+        <div class="modal" style="width:680px; max-width:94vw;">
+          <div class="modal-header"><h2 style="font-size:16px;">${adminEsc(n.subject)}</h2><button class="close-btn">✕</button></div>
+          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:10px;">to <strong>${adminEsc(n.recipient || "—")}</strong> · ${adminEsc((n.type || "").replace(/_/g, " "))} · ${fmtDate(n.sent_at)}</div>
+          <div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:14px; max-height:60vh; overflow:auto; background:#fff;">${n.body || "<em>(no body stored)</em>"}</div>
+        </div>`;
+      document.body.appendChild(bd);
+      const c = () => bd.remove();
+      bd.querySelector(".close-btn").addEventListener("click", c);
+      bd.addEventListener("click", (e) => { if (e.target === bd) c(); });
     });
   });
 

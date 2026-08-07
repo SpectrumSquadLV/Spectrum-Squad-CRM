@@ -75,7 +75,11 @@
       '<div style="padding:24px 28px 60px;">' +
         '<div style="display:flex;align-items:center;gap:10px;margin:0 0 4px;justify-content:space-between;">' +
           '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:22px;">🧩</span><h1 style="font-size:24px;margin:0;font-weight:700;color:' + ACCENT + ';">Occupational Therapy</h1></div>' +
-          (canAdminOT() ? '<button class="btn small secondary" id="ot-settings-btn">⚙ OT Settings</button>' : "") +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<button class="btn small" id="ot-add-btn">+ Add enrollment</button>' +
+            '<button class="btn small secondary" id="ot-outbox-btn">✉ Messages</button>' +
+            (canAdminOT() ? '<button class="btn small secondary" id="ot-settings-btn">⚙ OT Settings</button>' : "") +
+          "</div>" +
         "</div>" +
         '<p style="margin:0 0 18px;color:#767488;font-size:14px;">OT intake pipeline. Each card shows what\'s holding a family up, at a glance. ' + data.total + ' OT client(s).</p>' +
         '<div style="display:flex;gap:16px;overflow-x:auto;padding-bottom:8px;align-items:flex-start;">' + cols + "</div>" +
@@ -84,7 +88,69 @@
     mount.querySelectorAll("[data-ot-open]").forEach((el) => el.addEventListener("click", () => openDetail(el.getAttribute("data-ot-open"))));
     const sbtn = document.getElementById("ot-settings-btn");
     if (sbtn) sbtn.addEventListener("click", openSettings);
+    const abtn = document.getElementById("ot-add-btn");
+    if (abtn) abtn.addEventListener("click", openAddEnrollment);
+    const obtn = document.getElementById("ot-outbox-btn");
+    if (obtn) obtn.addEventListener("click", openOtOutbox);
   }
+
+  function otModal(inner, width) {
+    const bd = document.createElement("div"); bd.className = "modal-backdrop";
+    bd.innerHTML = '<div class="modal" style="width:' + (width || "520px") + ';max-width:94vw;">' + inner + "</div>";
+    document.body.appendChild(bd);
+    const close = () => bd.remove();
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+    return { bd, close };
+  }
+
+  function openAddEnrollment() {
+    const { bd, close } = otModal(
+      '<div class="modal-header"><h2>Add OT Enrollment</h2><button class="close-btn">✕</button></div>' +
+      '<p style="font-size:13px;color:#767488;margin-top:0;">Creates a new OT lead. If you enter a parent email, they get a link to complete the intake form.</p>' +
+      '<div class="field"><label>Child name *</label><input id="ot-e-child" /></div>' +
+      '<div class="field"><label>Parent / caregiver name</label><input id="ot-e-parent" /></div>' +
+      '<div class="field"><label>Parent email</label><input id="ot-e-email" type="email" placeholder="Sends the intake link if provided" /></div>' +
+      '<div class="field"><label>Parent phone</label><input id="ot-e-phone" /></div>' +
+      '<div style="margin-top:14px;display:flex;gap:8px;align-items:center;"><button class="btn" id="ot-e-save">Create enrollment</button><span id="ot-e-status" style="font-size:12.5px;color:#767488;"></span></div>'
+    );
+    bd.querySelector("#ot-e-save").addEventListener("click", async () => {
+      const child = bd.querySelector("#ot-e-child").value.trim();
+      const st = bd.querySelector("#ot-e-status");
+      if (!child) { st.textContent = "Child name is required."; return; }
+      st.textContent = "Creating…";
+      try {
+        const r = await api("/api/ot/enrollment", { method: "POST", body: {
+          child_name: child, parent_name: bd.querySelector("#ot-e-parent").value.trim(),
+          parent_email: bd.querySelector("#ot-e-email").value.trim(), parent_phone: bd.querySelector("#ot-e-phone").value.trim(),
+        } });
+        st.textContent = r.emailed ? "Created ✓ — intake link emailed." : "Created ✓";
+        setTimeout(() => { close(); render(); }, 900);
+      } catch (e) { st.textContent = e.message || "Failed."; }
+    });
+  }
+
+  async function openOtOutbox() {
+    const { bd } = otModal('<div class="modal-header"><h2>OT Messages</h2><button class="close-btn">✕</button></div><div id="ot-ob-body"><p style="color:#767488;">Loading…</p></div>', "680px");
+    const body = bd.querySelector("#ot-ob-body");
+    let rows;
+    try { rows = await api("/api/ot/notifications"); }
+    catch (e) { body.innerHTML = '<p style="color:#a3282e;">' + esc(e.message) + "</p>"; return; }
+    if (!rows.length) { body.innerHTML = '<p style="color:#767488;">No OT emails sent yet.</p>'; return; }
+    body.innerHTML = rows.map((n) =>
+      '<div class="task-row"><div class="info"><strong>' + esc(n.subject) + '</strong><div class="due">to ' + esc(n.recipient || "—") + " · " + esc((n.type || "").replace(/_/g, " ")) + "</div></div>" +
+      '<button class="btn small secondary" data-ot-vn="' + n.id + '">View</button></div>'
+    ).join("");
+    const map = {}; rows.forEach((n) => { map[String(n.id)] = n; });
+    body.querySelectorAll("[data-ot-vn]").forEach((b) => b.addEventListener("click", () => {
+      const n = map[b.getAttribute("data-ot-vn")]; if (!n) return;
+      const m = otModal('<div class="modal-header"><h2 style="font-size:16px;">' + esc(n.subject) + '</h2><button class="close-btn">✕</button></div>' +
+        '<div style="font-size:12.5px;color:#767488;margin-bottom:10px;">to ' + esc(n.recipient || "—") + " · " + esc(fmtWhen(n.sent_at)) + "</div>" +
+        '<div style="border:1px solid #e6e1d4;border-radius:10px;padding:14px;max-height:60vh;overflow:auto;background:#fff;">' + (n.body || "<em>(no body)</em>") + "</div>", "680px");
+    }));
+  }
+
+  function fmtWhen(iso) { try { return new Date(iso).toLocaleString(); } catch (e) { return iso || ""; } }
 
   async function openSettings() {
     let s;
