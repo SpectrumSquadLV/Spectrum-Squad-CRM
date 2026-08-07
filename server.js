@@ -1983,11 +1983,15 @@ setTimeout(() => {
   checkEnrollmentPackets().catch((e) => console.error("checkEnrollmentPackets failed:", e));
   retryFailedEnrollmentPackets().catch((e) => console.error("retryFailedEnrollmentPackets failed:", e));
   ot.reminderSweep().catch((e) => console.error("OT reminderSweep failed:", e));
+  attendance.dailySweep().catch((e) => console.error("Attendance dailySweep failed:", e));
+  geoMap.geocodeSweep().catch((e) => console.error("Geo geocodeSweep failed:", e));
 }, 30 * 1000);
 setInterval(() => {
   checkEnrollmentPackets().catch((e) => console.error("checkEnrollmentPackets failed:", e));
   retryFailedEnrollmentPackets().catch((e) => console.error("retryFailedEnrollmentPackets failed:", e));
   ot.reminderSweep().catch((e) => console.error("OT reminderSweep failed:", e));
+  attendance.dailySweep().catch((e) => console.error("Attendance dailySweep failed:", e));
+  geoMap.geocodeSweep().catch((e) => console.error("Geo geocodeSweep failed:", e));
 }, 60 * 60 * 1000);
 
 // ============================== AUTHORIZATION ALERTS ==============================
@@ -2767,6 +2771,27 @@ async function handle(req, res, pathname, method, query = {}) {
   // enforced internally), dispatched before the global 401 gate.
   if (pathname.startsWith("/api/ot/")) {
     const handled = await ot.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  // Employee Attendance add-on owns /api/attendance/* (permission enforced
+  // internally; a self "/me" endpoint lets an employee read their own standing).
+  if (pathname.startsWith("/api/attendance/")) {
+    const handled = await attendance.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  // Supply Requests add-on owns /api/supply/* (public submit/track split enforced
+  // internally, so it is dispatched before the global 401 gate below).
+  if (pathname.startsWith("/api/supply/")) {
+    const handled = await supply.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  // Clients & Clinicians Map add-on owns /api/geo/* (owner/admin/scheduling only,
+  // enforced internally).
+  if (pathname.startsWith("/api/geo/")) {
+    const handled = await geoMap.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -4646,6 +4671,22 @@ const clientForms = require("./client-forms")({
 const ot = require("./ot")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile,
 });
+// ===== EMPLOYEE ATTENDANCE MANAGEMENT add-on: points engine, discipline,
+// bonus cycles, policy editor, attendance emails, historical import. Reuses the
+// existing hr_employees identity + Resend. Owns all /api/attendance/* routes. =====
+const attendance = require("./hr-attendance")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
+});
+// ===== CLINIC SUPPLY / SHOPPING REQUESTS add-on: public submit link, tokenized
+// tracking, full status flow with requester email updates. Owns /api/supply/*. =====
+const supply = require("./supply-requests")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile,
+});
+// ===== CLIENTS & CLINICIANS MAP add-on: geocodes existing client + employee
+// addresses (OpenStreetMap) and pairs nearest clinicians for in-homes. =====
+const geoMap = require("./geo-map")({
+  dbGet, dbAll, dbRun, nowISO, crypto, json,
+});
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
@@ -4684,6 +4725,11 @@ const server = http.createServer(async (req, res) => {
   // Occupational Therapy public parent intake page.
   if (pathname === "/ot-intake" || pathname.startsWith("/ot-intake/")) {
     if (await ot.servePage(req, res, pathname)) return;
+  }
+
+  // Public supply/shopping request submit + tracking page.
+  if (pathname === "/supply-request" || pathname.startsWith("/supply-request/")) {
+    if (await supply.servePage(req, res, pathname)) return;
   }
 
   // Parent attendance acknowledgment: one click from the email marks it
@@ -4725,6 +4771,9 @@ async function start() {
   await hr.initTables().catch((e) => console.error("HR initTables failed:", e));
   await clientForms.initTables().catch((e) => console.error("Client Forms initTables failed:", e));
   await ot.initTables().catch((e) => console.error("OT initTables failed:", e));
+  await attendance.initTables().catch((e) => console.error("Attendance initTables failed:", e));
+  await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
+  await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
   await hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));

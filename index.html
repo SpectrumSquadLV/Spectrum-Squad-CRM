@@ -626,12 +626,8 @@ function renderLogin() {
 // ---------------- Dashboard ----------------
 async function renderDashboard(mount) {
   const dash = await api("/api/dashboard");
-  let myTasks = [];
-  try { myTasks = await api("/api/staff-tasks?scope=mine"); } catch (e) { myTasks = []; }
-  const myOpen = (myTasks || []).filter((t) => t.status !== "done");
   const byStage = Object.fromEntries(dash.byStage.map((s) => [s.stage, s.n]));
   const sMap = stageMap();
-  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
 
   mount.innerHTML = `
     <div class="page-header">
@@ -645,25 +641,6 @@ async function renderDashboard(mount) {
       <div class="stat-card"><div class="label">Active Therapy</div><div class="value">${byStage.active || 0}</div></div>
     </div>
     ${dash.authCounts ? renderAuthDashboardCard(dash.authCounts) : ""}
-    <div class="card" style="margin-bottom:20px;">
-      <div class="section-title" style="margin-top:0;">Tasks Assigned to Me ${myOpen.length ? `<span class="tag" style="background:#e0a430; color:#3a2a05;">${myOpen.length}</span>` : ""}</div>
-      ${
-        myOpen.length
-          ? myOpen
-              .map((t) => {
-                const overdue = t.due_date && new Date(t.due_date) < new Date(new Date().toDateString());
-                return `<div class="task-row">
-                  <div class="info">
-                    <strong>${esc(t.title)}</strong>
-                    <div class="due">${t.child_name ? esc(t.child_name) + " · " : ""}${t.due_date ? (overdue ? "<span style='color:#b91c1c;font-weight:700;'>due " + fmtDate(t.due_date) + "</span>" : "due " + fmtDate(t.due_date)) : "no due date"}</div>
-                  </div>
-                  <button class="btn small secondary" data-mytask-done="${t.id}">Mark done</button>
-                </div>`;
-              })
-              .join("")
-          : `<div class="empty-state">Nothing assigned to you right now. 🎉</div>`
-      }
-    </div>
     <div style="display:grid; grid-template-columns: 1.4fr 1fr; gap: 20px;">
       <div class="card">
         <div class="section-title" style="margin-top:0;">Pipeline Snapshot</div>
@@ -699,81 +676,13 @@ async function renderDashboard(mount) {
     </div>
     <div class="card" style="margin-top:20px;">
       <div class="section-title" style="margin-top:0;">Clients by Insurance Provider</div>
-      ${renderInsuranceDonut(dash.byInsurance || [])}
+      ${renderInsuranceChart(dash.byInsurance || [])}
     </div>
   `;
 
   document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
   mount.querySelectorAll("[data-auth-bucket]").forEach((el) => {
     el.addEventListener("click", () => (location.hash = "#/auth-alerts/" + el.dataset.authBucket));
-  });
-  wireInsuranceDonut(mount);
-  mount.querySelectorAll("[data-mytask-done]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try { await api(`/api/staff-tasks/${btn.dataset.mytaskDone}`, { method: "PATCH", body: { status: "done" } }); renderDashboard(mount); }
-      catch (e) { btn.disabled = false; alert(e.message); }
-    });
-  });
-}
-
-// Donut chart of clients by insurance provider. Hover or tap any wedge (or a
-// legend row) to see that provider's exact count and share in the center + a
-// tooltip. Replaces the old bar list.
-function renderInsuranceDonut(rows) {
-  if (!rows.length) return `<div class="empty-state">No active clients yet.</div>`;
-  const palette = ["#29225c", "#e0a430", "#5fa8a0", "#6660a8", "#c98a1b", "#3f8f89", "#8a7fd0", "#22c55e", "#ef4444", "#64748b"];
-  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
-  const total = rows.reduce((s, r) => s + r.n, 0);
-  const R = 70, C = 2 * Math.PI * R;
-  let acc = 0;
-  const segs = rows.map((r, i) => {
-    const share = total ? r.n / total : 0;
-    const len = share * C;
-    const seg = `<circle class="ins-seg" data-prov="${esc(r.provider)}" data-n="${r.n}" data-share="${Math.round(share * 100)}" cx="90" cy="90" r="${R}" fill="none" stroke="${palette[i % palette.length]}" stroke-width="26" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-acc}" style="cursor:pointer; transition:stroke-width .12s;"></circle>`;
-    acc += len; return seg;
-  }).join("");
-  const legend = rows.map((r, i) => {
-    const share = total ? Math.round((r.n / total) * 100) : 0;
-    return `<div class="ins-leg" data-prov="${esc(r.provider)}" data-n="${r.n}" data-share="${share}" style="display:flex; align-items:center; gap:8px; font-size:12.5px; padding:4px 0; cursor:pointer;">
-      <span style="width:11px; height:11px; border-radius:3px; background:${palette[i % palette.length]}; flex:0 0 auto;"></span>
-      <span style="flex:1;">${esc(r.provider)}</span>
-      <strong>${r.n} <span style="color:var(--text-muted); font-weight:400;">(${share}%)</span></strong>
-    </div>`;
-  }).join("");
-  return `<div style="display:flex; gap:24px; align-items:center; flex-wrap:wrap;">
-    <div style="position:relative; flex:0 0 auto; width:180px; height:180px;">
-      <svg width="180" height="180" viewBox="0 0 180 180" style="transform:rotate(-90deg);">${segs}</svg>
-      <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; pointer-events:none;">
-        <div style="font-size:26px; font-weight:800; color:var(--brand, #29225c); line-height:1;" id="ins-center-n" data-total="${total}">${total}</div>
-        <div style="font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.5px; margin-top:2px; text-align:center; max-width:120px;" id="ins-center-l">Active clients</div>
-      </div>
-      <div id="ins-tip" style="position:absolute; top:-6px; left:50%; transform:translateX(-50%); background:#2b2a35; color:#fff; font-size:12px; padding:5px 10px; border-radius:8px; white-space:nowrap; opacity:0; transition:.15s; pointer-events:none;"></div>
-    </div>
-    <div style="flex:1; min-width:190px;">${legend}</div>
-  </div>`;
-}
-function wireInsuranceDonut(mount) {
-  const tip = mount.querySelector("#ins-tip");
-  const cn = mount.querySelector("#ins-center-n");
-  const cl = mount.querySelector("#ins-center-l");
-  if (!tip || !cn) return;
-  const show = (el) => {
-    const p = el.getAttribute("data-prov"), n = el.getAttribute("data-n"), s = el.getAttribute("data-share");
-    tip.textContent = p + ": " + n + " (" + s + "%)";
-    tip.style.opacity = "1";
-    cn.textContent = n; cl.textContent = p;
-    mount.querySelectorAll(".ins-seg").forEach((sg) => sg.setAttribute("stroke-width", sg.getAttribute("data-prov") === p ? "34" : "22"));
-  };
-  const reset = () => {
-    tip.style.opacity = "0";
-    cn.textContent = cn.getAttribute("data-total"); cl.textContent = "Active clients";
-    mount.querySelectorAll(".ins-seg").forEach((sg) => sg.setAttribute("stroke-width", "26"));
-  };
-  mount.querySelectorAll(".ins-seg, .ins-leg").forEach((el) => {
-    el.addEventListener("mouseenter", () => show(el));
-    el.addEventListener("mouseleave", reset);
-    el.addEventListener("click", () => show(el));
   });
 }
 
@@ -3105,6 +3014,9 @@ async function renderTeamSection(mount) {
     <script src="screener-admin.js"></script>
   <script src="hr-recruiting.js"></script>
   <script src="ot-frontend.js"></script>
+  <script src="hr-attendance-frontend.js"></script>
+  <script src="supply-requests-frontend.js"></script>
+  <script src="geo-map-frontend.js"></script>
 
 </body>
 </html>
