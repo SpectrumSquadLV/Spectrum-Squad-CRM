@@ -512,6 +512,8 @@ async function route() {
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
   else if (hash.startsWith("#/map")) { if (window.__renderMap) await window.__renderMap(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/financial-center")) { if (window.__renderFinancialCenter) await window.__renderFinancialCenter(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/email-templates")) { if (window.__renderEmailTemplates) await window.__renderEmailTemplates(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/failed-emails")) { if (window.__renderFailedEmails) await window.__renderFailedEmails(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/auth-alerts")) await renderAuthAlerts(mount, param);
   else if (hash.startsWith("#/admin")) await renderAdmin(mount);
   else await renderDashboard(mount);
@@ -554,7 +556,11 @@ function renderShell(active) {
     navItems.push({ key: "map", label: "Map", icon: "🗺️" });
   if (["owner", "super_admin"].includes(state.user.role))
     navItems.push({ key: "financial-center", label: "Financial Center", icon: "💰" });
-  if (["owner", "admin", "super_admin"].includes(state.user.role)) navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
+  if (["owner", "admin", "super_admin"].includes(state.user.role)) {
+    navItems.push({ key: "email-templates", label: "Email Templates", icon: "✎" });
+    navItems.push({ key: "failed-emails", label: "Failed Emails", icon: "⚠" });
+    navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
+  }
 
   root.innerHTML = `
     <div class="app-shell">
@@ -2225,6 +2231,9 @@ async function renderSchedule(mount) {
   ]);
   const activeClients = state.clients.filter((c) => c.stage === "active" || c.stage === "first_day_scheduled");
   const targetMap = Object.fromEntries(targets.map((t) => [t.key, t.weekly_hours]));
+  if (!state.scheduleHidden) state.scheduleHidden = new Set();
+  const visibleSessions = sessions.filter((s) => !state.scheduleHidden.has(s.client_id));
+  const visibleClients = activeClients.filter((c) => !state.scheduleHidden.has(c.id));
 
   mount.innerHTML = `
     <div class="page-header">
@@ -2233,12 +2242,22 @@ async function renderSchedule(mount) {
     </div>
 
     <div class="card" style="margin-bottom:20px;">
+      <div class="section-title" style="margin-top:0;">Show / hide clients</div>
+      <p style="color:var(--text-muted); font-size:12.5px; margin-top:0;">Uncheck a client to hide them from the grid and hours table below. ${state.scheduleHidden.size ? `<strong>${state.scheduleHidden.size} hidden.</strong>` : ""}</p>
+      <div style="display:flex; flex-wrap:wrap; gap:8px;">
+        ${activeClients.length ? activeClients.map((c) => `<label style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; background:var(--bg,#f7f8fb); border:1px solid var(--border,#e5e7eb); border-radius:8px; padding:4px 9px; cursor:pointer;">
+          <input type="checkbox" class="sched-client-toggle" data-cid="${c.id}" ${state.scheduleHidden.has(c.id) ? "" : "checked"} /> ${staffEsc(c.child_name)}
+        </label>`).join("") : `<span style="color:var(--text-muted); font-size:12.5px;">No active clients.</span>`}
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:20px;">
       <div class="section-title" style="margin-top:0;">Weekly Hours vs. Target</div>
       <table>
         <thead><tr><th>Child</th><th>Desired Schedule</th><th>Target Hrs/Wk</th><th>Scheduled Hrs/Wk</th><th></th></tr></thead>
         <tbody>
           ${
-            activeClients
+            visibleClients
               .map((c) => {
                 const clientSessions = sessions.filter((s) => s.client_id === c.id);
                 const hours = clientSessions.reduce((sum, s) => sum + hoursBetween(s.start_time, s.end_time), 0);
@@ -2277,15 +2296,20 @@ async function renderSchedule(mount) {
       <div class="schedule-grid">
         <div></div>
         ${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d) => `<div class="day-head">${d}</div>`).join("")}
-        ${renderScheduleRows(sessions)}
+        ${renderScheduleRows(visibleSessions)}
       </div>
     </div>
   `;
 
   document.getElementById("add-session-btn").addEventListener("click", () => openAddSessionModal(activeClients));
+  mount.querySelectorAll(".sched-client-toggle").forEach((cb) => cb.addEventListener("change", () => {
+    const id = Number(cb.dataset.cid);
+    if (cb.checked) state.scheduleHidden.delete(id); else state.scheduleHidden.add(id);
+    renderSchedule(mount);
+  }));
   renderStaffingEstimator(mount);
   mount.querySelector("#est-refresh").addEventListener("click", () => renderStaffingEstimator(mount));
-  wireScheduleGrid(mount, sessions);
+  wireScheduleGrid(mount, visibleSessions);
 }
 
 function wireScheduleGrid(mount, sessions) {
@@ -2423,9 +2447,10 @@ async function renderStaffingEstimator(mount) {
 
   box.innerHTML = `
     <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+      ${tile("Clients with schedules", d.clientCount, `${d.totalHours} client hrs/wk total`)}
       ${tile("RBTs to hire", d.rbtsNeeded, `at ${d.rbtCapacity} hrs/wk each`)}
       ${tile("BCBAs to hire", d.bcbasNeeded, `1 per ${d.bcbaPerRbt} RBTs`)}
-      ${tile("Total client hours/wk", d.totalHours, `${d.clientCount} client${d.clientCount === 1 ? "" : "s"} with schedules`)}
+      ${tile("Total staff needed", (d.rbtsNeeded || 0) + (d.bcbasNeeded || 0), "RBTs + BCBAs")}
     </div>
     <div style="font-weight:600; font-size:13px; margin-bottom:8px;">Proposed staff schedules</div>
     <div style="display:flex; gap:12px; flex-wrap:wrap;">${staffCards}</div>`;
@@ -2663,22 +2688,33 @@ async function renderStaff(mount) {
       </div>
     </div>
     <div id="docs-outstanding" style="margin-bottom:14px;"></div>
+    <div id="staff-bulk-bar" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; background:var(--brand-light,#e8ecfa); border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:10px 14px; margin-bottom:12px;">
+      <strong id="staff-bulk-count" style="font-size:13px;"></strong>
+      <label style="font-size:12.5px;">Status <select id="bulk-status"><option value="">— keep —</option>${["active","onboarding","leave","terminated"].map((s)=>`<option value="${s}">${s}</option>`).join("")}</select></label>
+      <label style="font-size:12.5px;">HR stage <select id="bulk-stage"><option value="">— keep —</option>${["Applicant","Interviewing","Offer Sent","Offer Accepted","Onboarding","Active","Inactive"].map((s)=>`<option value="${s}">${s}</option>`).join("")}</select></label>
+      <label style="font-size:12.5px;">Location <input id="bulk-location" placeholder="(keep)" style="width:130px;" /></label>
+      <button class="btn small" id="staff-bulk-apply">Apply to selected</button>
+      <button class="btn small secondary" id="staff-bulk-delete" style="color:#b91c1c;">Delete selected</button>
+      <span id="staff-bulk-status" style="font-size:12px; color:var(--text-muted);"></span>
+    </div>
     <div class="card">
       <div style="overflow-x:auto;">
-        <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:760px;">
+        <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:800px;">
           <thead><tr style="text-align:left; color:var(--text-muted); font-size:11.5px; text-transform:uppercase;">
+            <th style="padding:8px 10px;"><input type="checkbox" id="staff-select-all" title="Select all" /></th>
             <th style="padding:8px 10px;">Name</th><th style="padding:8px 10px;">Title</th><th style="padding:8px 10px;">Phone</th>
             <th style="padding:8px 10px;">Certifications</th><th style="padding:8px 10px;">Time w/ Spectrum</th><th style="padding:8px 10px;">Status</th>
           </tr></thead>
           <tbody>
             ${staff.length ? staff.map((e) => { const ini = (e.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase(); return `<tr data-staff="${e.id}" style="cursor:pointer;">
+              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><input type="checkbox" class="staff-cb" data-cb="${e.id}" /></td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><div style="display:flex; align-items:center; gap:10px;"><span class="staff-av" data-av="${e.id}" data-hasphoto="${e.hr_photo ? "1" : "0"}" style="flex:0 0 auto; width:32px; height:32px; border-radius:50%; background:#eef0fb; color:#1b2a6b; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; overflow:hidden;">${staffEsc(ini)}</span><span><strong>${staffEsc(e.name)}</strong><div style="color:var(--text-muted); font-size:12px;">${staffEsc(e.email || "")}</div></span></div></td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.role_title || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.phone || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.certifications || (e.credentials || []).map((c) => c.credential_type).join(", ") || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${tenureFrom(e.hire_date)}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><span class="tag">${staffEsc(e.status || "active")}</span></td>
-            </tr>`; }).join("") : `<tr><td colspan="6"><div class="empty-state">No staff yet. Add one or import your Rethink sheet.</div></td></tr>`}
+            </tr>`; }).join("") : `<tr><td colspan="7"><div class="empty-state">No staff yet. Add one or import your Rethink sheet.</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -2687,7 +2723,8 @@ async function renderStaff(mount) {
   mount.querySelector("#staff-add-btn").addEventListener("click", () => openStaffModal(null, mount));
   mount.querySelector("#staff-import-btn").addEventListener("click", () => openStaffImportModal(mount));
   mount.querySelector("#payroll-import-btn").addEventListener("click", () => openPayrollImportModal(mount));
-  mount.querySelectorAll("[data-staff]").forEach((tr) => tr.addEventListener("click", () => openStaffModal(tr.dataset.staff, mount)));
+  mount.querySelectorAll("[data-staff]").forEach((tr) => tr.addEventListener("click", (ev) => { if (ev.target.closest(".staff-cb")) return; openStaffModal(tr.dataset.staff, mount); }));
+  wireStaffBulk(mount);
   try {
     const oc = await api("/api/hr/documents-outstanding");
     const el = mount.querySelector("#docs-outstanding");
@@ -2866,6 +2903,51 @@ function renderStaffDocs(backdrop, id, docs) {
       await postRow(row, { content_base64: String(dataUrl).split(",")[1], filename: f.name, mime_type: f.type || "application/octet-stream", status: "Received", date_received: new Date().toISOString().slice(0, 10) });
       reload();
     });
+  });
+}
+
+function wireStaffBulk(mount) {
+  const bar = mount.querySelector("#staff-bulk-bar");
+  const countEl = mount.querySelector("#staff-bulk-count");
+  const selectAll = mount.querySelector("#staff-select-all");
+  const cbs = () => Array.from(mount.querySelectorAll(".staff-cb"));
+  const selectedIds = () => cbs().filter((c) => c.checked).map((c) => Number(c.dataset.cb));
+  const refresh = () => {
+    const n = selectedIds().length;
+    bar.style.display = n ? "flex" : "none";
+    countEl.textContent = n + " selected";
+    if (selectAll) selectAll.checked = n > 0 && n === cbs().length;
+  };
+  cbs().forEach((c) => c.addEventListener("change", refresh));
+  cbs().forEach((c) => c.addEventListener("click", (e) => e.stopPropagation()));
+  if (selectAll) selectAll.addEventListener("change", () => { cbs().forEach((c) => (c.checked = selectAll.checked)); refresh(); });
+
+  const status = mount.querySelector("#staff-bulk-status");
+  mount.querySelector("#staff-bulk-apply").addEventListener("click", async () => {
+    const ids = selectedIds();
+    if (!ids.length) return;
+    const fields = {};
+    const st = mount.querySelector("#bulk-status").value; if (st) fields.status = st;
+    const stg = mount.querySelector("#bulk-stage").value; if (stg) fields.hr_stage = stg;
+    const loc = mount.querySelector("#bulk-location").value.trim(); if (loc) fields.hr_pref_location = loc;
+    if (!Object.keys(fields).length) { status.textContent = "Pick a field to change first."; return; }
+    status.textContent = "Applying…";
+    try {
+      const r = await api("/api/hr/employees/bulk", { method: "POST", body: { ids, fields } });
+      status.textContent = `Updated ${r.updated}.`;
+      renderStaff(mount);
+    } catch (e) { status.textContent = e.message || "Failed."; }
+  });
+  mount.querySelector("#staff-bulk-delete").addEventListener("click", async () => {
+    const ids = selectedIds();
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} staff member(s)? This cannot be undone.`)) return;
+    status.textContent = "Deleting…";
+    try {
+      const r = await api("/api/hr/employees/bulk", { method: "POST", body: { ids, delete: true } });
+      status.textContent = `Deleted ${r.deleted}.`;
+      renderStaff(mount);
+    } catch (e) { status.textContent = e.message || "Failed."; }
   });
 }
 

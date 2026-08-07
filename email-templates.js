@@ -544,31 +544,24 @@ function etOnAppMutated() {
   etSyncView();
 }
 
+// The native router in index.html owns the #/email-templates and
+// #/failed-emails routes + sidebar buttons now, calling these entry points
+// directly. This replaces the old MutationObserver/hashchange self-healing
+// (which raced the router and could bounce the page to the Dashboard).
 function initEmailTemplates() {
   etInjectStyles();
-  etSyncNavButton();
-  etSyncView();
-
-  const app = document.getElementById("app");
-  if (app) {
-    const observer = new MutationObserver(() => etOnAppMutated());
-    observer.observe(app, { childList: true, subtree: true });
-  }
-
-  window.addEventListener("hashchange", () => {
-    etSyncNavButton();
-    etSyncView();
-  });
-
-  // Defensive retries in case #app / .sidebar nav aren't mounted yet on
-  // first script execution.
-  [150, 500, 1200, 2500, 4000].forEach((ms) => {
-    setTimeout(() => {
-      etSyncNavButton();
-      etSyncView();
-    }, ms);
-  });
 }
+
+window.__renderEmailTemplates = async function (mount) {
+  if (!etCanEdit()) return renderDashboard(mount);
+  const parts = (location.hash || "").replace(/^#\//, "").split("/"); // ["email-templates"] or [.., key]
+  if (parts[1]) return etRenderEditor(mount, parts[1]);
+  return etRenderList(mount);
+};
+window.__renderFailedEmails = async function (mount) {
+  if (!etCanEdit()) return renderDashboard(mount);
+  return etRenderFailedEmails(mount);
+};
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initEmailTemplates);
