@@ -2692,6 +2692,14 @@ async function openStaffModal(id, pageMount) {
   const field = (k, label, type) => `<div class="field"><label>${label}</label><input data-f="${k}" ${type ? `type="${type}"` : ""} value="${staffEsc(emp[k] || "")}" /></div>`;
   const HR_STAGES = ["Applicant", "Interviewing", "Offer Sent", "Offer Accepted", "Onboarding", "Active", "Inactive"];
   const initials = (emp.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  // Precompute dynamic sections defensively so a render error in any one of
+  // them can never stop the whole card from appearing.
+  const safe = (fn) => { try { return fn(); } catch (e) { return `<div class="empty-state">—</div>`; } };
+  const availHtml = id ? safe(() => renderStaffAvailability(emp)) : "";
+  const activityHtml = id ? safe(() => renderStaffActivity(emp)) : "";
+  const timecardsHtml = id ? safe(() => (emp.timecards || []).length
+    ? emp.timecards.map((t) => `<div class="task-row"><div class="info"><strong>${t.pay_period_start ? fmtDate(t.pay_period_start) : "Period"} – ${t.pay_period_end ? fmtDate(t.pay_period_end) : ""}</strong><div class="due">Status: ${staffEsc(t.status)}${Number(t.open_flags) ? ` · ${t.open_flags} open flag(s)` : ""}</div></div><button class="btn small secondary" data-req-sig="${t.id}">Request signature</button></div>`).join("")
+    : `<div class="empty-state">No timecards yet. Import a payroll export to create them.</div>`) : "";
   backdrop.innerHTML = `
     <div class="modal" style="width:620px;">
       <div class="modal-header"><h2>${id ? staffEsc(emp.name) : "Add Staff"}</h2><button class="close-btn">✕</button></div>
@@ -2705,6 +2713,10 @@ async function openStaffModal(id, pageMount) {
         ${field("phone", "Phone")}
         <div class="field full"><label>Address</label><input data-f="address" value="${staffEsc(emp.address || "")}" /></div>
         <div class="field full"><label>Certification(s)</label><input data-f="certifications" value="${staffEsc(emp.certifications || "")}" placeholder="e.g. RBT, CPR/BLS" /></div>
+        <div class="field"><label>Preferred hours</label><input data-f="hr_pref_hours" value="${staffEsc(emp.hr_pref_hours || "")}" placeholder="e.g. 25–30/wk, mornings" /></div>
+        <div class="field"><label>Preferred location</label><input data-f="hr_pref_location" value="${staffEsc(emp.hr_pref_location || "")}" placeholder="e.g. In-clinic, in-home, NW valley" /></div>
+        <div class="field"><label>Language(s)</label><input data-f="hr_pref_language" value="${staffEsc(emp.hr_pref_language || "")}" placeholder="e.g. English, Spanish" /></div>
+        <div class="field full"><label>Other schedule preferences</label><input data-f="hr_pref_notes" value="${staffEsc(emp.hr_pref_notes || "")}" placeholder="Anything else about their ideal schedule" /></div>
         <div class="field"><label>HR stage</label><select data-f="hr_stage">
           <option value="">—</option>
           ${HR_STAGES.map((s) => `<option value="${s}" ${emp.hr_stage === s ? "selected" : ""}>${s}</option>`).join("")}
@@ -2720,14 +2732,10 @@ async function openStaffModal(id, pageMount) {
         <span id="staff-save-status" style="font-size:12.5px; color:var(--text-muted); align-self:center;"></span>
       </div>
       ${id ? `<div class="section-title">Documents</div><div id="staff-docs"></div>` : ""}
-      ${id ? `<div class="section-title">Timecards</div><div id="staff-timecards">${
-        (emp.timecards || []).length
-          ? emp.timecards.map((t) => `<div class="task-row"><div class="info"><strong>${t.pay_period_start ? fmtDate(t.pay_period_start) : "Period"} – ${t.pay_period_end ? fmtDate(t.pay_period_end) : ""}</strong><div class="due">Status: ${staffEsc(t.status)}${Number(t.open_flags) ? ` · ${t.open_flags} open flag(s)` : ""}</div></div><button class="btn small secondary" data-req-sig="${t.id}">Request signature</button></div>`).join("")
-          : `<div class="empty-state">No timecards yet. Import a payroll export to create them.</div>`
-      }</div>` : ""}
+      ${id ? `<div class="section-title">Timecards</div><div id="staff-timecards">${timecardsHtml}</div>` : ""}
       ${id ? `<div class="section-title">Attendance</div><div id="staff-attendance"></div>` : ""}
-      ${id ? `<div class="section-title">Availability</div><div id="staff-availability">${renderStaffAvailability(emp)}</div>` : ""}
-      ${id ? `<div class="section-title">Activity log</div><div id="staff-activity">${renderStaffActivity(emp)}</div>` : ""}
+      ${id ? `<div class="section-title">Availability (submitted by staff)</div><div id="staff-availability">${availHtml}</div>` : ""}
+      ${id ? `<div class="section-title">Activity log</div><div id="staff-activity">${activityHtml}</div>` : ""}
     </div>`;
   document.body.appendChild(backdrop);
   const close = () => backdrop.remove();

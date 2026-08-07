@@ -93,7 +93,7 @@ function hrSyncNavButton() {
   btn.dataset.nav = "hr";
   btn.innerHTML = "<span>👥</span> HR & Recruiting";
   btn.addEventListener("click", () => {
-    location.hash = "#/hr/command-center";
+    location.hash = "#/hr/dashboard";
   });
   nav.appendChild(btn);
 }
@@ -170,13 +170,11 @@ function hrInjectStyles() {
 
 // ---------------- tabs ----------------
 const HR_TABS = [
-  { key: "command-center", label: "BCBA Command Center" },
   { key: "dashboard", label: "Recruiting Dashboard" },
   { key: "pipeline", label: "Applicant Pipeline" },
   { key: "inbox", label: "Recruiting Inbox" },
   { key: "scheduling", label: "Scheduling" },
   { key: "positions", label: "Positions" },
-  { key: "timecards", label: "Timecards" },
   { key: "audit", label: "Audit Log" },
 ];
 
@@ -566,9 +564,9 @@ function hrOpenPositionModal(pos) {
 async function hrRenderScheduling(body) {
   const canManage = hrCanManage();
   const [slots, interviews, positions] = await Promise.all([
-    hrApi("/api/hr/slots"),
-    hrApi("/api/hr/interviews"),
-    canManage ? hrApi("/api/hr/positions") : Promise.resolve([]),
+    hrApi("/api/hr/slots").catch(() => []),
+    hrApi("/api/hr/interviews").catch(() => []),
+    canManage ? hrApi("/api/hr/positions").catch(() => []) : Promise.resolve([]),
   ]);
 
   const slotForm = canManage
@@ -1525,7 +1523,7 @@ let hrRenderInFlight = false;
 function hrRenderKeyFor(hash) {
   const parts = hash.replace(/^#\//, "").split("/");
   if (parts[1] === "candidate" && parts[2]) return "cand:" + parts[2];
-  return "tab:" + (parts[1] || "command-center");
+  return "tab:" + (parts[1] || "dashboard");
 }
 
 // Core render: draws the current #/hr hash into the given mount element.
@@ -1537,18 +1535,16 @@ async function hrDoRender(mount) {
     await hrRenderCandidate(mount, parts[2]);
     return;
   }
-  const tab = parts[1] || "command-center";
+  const tab = parts[1] || "dashboard";
   const renderers = {
-    "command-center": hrRenderCommandCenter,
     dashboard: hrRenderDashboard,
     pipeline: hrRenderPipeline,
     inbox: hrRenderInbox,
     scheduling: hrRenderScheduling,
     positions: hrRenderPositions,
-    timecards: hrRenderTimecards,
     audit: hrRenderAudit,
   };
-  await hrRenderShell(mount, tab, renderers[tab] || hrRenderCommandCenter);
+  await hrRenderShell(mount, tab, renderers[tab] || hrRenderDashboard);
 }
 
 // Primary entry point: the native router calls this directly for #/hr routes,

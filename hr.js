@@ -452,6 +452,11 @@ module.exports = function initHr(ctx) {
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_stipulations TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_milestones_sent TEXT`).catch(() => {}); // JSON: {30:ts,60:ts,90:ts}
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_activity TEXT`).catch(() => {});       // JSON array of {at, text}
+    // Schedule preferences shown on the staff card (owner/HR-entered).
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_pref_hours TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_pref_location TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_pref_language TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_pref_notes TEXT`).catch(() => {});
     // Document tracker: one row per (employee, doc_key). social/id store status only.
     await dbRun(`CREATE TABLE IF NOT EXISTS hr_doc_tracker (
       id SERIAL PRIMARY KEY,
@@ -2258,7 +2263,8 @@ module.exports = function initHr(ctx) {
         if (!canManage) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
         const allowed = ["name", "email", "role_title", "employment_type", "hire_date", "phone", "address", "certifications", "status", "rethink_id",
-          "hr_stage", "hr_hire_date", "hr_offer_accepted_date", "hr_availability", "hr_stipulations"];
+          "hr_stage", "hr_hire_date", "hr_offer_accepted_date", "hr_availability", "hr_stipulations",
+          "hr_pref_hours", "hr_pref_location", "hr_pref_language", "hr_pref_notes"];
         const fields = Object.keys(b).filter((k) => allowed.includes(k));
         if (!fields.length) return json(res, 400, { error: "Nothing to update" });
         await dbRun(`UPDATE hr_employees SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`, [...fields.map((f) => b[f]), Number(empDetailMatch[1])]);
