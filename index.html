@@ -2592,7 +2592,8 @@ async function renderStaff(mount) {
   mount.innerHTML = `
     <div class="page-header">
       <div><h1>Staff</h1><p>Team directory — contact info, documents, certifications, timecards, and length of employment.</p></div>
-      <div style="display:flex; gap:8px;">
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn secondary" id="payroll-import-btn">🧾 Import payroll → timecards</button>
         <button class="btn secondary" id="staff-import-btn">⬆ Import Rethink sheet</button>
         <button class="btn" id="staff-add-btn">+ Add Staff</button>
       </div>
@@ -2621,6 +2622,7 @@ async function renderStaff(mount) {
   `;
   mount.querySelector("#staff-add-btn").addEventListener("click", () => openStaffModal(null, mount));
   mount.querySelector("#staff-import-btn").addEventListener("click", () => openStaffImportModal(mount));
+  mount.querySelector("#payroll-import-btn").addEventListener("click", () => openPayrollImportModal(mount));
   mount.querySelectorAll("[data-staff]").forEach((tr) => tr.addEventListener("click", () => openStaffModal(tr.dataset.staff, mount)));
   try {
     const oc = await api("/api/hr/documents-outstanding");
@@ -2956,6 +2958,87 @@ function openStaffImportModal(pageMount) {
     };
     reader.readAsText(file);
   });
+}
+
+// Upload a Rethink bi-weekly payroll export (.xlsx) → auto-create a timecard
+// per employee, preview matches, then send each staff member a signature link.
+function openPayrollImportModal(pageMount) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal" style="width:680px;">
+      <div class="modal-header"><h2>Import Payroll Export → Timecards</h2><button class="close-btn">✕</button></div>
+      <p style="font-size:13px; color:var(--text-muted); margin-top:0;">Upload the bi-weekly <strong>Rethink payroll export</strong> (the <code>.xlsx</code> file). A timecard is built for each staff member from their shifts — <strong>hours only, no pay</strong> — then you can send everyone a link to review, edit, and sign.</p>
+      <input type="file" id="payroll-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+      <div id="payroll-status" style="font-size:12.5px; margin-top:10px; color:var(--text-muted);"></div>
+      <div id="payroll-preview" style="margin-top:12px;"></div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".close-btn").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+
+  const statusEl = backdrop.querySelector("#payroll-status");
+  const previewEl = backdrop.querySelector("#payroll-preview");
+
+  backdrop.querySelector("#payroll-file").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    statusEl.textContent = "Reading & parsing the export…";
+    previewEl.innerHTML = "";
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const b64 = String(reader.result).split(",")[1];
+      try {
+        const res = await api("/api/hr/payroll/import", { method: "POST", body: { filename: file.name, content_base64: b64 } });
+        renderPreview(res);
+      } catch (err) { statusEl.textContent = err.message || "Could not import."; }
+    };
+    reader.readAsDataURL(file);
+  });
+
+  function renderPreview(res) {
+    statusEl.textContent = "";
+    const rows = (res.employees || []).map((emp) => {
+      const badge = !emp.matched
+        ? `<span class="tag" style="background:#fee2e2; color:#991b1b;">no staff match</span>`
+        : (!emp.has_email ? `<span class="tag" style="background:#fef3c7; color:#92400e;">no email</span>` : `<span class="tag" style="background:#dcfce7; color:#166534;">ready</span>`);
+      return `<tr>
+        <td style="padding:6px 8px; border-top:1px solid var(--border,#eee);">${staffEsc(emp.name)}</td>
+        <td style="padding:6px 8px; border-top:1px solid var(--border,#eee); text-align:right;">${emp.total_hours}</td>
+        <td style="padding:6px 8px; border-top:1px solid var(--border,#eee); text-align:right;">${emp.shifts}</td>
+        <td style="padding:6px 8px; border-top:1px solid var(--border,#eee);">${badge}</td>
+      </tr>`;
+    }).join("");
+    const warn = [];
+    if (res.unmatched && res.unmatched.length) warn.push(`<div style="color:#991b1b; font-size:12.5px; margin-top:6px;">⚠ ${res.unmatched.length} employee(s) had no matching staff record (import them first / set their Rethink ID): ${staffEsc(res.unmatched.join(", "))}</div>`);
+    if (res.no_email && res.no_email.length) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ ${res.no_email.length} matched staff have no email on file and won't receive a link: ${staffEsc(res.no_email.join(", "))}</div>`);
+    previewEl.innerHTML = `
+      <div style="font-size:13px; margin-bottom:8px;">Pay period <strong>${staffEsc(res.pay_period_start || "")} – ${staffEsc(res.pay_period_end || "")}</strong> · ${res.matched}/${res.total_employees} matched to staff. Timecards created.</div>
+      <div style="max-height:260px; overflow:auto; border:1px solid var(--border,#eee); border-radius:8px;">
+        <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+          <thead><tr style="text-align:left; color:var(--text-muted); text-transform:uppercase; font-size:11px;">
+            <th style="padding:6px 8px;">Staff</th><th style="padding:6px 8px; text-align:right;">Hours</th><th style="padding:6px 8px; text-align:right;">Shifts</th><th style="padding:6px 8px;">Status</th>
+          </tr></thead><tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${warn.join("")}
+      <div style="margin-top:14px; display:flex; gap:8px; align-items:center;">
+        <button class="btn" id="payroll-send" ${res.matched ? "" : "disabled"}>Send ${res.matched} timecard(s) for signature</button>
+        <button class="btn secondary" id="payroll-done">Close</button>
+        <span id="payroll-send-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+      </div>`;
+    previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); renderStaff(pageMount); });
+    previewEl.querySelector("#payroll-send").addEventListener("click", async () => {
+      const btn = previewEl.querySelector("#payroll-send");
+      btn.disabled = true;
+      previewEl.querySelector("#payroll-send-status").textContent = "Sending…";
+      try {
+        const r = await api("/api/hr/timecards/send-all", { method: "POST", body: { pay_period_end: res.pay_period_end } });
+        previewEl.querySelector("#payroll-send-status").textContent = `Sent ${r.sent}${r.skipped && r.skipped.length ? ` · ${r.skipped.length} skipped (no email)` : ""} ✓`;
+      } catch (e) { btn.disabled = false; previewEl.querySelector("#payroll-send-status").textContent = e.message || "Send failed."; }
+    });
+  }
 }
 
 // ---------------- Admin ----------------
