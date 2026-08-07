@@ -510,6 +510,7 @@ async function route() {
   else if (hash.startsWith("#/schedule")) await renderSchedule(mount);
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
+  else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/map")) { if (window.__renderMap) await window.__renderMap(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/financial-center")) { if (window.__renderFinancialCenter) await window.__renderFinancialCenter(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/email-templates")) { if (window.__renderEmailTemplates) await window.__renderEmailTemplates(mount); else await renderDashboard(mount); }
@@ -552,6 +553,8 @@ function renderShell(active) {
     navItems.push({ key: "hr", label: "HR & Recruiting", icon: "👥" });
   if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
     navItems.push({ key: "staff", label: "Staff", icon: "🧑‍⚕️" });
+  if (["owner", "admin", "super_admin", "hr_admin", "clinical"].includes(state.user.role))
+    navItems.push({ key: "supervision", label: "RBT Supervision", icon: "📋" });
   if (["owner", "super_admin", "admin", "scheduling"].includes(state.user.role))
     navItems.push({ key: "map", label: "Map", icon: "🗺️" });
   if (["owner", "super_admin"].includes(state.user.role))
@@ -693,6 +696,10 @@ async function renderDashboard(mount) {
         <div id="dash-staffing"><div class="empty-state">Calculating…</div></div>
       </div>
     </div>
+    ${dash.supervision ? `<div class="card" style="margin-top:20px;">
+      <div class="section-title" style="margin-top:0;">RBT Supervision — this month</div>
+      ${renderSupervisionWidget(dash.supervision)}
+    </div>` : ""}
   `;
 
   document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
@@ -700,6 +707,22 @@ async function renderDashboard(mount) {
     el.addEventListener("click", () => (location.hash = "#/auth-alerts/" + el.dataset.authBucket));
   });
   fillDashStaffing(mount);
+}
+
+function renderSupervisionWidget(s) {
+  const overall = s.overall_pct == null ? "—" : s.overall_pct + "%";
+  const ok = s.overall_pct != null && s.overall_pct >= s.min_pct;
+  const tile = (val, label, color) => `<div style="flex:1; min-width:120px; background:var(--bg,#f7f8fb); border:1px solid var(--border,#e5e7eb); border-radius:12px; padding:14px 16px;">
+    <div style="font-size:26px; font-weight:800; color:${color || "var(--brand-navy,#1b2a6b)"};">${val}</div>
+    <div style="font-size:12px; color:var(--text-muted);">${label}</div></div>`;
+  return `<div style="display:flex; gap:12px; flex-wrap:wrap;">
+      ${tile(overall, `Overall supervision (min ${s.min_pct}%)`, ok ? "#166534" : (s.overall_pct == null ? "var(--brand-navy,#1b2a6b)" : "#b91c1c"))}
+      ${tile(`${s.meeting}/${s.staff_count}`, "Staff meeting the minimum")}
+      ${tile(`${s.signed_count}/${s.staff_count}`, "Signed off")}
+      ${tile(s.need_hours_upload, "Missing worked hours", s.need_hours_upload ? "#b45309" : "var(--brand-navy,#1b2a6b)")}
+    </div>
+    ${s.need_hours_upload ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">⬆ Upload this month's Rethink hours export on the <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a> page to calculate percentages.</div>` : ""}
+    <div style="margin-top:10px;"><a href="#/supervision" class="btn small secondary">Open supervision tracker</a></div>`;
 }
 
 async function fillDashStaffing(mount) {
@@ -2792,6 +2815,7 @@ async function openStaffModal(id, pageMount) {
       </div>
       ${id ? `<div class="section-title">Documents</div><div id="staff-docs"></div>` : ""}
       ${id ? `<div class="section-title">Timecards</div><div id="staff-timecards">${timecardsHtml}</div>` : ""}
+      ${id ? `<div class="section-title">Supervision</div><div id="staff-supervision"></div>` : ""}
       ${id ? `<div class="section-title">Attendance</div><div id="staff-attendance"></div>` : ""}
       ${id ? `<div class="section-title">Availability (submitted by staff)</div><div id="staff-availability">${availHtml}</div>` : ""}
       ${id ? `<div class="section-title">Activity log</div><div id="staff-activity">${activityHtml}</div>` : ""}
@@ -2844,6 +2868,10 @@ async function openStaffModal(id, pageMount) {
   if (id && window.HRAttendance) {
     const attEl = backdrop.querySelector("#staff-attendance");
     if (attEl) window.HRAttendance.renderSection(attEl, id, emp.name);
+  }
+  if (id && window.HRSupervision) {
+    const supEl = backdrop.querySelector("#staff-supervision");
+    if (supEl) window.HRSupervision.renderStaffSection(supEl, id);
   }
 }
 
@@ -3492,6 +3520,7 @@ async function renderTeamSection(mount) {
   <script src="hr-recruiting.js"></script>
   <script src="ot-frontend.js"></script>
   <script src="hr-attendance-frontend.js"></script>
+  <script src="supervision-frontend.js"></script>
   <script src="supply-requests-frontend.js"></script>
   <script src="geo-map-frontend.js"></script>
 

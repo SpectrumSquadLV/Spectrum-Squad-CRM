@@ -2865,6 +2865,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   // Supply Requests add-on owns /api/supply/* (public submit/track split enforced
   // internally, so it is dispatched before the global 401 gate below).
+  if (pathname.startsWith("/api/supervision")) {
+    const handled = await supervision.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/supply/")) {
     const handled = await supply.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -2997,6 +3002,14 @@ async function handle(req, res, pathname, method, query = {}) {
         }
       }
 
+      // Supervision widget (owner/admin/clinical see it on the dashboard).
+      let supervisionWidget = null;
+      try {
+        if (["owner", "super_admin", "admin", "hr_admin", "clinical"].includes(user && user.role)) {
+          supervisionWidget = await supervision.widget();
+        }
+      } catch (e) { /* non-fatal */ }
+
       return json(res, 200, {
         byStage,
         overdue,
@@ -3006,6 +3019,7 @@ async function handle(req, res, pathname, method, query = {}) {
         stages: pipeline.STAGES,
         byInsurance,
         authCounts,
+        supervision: supervisionWidget,
       });
     }
 
@@ -4796,6 +4810,11 @@ const supply = require("./supply-requests")({
 const geoMap = require("./geo-map")({
   dbGet, dbAll, dbRun, nowISO, crypto, json,
 });
+// ===== RBT SUPERVISION TRACKER add-on: monthly supervision logs per employee,
+// Rethink-hours import, BCBA sign-off with auto-email + PDF. Owns /api/supervision/*. =====
+const supervision = require("./supervision")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
+});
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
@@ -4888,6 +4907,7 @@ async function start() {
   await ot.initTables().catch((e) => console.error("OT initTables failed:", e));
   await attendance.initTables().catch((e) => console.error("Attendance initTables failed:", e));
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
+  await supervision.initTables().catch((e) => console.error("Supervision initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
