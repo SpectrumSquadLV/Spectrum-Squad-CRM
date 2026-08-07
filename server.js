@@ -393,6 +393,10 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_tricare_date TEXT;
 -- Rename the old Vineland stage task to the In-Clinic Assessment.
 UPDATE stage_tasks SET label = 'Schedule In-Clinic Assessment' WHERE stage_key = 'assessment_scheduling' AND label = 'Schedule Vineland / Intake Assessment';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS can_view_financials BOOLEAN NOT NULL DEFAULT false;
+-- Per-user granular module access overrides: JSON map { moduleKey: bool }.
+-- Absent key = fall back to the role default. Lets the owner grant or restrict
+-- individual nav sections per user.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS module_access TEXT;
 
   CREATE TABLE IF NOT EXISTS client_financial_settings (
     client_id INTEGER PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
@@ -2829,6 +2833,33 @@ async function handle(req, res, pathname, method, query = {}) {
 
   const cookies = auth.parseCookies(req);
   const user = await auth.getUserFromToken(cookies.session);
+
+  // Per-user granular module access: if the owner explicitly turned a module OFF
+  // for this user, block its API here (public sub-routes are exempt). Absent =
+  // role defaults apply, so existing users are unaffected.
+  if (user && user.module_access && !pathname.includes("/public")) {
+    let ma = null; try { ma = JSON.parse(user.module_access); } catch (e) { ma = null; }
+    if (ma) {
+      const prefixKey = (
+        pathname.startsWith("/api/hr/") ? "hr" :
+        pathname.startsWith("/api/ot/") ? "ot" :
+        pathname.startsWith("/api/supervision") ? "supervision" :
+        pathname.startsWith("/api/fin/") ? "financial-center" :
+        pathname.startsWith("/api/leads") ? "leads" :
+        pathname.startsWith("/api/policies") ? "policies" :
+        pathname.startsWith("/api/geo") ? "map" :
+        pathname.startsWith("/api/supply/") ? "supply" :
+        pathname.startsWith("/api/attendance") ? "staff" :
+        null
+      );
+      if (prefixKey && ma[prefixKey] === false) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Your account doesn't have access to this section." }));
+        return true;
+      }
+    }
+  }
+
   if (pathname.startsWith("/api/screener/")) {
     const handled = await screener.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -4307,7 +4338,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     if (pathname === "/api/admin/users" && method === "GET") {
       if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted to manage users" });
       const rows = await dbAll(
-        `SELECT id, name, email, role, department_id, can_view_financials, created_at
+        `SELECT id, name, email, role, department_id, can_view_financials, module_access, created_at
          FROM users ORDER BY created_at NULLS LAST, id`
       );
       return json(res, 200, { users: rows, roles: ROLE_CATALOG });
@@ -4333,7 +4364,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
       const newId = await createUser({ name, email, password, role, department_id: departmentId });
       const created = await dbGet(
-        "SELECT id, name, email, role, department_id, can_view_financials, created_at FROM users WHERE id = ?",
+        "SELECT id, name, email, role, department_id, can_view_financials, module_access, created_at FROM users WHERE id = ?",
         [newId]
       );
       return json(res, 201, created);
@@ -4386,11 +4417,23 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         params.push(hash, salt);
       }
 
+      if ("module_access" in body) {
+        // JSON map { moduleKey: bool }. Store null to clear (revert to role defaults).
+        let ma = null;
+        if (body.module_access && typeof body.module_access === "object") {
+          const clean = {};
+          for (const k of Object.keys(body.module_access)) clean[String(k).slice(0, 40)] = !!body.module_access[k];
+          ma = JSON.stringify(clean);
+        }
+        sets.push("module_access = ?");
+        params.push(ma);
+      }
+
       if (!sets.length) return json(res, 400, { error: "Nothing to update." });
       params.push(targetId);
       await dbRun(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`, params);
       const updated = await dbGet(
-        "SELECT id, name, email, role, department_id, can_view_financials, created_at FROM users WHERE id = ?",
+        "SELECT id, name, email, role, department_id, can_view_financials, module_access, created_at FROM users WHERE id = ?",
         [targetId]
       );
       return json(res, 200, updated);

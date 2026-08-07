@@ -495,6 +495,10 @@ async function route() {
 
   const [, view, param] = hash.split("/");
 
+  // Enforce per-user module access on direct hash navigation.
+  const maGuard = getModuleAccess(state.user);
+  if (maGuard && view && maGuard[view] === false) { location.hash = "#/dashboard"; return; }
+
   renderShell(view || "dashboard");
 
   const mount = document.getElementById("view-mount");
@@ -537,6 +541,31 @@ async function loadTherapists() {
   state.therapists = await api("/api/therapists");
 }
 
+// Catalog of grantable nav modules (for per-user granular access).
+const MODULE_CATALOG = {
+  dashboard: { label: "Dashboard", icon: "◧" },
+  pipeline: { label: "Client Pipeline", icon: "▤" },
+  tasks: { label: "Tasks & Alerts", icon: "✓" },
+  schedule: { label: "Therapy Schedule", icon: "▦" },
+  staff: { label: "Staff", icon: "🧑‍⚕️" },
+  supervision: { label: "RBT Supervision", icon: "📋" },
+  leads: { label: "Lead Management", icon: "🎯" },
+  policies: { label: "Policies & SOPs", icon: "📚" },
+  map: { label: "Map", icon: "🗺️" },
+  hr: { label: "HR & Recruiting", icon: "👥" },
+  outbox: { label: "Message Outbox", icon: "✉" },
+  "financial-center": { label: "Financial Center", icon: "💰" },
+  "email-templates": { label: "Email Templates", icon: "✎" },
+  "failed-emails": { label: "Failed Emails", icon: "⚠" },
+  "auth-alerts": { label: "Authorization Alerts", icon: "⏰" },
+  admin: { label: "Admin Settings", icon: "⚙" },
+};
+function getModuleAccess(user) {
+  if (!user || !user.module_access) return null;
+  try { return typeof user.module_access === "string" ? JSON.parse(user.module_access) : user.module_access; }
+  catch (e) { return null; }
+}
+
 // ---------------- Shell (sidebar + layout) ----------------
 function renderShell(active) {
   // OT-only users see no ABA navigation at all (their OT button is injected by
@@ -568,6 +597,16 @@ function renderShell(active) {
     navItems.push({ key: "email-templates", label: "Email Templates", icon: "✎" });
     navItems.push({ key: "failed-emails", label: "Failed Emails", icon: "⚠" });
     navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
+  }
+
+  // Per-user granular access overrides: an explicit false hides a module; an
+  // explicit true adds one the role wouldn't normally see. Absent = role default.
+  const ma = getModuleAccess(state.user);
+  if (ma) {
+    for (let i = navItems.length - 1; i >= 0; i--) if (ma[navItems[i].key] === false) navItems.splice(i, 1);
+    Object.keys(ma).forEach((k) => {
+      if (ma[k] === true && !navItems.some((n) => n.key === k) && MODULE_CATALOG[k]) navItems.push({ key: k, label: MODULE_CATALOG[k].label, icon: MODULE_CATALOG[k].icon });
+    });
   }
 
   root.innerHTML = `
@@ -3415,6 +3454,7 @@ async function renderTeamSection(mount) {
               </td>
               <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3); white-space:nowrap;">
                 <button class="btn small" data-save-user="${u.id}">Save</button>
+                <button class="btn small secondary" data-access-user="${u.id}">Access</button>
                 <button class="btn small secondary" data-reset-user="${u.id}">Reset password</button>
                 ${String(u.id) === String(state.user.id) ? "" : `<button class="btn small secondary" data-delete-user="${u.id}" style="color:#b91c1c;">Remove</button>`}
               </td>
@@ -3479,6 +3519,13 @@ async function renderTeamSection(mount) {
     });
   });
 
+  body.querySelectorAll("[data-access-user]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const u = users.find((x) => String(x.id) === btn.dataset.accessUser);
+      if (u) openAccessModal(u, () => renderTeamSection(mount));
+    });
+  });
+
   body.querySelectorAll("[data-reset-user]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.resetUser;
@@ -3535,6 +3582,54 @@ async function renderTeamSection(mount) {
       addBtn.disabled = false;
     }
   });
+}
+
+// Granular per-user module access editor. Each module can be Default (role),
+// On (granted), or Off (denied). Saves module_access to the user.
+function openAccessModal(u, onDone) {
+  const current = getModuleAccess(u) || {};
+  const keys = Object.keys(MODULE_CATALOG);
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  const rowFor = (k) => {
+    const v = current[k]; // true | false | undefined
+    const sel = (val, label) => `<option value="${val}" ${String(v) === val || (val === "default" && v === undefined) ? "selected" : ""}>${label}</option>`;
+    return `<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:5px 0; border-bottom:1px solid var(--border,#f0f0f3);">
+      <span style="font-size:13px;">${MODULE_CATALOG[k].icon} ${adminEsc(MODULE_CATALOG[k].label)}</span>
+      <select data-mod="${k}" style="min-width:120px;">${sel("default", "Role default")}${sel("true", "On (grant)")}${sel("false", "Off (hide)")}</select>
+    </div>`;
+  };
+  backdrop.innerHTML = `<div class="modal" style="width:520px; max-width:94vw;">
+    <div class="modal-header"><h2 style="font-size:16px;">Access — ${adminEsc(u.name)}</h2><button class="close-btn">✕</button></div>
+    <p style="font-size:12.5px; color:var(--text-muted); margin-top:0;">Fine-tune what <strong>${adminEsc(u.name)}</strong> can see. "Role default" uses their role's normal access; "On" grants a section; "Off" hides it. (Financials and other sensitive data still enforce their own rules server-side.)</p>
+    <div style="max-height:52vh; overflow:auto;">${keys.map(rowFor).join("")}</div>
+    <div style="margin-top:14px; display:flex; gap:8px;">
+      <button class="btn" id="acc-save">Save access</button>
+      <button class="btn secondary" id="acc-reset">Reset all to role default</button>
+      <span id="acc-status" style="font-size:12.5px; color:var(--text-muted); align-self:center;"></span>
+    </div>
+  </div>`;
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".close-btn").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+  const save = async (resetAll) => {
+    let map = {};
+    if (!resetAll) {
+      backdrop.querySelectorAll("[data-mod]").forEach((sel) => {
+        if (sel.value === "true") map[sel.dataset.mod] = true;
+        else if (sel.value === "false") map[sel.dataset.mod] = false;
+      });
+    }
+    backdrop.querySelector("#acc-status").textContent = "Saving…";
+    try {
+      await api(`/api/admin/users/${u.id}`, { method: "PATCH", body: { module_access: resetAll ? null : map } });
+      backdrop.querySelector("#acc-status").textContent = "Saved ✓";
+      setTimeout(() => { close(); if (onDone) onDone(); }, 700);
+    } catch (e) { backdrop.querySelector("#acc-status").textContent = e.message || "Failed."; }
+  };
+  backdrop.querySelector("#acc-save").addEventListener("click", () => save(false));
+  backdrop.querySelector("#acc-reset").addEventListener("click", () => save(true));
 }
 
 </script>
