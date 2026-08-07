@@ -2672,6 +2672,8 @@ async function openStaffModal(id, pageMount) {
           ? emp.timecards.map((t) => `<div class="task-row"><div class="info"><strong>${t.pay_period_start ? fmtDate(t.pay_period_start) : "Period"} – ${t.pay_period_end ? fmtDate(t.pay_period_end) : ""}</strong><div class="due">Status: ${staffEsc(t.status)}${Number(t.open_flags) ? ` · ${t.open_flags} open flag(s)` : ""}</div></div><button class="btn small secondary" data-req-sig="${t.id}">Request signature</button></div>`).join("")
           : `<div class="empty-state">No timecards yet. Import a payroll export to create them.</div>`
       }</div>` : ""}
+      ${id ? `<div class="section-title">Availability</div><div id="staff-availability">${renderStaffAvailability(emp)}</div>` : ""}
+      ${id ? `<div class="section-title">Activity log</div><div id="staff-activity">${renderStaffActivity(emp)}</div>` : ""}
     </div>`;
   document.body.appendChild(backdrop);
   const close = () => backdrop.remove();
@@ -2693,6 +2695,18 @@ async function openStaffModal(id, pageMount) {
     try { const r = await api(`/api/hr/timecards/${btn.dataset.reqSig}/request-verification`, { method: "POST" }); btn.textContent = r.sent ? "Sent ✓" : "Link created"; }
     catch (e) { btn.textContent = "Failed"; alert(e.message); }
   }));
+
+  // When the HR stage is switched to "Offer Accepted", offer to fire the
+  // onboarding bundle (welcome emails + tasks) before saving.
+  if (id) {
+    const stageSel = backdrop.querySelector('[data-f="hr_stage"]');
+    const priorStage = emp.hr_stage || "";
+    if (stageSel) stageSel.addEventListener("change", () => {
+      if (stageSel.value === "Offer Accepted" && priorStage !== "Offer Accepted") {
+        openOfferAcceptedModal(id, emp, () => { close(); if (pageMount) renderStaff(pageMount); });
+      }
+    });
+  }
 
   // Photo avatar
   if (id && emp.hr_photo) {
@@ -2765,6 +2779,103 @@ function renderStaffDocs(backdrop, id, docs) {
       reload();
     });
   });
+}
+
+function renderStaffAvailability(emp) {
+  let av = null, st = null;
+  try { av = emp.hr_availability ? (typeof emp.hr_availability === "string" ? JSON.parse(emp.hr_availability) : emp.hr_availability) : null; } catch (e) {}
+  try { st = emp.hr_stipulations ? (typeof emp.hr_stipulations === "string" ? JSON.parse(emp.hr_stipulations) : emp.hr_stipulations) : null; } catch (e) {}
+  if ((!av || !Object.keys(av).length) && (!st || !Object.keys(st).length)) {
+    return `<div class="empty-state">No availability submitted yet. Sending the scheduling email (via Offer Accepted) invites the new hire to fill this out.</div>`;
+  }
+  const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const BLOCKS = [["morning", "Morning"], ["afternoon", "Afternoon"], ["evening", "Evening"]];
+  let grid = "";
+  if (av && Object.keys(av).length) {
+    grid = `<div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:12px;width:100%;">
+      <tr><th style="border:1px solid var(--border,#eee);padding:4px;">Day</th>${BLOCKS.map((b) => `<th style="border:1px solid var(--border,#eee);padding:4px;">${b[1]}</th>`).join("")}</tr>
+      ${DAYS.map((d) => `<tr><td style="border:1px solid var(--border,#eee);padding:4px;font-weight:600;">${d}</td>${BLOCKS.map((b) => {
+        const on = av[d] && av[d][b[0]];
+        return `<td style="border:1px solid var(--border,#eee);padding:4px;text-align:center;${on ? "background:#5fa8a0;color:#fff;font-weight:700;" : ""}">${on ? "✓" : ""}</td>`;
+      }).join("")}</tr>`).join("")}
+    </table></div>`;
+  }
+  let notes = "";
+  if (st && Object.keys(st).length) {
+    const row = (k, label) => st[k] ? `<div style="font-size:12.5px;margin-top:4px;"><strong>${label}:</strong> ${staffEsc(st[k])}</div>` : "";
+    notes = `<div style="margin-top:8px;">
+      ${row("transport", "Transportation")}${row("earliest", "Earliest start")}${row("restrictions", "Cannot work")}${row("hours", "Preferred hours")}${row("notes", "Notes")}
+    </div>`;
+  }
+  return grid + notes;
+}
+
+function renderStaffActivity(emp) {
+  let arr = [];
+  try { arr = emp.hr_activity ? (typeof emp.hr_activity === "string" ? JSON.parse(emp.hr_activity) : emp.hr_activity) : []; } catch (e) {}
+  if (!Array.isArray(arr) || !arr.length) return `<div class="empty-state">No activity logged yet.</div>`;
+  return arr.slice(0, 30).map((a) => `<div class="task-row"><div class="info"><div style="font-size:12.5px;">${staffEsc(a.text || "")}</div><div class="due">${a.at ? fmtDate(a.at) : ""}</div></div></div>`).join("");
+}
+
+// Offer-accepted onboarding bundle: pick which welcome emails/tasks to fire,
+// then POST to /offer-accepted. Each action is a checkbox that starts checked.
+function openOfferAcceptedModal(id, emp, onDone) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  const today = new Date().toISOString().slice(0, 10);
+  const hire = (emp.hr_hire_date || emp.hire_date || "").slice(0, 10) || today;
+  backdrop.innerHTML = `
+    <div class="modal" style="width:560px;">
+      <div class="modal-header"><h2>🎉 Offer accepted — start onboarding</h2><button class="close-btn">✕</button></div>
+      <p style="font-size:13px; color:var(--text-muted); margin-top:0;">Choose what to send <strong>${staffEsc(emp.name)}</strong> now. Uncheck anything you'd rather handle later.</p>
+      <div class="field"><label>Start / hire date</label><input id="oa-hire" type="date" value="${staffEsc(hire)}" /></div>
+      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:10px;"><input type="checkbox" data-oa="dojo" checked /><span><strong>Class Dojo welcome email</strong><br><span style="font-size:12px; color:var(--text-muted);">Warm welcome + start date.</span></span></label>
+      <div class="field" style="margin:6px 0 6px 26px;"><label>Class Dojo invite link (optional)</label><input id="oa-dojo-link" placeholder="https://…" /></div>
+      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="rethink" checked /><span><strong>Rethink credentials email</strong><br><span style="font-size:12px; color:var(--text-muted);">Username only — send the password by a separate secure channel.</span></span></label>
+      <div class="field" style="margin:6px 0 6px 26px;"><label>Rethink username (optional)</label><input id="oa-rethink-user" placeholder="jsmith" /></div>
+      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="scheduling" checked /><span><strong>Availability / scheduling email</strong><br><span style="font-size:12px; color:var(--text-muted);">Sends a personal link to submit their weekly availability.</span></span></label>
+      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="task_homebase" checked /><span><strong>Task: add to Homebase</strong></span></label>
+      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="task_rethink" checked /><span><strong>Task: add to Rethink</strong></span></label>
+      <div style="margin-top:16px; display:flex; gap:8px;">
+        <button class="btn" id="oa-go">Confirm &amp; send</button>
+        <button class="btn secondary" id="oa-skip">Just set the stage</button>
+        <span id="oa-status" style="font-size:12.5px; color:var(--text-muted); align-self:center;"></span>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".close-btn").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+  const run = async (fireActions) => {
+    const status = backdrop.querySelector("#oa-status");
+    status.textContent = "Working…";
+    backdrop.querySelector("#oa-go").disabled = true;
+    backdrop.querySelector("#oa-skip").disabled = true;
+    try {
+      if (fireActions) {
+        const actions = {};
+        backdrop.querySelectorAll("[data-oa]").forEach((c) => { actions[c.dataset.oa] = c.checked; });
+        const body = {
+          actions,
+          hire_date: backdrop.querySelector("#oa-hire").value || null,
+          class_dojo_link: backdrop.querySelector("#oa-dojo-link").value || null,
+          rethink_username: backdrop.querySelector("#oa-rethink-user").value || null,
+        };
+        const r = await api(`/api/hr/employees/${id}/offer-accepted`, { method: "POST", body });
+        status.textContent = "Sent: " + ((r.fired && r.fired.length) ? r.fired.join(", ") : "stage updated") + " ✓";
+      } else {
+        await api(`/api/hr/employees/${id}`, { method: "PATCH", body: { hr_stage: "Offer Accepted", hr_hire_date: backdrop.querySelector("#oa-hire").value || null } });
+        status.textContent = "Stage updated ✓";
+      }
+      setTimeout(() => { close(); if (onDone) onDone(); }, 800);
+    } catch (e) {
+      status.textContent = e.message || "Failed.";
+      backdrop.querySelector("#oa-go").disabled = false;
+      backdrop.querySelector("#oa-skip").disabled = false;
+    }
+  };
+  backdrop.querySelector("#oa-go").addEventListener("click", () => run(true));
+  backdrop.querySelector("#oa-skip").addEventListener("click", () => run(false));
 }
 
 function openStaffImportModal(pageMount) {
