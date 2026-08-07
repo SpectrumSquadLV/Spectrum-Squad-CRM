@@ -2591,12 +2591,13 @@ async function renderStaff(mount) {
   }
   mount.innerHTML = `
     <div class="page-header">
-      <div><h1>Staff</h1><p>Team directory — contact info, certifications, timecards, and length of employment.</p></div>
+      <div><h1>Staff</h1><p>Team directory — contact info, documents, certifications, timecards, and length of employment.</p></div>
       <div style="display:flex; gap:8px;">
         <button class="btn secondary" id="staff-import-btn">⬆ Import Rethink sheet</button>
         <button class="btn" id="staff-add-btn">+ Add Staff</button>
       </div>
     </div>
+    <div id="docs-outstanding" style="margin-bottom:14px;"></div>
     <div class="card">
       <div style="overflow-x:auto;">
         <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:760px;">
@@ -2621,6 +2622,13 @@ async function renderStaff(mount) {
   mount.querySelector("#staff-add-btn").addEventListener("click", () => openStaffModal(null, mount));
   mount.querySelector("#staff-import-btn").addEventListener("click", () => openStaffImportModal(mount));
   mount.querySelectorAll("[data-staff]").forEach((tr) => tr.addEventListener("click", () => openStaffModal(tr.dataset.staff, mount)));
+  try {
+    const oc = await api("/api/hr/documents-outstanding");
+    const el = mount.querySelector("#docs-outstanding");
+    if (el && oc && oc.count != null) {
+      el.innerHTML = `<span class="tag" style="background:${oc.count ? "#fef3c7" : "#dcfce7"}; color:${oc.count ? "#92400e" : "#166534"}; font-size:13px; padding:6px 12px;">📄 Documents outstanding: <strong>${oc.count}</strong></span>`;
+    }
+  } catch (e) {}
 }
 
 async function openStaffModal(id, pageMount) {
@@ -2629,9 +2637,14 @@ async function openStaffModal(id, pageMount) {
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
   const field = (k, label, type) => `<div class="field"><label>${label}</label><input data-f="${k}" ${type ? `type="${type}"` : ""} value="${staffEsc(emp[k] || "")}" /></div>`;
+  const HR_STAGES = ["Applicant", "Interviewing", "Offer Sent", "Offer Accepted", "Onboarding", "Active", "Inactive"];
+  const initials = (emp.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   backdrop.innerHTML = `
-    <div class="modal" style="width:560px;">
+    <div class="modal" style="width:620px;">
       <div class="modal-header"><h2>${id ? staffEsc(emp.name) : "Add Staff"}</h2><button class="close-btn">✕</button></div>
+      ${id ? `<div style="text-align:center; margin-bottom:10px;">
+        <div id="staff-avatar" style="width:84px;height:84px;border-radius:50%;margin:0 auto;background:#eef0fb;color:#29225c;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;overflow:hidden;">${staffEsc(initials)}</div>
+      </div>` : ""}
       <div class="form-grid" style="gap:10px;">
         ${field("name", "Full name")}
         ${field("role_title", "Title / role")}
@@ -2639,16 +2652,21 @@ async function openStaffModal(id, pageMount) {
         ${field("phone", "Phone")}
         <div class="field full"><label>Address</label><input data-f="address" value="${staffEsc(emp.address || "")}" /></div>
         <div class="field full"><label>Certification(s)</label><input data-f="certifications" value="${staffEsc(emp.certifications || "")}" placeholder="e.g. RBT, CPR/BLS" /></div>
-        ${field("hire_date", "Hire date", "date")}
-        <div class="field"><label>Status</label><select data-f="status">
+        <div class="field"><label>HR stage</label><select data-f="hr_stage">
+          <option value="">—</option>
+          ${HR_STAGES.map((s) => `<option value="${s}" ${emp.hr_stage === s ? "selected" : ""}>${s}</option>`).join("")}
+        </select></div>
+        <div class="field"><label>Hire date (start)</label><input data-f="hr_hire_date" type="date" value="${staffEsc((emp.hr_hire_date || emp.hire_date || "").slice(0,10))}" /></div>
+        <div class="field"><label>Employment status</label><select data-f="status">
           ${["active", "onboarding", "leave", "terminated"].map((s) => `<option value="${s}" ${emp.status === s ? "selected" : ""}>${s}</option>`).join("")}
         </select></div>
       </div>
-      ${id ? `<div style="font-size:12.5px; color:var(--text-muted); margin-top:6px;">Length of employment: <strong>${tenureFrom(emp.hire_date)}</strong></div>` : ""}
+      ${id ? `<div style="font-size:12.5px; color:var(--text-muted); margin-top:6px;">Length of employment: <strong>${tenureFrom(emp.hr_hire_date || emp.hire_date)}</strong></div>` : ""}
       <div style="margin-top:16px; display:flex; gap:8px;">
         <button class="btn" id="staff-save">${id ? "Save" : "Add"}</button>
         <span id="staff-save-status" style="font-size:12.5px; color:var(--text-muted); align-self:center;"></span>
       </div>
+      ${id ? `<div class="section-title">Documents</div><div id="staff-docs"></div>` : ""}
       ${id ? `<div class="section-title">Timecards</div><div id="staff-timecards">${
         (emp.timecards || []).length
           ? emp.timecards.map((t) => `<div class="task-row"><div class="info"><strong>${t.pay_period_start ? fmtDate(t.pay_period_start) : "Period"} – ${t.pay_period_end ? fmtDate(t.pay_period_end) : ""}</strong><div class="due">Status: ${staffEsc(t.status)}${Number(t.open_flags) ? ` · ${t.open_flags} open flag(s)` : ""}</div></div><button class="btn small secondary" data-req-sig="${t.id}">Request signature</button></div>`).join("")
@@ -2675,6 +2693,78 @@ async function openStaffModal(id, pageMount) {
     try { const r = await api(`/api/hr/timecards/${btn.dataset.reqSig}/request-verification`, { method: "POST" }); btn.textContent = r.sent ? "Sent ✓" : "Link created"; }
     catch (e) { btn.textContent = "Failed"; alert(e.message); }
   }));
+
+  // Photo avatar
+  if (id && emp.hr_photo) {
+    const av = backdrop.querySelector("#staff-avatar");
+    if (av) {
+      const img = new Image();
+      img.src = `/api/hr/employees/${id}/photo?t=${Date.now()}`;
+      img.style.cssText = "width:100%;height:100%;object-fit:cover;";
+      img.onload = () => { av.innerHTML = ""; av.appendChild(img); };
+    }
+  }
+
+  if (id) renderStaffDocs(backdrop, id, emp.documents || []);
+}
+
+function renderStaffDocs(backdrop, id, docs) {
+  const box = backdrop.querySelector("#staff-docs");
+  if (!box) return;
+  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+  const STATUSES = ["Not Requested", "Requested", "Received", "Verified", "Expired"];
+  const stColor = (s) => ({ "Not Requested": "#eee", "Requested": "#fef3c7", "Received": "#dbeafe", "Verified": "#dcfce7", "Expired": "#fee2e2" }[s] || "#eee");
+  const overdueReq = (d) => d.status === "Requested" && d.date_requested && (Date.now() - new Date(d.date_requested).getTime() > 3 * 86400000);
+  const rbtSoon = (d) => d.expires && d.expiration_date && ((new Date(d.expiration_date).getTime() - Date.now()) / 86400000 <= 60);
+  box.innerHTML = docs.map((d) => {
+    const warn = overdueReq(d) ? "border-left:4px solid #dc2626;" : (rbtSoon(d) ? "border-left:4px solid #e0a430;" : "border-left:4px solid transparent;");
+    return `<div class="doc-track-row" data-key="${d.doc_key}" style="${warn} padding:8px 10px; border:1px solid var(--border,#eee); border-radius:8px; margin-bottom:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+        <strong style="font-size:13px;">${esc(d.label)}</strong>
+        <span class="tag" style="background:${stColor(d.status)};">${esc(d.status)}</span>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
+        <select data-dk-status style="min-width:130px;">${STATUSES.map((s) => `<option ${s === d.status ? "selected" : ""}>${s}</option>`).join("")}</select>
+        <button class="btn small secondary" data-dk-request>Request</button>
+        ${d.expires ? `<label style="font-size:12px;">Expires <input type="date" data-dk-exp value="${(d.expiration_date || "").slice(0,10)}" /></label>` : ""}
+        ${d.file_allowed ? `<input type="file" data-dk-file style="font-size:12px; max-width:160px;" />` : `<span style="font-size:11.5px; color:var(--text-muted);">status only (scan stays in secure folder)</span>`}
+        ${d.has_file ? `<a class="btn small secondary" href="/api/hr/employees/${id}/doc-tracker/${d.doc_key}/file" target="_blank" rel="noopener">View</a>` : ""}
+        <button class="btn small" data-dk-save>Save</button>
+      </div>
+      <input data-dk-notes placeholder="Notes (optional)" value="${esc(d.notes || "")}" style="margin-top:6px; width:100%; font-size:12.5px;" />
+    </div>`;
+  }).join("");
+
+  const reload = async () => {
+    try { const fresh = await api(`/api/hr/employees/${id}/doc-tracker`); renderStaffDocs(backdrop, id, fresh); } catch (e) {}
+  };
+  const postRow = async (row, extra) => {
+    const key = row.dataset.key;
+    const body = Object.assign({
+      doc_key: key,
+      status: row.querySelector("[data-dk-status]").value,
+      notes: row.querySelector("[data-dk-notes]").value || null,
+    }, extra || {});
+    const exp = row.querySelector("[data-dk-exp]"); if (exp) body.expiration_date = exp.value || null;
+    if (body.status === "Received" && !body.date_received) body.date_received = new Date().toISOString().slice(0, 10);
+    await api(`/api/hr/employees/${id}/doc-tracker`, { method: "POST", body });
+  };
+
+  box.querySelectorAll(".doc-track-row").forEach((row) => {
+    row.querySelector("[data-dk-request]").addEventListener("click", async () => {
+      await api(`/api/hr/employees/${id}/doc-tracker`, { method: "POST", body: { doc_key: row.dataset.key, action: "request" } });
+      reload();
+    });
+    row.querySelector("[data-dk-save]").addEventListener("click", async () => { await postRow(row); reload(); });
+    const fileInp = row.querySelector("[data-dk-file]");
+    if (fileInp) fileInp.addEventListener("change", async () => {
+      const f = fileInp.files[0]; if (!f) return;
+      if (f.size > 15 * 1024 * 1024) { alert("File too large (15MB max)."); return; }
+      const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); });
+      await postRow(row, { content_base64: String(dataUrl).split(",")[1], filename: f.name, mime_type: f.type || "application/octet-stream", status: "Received", date_received: new Date().toISOString().slice(0, 10) });
+      reload();
+    });
+  });
 }
 
 function openStaffImportModal(pageMount) {

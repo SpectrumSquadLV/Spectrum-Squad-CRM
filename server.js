@@ -4840,6 +4840,12 @@ async function start() {
     hr.processCredentialAlerts().catch((e) => console.error("HR credential alert sweep failed:", e));
   }, 15 * 60 * 1000);
 
+  // HR document tracker follow-ups (3-day requested / 60-day RBT renewal), also on boot.
+  hr.processHrDocFollowups().catch((e) => console.error("HR doc follow-up sweep failed:", e));
+  setInterval(() => {
+    hr.processHrDocFollowups().catch((e) => console.error("HR doc follow-up sweep failed:", e));
+  }, 6 * 60 * 60 * 1000);
+
   server.listen(PORT, () => {
     console.log(`Spectrum Squad CRM running at http://localhost:${PORT}`);
     console.log(`Demo login: admin@spectrumsquadlv.com / ChangeMe123!`);
