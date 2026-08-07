@@ -1462,6 +1462,25 @@ async function createStaffTask({ title, description, assigned_user_id, assigned_
      VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING *`,
     [title, description || null, uid, uname, client_id || null, due_date || null, created_by || "system", nowISO()]
   );
+  // Notify the assignee immediately that a task was assigned to them.
+  if (uid) {
+    const u = await dbGet("SELECT email, name FROM users WHERE id = ?", [uid]).catch(() => null);
+    if (u && u.email) {
+      let childName = null;
+      if (client_id) { const c = await dbGet("SELECT child_name FROM clients WHERE id = ?", [client_id]).catch(() => null); childName = c && c.child_name; }
+      await sendEmail({
+        to: u.email,
+        subject: `New task assigned to you: ${title}`,
+        html: `<p>Hi ${uname || u.name || "there"},</p>
+          <p>A new task has been assigned to you${created_by ? ` by ${created_by}` : ""}${due_date ? `, due <strong>${new Date(due_date).toLocaleDateString()}</strong>` : ""}:</p>
+          <p style="font-size:16px;"><strong>${title}</strong></p>
+          ${description ? `<p>${description}</p>` : ""}
+          ${childName ? `<p>Client: <strong>${childName}</strong></p>` : ""}
+          <p>Please log in to the CRM to view and complete it.</p>`,
+        type: "staff_task_assigned",
+      }).catch((e) => console.error("staff task assignment email failed:", e.message));
+    }
+  }
   return row;
 }
 
@@ -4228,20 +4247,35 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted" });
       return json(res, 200, {
         eligibility_check_email: await getAppSetting("eligibility_check_email", ""),
+        screener_completed_recipient: await getAppSetting("screener_completed_recipient", ""),
+        owner_notification_email: await getAppSetting("owner_notification_email", ""),
       });
     }
     if (pathname === "/api/admin/settings" && method === "PATCH") {
       if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted" });
       const body = await readBody(req);
+      const validEmail = (e) => !e || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
       if ("eligibility_check_email" in body) {
         const email = (body.eligibility_check_email || "").trim();
-        if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-          return json(res, 400, { error: "Please enter a valid email address." });
-        }
+        if (!validEmail(email)) return json(res, 400, { error: "Please enter a valid email address." });
         await setAppSetting("eligibility_check_email", email);
+      }
+      if ("owner_notification_email" in body) {
+        const email = (body.owner_notification_email || "").trim();
+        if (!validEmail(email)) return json(res, 400, { error: "Please enter a valid owner email address." });
+        await setAppSetting("owner_notification_email", email);
+      }
+      if ("screener_completed_recipient" in body) {
+        // May be a comma/semicolon-separated list of addresses.
+        const raw = (body.screener_completed_recipient || "").trim();
+        const parts = raw.split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+        if (parts.some((p) => !validEmail(p))) return json(res, 400, { error: "One of the screener recipient addresses is invalid." });
+        await setAppSetting("screener_completed_recipient", parts.join(", "));
       }
       return json(res, 200, {
         eligibility_check_email: await getAppSetting("eligibility_check_email", ""),
+        screener_completed_recipient: await getAppSetting("screener_completed_recipient", ""),
+        owner_notification_email: await getAppSetting("owner_notification_email", ""),
       });
     }
 

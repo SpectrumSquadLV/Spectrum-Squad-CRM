@@ -97,6 +97,12 @@ module.exports = function initScreener(ctx) {
 
   async function notifyTeam(client, data) {
     const child = client.child_name || "A client";
+    // Recipient is configurable in Admin Settings ("Completed screener
+    // recipient"); falls back to SCREENER_TEAM_EMAIL. Sent as an email only —
+    // completing a screener never creates a task for anyone.
+    let recipients = TEAM_EMAILS;
+    const cfg = await dbGet("SELECT value FROM app_settings WHERE key = ?", ["screener_completed_recipient"]).catch(() => null);
+    if (cfg && cfg.value) recipients = cfg.value.split(/[;,]/).map((s) => s.trim()).filter(Boolean);
     const clientLink = `${APP_BASE_URL}/#/pipeline/${client.id}`;
     const rows = Object.keys(data)
       .filter((k) => !k.startsWith("_"))
@@ -111,7 +117,7 @@ module.exports = function initScreener(ctx) {
        <p>It's saved on their record: <a href="${clientLink}">open in the CRM →</a></p>
        <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:12px;">${rows}</table>`
     );
-    for (const addr of TEAM_EMAILS) {
+    for (const addr of recipients) {
       await sendEmail({
         to: addr,
         subject: `✅ Clinical screener completed — ${child}`,
