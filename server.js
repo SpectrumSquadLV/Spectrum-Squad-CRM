@@ -2875,6 +2875,11 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  if (pathname.startsWith("/api/leads") || pathname.startsWith("/api/policies")) {
+    const handled = await growth.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/supply/")) {
     const handled = await supply.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -4825,6 +4830,10 @@ const supervision = require("./supervision")({
 const financialAdvisor = require("./financial-advisor")({
   dbGet, dbAll, dbRun, nowISO, crypto, readBody, json,
 });
+// ===== GROWTH add-on: Lead Management + Policies/SOPs (public QR viewer). =====
+const growth = require("./growth")({
+  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json,
+});
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
@@ -4876,6 +4885,11 @@ const server = http.createServer(async (req, res) => {
     if (attendance.servePage && await attendance.servePage(req, res, pathname)) return;
   }
 
+  // Public policies/SOPs viewer (QR-code target).
+  if (pathname === "/policies" || pathname.startsWith("/policies/")) {
+    if (growth.servePage && growth.servePage(req, res, pathname)) return;
+  }
+
   // Parent attendance acknowledgment: one click from the email marks it
   // acknowledged and shows a thank-you page.
   if (pathname === "/attendance-ack") {
@@ -4919,6 +4933,7 @@ async function start() {
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
   await supervision.initTables().catch((e) => console.error("Supervision initTables failed:", e));
   await financialAdvisor.initTables().catch((e) => console.error("Financial advisor initTables failed:", e));
+  await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));

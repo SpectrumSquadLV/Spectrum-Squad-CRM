@@ -511,6 +511,8 @@ async function route() {
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/policies")) { if (window.__renderPolicies) await window.__renderPolicies(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/map")) { if (window.__renderMap) await window.__renderMap(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/financial-center")) { if (window.__renderFinancialCenter) await window.__renderFinancialCenter(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/email-templates")) { if (window.__renderEmailTemplates) await window.__renderEmailTemplates(mount); else await renderDashboard(mount); }
@@ -555,6 +557,9 @@ function renderShell(active) {
     navItems.push({ key: "staff", label: "Staff", icon: "🧑‍⚕️" });
   if (["owner", "admin", "super_admin", "hr_admin", "clinical"].includes(state.user.role))
     navItems.push({ key: "supervision", label: "RBT Supervision", icon: "📋" });
+  if (["owner", "super_admin", "admin", "intake", "scheduling"].includes(state.user.role))
+    navItems.push({ key: "leads", label: "Lead Management", icon: "🎯" });
+  navItems.push({ key: "policies", label: "Policies & SOPs", icon: "📚" });
   if (["owner", "super_admin", "admin", "scheduling"].includes(state.user.role))
     navItems.push({ key: "map", label: "Map", icon: "🗺️" });
   if (["owner", "super_admin"].includes(state.user.role))
@@ -3544,6 +3549,7 @@ async function renderTeamSection(mount) {
   <script src="ot-frontend.js"></script>
   <script src="hr-attendance-frontend.js"></script>
   <script src="supervision-frontend.js"></script>
+  <script src="growth-frontend.js"></script>
   <script src="supply-requests-frontend.js"></script>
   <script src="geo-map-frontend.js"></script>
 
