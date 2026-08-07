@@ -106,25 +106,25 @@ function hrInjectStyles() {
   style.textContent = `
     .hr-wrap { padding: 22px; max-width: 1200px; }
     .hr-head { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:6px; }
-    .hr-head h1 { font-size:22px; margin:0; color:var(--brand-navy,#29225c); }
+    .hr-head h1 { font-size:22px; margin:0; color:var(--brand-navy,#1b2a6b); }
     .hr-tabs { display:flex; gap:6px; flex-wrap:wrap; margin:14px 0 20px; border-bottom:1px solid var(--border,#e5e7eb); }
     .hr-tab { background:none; border:none; padding:9px 14px; font-size:13.5px; cursor:pointer; color:var(--text-muted,#6b6a86); border-bottom:2px solid transparent; }
-    .hr-tab.active { color:var(--brand-navy,#29225c); border-bottom-color:var(--brand-gold,#e0a430); font-weight:600; }
+    .hr-tab.active { color:var(--brand-navy,#1b2a6b); border-bottom-color:var(--brand-gold,#e0a430); font-weight:600; }
     .hr-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:14px; }
     .hr-stat { background:var(--surface,#fff); border:1px solid var(--border,#e5e7eb); border-radius:12px; padding:16px; box-shadow:0 1px 3px rgba(41,34,92,.06); }
-    .hr-stat .n { font-size:26px; font-weight:700; color:var(--brand-navy,#29225c); }
+    .hr-stat .n { font-size:26px; font-weight:700; color:var(--brand-navy,#1b2a6b); }
     .hr-stat .l { font-size:12.5px; color:var(--text-muted,#6b6a86); margin-top:2px; }
     .hr-stat.urgent { border-color:#f3c46b; background:#fffaf0; }
     .hr-stat.urgent .n { color:var(--brand-gold-dark,#c98a1b); }
     .hr-card { background:var(--surface,#fff); border:1px solid var(--border,#e5e7eb); border-radius:12px; padding:16px; margin-top:16px; box-shadow:0 1px 3px rgba(41,34,92,.06); }
     .hr-card h2 { font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted,#6b6a86); margin:0 0 12px; }
-    .hr-btn { background:var(--brand-navy,#29225c); color:#fff; border:none; border-radius:8px; padding:9px 15px; font-size:13.5px; cursor:pointer; font-weight:600; }
-    .hr-btn:hover { background:var(--brand-navy-dark,#1c1740); }
-    .hr-btn.ghost { background:#fff; color:var(--brand-navy,#29225c); border:1px solid var(--brand-navy,#29225c); }
+    .hr-btn { background:var(--brand-navy,#1b2a6b); color:#fff; border:none; border-radius:8px; padding:9px 15px; font-size:13.5px; cursor:pointer; font-weight:600; }
+    .hr-btn:hover { background:var(--brand-navy-dark,#101c4d); }
+    .hr-btn.ghost { background:#fff; color:var(--brand-navy,#1b2a6b); border:1px solid var(--brand-navy,#1b2a6b); }
     .hr-btn.sm { padding:5px 10px; font-size:12.5px; }
     .hr-btn.danger { background:#fff; color:#b91c1c; border:1px solid #e3b1b1; }
     .hr-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-    .hr-badge { display:inline-block; border-radius:20px; padding:2px 10px; font-size:11.5px; font-weight:600; background:var(--brand-navy-light,#edecf8); color:var(--brand-navy,#29225c); }
+    .hr-badge { display:inline-block; border-radius:20px; padding:2px 10px; font-size:11.5px; font-weight:600; background:var(--brand-navy-light,#edecf8); color:var(--brand-navy,#1b2a6b); }
     .hr-badge.urgent { background:#fdecc8; color:var(--brand-gold-dark,#c98a1b); }
     .hr-badge.priority { background:#fde0e0; color:#b91c1c; }
     .hr-badge.qualified { background:#dcfce7; color:#15803d; }
@@ -137,13 +137,13 @@ function hrInjectStyles() {
     .hr-table tr.clickable:hover { background:var(--brand-navy-light,#edecf8); cursor:pointer; }
     .hr-kanban { display:flex; gap:12px; overflow-x:auto; padding-bottom:12px; }
     .hr-col { flex:0 0 250px; background:#f4f4f8; border-radius:10px; padding:10px; }
-    .hr-col h3 { font-size:12px; margin:0 0 8px; color:var(--brand-navy,#29225c); text-transform:uppercase; letter-spacing:.03em; display:flex; justify-content:space-between; }
+    .hr-col h3 { font-size:12px; margin:0 0 8px; color:var(--brand-navy,#1b2a6b); text-transform:uppercase; letter-spacing:.03em; display:flex; justify-content:space-between; }
     .hr-col h3 .cnt { background:#fff; border-radius:10px; padding:0 7px; font-size:11px; color:var(--text-muted,#6b6a86); }
     .hr-ccard { background:#fff; border:1px solid var(--border,#e5e7eb); border-radius:8px; padding:10px; margin-bottom:8px; font-size:12.5px; cursor:grab; }
     .hr-ccard.drop-hint { outline:2px dashed var(--brand-gold,#e0a430); }
-    .hr-ccard .nm { font-weight:600; color:var(--brand-navy,#29225c); }
+    .hr-ccard .nm { font-weight:600; color:var(--brand-navy,#1b2a6b); }
     .hr-ccard .meta { color:var(--text-muted,#6b6a86); font-size:11.5px; margin-top:2px; }
-    .hr-col.dragover { background:#e7e7f2; outline:2px dashed var(--brand-navy,#29225c); }
+    .hr-col.dragover { background:#e7e7f2; outline:2px dashed var(--brand-navy,#1b2a6b); }
     .hr-field { margin:12px 0; }
     .hr-field label { display:block; font-size:12.5px; font-weight:600; color:#374151; margin-bottom:5px; }
     .hr-field input, .hr-field textarea, .hr-field select { width:100%; padding:9px 10px; border:1px solid var(--border,#d1d5db); border-radius:8px; font-size:14px; box-sizing:border-box; font-family:inherit; }
@@ -151,7 +151,7 @@ function hrInjectStyles() {
     .hr-2col { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     .hr-modal-back { position:fixed; inset:0; background:rgba(28,23,64,.45); display:flex; align-items:flex-start; justify-content:center; z-index:1000; padding:30px 16px; overflow-y:auto; }
     .hr-modal { background:#fff; border-radius:14px; max-width:820px; width:100%; padding:22px; box-shadow:0 20px 60px rgba(28,23,64,.3); }
-    .hr-modal h2 { margin-top:0; color:var(--brand-navy,#29225c); }
+    .hr-modal h2 { margin-top:0; color:var(--brand-navy,#1b2a6b); }
     .hr-close { float:right; background:none; border:none; font-size:22px; cursor:pointer; color:var(--text-muted,#6b6a86); line-height:1; }
     .hr-empty { text-align:center; padding:40px; color:var(--text-muted,#6b6a86); border:1px dashed var(--border,#e5e7eb); border-radius:12px; }
     .hr-err { color:#b91c1c; font-size:13.5px; }
@@ -290,7 +290,7 @@ async function hrRenderDashboard(body) {
             const pct = Math.round((r.count / max) * 100);
             return `<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:12.5px"><span>${hrEsc(
               keyer(r)
-            )}</span><span>${r.count}</span></div><div style="background:#eee;border-radius:6px;height:8px"><div style="width:${pct}%;background:var(--brand-navy,#29225c);height:8px;border-radius:6px"></div></div></div>`;
+            )}</span><span>${r.count}</span></div><div style="background:#eee;border-radius:6px;height:8px"><div style="width:${pct}%;background:var(--brand-navy,#1b2a6b);height:8px;border-radius:6px"></div></div></div>`;
           })
           .join("")
       : `<p class="hr-muted">No data yet.</p>`;
@@ -379,7 +379,7 @@ async function hrRenderPositions(body) {
         return `<div class="hr-card">
           <div class="hr-row" style="justify-content:space-between">
             <div>
-              <div style="font-size:16px;font-weight:700;color:var(--brand-navy,#29225c)">${hrEsc(p.title)}</div>
+              <div style="font-size:16px;font-weight:700;color:var(--brand-navy,#1b2a6b)">${hrEsc(p.title)}</div>
               <div class="hr-row" style="margin-top:6px">
                 <span class="hr-badge ${p.priority === "urgent" ? "urgent" : ""}">${hrEsc(p.priority)}</span>
                 <span class="hr-badge ${p.status === "paused" ? "paused" : p.status === "closed" ? "closed" : "qualified"}">${hrEsc(p.status)}</span>
@@ -933,7 +933,7 @@ function hrCommsHtml(a) {
           const inbound = m.direction === "inbound";
           const who = inbound ? "Candidate" : (m.ai_generated || m.sent_by === "assistant" ? "Assistant" : "Team");
           const snippet = String(m.body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
-          return `<div class="hr-note" style="border-left:3px solid ${inbound ? "#5fa8a0" : "#29225c"}">
+          return `<div class="hr-note" style="border-left:3px solid ${inbound ? "#5fa8a0" : "#1b2a6b"}">
             <div style="font-weight:600">${hrEsc(m.subject || "(no subject)")}</div>
             <div>${hrEsc(snippet)}${snippet.length >= 160 ? "…" : ""}</div>
             <div class="who">${hrEsc(who)} · ${hrEsc(m.channel || "email")} · ${hrEsc(m.status || "")} · ${hrFmtDate(m.created_at)}</div>

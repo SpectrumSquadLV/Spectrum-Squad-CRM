@@ -8,7 +8,7 @@
 
   const MILESTONES = [
     { key: 1, label: "New Lead", color: "#6b7280" },
-    { key: 2, label: "Intake & Eligibility", color: "#6660a8" },
+    { key: 2, label: "Intake & Eligibility", color: "#3f56b5" },
     { key: 3, label: "Clinical Assessment", color: "#3f8f89" },
     { key: 4, label: "Authorization", color: "#c98a1b" },
     { key: 5, label: "Ready to Start", color: "#e0a430" },
@@ -155,7 +155,7 @@ btn.textContent = "▤ Client Pipeline";
         '<select id="pv2-f-bcba"><option value="">All BCBAs</option>' + opt(uniqueValues("assigned_bcba_name")) + "</select>" +
         '<select id="pv2-f-service"><option value="">All service types</option>' + opt(uniqueValues("service_location")) + "</select>" +
         '<select id="pv2-f-days"><option value="">Any days waiting</option><option value="7">7+ days</option><option value="14">14+ days</option><option value="21">21+ days</option></select>' +
-        '<button type="button" id="pv2-f-clear" style="margin-left:auto;background:none;border:none;color:#29225c;text-decoration:underline;font-size:12.5px;cursor:pointer;">Clear filters</button>' +
+        '<button type="button" id="pv2-f-clear" style="margin-left:auto;background:none;border:none;color:#1b2a6b;text-decoration:underline;font-size:12.5px;cursor:pointer;">Clear filters</button>' +
       "</div>"
     );
   }
@@ -230,7 +230,7 @@ btn.textContent = "▤ Client Pipeline";
 
     mount.innerHTML =
       '<div style="padding:24px 28px 60px;">' +
-        '<h1 style="font-size:24px;margin:0 0 4px;font-weight:700;color:#29225c;">Client pipeline</h1>' +
+        '<h1 style="font-size:24px;margin:0 0 4px;font-weight:700;color:#1b2a6b;">Client pipeline</h1>' +
         '<p style="margin:0 0 18px;color:#767488;font-size:14px;">Milestone view with progress, blockers, and next actions. Check off an item to mark it done, or click a card to open the full client record.</p>' +
         filterBarHTML() +
         '<div style="display:flex;gap:16px;overflow-x:auto;padding-bottom:8px;align-items:flex-start;">' + columns + "</div>" +

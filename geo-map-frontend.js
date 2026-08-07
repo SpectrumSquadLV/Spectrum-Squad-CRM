@@ -161,17 +161,12 @@
     if (clr) clr.addEventListener("click", () => { selectedClientId = null; linkLines.clearLayers(); side.innerHTML = '<div style="color:#8a8797;font-size:13px;">Tap a client pin to see the nearest clinicians for an in-home match.</div>'; });
   }
 
-  function onHash() {
-    if (location.hash !== HASH) return;
+  // The native router in index.html owns the #/map route + sidebar button now;
+  // it calls window.__renderMap(mount) directly, so this module no longer
+  // injects its own nav button or listens for hashchange (which previously
+  // raced the router and bounced the user back to the Dashboard).
+  window.__renderMap = function (mount) {
     if (!canSee()) { location.hash = "#/dashboard"; return; }
-    render();
-    [150, 500, 1100].forEach((ms) => setTimeout(() => { const m = document.getElementById("view-mount"); if (location.hash === HASH && m && m.dataset.map !== "1") render(); }, ms));
-  }
-  function boot() {
-    [200, 700, 1500, 3000].forEach((ms) => setTimeout(injectNav, ms));
-    new MutationObserver(injectNav).observe(document.body, { childList: true, subtree: true });
-    window.addEventListener("hashchange", onHash);
-    if (location.hash === HASH) onHash();
-  }
-  boot();
+    return render();
+  };
 })();

@@ -685,6 +685,13 @@ module.exports = function initHr(ctx) {
   }
 
   async function ownerEmail() {
+    // A configurable recipient wins, so notifications never get stuck on a dead
+    // mailbox (the seeded admin@ account hard-bounced).
+    const configured = await getSetting("owner_notification_email", "");
+    if (configured) return configured;
+    // Prefer a real owner mailbox over the seeded admin@ account.
+    const real = await dbGet("SELECT email FROM users WHERE role = 'owner' AND email <> 'admin@spectrumsquadlv.com' ORDER BY id LIMIT 1");
+    if (real && real.email) return real.email;
     const row = await dbGet("SELECT email FROM users WHERE role = 'owner' ORDER BY id LIMIT 1");
     if (row && row.email) return row.email;
     const admin = await dbGet("SELECT email FROM users WHERE role = 'admin' ORDER BY id LIMIT 1");
@@ -3553,12 +3560,12 @@ Write body as plain text with line breaks (no HTML).`;
   }
 
   function dailySummaryHtml(s) {
-    const stat = (n, l) => `<td style="padding:8px 14px;text-align:center"><div style="font-size:22px;font-weight:700;color:#29225c">${n}</div><div style="font-size:12px;color:#6b6a86">${l}</div></td>`;
+    const stat = (n, l) => `<td style="padding:8px 14px;text-align:center"><div style="font-size:22px;font-weight:700;color:#1b2a6b">${n}</div><div style="font-size:12px;color:#6b6a86">${l}</div></td>`;
     return (
-      `<h2 style="color:#29225c">Your daily recruiting summary</h2>` +
+      `<h2 style="color:#1b2a6b">Your daily recruiting summary</h2>` +
       `<table style="border-collapse:collapse;margin:10px 0"><tr>${stat(s.newApplicants, "New applicants")}${stat(s.priority, "Priority BCBA")}${stat(s.responses, "Responses")}${stat(s.interviewsScheduled, "Interviews set")}${stat(s.awaitingDecision, "Awaiting decision")}${stat(s.followupsDue, "Follow-ups due")}</tr></table>` +
-      `<h3 style="color:#29225c;margin-bottom:4px">Recommended actions</h3><ul>${s.actions.map((a) => `<li>${escapeHtml(a)}</li>`).join("")}</ul>` +
-      (s.bottlenecks.length ? `<h3 style="color:#29225c;margin-bottom:4px">Pipeline</h3><ul>${s.bottlenecks.map((b) => `<li>${escapeHtml(b.stage)}: ${b.count}</li>`).join("")}</ul>` : "") +
+      `<h3 style="color:#1b2a6b;margin-bottom:4px">Recommended actions</h3><ul>${s.actions.map((a) => `<li>${escapeHtml(a)}</li>`).join("")}</ul>` +
+      (s.bottlenecks.length ? `<h3 style="color:#1b2a6b;margin-bottom:4px">Pipeline</h3><ul>${s.bottlenecks.map((b) => `<li>${escapeHtml(b.stage)}: ${b.count}</li>`).join("")}</ul>` : "") +
       `<p><a href="${APP_BASE_URL}/#/hr/command-center">Open the BCBA Command Center</a></p>`
     );
   }
@@ -3884,7 +3891,7 @@ Write body as plain text with line breaks (no HTML).`;
     return `
 <div style="background:#f4f1ea;padding:24px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:22px;overflow:hidden;border:1px solid #ece7db;box-shadow:0 10px 30px rgba(41,34,92,.12);">
-    <div style="background:linear-gradient(135deg,#29225c,#6660a8);color:#fff;padding:26px;">
+    <div style="background:linear-gradient(135deg,#1b2a6b,#3f56b5);color:#fff;padding:26px;">
       <div style="font-size:22px;">✨</div>
       <h1 style="margin:6px 0 2px;font-size:21px;">Hi ${escapeHtml(firstName)} — your timecard's ready!</h1>
       <p style="margin:0;opacity:.9;font-size:14px;">Take a quick look at your hours, then tap Accept — or ask for an edit if something's off.</p>
@@ -3949,7 +3956,7 @@ Write body as plain text with line breaks (no HTML).`;
         stream.on("error", reject);
         doc.pipe(stream);
 
-        doc.fillColor("#29225c").fontSize(20).text("Spectrum Squad — Timecard", { align: "left" });
+        doc.fillColor("#1b2a6b").fontSize(20).text("Spectrum Squad — Timecard", { align: "left" });
         doc.moveDown(0.3);
         doc.fillColor("#201a4d").fontSize(13).text(empName + (emp && emp.role_title ? `  ·  ${emp.role_title}` : ""));
         doc.fillColor("#6b6a86").fontSize(11).text(`Pay period: ${tc.pay_period_start || "?"} to ${tc.pay_period_end || "?"}`);
@@ -3976,7 +3983,7 @@ Write body as plain text with line breaks (no HTML).`;
         y += 6;
         doc.moveTo(x0, y).lineTo(x0 + cols.reduce((a, b) => a + b, 0), y).strokeColor("#e5e7eb").stroke();
         y += 10;
-        doc.fillColor("#29225c").fontSize(12).text(`Total hours: ${total}`, x0, y);
+        doc.fillColor("#1b2a6b").fontSize(12).text(`Total hours: ${total}`, x0, y);
         doc.moveDown(2);
         doc.fillColor("#201a4d").fontSize(11).text(`Accepted & electronically signed by: ${signedName}`);
         doc.fillColor("#6b6a86").fontSize(10).text(`Signed on ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })} (Pacific)`);
@@ -4177,7 +4184,7 @@ Write body as plain text with line breaks (no HTML).`;
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Your Availability — Spectrum Squad</title>
 <style>
-  :root{--navy:#29225c;--gold:#e0a430;--teal:#5fa8a0;--surface:#fff;--text:#201a4d;--muted:#6b6a86;}
+  :root{--navy:#1b2a6b;--gold:#e0a430;--teal:#5fa8a0;--surface:#fff;--text:#201a4d;--muted:#6b6a86;}
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--text);
     background:linear-gradient(160deg,#efe9ff 0%,#f7f8fb 45%,#e8f5f2 100%);min-height:100vh}
@@ -4303,7 +4310,7 @@ Write body as plain text with line breaks (no HTML).`;
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Your offer — Spectrum Squad</title>
 <style>
-  :root{--navy:#29225c;--navy-dark:#1c1740;--gold:#e0a430;--teal:#5fa8a0;--surface:#fff;--text:#201a4d;--muted:#6b6a86;}
+  :root{--navy:#1b2a6b;--navy-dark:#101c4d;--gold:#e0a430;--teal:#5fa8a0;--surface:#fff;--text:#201a4d;--muted:#6b6a86;}
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--text);
     background:linear-gradient(160deg,#efe9ff 0%,#f7f8fb 45%,#e8f5f2 100%);min-height:100vh;overflow-x:hidden}
@@ -4371,7 +4378,7 @@ Write body as plain text with line breaks (no HTML).`;
   // ---- confetti ----
   var cv=document.getElementById("confetti"),ctx=cv.getContext("2d"),parts=[],raf=null;
   function size(){cv.width=innerWidth;cv.height=innerHeight;} size(); addEventListener("resize",size);
-  var COL=["#e0a430","#29225c","#5fa8a0","#ef6f6c","#8b7ff0","#ffd166"];
+  var COL=["#e0a430","#1b2a6b","#5fa8a0","#ef6f6c","#8b7ff0","#ffd166"];
   function spawn(n,spread){for(var i=0;i<n;i++){parts.push({x:innerWidth/2+(Math.random()-.5)*spread,y:innerHeight*0.35,vx:(Math.random()-.5)*9,vy:-6-Math.random()*9,g:.22+Math.random()*.15,s:6+Math.random()*7,c:COL[(Math.random()*COL.length)|0],r:Math.random()*6,vr:(Math.random()-.5)*.4});}}
   function rain(n){for(var i=0;i<n;i++){parts.push({x:Math.random()*innerWidth,y:-20,vx:(Math.random()-.5)*3,vy:2+Math.random()*4,g:.05,s:6+Math.random()*7,c:COL[(Math.random()*COL.length)|0],r:Math.random()*6,vr:(Math.random()-.5)*.4});}}
   function tick(){ctx.clearRect(0,0,cv.width,cv.height);for(var i=parts.length-1;i>=0;i--){var p=parts[i];p.vy+=p.g;p.x+=p.vx;p.y+=p.vy;p.r+=p.vr;ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.r);ctx.fillStyle=p.c;ctx.fillRect(-p.s/2,-p.s/2,p.s,p.s*.6);ctx.restore();if(p.y>innerHeight+30)parts.splice(i,1);}if(parts.length){raf=requestAnimationFrame(tick);}else{raf=null;}}
@@ -4462,11 +4469,11 @@ Write body as plain text with line breaks (no HTML).`;
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Your timecard — Spectrum Squad</title>
 <style>
-  :root{--brand:#29225c;--brand2:#6660a8;--gold:#e0a430;--bg:#f4f1ea;--card:#fff;--ink:#2b2a35;--muted:#8a8797;--line:#ece7db;--green:#22a565;}
+  :root{--brand:#1b2a6b;--brand2:#3f56b5;--gold:#e0a430;--bg:#f4f1ea;--card:#fff;--ink:#2b2a35;--muted:#8a8797;--line:#ece7db;--green:#22a565;}
   *{box-sizing:border-box} body{margin:0;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);padding:22px 12px;}
   .wrap{max-width:600px;margin:0 auto;}
   .card{background:var(--card);border-radius:22px;overflow:hidden;box-shadow:0 10px 30px rgba(41,34,92,.12);border:1px solid var(--line);}
-  .hero{background:linear-gradient(135deg,#29225c,#6660a8);color:#fff;padding:26px;}
+  .hero{background:linear-gradient(135deg,#1b2a6b,#3f56b5);color:#fff;padding:26px;}
   .hero h1{margin:6px 0 2px;font-size:21px;} .hero p{margin:0;opacity:.88;font-size:13.5px;}
   .period{display:inline-block;margin-top:12px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.25);padding:5px 12px;border-radius:999px;font-size:12.5px;font-weight:600;}
   .stats{display:flex;gap:12px;padding:18px 22px 4px;}
@@ -4567,7 +4574,7 @@ Write body as plain text with line breaks (no HTML).`;
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Schedule your interview — Spectrum Squad</title>
 <style>
-  :root{--navy:#29225c;--navy-dark:#1c1740;--navy-light:#edecf8;--gold:#e0a430;--bg:#f7f8fb;--surface:#fff;--border:#e5e7eb;--text:#201a4d;--muted:#6b6a86;--radius:14px;}
+  :root{--navy:#1b2a6b;--navy-dark:#101c4d;--navy-light:#edecf8;--gold:#e0a430;--bg:#f7f8fb;--surface:#fff;--border:#e5e7eb;--text:#201a4d;--muted:#6b6a86;--radius:14px;}
   *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
   header{background:linear-gradient(135deg,var(--navy),var(--navy-dark));color:#fff;padding:36px 20px;text-align:center}
   header h1{margin:6px 0 4px;font-size:24px} header p{margin:0;opacity:.85}
@@ -4626,7 +4633,7 @@ Write body as plain text with line breaks (no HTML).`;
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Careers — Spectrum Squad</title>
 <style>
-  :root{--navy:#29225c;--navy-dark:#1c1740;--navy-light:#edecf8;--gold:#e0a430;--teal:#5fa8a0;--bg:#f7f8fb;--surface:#fff;--border:#e5e7eb;--text:#201a4d;--muted:#6b6a86;--radius:14px;}
+  :root{--navy:#1b2a6b;--navy-dark:#101c4d;--navy-light:#edecf8;--gold:#e0a430;--teal:#5fa8a0;--bg:#f7f8fb;--surface:#fff;--border:#e5e7eb;--text:#201a4d;--muted:#6b6a86;--radius:14px;}
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
   header{background:linear-gradient(135deg,var(--navy),var(--navy-dark));color:#fff;padding:40px 20px;text-align:center}

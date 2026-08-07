@@ -386,7 +386,7 @@ module.exports = function initHrAttendance(ctx) {
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Attendance Acknowledgment — Spectrum Squad</title>
 <style>
-  :root{--navy:#29225c;--gold:#e0a430;--surface:#fff;--text:#201a4d;--muted:#6b6a86;}
+  :root{--navy:#1b2a6b;--gold:#e0a430;--surface:#fff;--text:#201a4d;--muted:#6b6a86;}
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--text);
     background:linear-gradient(160deg,#efe9ff 0%,#f7f8fb 45%,#e8f5f2 100%);min-height:100vh}

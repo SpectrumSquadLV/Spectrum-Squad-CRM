@@ -96,7 +96,7 @@
         '<div style="display:flex;justify-content:space-between;"><span>Est. Lifetime Revenue</span><b style="color:var(--text);">' + fmtMoney(s.estLifetimeRevenue) + "</b></div>" +
         '<div style="display:flex;justify-content:space-between;"><span>Est. Lifetime Net Profit</span><b style="color:var(--text);">' + fmtMoney(s.estLifetimeNetProfit) + "</b></div>" +
         (s.hasMissing ? '<div style="margin-top:4px;color:var(--brand-gold-dark);">⚠ Some figures use incomplete data</div>' : "") +
-        '<button type="button" class="ofin-toggle" data-ofin-client="' + esc(clientId) + '" style="margin-top:6px;background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;color:var(--brand-navy,var(--brand));cursor:pointer;">🔒 Owner Financial Snapshot ▾</button>' +
+        '<button type="button" class="ofin-toggle" data-ofin-client="' + esc(clientId) + '" style="margin-top:6px;background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;color:var(--brand-navy,var(--brand));cursor:pointer;">🔒 Financials ▾</button>' +
       "</div>"
     );
   }
@@ -219,7 +219,7 @@
     return (
       '<div class="ofin-full" style="display:none;margin-top:8px;background:var(--brand-light,#edecf8);border:1px solid var(--border);border-radius:10px;">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--border);">' +
-          '<b style="font-size:11.5px;color:var(--brand-navy,var(--brand));">🔒 Owner Financial Snapshot</b>' +
+          '<b style="font-size:11.5px;color:var(--brand-navy,var(--brand));">🔒 Financials</b>' +
           '<span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#a3282e;background:#fdecec;padding:2px 6px;border-radius:999px;">Private — Owner Only</span>' +
         "</div>" +
         '<div class="ofin-full-body" style="font-size:11.5px;">Loading…</div>' +
@@ -274,11 +274,11 @@
       const isOpen = fullSection.style.display !== "none";
       if (isOpen) {
         fullSection.style.display = "none";
-        toggleBtn.textContent = "🔒 Owner Financial Snapshot ▾";
+        toggleBtn.textContent = "🔒 Financials ▾";
         return;
       }
       fullSection.style.display = "block";
-      toggleBtn.textContent = "🔒 Owner Financial Snapshot ▴";
+      toggleBtn.textContent = "🔒 Financials ▴";
       if (fullBody.dataset.ofinLoaded !== "1") {
         await renderFullBody(fullBody, clientId, false);
       }

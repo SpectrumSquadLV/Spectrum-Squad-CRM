@@ -121,12 +121,12 @@ module.exports = function initClientForms(ctx) {
     if (client.parent_email) {
       const link = `${APP_BASE_URL}/financial-form/?token=${token}`;
       const html = `
-        <div style="font-family:Arial,Helvetica,sans-serif;color:#29225c;">
-          <h2 style="color:#29225c;">One quick step for ${esc(client.child_name)} 💛</h2>
+        <div style="font-family:Arial,Helvetica,sans-serif;color:#1b2a6b;">
+          <h2 style="color:#1b2a6b;">One quick step for ${esc(client.child_name)} 💛</h2>
           <p>Hi ${esc(client.parent_name || "there")},</p>
           <p>We've completed the insurance benefits check for <strong>${esc(client.child_name)}</strong>! The last step before we move forward is a quick, friendly review of what your insurance covers and what (if anything) you'd be responsible for — then a simple signature.</p>
           <p style="text-align:center;margin:28px 0;">
-            <a href="${esc(link)}" style="background:#e0a430;color:#29225c;font-weight:700;text-decoration:none;padding:14px 28px;border-radius:999px;font-size:16px;display:inline-block;">Review &amp; Sign →</a>
+            <a href="${esc(link)}" style="background:#e0a430;color:#1b2a6b;font-weight:700;text-decoration:none;padding:14px 28px;border-radius:999px;font-size:16px;display:inline-block;">Review &amp; Sign →</a>
           </p>
           <p style="font-size:13px;color:#666;">It only takes a minute. If the button doesn't work, copy and paste this link:<br/>${esc(link)}</p>
           <p>Warmly,<br/>The Spectrum Squad Team</p>
@@ -194,7 +194,7 @@ module.exports = function initClientForms(ctx) {
       await sendEmail({
         to: client.parent_email,
         subject: `Thank you — financial form signed for ${client.child_name}`,
-        html: `<div style="font-family:Arial,Helvetica,sans-serif;color:#29225c;">
+        html: `<div style="font-family:Arial,Helvetica,sans-serif;color:#1b2a6b;">
           <h2>All done, thank you! 🎉</h2>
           <p>Hi ${esc(client.parent_name || "there")}, we've received your signed financial responsibility form for <strong>${esc(client.child_name)}</strong>. A copy is saved in your file. You can view it anytime here:</p>
           <p><a href="${esc(APP_BASE_URL)}/financial-form/?token=${esc(token)}">View signed form</a></p>
@@ -227,12 +227,12 @@ module.exports = function initClientForms(ctx) {
     if (client.parent_email) {
       const link = `${APP_BASE_URL}/schedule-request/?token=${token}`;
       const html = `
-        <div style="font-family:Arial,Helvetica,sans-serif;color:#29225c;">
-          <h2 style="color:#29225c;">Let's build ${esc(client.child_name)}'s schedule! 🗓️✨</h2>
+        <div style="font-family:Arial,Helvetica,sans-serif;color:#1b2a6b;">
+          <h2 style="color:#1b2a6b;">Let's build ${esc(client.child_name)}'s schedule! 🗓️✨</h2>
           <p>Hi ${esc(client.parent_name || "there")},</p>
           <p>Exciting news — it's time to choose the days and times that work best for <strong>${esc(client.child_name)}</strong>'s therapy! We've made it fun and easy: just tap the times that work for your family.</p>
           <p style="text-align:center;margin:28px 0;">
-            <a href="${esc(link)}" style="background:#e0a430;color:#29225c;font-weight:700;text-decoration:none;padding:14px 28px;border-radius:999px;font-size:16px;display:inline-block;">Pick our times →</a>
+            <a href="${esc(link)}" style="background:#e0a430;color:#1b2a6b;font-weight:700;text-decoration:none;padding:14px 28px;border-radius:999px;font-size:16px;display:inline-block;">Pick our times →</a>
           </p>
           <p style="font-size:13px;color:#666;">If the button doesn't work, paste this link:<br/>${esc(link)}</p>
           <p>Can't wait to get started,<br/>The Spectrum Squad Team</p>
@@ -563,7 +563,7 @@ module.exports = function initClientForms(ctx) {
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Pick Your Schedule — Spectrum Squad</title>
 <style>
-  :root{--navy:#29225c;--gold:#e0a430;--teal:#5fa8a0;}
+  :root{--navy:#1b2a6b;--gold:#e0a430;--teal:#5fa8a0;}
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--navy);
     background:linear-gradient(135deg,#fff4e0 0%,#eafaf6 100%);min-height:100vh;}
@@ -659,7 +659,7 @@ document.getElementById("submit").addEventListener("click",function(){
     else{btn.disabled=false;btn.textContent="Submit";alert(res.error||"Could not submit.");}
   }).catch(function(){btn.disabled=false;btn.textContent="Submit";alert("Something went wrong. Please try again.");});
 });
-function celebrate(){var cv=document.getElementById("confetti"),cx=cv.getContext("2d");cv.width=innerWidth;cv.height=innerHeight;var parts=[],colors=["#e0a430","#5fa8a0","#29225c","#f6c667","#8a7fd0"];for(var i=0;i<160;i++){parts.push({x:Math.random()*cv.width,y:-20-Math.random()*cv.height,r:4+Math.random()*6,c:colors[i%colors.length],vy:2+Math.random()*4,vx:-2+Math.random()*4,a:Math.random()*6});}var t=0;(function run(){cx.clearRect(0,0,cv.width,cv.height);parts.forEach(function(p){p.y+=p.vy;p.x+=p.vx;p.a+=.1;cx.save();cx.translate(p.x,p.y);cx.rotate(p.a);cx.fillStyle=p.c;cx.fillRect(-p.r/2,-p.r/2,p.r,p.r*1.6);cx.restore();});t++;if(t<260)requestAnimationFrame(run);else cx.clearRect(0,0,cv.width,cv.height);})();}
+function celebrate(){var cv=document.getElementById("confetti"),cx=cv.getContext("2d");cv.width=innerWidth;cv.height=innerHeight;var parts=[],colors=["#e0a430","#5fa8a0","#1b2a6b","#f6c667","#6f86e0"];for(var i=0;i<160;i++){parts.push({x:Math.random()*cv.width,y:-20-Math.random()*cv.height,r:4+Math.random()*6,c:colors[i%colors.length],vy:2+Math.random()*4,vx:-2+Math.random()*4,a:Math.random()*6});}var t=0;(function run(){cx.clearRect(0,0,cv.width,cv.height);parts.forEach(function(p){p.y+=p.vy;p.x+=p.vx;p.a+=.1;cx.save();cx.translate(p.x,p.y);cx.rotate(p.a);cx.fillStyle=p.c;cx.fillRect(-p.r/2,-p.r/2,p.r,p.r*1.6);cx.restore();});t++;if(t<260)requestAnimationFrame(run);else cx.clearRect(0,0,cv.width,cv.height);})();}
 </script>
 </body></html>`;
   }
@@ -673,7 +673,7 @@ function celebrate(){var cv=document.getElementById("confetti"),cx=cv.getContext
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Financial Review — Spectrum Squad</title>
 <style>
-  :root{--navy:#29225c;--gold:#e0a430;--teal:#5fa8a0;}
+  :root{--navy:#1b2a6b;--gold:#e0a430;--teal:#5fa8a0;}
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--navy);
     background:linear-gradient(135deg,#f3f0ff 0%,#eafaf6 100%);min-height:100vh;}
@@ -693,7 +693,7 @@ function celebrate(){var cv=document.getElementById("confetti"),cx=cv.getContext
   .scenario{border-radius:14px;padding:16px 18px;margin:16px 0;border:2px solid;}
   .scenario.copay{background:#fff8ec;border-color:var(--gold);}
   .scenario.secondary{background:#eef6f5;border-color:var(--teal);}
-  .scenario.mco{background:#f3f0ff;border-color:#8a7fd0;}
+  .scenario.mco{background:#f3f0ff;border-color:#6f86e0;}
   .scenario h3{margin:0 0 8px;font-size:17px;}
   table.figs{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px;}
   table.figs td{padding:6px 8px;border-bottom:1px solid #eee;}
@@ -798,7 +798,7 @@ function render(d){
 function celebrate(){
   var cv=document.getElementById("confetti"),cx=cv.getContext("2d");
   cv.width=innerWidth;cv.height=innerHeight;var parts=[];
-  var colors=["#e0a430","#5fa8a0","#29225c","#f6c667","#8a7fd0"];
+  var colors=["#e0a430","#5fa8a0","#1b2a6b","#f6c667","#6f86e0"];
   for(var i=0;i<160;i++){parts.push({x:Math.random()*cv.width,y:-20-Math.random()*cv.height,r:4+Math.random()*6,c:colors[i%colors.length],vy:2+Math.random()*4,vx:-2+Math.random()*4,a:Math.random()*6});}
   var t=0;(function run(){cx.clearRect(0,0,cv.width,cv.height);parts.forEach(function(p){p.y+=p.vy;p.x+=p.vx;p.a+=.1;cx.save();cx.translate(p.x,p.y);cx.rotate(p.a);cx.fillStyle=p.c;cx.fillRect(-p.r/2,-p.r/2,p.r,p.r*1.6);cx.restore();});t++;if(t<260)requestAnimationFrame(run);else cx.clearRect(0,0,cv.width,cv.height);})();
 }

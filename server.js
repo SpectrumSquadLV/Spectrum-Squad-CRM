@@ -639,8 +639,8 @@ function brandedEmail(innerHtml) {
       <div style="text-align:center;padding:24px 20px 6px;">
         <img src="${logoUrl}" alt="Spectrum Squad" width="230" style="max-width:230px;height:auto;border:0;" />
       </div>
-      <div style="padding:10px 30px 26px;color:#29225c;font-size:15px;line-height:1.6;">${innerHtml}</div>
-      <div style="background:#29225c;color:#cfc9ec;text-align:center;padding:16px 20px;font-size:12px;">
+      <div style="padding:10px 30px 26px;color:#1b2a6b;font-size:15px;line-height:1.6;">${innerHtml}</div>
+      <div style="background:#1b2a6b;color:#cfc9ec;text-align:center;padding:16px 20px;font-size:12px;">
         Spectrum Squad &middot; Compassionate ABA Therapy
       </div>
     </div>
@@ -708,7 +708,7 @@ async function sendEligibilityCheck(client, actor) {
 
   const html = `
     <div style="font-family:Arial,Helvetica,sans-serif;color:#222;">
-      <h2 style="color:#29225c;">Benefits &amp; Eligibility Check</h2>
+      <h2 style="color:#1b2a6b;">Benefits &amp; Eligibility Check</h2>
       <p>Please run a benefits &amp; eligibility check for the following new patient:</p>
       <table style="border-collapse:collapse;font-size:14px;">
         ${row("Patient name", client.child_name)}
@@ -1248,9 +1248,9 @@ const emailTemplates = {
 const STAGES = [
   { key: "new_submission", label: "New Submission", color: "#6b7280" },
   { key: "clinical_screener", label: "Clinical Screener", color: "#3f8f89" },
-  { key: "insurance_verification", label: "Insurance Verification", color: "#6660a8" },
+  { key: "insurance_verification", label: "Insurance Verification", color: "#3f56b5" },
   { key: "intake_packet", label: "Intake Packet", color: "#5fa8a0" },
-  { key: "assessment_scheduling", label: "In-Clinic Assessment", color: "#29225c" },
+  { key: "assessment_scheduling", label: "In-Clinic Assessment", color: "#1b2a6b" },
   { key: "authorization", label: "Authorization Pending", color: "#c98a1b" },
   { key: "first_day_scheduled", label: "First Day Scheduling", color: "#e0a430" },
   { key: "active", label: "Active Therapy", color: "#22c55e" },
@@ -2189,10 +2189,17 @@ async function checkAuthExpirations() {
         `${milestone}-day milestone alert created (level: ${alertLevel})`
       );
 
+      // Resolve the owner notification recipient: a configured setting wins,
+      // else the real owner mailbox (never the dead seeded admin@ account).
+      let ownerNotify = await getAppSetting("owner_notification_email", "");
+      if (!ownerNotify) {
+        const o = await dbGet("SELECT email FROM users WHERE role = 'owner' AND email <> 'admin@spectrumsquadlv.com' ORDER BY id LIMIT 1");
+        ownerNotify = (o && o.email) || process.env.AUTH_ALERT_ADMIN_EMAIL || "";
+      }
       const recipients = [
         client.assigned_bcba_email,
         client.assigned_billing_email,
-        process.env.AUTH_ALERT_ADMIN_EMAIL || "admin@spectrumsquadlv.com",
+        ownerNotify,
       ].filter(Boolean);
       const uniqueRecipients = [...new Set(recipients.map((r) => r.trim().toLowerCase()))];
 
@@ -2704,7 +2711,7 @@ const PUBLIC_ROUTES = new Set([
   "/api/admin/delete-document",
 ]);
 
-const CLIENT_COLOR_PALETTE = ["#5fa8a0", "#e0a430", "#6660a8", "#3f8f89", "#c98a1b", "#8d85c8"];
+const CLIENT_COLOR_PALETTE = ["#5fa8a0", "#e0a430", "#3f56b5", "#3f8f89", "#c98a1b", "#8d85c8"];
 
 async function createClientFromPayload(c) {
   const color = CLIENT_COLOR_PALETTE[Math.floor(Math.random() * CLIENT_COLOR_PALETTE.length)];
@@ -2906,9 +2913,12 @@ async function handle(req, res, pathname, method, query = {}) {
       const { email, password } = await readBody(req);
       const result = await auth.login(email || "", password || "");
       if (!result) return json(res, 401, { error: "Invalid email or password" });
+      // Session-only cookie (no Max-Age/Expires): it is cleared when the
+      // browser closes, so providers must re-enter their password each new
+      // browser session rather than staying logged in indefinitely.
       res.setHeader(
         "Set-Cookie",
-        `session=${result.token}; HttpOnly; Path=/; Max-Age=${12 * 3600}; SameSite=Lax`
+        `session=${result.token}; HttpOnly; Path=/; SameSite=Lax`
       );
       return json(res, 200, { user: result.user });
     }
@@ -4004,7 +4014,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         <p>Missed sessions can affect ${client.child_name}'s treatment progress and may put continued authorization at risk. We ask that you please help ensure ${client.child_name} attends all scheduled sessions going forward.</p>
         <p>Please click below to let us know you've received this message:</p>
         <p style="text-align:center;margin:24px 0;">
-          <a href="${ackLink}" style="background:#e0a430;color:#29225c;font-weight:700;text-decoration:none;padding:12px 24px;border-radius:999px;font-size:15px;display:inline-block;">✅ I acknowledge this message</a>
+          <a href="${ackLink}" style="background:#e0a430;color:#1b2a6b;font-weight:700;text-decoration:none;padding:12px 24px;border-radius:999px;font-size:15px;display:inline-block;">✅ I acknowledge this message</a>
         </p>
         <p style="font-size:12px;color:#888;">If the button doesn't work, open this link: ${ackLink}</p>
         <p>Thank you,<br/>Spectrum Squad</p>
@@ -4378,9 +4388,9 @@ async function seedDepartments() {
   if (Number(existing.n) > 0) return;
   const depts = [
     { key: "intake", name: "Intake / Admin", color: "#5fa8a0", notify_email: "intake@spectrumsquadlv.com" },
-    { key: "clinical", name: "Clinical (BCBA)", color: "#29225c", notify_email: "clinical@spectrumsquadlv.com" },
+    { key: "clinical", name: "Clinical (BCBA)", color: "#1b2a6b", notify_email: "clinical@spectrumsquadlv.com" },
     { key: "billing", name: "Billing / Insurance", color: "#e0a430", notify_email: "billing@spectrumsquadlv.com" },
-    { key: "scheduling", name: "Scheduling", color: "#6660a8", notify_email: "scheduling@spectrumsquadlv.com" },
+    { key: "scheduling", name: "Scheduling", color: "#3f56b5", notify_email: "scheduling@spectrumsquadlv.com" },
   ];
   for (const d of depts) {
     await dbRun("INSERT INTO departments (key, name, color, notify_email) VALUES (?, ?, ?, ?)", [
@@ -4459,7 +4469,7 @@ async function seedTherapists() {
   const existing = await dbGet("SELECT COUNT(*) AS n FROM therapists");
   if (Number(existing.n) > 0) return;
   const rows = [
-    ["Allie R.", "BCBA", "#29225c", 30],
+    ["Allie R.", "BCBA", "#1b2a6b", 30],
     ["Katelyn S.", "RBT", "#5fa8a0", 30],
     ["April M.", "RBT", "#3f8f89", 30],
     ["Marcus T.", "RBT", "#e0a430", 25],
@@ -4553,7 +4563,7 @@ async function seedDemoClients() {
       desired_schedule: "Full-Time",
       rethink_status: "In Rethink",
       stage: "authorization",
-      color: "#6660a8",
+      color: "#3f56b5",
     },
     {
       child_name: "Demo Child D",
@@ -4817,7 +4827,7 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Spectrum Squad</title>
-      <style>body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:linear-gradient(135deg,#f3f0ff,#eafaf6);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#29225c;}
+      <style>body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:linear-gradient(135deg,#f3f0ff,#eafaf6);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#1b2a6b;}
       .c{background:#fff;border-radius:20px;box-shadow:0 18px 50px rgba(41,34,92,.14);padding:40px 32px;max-width:420px;text-align:center;margin:16px;}
       .c img.logo{max-width:200px;width:70%;height:auto;margin-bottom:12px;}
       .big{font-size:56px}</style></head>

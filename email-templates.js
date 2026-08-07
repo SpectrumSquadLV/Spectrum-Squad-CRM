@@ -90,7 +90,7 @@ function etInjectStyles() {
     .et-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: #fff; }
     .et-card-info strong { display: block; font-size: 14px; margin-bottom: 2px; }
     .et-card-info span { font-size: 12.5px; color: #6b7280; }
-    .et-edit-btn { background: #29225c; color: #fff; border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+    .et-edit-btn { background: #1b2a6b; color: #fff; border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
     .et-edit-btn:hover { background: #3a3178; }
     .et-field-label { font-size: 12.5px; font-weight: 600; color: #374151; margin: 14px 0 6px; display: block; }
     .et-subject-input { width: 100%; padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box; }
@@ -101,11 +101,11 @@ function etInjectStyles() {
     .et-body-editor img { max-width: 100%; }
     .et-fields-box { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 14px; background: #fafafa; margin-top: 16px; }
     .et-fields-box h3 { font-size: 12.5px; text-transform: uppercase; color: #6b7280; margin: 0 0 8px; }
-    .et-field-chip { display: inline-block; background: #eef0fb; color: #29225c; border-radius: 5px; padding: 3px 8px; font-size: 12px; margin: 0 6px 6px 0; cursor: pointer; border: none; }
+    .et-field-chip { display: inline-block; background: #eef0fb; color: #1b2a6b; border-radius: 5px; padding: 3px 8px; font-size: 12px; margin: 0 6px 6px 0; cursor: pointer; border: none; }
     .et-field-chip:hover { background: #dde0f7; }
     .et-actions { display: flex; gap: 10px; margin-top: 18px; align-items: center; }
     .et-save-btn { background: #22c55e; color: #fff; border: none; border-radius: 6px; padding: 9px 16px; font-size: 13.5px; cursor: pointer; font-weight: 600; }
-    .et-preview-btn, .et-test-btn { background: #fff; color: #29225c; border: 1px solid #29225c; border-radius: 6px; padding: 9px 16px; font-size: 13.5px; cursor: pointer; }
+    .et-preview-btn, .et-test-btn { background: #fff; color: #1b2a6b; border: 1px solid #1b2a6b; border-radius: 6px; padding: 9px 16px; font-size: 13.5px; cursor: pointer; }
     .et-status-msg { font-size: 13px; margin-left: 4px; }
     .et-status-msg.ok { color: #16a34a; }
     .et-status-msg.err { color: #dc2626; }
@@ -456,7 +456,7 @@ async function etRenderFailedEmails(mount) {
     <div class="et-header"><h1>Failed Emails</h1></div>
     <p class="et-fe-hint">These are emails the CRM tried to send but the mail provider rejected or errored on. Fix the underlying problem if needed (a bad address, or the email provider configuration), then push them out again. A resend re-uses the original message content and, when successful, clears it from this list.</p>
     <div class="et-actions" style="margin-top:0;">
-      <button class="et-save-btn" id="et-fe-resend-all" style="background:#29225c;">Resend All</button>
+      <button class="et-save-btn" id="et-fe-resend-all" style="background:#1b2a6b;">Resend All</button>
       <button class="et-preview-btn" id="et-fe-refresh">Refresh</button>
       <span class="et-status-msg" id="et-fe-status"></span>
     </div>
