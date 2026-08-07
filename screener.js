@@ -58,7 +58,7 @@ module.exports = function initScreener(ctx) {
   // --- Emails ---------------------------------------------------------------
   function emailShell(inner) {
     return `<div style="font-family:'Segoe UI',Arial,sans-serif;max-width:520px;margin:0 auto;color:#241d52;">
-      <div style="background:#29225c;color:#fff;padding:20px 24px;border-radius:14px 14px 0 0;">
+      <div style="background:#1b2a6b;color:#fff;padding:20px 24px;border-radius:14px 14px 0 0;">
         <div style="font-size:20px;font-weight:800;">Spectrum Squad 🌈</div>
       </div>
       <div style="background:#ffffff;border:1px solid #e7e5f2;border-top:none;padding:24px;border-radius:0 0 14px 14px;line-height:1.6;">
@@ -103,7 +103,7 @@ module.exports = function initScreener(ctx) {
       .map((k) => {
         const v = Array.isArray(data[k]) ? data[k].join(", ") : data[k];
         if (v === undefined || v === null || v === "") return "";
-        return `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee;font-weight:600;color:#29225c;vertical-align:top;">${k}</td><td style="padding:6px 10px;border-bottom:1px solid #eee;">${String(v).replace(/</g, "&lt;")}</td></tr>`;
+        return `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee;font-weight:600;color:#1b2a6b;vertical-align:top;">${k}</td><td style="padding:6px 10px;border-bottom:1px solid #eee;">${String(v).replace(/</g, "&lt;")}</td></tr>`;
       })
       .join("");
     const html = emailShell(

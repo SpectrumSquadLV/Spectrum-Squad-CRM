@@ -347,27 +347,12 @@ function onAppMutated() {
   syncFinancialView();
 }
 
-function initFinancialCenter() {
-  const appRoot = document.getElementById("app");
-  if (appRoot) {
-    const observer = new MutationObserver(() => onAppMutated());
-    observer.observe(appRoot, { childList: true, subtree: true });
-  }
-  window.addEventListener("hashchange", () => {
-    const mount = document.getElementById("view-mount");
-    if (mount) delete mount.dataset.fcState;
-    setTimeout(onAppMutated, 0);
-  });
-  onAppMutated();
-  // Defensive redundancy for the initial load race between this script's
-  // render and the native app's own async auth-check + data-fetch + render
-  // sequence. Cheap and safe -- the self-healing checks above make every
-  // call here a no-op once things have settled correctly.
-  [150, 500, 1200, 2500, 4000].forEach((ms) => setTimeout(onAppMutated, ms));
-}
-
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initFinancialCenter);
-} else {
-  initFinancialCenter();
-}
+// The native router in index.html owns the #/financial-center route + sidebar
+// button now, calling window.__renderFinancialCenter(mount) directly. The old
+// MutationObserver/hashchange self-healing raced the router (and could leave
+// the wrong view showing), so it's replaced by this single entry point.
+window.__renderFinancialCenter = function (mount) {
+  if (!canViewFinancial()) return renderFinancialCenter(mount, undefined);
+  const param = (location.hash.split("/")[2]) || "overview";
+  return renderFinancialCenter(mount, param);
+};

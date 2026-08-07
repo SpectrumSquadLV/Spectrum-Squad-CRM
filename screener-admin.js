@@ -43,7 +43,7 @@
       var v = Array.isArray(d[k]) ? d[k].join(", ") : d[k];
       if(v===undefined||v===null||String(v).trim()==="") return "";
       v = String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;");
-      return '<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;font-weight:600;color:#29225c;vertical-align:top;width:42%;">'+pretty(k)+'</td><td style="padding:8px 10px;border-bottom:1px solid #eee;">'+v+'</td></tr>';
+      return '<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;font-weight:600;color:#1b2a6b;vertical-align:top;width:42%;">'+pretty(k)+'</td><td style="padding:8px 10px;border-bottom:1px solid #eee;">'+v+'</td></tr>';
     }).join("");
     var bd = document.createElement("div");
     bd.className = "modal-backdrop";
@@ -82,7 +82,7 @@
     btn.id = "screener-view-btn";
     btn.type = "button";
     btn.textContent = "🌈 View Screener";
-    btn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#edecf8;color:#29225c;padding:8px 14px;border-radius:10px;cursor:pointer;margin:0 0 14px;";
+    btn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#edecf8;color:#1b2a6b;padding:8px 14px;border-radius:10px;cursor:pointer;margin:0 0 14px;";
     btn.addEventListener("click", onClick);
     // place just under the header
     if(header.nextSibling) header.parentNode.insertBefore(btn, header.nextSibling);

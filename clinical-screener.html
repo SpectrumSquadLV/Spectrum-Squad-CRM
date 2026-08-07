@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<meta name="theme-color" content="#29225c" />
+<meta name="theme-color" content="#1b2a6b" />
 <title>Spectrum Squad — Family Intake Screener</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root{
-  --navy:#29225c; --navy-dark:#1c1740; --navy-light:#edecf8;
+  --navy:#1b2a6b; --navy-dark:#101c4d; --navy-light:#edecf8;
   --gold:#e0a430; --gold-dark:#c98a1b; --teal:#5fa8a0; --teal-dark:#3f8f89;
   --coral:#ef6f6c; --purple:#8b5cf6;
   --bg:#f4f2fb; --surface:#ffffff; --border:#e7e5f2;
@@ -603,7 +603,7 @@ function finish(){ show(steps.length-1); burst(); }
 var cvs=document.getElementById("confetti"),ctx=cvs.getContext("2d"),parts=[],raf=null;
 function size(){ cvs.width=innerWidth; cvs.height=innerHeight; }
 size(); addEventListener("resize",size);
-var COLORS=["#8b5cf6","#5fa8a0","#e0a430","#ef6f6c","#29225c","#22c55e"];
+var COLORS=["#8b5cf6","#5fa8a0","#e0a430","#ef6f6c","#1b2a6b","#22c55e"];
 function burst(){
   parts=[];
   for(var k=0;k<140;k++){

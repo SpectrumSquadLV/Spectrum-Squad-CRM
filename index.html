@@ -10,8 +10,8 @@
 <style>
 :root {
   /* Spectrum Squad brand palette, pulled from the logo */
-  --brand-navy: #29225c;
-  --brand-navy-dark: #1c1740;
+  --brand-navy: #1b2a6b;
+  --brand-navy-dark: #101c4d;
   --brand-navy-light: #edecf8;
   --brand-gold: #e0a430;
   --brand-gold-dark: #c98a1b;
@@ -54,7 +54,7 @@ button { font-family: inherit; cursor: pointer; }
 
 .sidebar {
   width: 240px;
-  background: linear-gradient(180deg, var(--brand-navy) 0%, #423a86 100%);
+  background: linear-gradient(180deg, var(--brand-navy) 0%, #2a3d8f 100%);
   color: #ded9f5;
   display: flex;
   flex-direction: column;
@@ -228,7 +228,7 @@ button { font-family: inherit; cursor: pointer; }
   display: inline-block; font-size: 10.5px; font-weight: 700; padding: 3px 9px;
   border-radius: 999px; color: #fff; text-transform: uppercase; letter-spacing: 0.02em;
 }
-.alert-badge.informational { background: #6660a8; }
+.alert-badge.informational { background: #3f56b5; }
 .alert-badge.attention { background: var(--brand-gold-dark); }
 .alert-badge.urgent { background: #ea580c; }
 .alert-badge.critical { background: #dc2626; }
@@ -258,7 +258,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-light
 /* ---------- Login ---------- */
 .login-wrap {
   min-height: 100vh; display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, var(--brand-navy) 0%, #423a86 60%, var(--brand-teal) 100%);
+  background: linear-gradient(135deg, var(--brand-navy) 0%, #2a3d8f 60%, var(--brand-teal) 100%);
 }
 .login-card {
   background: #fff; border-radius: 16px; padding: 40px 36px; width: 380px;
@@ -510,6 +510,8 @@ async function route() {
   else if (hash.startsWith("#/schedule")) await renderSchedule(mount);
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
+  else if (hash.startsWith("#/map")) { if (window.__renderMap) await window.__renderMap(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/financial-center")) { if (window.__renderFinancialCenter) await window.__renderFinancialCenter(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/auth-alerts")) await renderAuthAlerts(mount, param);
   else if (hash.startsWith("#/admin")) await renderAdmin(mount);
   else await renderDashboard(mount);
@@ -548,6 +550,10 @@ function renderShell(active) {
     navItems.push({ key: "hr", label: "HR & Recruiting", icon: "👥" });
   if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
     navItems.push({ key: "staff", label: "Staff", icon: "🧑‍⚕️" });
+  if (["owner", "super_admin", "admin", "scheduling"].includes(state.user.role))
+    navItems.push({ key: "map", label: "Map", icon: "🗺️" });
+  if (["owner", "super_admin"].includes(state.user.role))
+    navItems.push({ key: "financial-center", label: "Financial Center", icon: "💰" });
   if (["owner", "admin", "super_admin"].includes(state.user.role)) navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
 
   root.innerHTML = `
@@ -592,17 +598,14 @@ function renderLogin() {
         <form id="login-form">
           <div class="field">
             <label>Email</label>
-            <input type="email" name="email" required value="admin@spectrumsquadlv.com" />
+            <input type="email" name="email" required autocomplete="username" />
           </div>
           <div class="field">
             <label>Password</label>
-            <input type="password" name="password" required value="ChangeMe123!" />
+            <input type="password" name="password" required autocomplete="current-password" />
           </div>
           <button class="btn" type="submit" style="width:100%; justify-content:center; margin-top:8px;">Log in</button>
         </form>
-        <div class="demo-hint">
-          Demo accounts (all use password <strong>ChangeMe123!</strong>): admin@, intake@, clinical@, billing@, scheduling@spectrumsquadlv.com
-        </div>
       </div>
     </div>
   `;
@@ -674,9 +677,15 @@ async function renderDashboard(mount) {
         }
       </div>
     </div>
-    <div class="card" style="margin-top:20px;">
-      <div class="section-title" style="margin-top:0;">Clients by Insurance Provider</div>
-      ${renderInsuranceChart(dash.byInsurance || [])}
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px; margin-top:20px;">
+      <div class="card" style="margin:0;">
+        <div class="section-title" style="margin-top:0;">Clients by Insurance Provider</div>
+        ${renderInsuranceChart(dash.byInsurance || [])}
+      </div>
+      <div class="card" style="margin:0;">
+        <div class="section-title" style="margin-top:0;">Staffing (from submitted schedules)</div>
+        <div id="dash-staffing"><div class="empty-state">Calculating…</div></div>
+      </div>
     </div>
   `;
 
@@ -684,31 +693,64 @@ async function renderDashboard(mount) {
   mount.querySelectorAll("[data-auth-bucket]").forEach((el) => {
     el.addEventListener("click", () => (location.hash = "#/auth-alerts/" + el.dataset.authBucket));
   });
+  fillDashStaffing(mount);
+}
+
+async function fillDashStaffing(mount) {
+  const box = mount.querySelector("#dash-staffing");
+  if (!box) return;
+  let d;
+  try { d = await api("/api/client-forms/staffing-estimate?rbtCapacity=30&bcbaPerRbt=6"); }
+  catch (e) { box.innerHTML = `<div class="empty-state">Couldn't load staffing estimate.</div>`; return; }
+  if (d.unstaffedNote) { box.innerHTML = `<div class="empty-state">${d.unstaffedNote}</div>`; return; }
+  const tile = (val, label, sub) => `<div style="flex:1; min-width:120px; background:var(--bg,#f7f8fb); border:1px solid var(--border,#e5e7eb); border-radius:12px; padding:14px 16px;">
+    <div style="font-size:26px; font-weight:800; color:var(--brand-navy,#1b2a6b);">${val}</div>
+    <div style="font-size:12px; color:var(--text-muted);">${label}</div>${sub ? `<div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${sub}</div>` : ""}</div>`;
+  box.innerHTML = `
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      ${tile(d.rbtsNeeded, "RBTs needed", `at ${d.rbtCapacity} hrs/wk`)}
+      ${tile(d.bcbasNeeded, "BCBAs needed", `1 per ${d.bcbaPerRbt} RBTs`)}
+    </div>
+    <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:12px;">
+      ${tile(d.totalHours, "Client hrs/wk", `${d.clientCount} client${d.clientCount === 1 ? "" : "s"}`)}
+      ${tile((d.rbtsNeeded || 0) + (d.bcbasNeeded || 0), "Total staff", "recommended")}
+    </div>
+    <div style="font-size:11.5px; color:var(--text-muted); margin-top:10px;">Full breakdown on the <a href="#/schedule" style="color:var(--brand-navy,#1b2a6b);">Therapy Schedule</a> page.</div>`;
 }
 
 function renderInsuranceChart(rows) {
   if (!rows.length) return `<div class="empty-state">No active clients yet.</div>`;
-  const palette = ["#29225c", "#e0a430", "#5fa8a0", "#6660a8", "#c98a1b", "#3f8f89", "#8a7fd0", "#22c55e", "#ef4444", "#64748b"];
-  const max = Math.max(...rows.map((r) => r.n), 1);
+  const palette = ["#1b2a6b", "#e0a430", "#5fa8a0", "#3f56b5", "#c98a1b", "#3f8f89", "#6f86e0", "#22c55e", "#ef4444", "#64748b"];
   const total = rows.reduce((s, r) => s + r.n, 0);
   const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
-  return `<div style="display:flex; flex-direction:column; gap:10px;">
-    ${rows
-      .map((r, i) => {
-        const pct = Math.round((r.n / max) * 100);
-        const share = total ? Math.round((r.n / total) * 100) : 0;
-        const color = palette[i % palette.length];
-        return `<div>
-          <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:3px;">
-            <span>${esc(r.provider)}</span>
-            <strong>${r.n} <span style="color:var(--text-muted); font-weight:400;">(${share}%)</span></strong>
-          </div>
-          <div style="background:#eef0f5; border-radius:999px; height:14px; overflow:hidden;">
-            <div style="width:${pct}%; background:${color}; height:14px; border-radius:999px; min-width:2px;"></div>
-          </div>
-        </div>`;
-      })
-      .join("")}
+  const r = 62, cx = 80, cy = 80, sw = 26, C = 2 * Math.PI * r;
+  let acc = 0;
+  const arcs = rows.map((row, i) => {
+    const frac = total ? row.n / total : 0;
+    const dash = frac * C;
+    const offset = -acc * C;
+    acc += frac;
+    const color = palette[i % palette.length];
+    return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-dasharray="${dash.toFixed(2)} ${(C - dash).toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"></circle>`;
+  }).join("");
+  const legend = rows.map((row, i) => {
+    const share = total ? Math.round((row.n / total) * 100) : 0;
+    const color = palette[i % palette.length];
+    return `<div style="display:flex; align-items:center; gap:8px; font-size:12.5px; margin-bottom:7px;">
+      <span style="width:11px; height:11px; border-radius:3px; background:${color}; flex:0 0 auto;"></span>
+      <span style="flex:1;">${esc(row.provider)}</span>
+      <strong>${row.n} <span style="color:var(--text-muted); font-weight:400;">(${share}%)</span></strong>
+    </div>`;
+  }).join("");
+  return `<div style="display:flex; gap:24px; align-items:center; flex-wrap:wrap;">
+    <div style="position:relative; width:160px; height:160px; flex:0 0 auto;">
+      <svg viewBox="0 0 160 160" width="160" height="160">${arcs}</svg>
+      <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; pointer-events:none;">
+        <div style="font-size:28px; font-weight:800; color:var(--brand-navy,#1b2a6b); line-height:1;">${total}</div>
+        <div style="font-size:11px; color:var(--text-muted);">clients</div>
+      </div>
+    </div>
+    <div style="flex:1; min-width:220px;">${legend}</div>
   </div>`;
 }
 
@@ -2250,7 +2292,7 @@ function wireScheduleGrid(mount, sessions) {
   const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
   // Color legend of clients that appear on the grid.
   const seen = {};
-  sessions.forEach((s) => { if (!seen[s.client_id]) seen[s.client_id] = { name: s.child_name, color: s.client_color || "#29225c" }; });
+  sessions.forEach((s) => { if (!seen[s.client_id]) seen[s.client_id] = { name: s.child_name, color: s.client_color || "#1b2a6b" }; });
   const legend = mount.querySelector("#grid-legend");
   if (legend) {
     legend.innerHTML = Object.values(seen).map((c) =>
@@ -2354,7 +2396,7 @@ async function renderStaffingEstimator(mount) {
   const DAYN = { 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri" };
   const hourLabel = (h) => { const ap = h < 12 ? "am" : "pm"; let hh = h % 12; if (hh === 0) hh = 12; return hh + ap; };
   const tile = (label, val, sub) => `<div style="flex:1; min-width:130px; background:var(--bg,#f7f7fb); border:1px solid var(--border,#e5e7eb); border-radius:12px; padding:14px 16px;">
-    <div style="font-size:26px; font-weight:800; color:var(--brand-navy,#29225c);">${val}</div>
+    <div style="font-size:26px; font-weight:800; color:var(--brand-navy,#1b2a6b);">${val}</div>
     <div style="font-size:12.5px; color:var(--text-muted);">${label}</div>${sub ? `<div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${sub}</div>` : ""}</div>`;
 
   const staffCards = d.staff.map((m) => {
@@ -2608,7 +2650,7 @@ async function renderStaff(mount) {
           </tr></thead>
           <tbody>
             ${staff.length ? staff.map((e) => { const ini = (e.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase(); return `<tr data-staff="${e.id}" style="cursor:pointer;">
-              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><div style="display:flex; align-items:center; gap:10px;"><span class="staff-av" data-av="${e.id}" data-hasphoto="${e.hr_photo ? "1" : "0"}" style="flex:0 0 auto; width:32px; height:32px; border-radius:50%; background:#eef0fb; color:#29225c; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; overflow:hidden;">${staffEsc(ini)}</span><span><strong>${staffEsc(e.name)}</strong><div style="color:var(--text-muted); font-size:12px;">${staffEsc(e.email || "")}</div></span></div></td>
+              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><div style="display:flex; align-items:center; gap:10px;"><span class="staff-av" data-av="${e.id}" data-hasphoto="${e.hr_photo ? "1" : "0"}" style="flex:0 0 auto; width:32px; height:32px; border-radius:50%; background:#eef0fb; color:#1b2a6b; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; overflow:hidden;">${staffEsc(ini)}</span><span><strong>${staffEsc(e.name)}</strong><div style="color:var(--text-muted); font-size:12px;">${staffEsc(e.email || "")}</div></span></div></td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.role_title || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.phone || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.certifications || (e.credentials || []).map((c) => c.credential_type).join(", ") || "—")}</td>
@@ -2630,7 +2672,7 @@ async function renderStaff(mount) {
     if (el && oc && oc.count != null) {
       const mw = oc.milestones_this_week || 0;
       el.innerHTML = `<span class="tag" style="background:${oc.count ? "#fef3c7" : "#dcfce7"}; color:${oc.count ? "#92400e" : "#166534"}; font-size:13px; padding:6px 12px;">📄 Documents outstanding: <strong>${oc.count}</strong></span>`
-        + `<span class="tag" style="background:#eef0fb; color:#29225c; font-size:13px; padding:6px 12px; margin-left:8px;">🎉 Milestone check-ins this week: <strong>${mw}</strong></span>`;
+        + `<span class="tag" style="background:#eef0fb; color:#1b2a6b; font-size:13px; padding:6px 12px; margin-left:8px;">🎉 Milestone check-ins this week: <strong>${mw}</strong></span>`;
     }
   } catch (e) {}
   // Lazy-load photo thumbnails for staff who have one.
@@ -2654,7 +2696,7 @@ async function openStaffModal(id, pageMount) {
     <div class="modal" style="width:620px;">
       <div class="modal-header"><h2>${id ? staffEsc(emp.name) : "Add Staff"}</h2><button class="close-btn">✕</button></div>
       ${id ? `<div style="text-align:center; margin-bottom:10px;">
-        <div id="staff-avatar" style="width:84px;height:84px;border-radius:50%;margin:0 auto;background:#eef0fb;color:#29225c;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;overflow:hidden;">${staffEsc(initials)}</div>
+        <div id="staff-avatar" style="width:84px;height:84px;border-radius:50%;margin:0 auto;background:#eef0fb;color:#1b2a6b;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;overflow:hidden;">${staffEsc(initials)}</div>
       </div>` : ""}
       <div class="form-grid" style="gap:10px;">
         ${field("name", "Full name")}
@@ -3208,7 +3250,7 @@ async function renderTeamSection(mount) {
       ${roles
         .map(
           (r) => `<div style="border:1px solid var(--border,#e5e7eb); border-radius:8px; padding:10px 12px;">
-            <div style="font-weight:600; font-size:13px;">${adminEsc(r.label)}${r.privileged ? ` <span class="tag" style="background:#eef0fb; color:#29225c;">full access</span>` : ""}</div>
+            <div style="font-weight:600; font-size:13px;">${adminEsc(r.label)}${r.privileged ? ` <span class="tag" style="background:#eef0fb; color:#1b2a6b;">full access</span>` : ""}</div>
             <div style="font-size:12.5px; color:var(--text-muted); margin-top:3px;">${adminEsc(r.description)}</div>
           </div>`
         )
