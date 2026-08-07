@@ -972,6 +972,22 @@ const EMAIL_TEMPLATE_DEFS = [
     description: "Sent to the parent when their child comes off the waitlist and enrollment can continue.",
     fields: ["parent_name", "child_name", "today"],
   },
+  // ---- HR / Onboarding emails (staff), used by the Offer-Accepted bundle + milestones ----
+  { key: "hr_welcome_dojo", label: "New Hire — Class Dojo Welcome", category: "HR / Onboarding Emails",
+    description: "Sent to a new hire when their offer is accepted (Class Dojo invite).",
+    fields: ["first_name", "hire_date", "class_dojo_link"] },
+  { key: "hr_rethink_creds", label: "New Hire — Rethink Credentials", category: "HR / Onboarding Emails",
+    description: "Sent to a new hire with their Rethink username (password goes by a separate channel).",
+    fields: ["first_name", "rethink_username"] },
+  { key: "hr_scheduling_request", label: "New Hire — Scheduling / Availability", category: "HR / Onboarding Emails",
+    description: "Sent to a new hire asking them to complete their availability form.",
+    fields: ["first_name", "scheduling_form_link"] },
+  { key: "hr_milestone_30", label: "Staff Milestone — 30 Days", category: "HR / Onboarding Emails",
+    description: "Auto-sent 30 days after a staff member's hire date.", fields: ["first_name"] },
+  { key: "hr_milestone_60", label: "Staff Milestone — 60 Days", category: "HR / Onboarding Emails",
+    description: "Auto-sent 60 days after a staff member's hire date.", fields: ["first_name"] },
+  { key: "hr_milestone_90", label: "Staff Milestone — 90 Days", category: "HR / Onboarding Emails",
+    description: "Auto-sent 90 days after a staff member's hire date.", fields: ["first_name"] },
 ];
 
 // The CRM's original built-in copy -- used both as the seed data and as a
@@ -1048,11 +1064,51 @@ const EMAIL_TEMPLATE_DEFAULTS = {
     <p>Our team will be in touch shortly with the next steps. If you have any questions in the meantime, just reply to this email.</p>
     <p>Warmly,<br/>The Spectrum Squad Team</p>`,
   },
+  hr_welcome_dojo: {
+    subject: "Welcome to the team, {{first_name}}!",
+    body: `<p>Hi {{first_name}},</p>
+    <p>We're so glad to have you! Your first step is joining our <strong>Class Dojo</strong>, where our team communicates day to day: <a href="{{class_dojo_link}}">{{class_dojo_link}}</a></p>
+    <p>Your start date is <strong>{{hire_date}}</strong>. Reach out any time with questions.</p>
+    <p>Warmly,<br/>The Spectrum Squad Team</p>`,
+  },
+  hr_rethink_creds: {
+    subject: "Your Rethink login",
+    body: `<p>Hi {{first_name}},</p>
+    <p>Your Rethink account is ready.</p>
+    <p><strong>Username:</strong> {{rethink_username}}</p>
+    <p>Your temporary password will be sent to you separately. You'll be prompted to change it at first login.</p>
+    <p>The Spectrum Squad Team</p>`,
+  },
+  hr_scheduling_request: {
+    subject: "Your availability — quick form",
+    body: `<p>Hi {{first_name}},</p>
+    <p>Before your start date, please fill out your availability and any scheduling needs (transportation, in-clinic vs in-home, etc.): <a href="{{scheduling_form_link}}">{{scheduling_form_link}}</a></p>
+    <p>Thank you,<br/>The Spectrum Squad Team</p>`,
+  },
+  hr_milestone_30: {
+    subject: "30 days in — congratulations, {{first_name}}!",
+    body: `<p>Hi {{first_name}},</p>
+    <p>You've hit your first month with us. Thank you for the work you're putting in with our clients. If anything would make your job easier, tell us.</p>
+    <p>The Spectrum Squad Team</p>`,
+  },
+  hr_milestone_60: {
+    subject: "60 days with the team!",
+    body: `<p>Hi {{first_name}},</p>
+    <p>Two months in and you're part of the fabric here. Congratulations, {{first_name}}.</p>
+    <p>The Spectrum Squad Team</p>`,
+  },
+  hr_milestone_90: {
+    subject: "90 days — a real milestone",
+    body: `<p>Hi {{first_name}},</p>
+    <p>Congratulations on 90 days, {{first_name}}. That's a significant mark, and we're grateful you're here.</p>
+    <p>The Spectrum Squad Team</p>`,
+  },
 };
 
 async function seedEmailTemplates() {
   for (const def of EMAIL_TEMPLATE_DEFS) {
     const defaults = EMAIL_TEMPLATE_DEFAULTS[def.key];
+    if (!defaults) { console.error("No default body for email template:", def.key); continue; }
     await dbRun(
       `INSERT INTO email_templates (template_key, label, category, subject_template, body_template, updated_by, updated_at)
        VALUES (?, ?, ?, ?, ?, 'system', ?)
@@ -4718,7 +4774,8 @@ const server = http.createServer(async (req, res) => {
   if (
     pathname === "/careers" || pathname.startsWith("/careers/") ||
     pathname.startsWith("/apply/") || pathname.startsWith("/schedule/") ||
-    pathname.startsWith("/verify-timecard/") || pathname.startsWith("/offer/")
+    pathname.startsWith("/verify-timecard/") || pathname.startsWith("/offer/") ||
+    pathname === "/staff-availability" || pathname.startsWith("/staff-availability/")
   ) {
     if (await hr.servePage(req, res, pathname)) return;
   }

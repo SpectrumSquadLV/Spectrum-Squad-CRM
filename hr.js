@@ -470,6 +470,13 @@ module.exports = function initHr(ctx) {
       updated_at TEXT,
       UNIQUE (employee_id, doc_key)
     )`);
+    // Tokenized staff availability form links (new-hire scheduling request).
+    await dbRun(`CREATE TABLE IF NOT EXISTS hr_avail_links (
+      id SERIAL PRIMARY KEY,
+      employee_id INTEGER NOT NULL,
+      token TEXT UNIQUE NOT NULL,
+      created_at TEXT
+    )`);
     // hr_interviews already exists; add scheduling/reminder columns idempotently.
     await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS slot_id INTEGER`).catch(() => {});
     await dbRun(`ALTER TABLE hr_interviews ADD COLUMN IF NOT EXISTS reminder_24_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
@@ -941,6 +948,32 @@ module.exports = function initHr(ctx) {
     ).catch((e) => console.error("hr staff task insert failed:", e.message));
   }
 
+  // Render an editable email template (from the email_templates table) with
+  // {{merge}} fields. Keeps HR onboarding emails owner-editable.
+  async function renderHrEmail(templateKey, fields) {
+    const row = await dbGet("SELECT subject_template, body_template FROM email_templates WHERE template_key = ?", [templateKey]);
+    if (!row) return null;
+    const sub = (s) => String(s || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (m, k) => (fields[k] == null ? "" : String(fields[k])));
+    return { subject: sub(row.subject_template), html: sub(row.body_template) };
+  }
+
+  // Append a {at, text} entry to an employee's activity log (hr_activity JSON).
+  async function logEmpActivity(employeeId, text) {
+    const emp = await dbGet("SELECT hr_activity FROM hr_employees WHERE id = ?", [employeeId]);
+    let arr = [];
+    try { arr = JSON.parse(emp && emp.hr_activity ? emp.hr_activity : "[]"); } catch (e) { arr = []; }
+    arr.unshift({ at: nowISO(), text });
+    await dbRun("UPDATE hr_employees SET hr_activity = ? WHERE id = ?", [JSON.stringify(arr.slice(0, 200)), employeeId]);
+  }
+
+  async function getOrCreateAvailLink(employeeId) {
+    const existing = await dbGet("SELECT token FROM hr_avail_links WHERE employee_id = ? ORDER BY id DESC LIMIT 1", [employeeId]);
+    if (existing) return existing.token;
+    const token = crypto.randomBytes(20).toString("hex");
+    await dbRun("INSERT INTO hr_avail_links (employee_id, token, created_at) VALUES (?, ?, ?)", [employeeId, token, nowISO()]);
+    return token;
+  }
+
   // Return the 6 tracker rows for an employee, filling defaults for any missing.
   async function getDocTracker(employeeId) {
     const existing = await dbAll("SELECT * FROM hr_doc_tracker WHERE employee_id = ?", [employeeId]);
@@ -1296,6 +1329,35 @@ module.exports = function initHr(ctx) {
           await notify({ type: "offer_declined", applicantId: applicant.id, positionId: applicant.position_id, title: "Offer declined", body: `${applicant.full_name} declined the offer${b.reason ? ": " + b.reason : "."}`, severity: "warning", emailOwner: true });
         }
         await audit("candidate", "offer_declined", "applicant", o.applicant_id, b.reason || "");
+        return json(res, 200, { ok: true });
+      }
+
+      // -------- PUBLIC: new-hire availability form --------
+      if (pathname === "/api/hr/public/staff-availability" && method === "GET") {
+        const link = await dbGet("SELECT * FROM hr_avail_links WHERE token = ?", [query.token || ""]);
+        if (!link) return json(res, 404, { error: "This link is invalid or has expired." });
+        const emp = await dbGet("SELECT id, name, hr_availability, hr_stipulations FROM hr_employees WHERE id = ?", [link.employee_id]);
+        if (!emp) return json(res, 404, { error: "Not found" });
+        return json(res, 200, {
+          name: emp.name,
+          availability: parseJson(emp.hr_availability, null),
+          stipulations: parseJson(emp.hr_stipulations, null),
+        });
+      }
+      if (pathname === "/api/hr/public/staff-availability" && method === "POST") {
+        const b = await readBody(req);
+        const link = await dbGet("SELECT * FROM hr_avail_links WHERE token = ?", [b.token || ""]);
+        if (!link) return json(res, 404, { error: "This link is invalid or has expired." });
+        await dbRun("UPDATE hr_employees SET hr_availability = ?, hr_stipulations = ? WHERE id = ?", [
+          JSON.stringify(b.availability || {}), JSON.stringify(b.stipulations || {}), link.employee_id,
+        ]);
+        // Mark any open "availability/scheduling" staff task for this employee complete.
+        await dbRun(
+          "UPDATE staff_tasks SET status = 'done', completed_at = ? WHERE status = 'open' AND (title ILIKE '%availability%' OR title ILIKE '%scheduling%') AND description = ?",
+          [nowISO(), `Staff #${link.employee_id}`]
+        ).catch(() => {});
+        await logEmpActivity(link.employee_id, "Submitted availability / scheduling form.");
+        await notify({ type: "staff_availability", title: "Availability submitted", body: "A new hire submitted their availability form.", severity: "info", emailOwner: false }).catch(() => {});
         return json(res, 200, { ok: true });
       }
 
@@ -2193,6 +2255,44 @@ module.exports = function initHr(ctx) {
       }
       if (pathname === "/api/hr/documents-outstanding" && method === "GET") {
         return json(res, 200, { count: await countDocsOutstanding() });
+      }
+
+      // Offer Accepted trigger bundle: fire the selected onboarding actions.
+      const offerAcceptedMatch = pathname.match(/^\/api\/hr\/employees\/(\d+)\/offer-accepted$/);
+      if (offerAcceptedMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const empId = Number(offerAcceptedMatch[1]);
+        const emp = await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empId]);
+        if (!emp) return json(res, 404, { error: "Not found" });
+        const b = await readBody(req);
+        const a = b.actions || {};
+        const first = firstNameOf(emp.name);
+        const hireDate = b.hire_date || emp.hr_hire_date || null;
+        const fired = [];
+
+        await dbRun("UPDATE hr_employees SET hr_stage = 'Offer Accepted', hr_offer_accepted_date = ?, hr_hire_date = COALESCE(?, hr_hire_date) WHERE id = ?", [nowISO().slice(0, 10), hireDate, empId]);
+
+        if (a.dojo && emp.email) {
+          const t = await renderHrEmail("hr_welcome_dojo", { first_name: first, hire_date: hireDate || "your start date", class_dojo_link: b.class_dojo_link || "" });
+          if (t) { await sendEmail({ to: emp.email, subject: t.subject, html: t.html, type: "hr_onboarding" }).catch((e) => console.error(e)); fired.push("Class Dojo welcome email"); }
+        }
+        if (a.rethink && emp.email) {
+          const t = await renderHrEmail("hr_rethink_creds", { first_name: first, rethink_username: b.rethink_username || "(to be provided)" });
+          if (t) { await sendEmail({ to: emp.email, subject: t.subject, html: t.html, type: "hr_onboarding" }).catch((e) => console.error(e)); fired.push("Rethink credentials email"); }
+        }
+        if (a.scheduling && emp.email) {
+          const token = await getOrCreateAvailLink(empId);
+          const link = `${APP_BASE_URL}/staff-availability/?token=${token}`;
+          const t = await renderHrEmail("hr_scheduling_request", { first_name: first, scheduling_form_link: link });
+          if (t) { await sendEmail({ to: emp.email, subject: t.subject, html: t.html, type: "hr_onboarding" }).catch((e) => console.error(e)); fired.push("Scheduling/availability email"); }
+          await hrMakeStaffTask(`Availability form pending: ${emp.name}`, empId);
+        }
+        if (a.task_homebase) { await hrMakeStaffTask(`Add ${emp.name} to Homebase`, empId); fired.push("Task: Add to Homebase"); }
+        if (a.task_rethink) { await hrMakeStaffTask(`Add ${emp.name} to Rethink`, empId); fired.push("Task: Add to Rethink"); }
+
+        await logEmpActivity(empId, "Offer Accepted — fired: " + (fired.length ? fired.join("; ") : "no actions selected") + (hireDate ? ` (start ${hireDate})` : ""));
+        await audit(actor, "offer_accepted_bundle", "employee", empId, fired.join("; "));
+        return json(res, 200, { ok: true, fired, employee: await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empId]) });
       }
 
       // Bulk import staff from the Rethink payroll sheet (NO pay). Upserts by
@@ -3764,7 +3864,138 @@ Write body as plain text with line breaks (no HTML).`;
       res.end(offerHtml());
       return true;
     }
+    if (pathname === "/staff-availability" || pathname.startsWith("/staff-availability/")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(staffAvailabilityHtml());
+      return true;
+    }
     return false;
+  }
+
+  // Public, client-rendered availability / scheduling form for a new hire.
+  // Fetches the employee by token, lets them mark a weekly availability grid
+  // and add scheduling stipulations, then POSTs back. No ${} interpolation on
+  // purpose — everything comes from the token'd API call.
+  function staffAvailabilityHtml() {
+    return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Your Availability — Spectrum Squad</title>
+<style>
+  :root{--navy:#29225c;--gold:#e0a430;--teal:#5fa8a0;--surface:#fff;--text:#201a4d;--muted:#6b6a86;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--text);
+    background:linear-gradient(160deg,#efe9ff 0%,#f7f8fb 45%,#e8f5f2 100%);min-height:100vh}
+  .wrap{max-width:720px;margin:0 auto;padding:26px 18px 60px}
+  .card{background:var(--surface);border:1px solid #e7e4f5;border-radius:20px;padding:24px;margin:18px 0;
+    box-shadow:0 18px 50px rgba(41,34,92,.12)}
+  h1{font-size:24px;margin:6px 0;color:var(--navy)} h2{color:var(--navy);font-size:18px;margin:0 0 6px}
+  p.sub{color:var(--muted);margin:4px 0 16px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border:1px solid #e7e4f5;padding:4px;text-align:center}
+  th{background:#f6f4ff;color:var(--navy);font-weight:700}
+  td.slot{cursor:pointer;user-select:none;background:#fff}
+  td.slot.on{background:var(--teal);color:#fff;font-weight:700}
+  td.daylabel{background:#faf9ff;font-weight:700;color:var(--navy);text-align:left;padding-left:8px}
+  label.f{display:block;font-weight:600;margin:12px 0 4px;color:var(--navy)}
+  textarea,input[type=text]{width:100%;border:1px solid #d7d3ee;border-radius:10px;padding:10px;font-size:15px;font-family:inherit}
+  .chk{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:15px}
+  .btn{display:block;width:100%;background:linear-gradient(135deg,var(--gold),#f0b64a);color:#3a2a00;border:none;
+    border-radius:14px;padding:16px;font-size:18px;font-weight:800;cursor:pointer;box-shadow:0 8px 20px rgba(224,164,48,.4);
+    margin-top:18px}
+  .btn[disabled]{opacity:.6;cursor:default}
+  .hint{font-size:13px;color:var(--muted);margin:6px 0}
+  .ok{text-align:center;padding:40px 10px}
+  .ok .big{font-size:52px}
+</style></head>
+<body>
+<div class="wrap" id="app"><div class="card"><p>Loading…</p></div></div>
+<script>
+(function(){
+  var app=document.getElementById('app');
+  var params=new URLSearchParams(location.search);
+  var token=params.get('token')||'';
+  var DAYS=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+  var BLOCKS=[['morning','Morning (8a–12p)'],['afternoon','Afternoon (12p–4p)'],['evening','Evening (4p–7p)']];
+  var grid={};
+  function esc(s){var d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
+  function err(msg){app.innerHTML='<div class="card"><h1>Hmm…</h1><p class="sub">'+esc(msg)+'</p></div>';}
+  fetch('/api/hr/public/staff-availability?token='+encodeURIComponent(token))
+    .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
+    .then(function(res){
+      if(!res.ok){return err(res.j.error||'This link is invalid or has expired.');}
+      var d=res.j;
+      if(d.availability&&typeof d.availability==='object'){grid=d.availability;}
+      render(d);
+    }).catch(function(){err('Could not load the form. Please try again.');});
+
+  function render(d){
+    var rows='';
+    DAYS.forEach(function(day){
+      rows+='<tr><td class="daylabel">'+day+'</td>';
+      BLOCKS.forEach(function(b){
+        var on=grid[day]&&grid[day][b[0]];
+        rows+='<td class="slot'+(on?' on':'')+'" data-day="'+day+'" data-block="'+b[0]+'">'+(on?'✓':'')+'</td>';
+      });
+      rows+='</tr>';
+    });
+    var head='<tr><th>Day</th>'+BLOCKS.map(function(b){return '<th>'+b[1]+'</th>';}).join('')+'</tr>';
+    var st=(d.stipulations&&typeof d.stipulations==='object')?d.stipulations:{};
+    app.innerHTML=
+      '<div class="card">'+
+        '<h1>Welcome, '+esc(d.name||'')+'! 🎉</h1>'+
+        '<p class="sub">Let us know when you\\'re available so we can build your schedule. Tap the time blocks that work for you.</p>'+
+        '<h2>Weekly availability</h2>'+
+        '<div style="overflow-x:auto"><table>'+head+rows+'</table></div>'+
+        '<p class="hint">Tap a cell to toggle it on/off.</p>'+
+      '</div>'+
+      '<div class="card">'+
+        '<h2>Transportation & scheduling notes</h2>'+
+        '<label class="f">How will you get to sessions?</label>'+
+        '<input type="text" id="transport" value="'+esc(st.transport||'')+'" placeholder="e.g. My own car, public transit, rides"/>'+
+        '<label class="f">Earliest you can start each day</label>'+
+        '<input type="text" id="earliest" value="'+esc(st.earliest||'')+'" placeholder="e.g. 9:00am after school drop-off"/>'+
+        '<label class="f">Any days or times you absolutely cannot work?</label>'+
+        '<textarea id="restrictions" rows="3" placeholder="e.g. No Fridays, classes Tue/Thu evenings">'+esc(st.restrictions||'')+'</textarea>'+
+        '<label class="f">Preferred weekly hours</label>'+
+        '<input type="text" id="hours" value="'+esc(st.hours||'')+'" placeholder="e.g. 25–30 hours"/>'+
+        '<label class="f">Anything else we should know?</label>'+
+        '<textarea id="notes" rows="3" placeholder="Optional">'+esc(st.notes||'')+'</textarea>'+
+        '<button class="btn" id="submit">Submit my availability</button>'+
+      '</div>';
+    Array.prototype.forEach.call(document.querySelectorAll('td.slot'),function(td){
+      td.addEventListener('click',function(){
+        var day=td.getAttribute('data-day'),block=td.getAttribute('data-block');
+        grid[day]=grid[day]||{};
+        grid[day][block]=!grid[day][block];
+        td.classList.toggle('on',grid[day][block]);
+        td.textContent=grid[day][block]?'✓':'';
+      });
+    });
+    document.getElementById('submit').addEventListener('click',submit);
+  }
+  function submit(){
+    var btn=document.getElementById('submit');
+    btn.disabled=true;btn.textContent='Submitting…';
+    var stip={
+      transport:val('transport'),earliest:val('earliest'),
+      restrictions:val('restrictions'),hours:val('hours'),notes:val('notes')
+    };
+    fetch('/api/hr/public/staff-availability',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token:token,availability:grid,stipulations:stip})
+    }).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
+      .then(function(res){
+        if(!res.ok){btn.disabled=false;btn.textContent='Submit my availability';return err(res.j.error||'Could not submit.');}
+        app.innerHTML='<div class="card ok"><div class="big">✅</div><h1>Thank you!</h1>'+
+          '<p class="sub">Your availability has been sent to the Spectrum Squad team. We\\'ll be in touch about your schedule soon.</p></div>';
+      }).catch(function(){btn.disabled=false;btn.textContent='Submit my availability';err('Could not submit. Please try again.');});
+  }
+  function val(id){var el=document.getElementById(id);return el?el.value.trim():'';}
+})();
+</script>
+</body></html>`;
   }
 
   // The cute, interactive offer page. Fully client-rendered (no ${} in this
