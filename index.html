@@ -2606,14 +2606,14 @@ async function renderStaff(mount) {
             <th style="padding:8px 10px;">Certifications</th><th style="padding:8px 10px;">Time w/ Spectrum</th><th style="padding:8px 10px;">Status</th>
           </tr></thead>
           <tbody>
-            ${staff.length ? staff.map((e) => `<tr data-staff="${e.id}" style="cursor:pointer;">
-              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><strong>${staffEsc(e.name)}</strong><div style="color:var(--text-muted); font-size:12px;">${staffEsc(e.email || "")}</div></td>
+            ${staff.length ? staff.map((e) => { const ini = (e.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase(); return `<tr data-staff="${e.id}" style="cursor:pointer;">
+              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><div style="display:flex; align-items:center; gap:10px;"><span class="staff-av" data-av="${e.id}" data-hasphoto="${e.hr_photo ? "1" : "0"}" style="flex:0 0 auto; width:32px; height:32px; border-radius:50%; background:#eef0fb; color:#29225c; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; overflow:hidden;">${staffEsc(ini)}</span><span><strong>${staffEsc(e.name)}</strong><div style="color:var(--text-muted); font-size:12px;">${staffEsc(e.email || "")}</div></span></div></td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.role_title || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.phone || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.certifications || (e.credentials || []).map((c) => c.credential_type).join(", ") || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${tenureFrom(e.hire_date)}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><span class="tag">${staffEsc(e.status || "active")}</span></td>
-            </tr>`).join("") : `<tr><td colspan="6"><div class="empty-state">No staff yet. Add one or import your Rethink sheet.</div></td></tr>`}
+            </tr>`; }).join("") : `<tr><td colspan="6"><div class="empty-state">No staff yet. Add one or import your Rethink sheet.</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -2626,9 +2626,18 @@ async function renderStaff(mount) {
     const oc = await api("/api/hr/documents-outstanding");
     const el = mount.querySelector("#docs-outstanding");
     if (el && oc && oc.count != null) {
-      el.innerHTML = `<span class="tag" style="background:${oc.count ? "#fef3c7" : "#dcfce7"}; color:${oc.count ? "#92400e" : "#166534"}; font-size:13px; padding:6px 12px;">📄 Documents outstanding: <strong>${oc.count}</strong></span>`;
+      const mw = oc.milestones_this_week || 0;
+      el.innerHTML = `<span class="tag" style="background:${oc.count ? "#fef3c7" : "#dcfce7"}; color:${oc.count ? "#92400e" : "#166534"}; font-size:13px; padding:6px 12px;">📄 Documents outstanding: <strong>${oc.count}</strong></span>`
+        + `<span class="tag" style="background:#eef0fb; color:#29225c; font-size:13px; padding:6px 12px; margin-left:8px;">🎉 Milestone check-ins this week: <strong>${mw}</strong></span>`;
     }
   } catch (e) {}
+  // Lazy-load photo thumbnails for staff who have one.
+  mount.querySelectorAll('.staff-av[data-hasphoto="1"]').forEach((av) => {
+    const img = new Image();
+    img.src = `/api/hr/employees/${av.dataset.av}/photo?t=${Date.now()}`;
+    img.style.cssText = "width:100%;height:100%;object-fit:cover;";
+    img.onload = () => { av.innerHTML = ""; av.appendChild(img); };
+  });
 }
 
 async function openStaffModal(id, pageMount) {
