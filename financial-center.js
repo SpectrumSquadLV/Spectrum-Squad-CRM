@@ -1,358 +1,227 @@
-// financial-center.js -- Spectrum Squad CRM: Financial Center (ClickUp)
-//
-// Loaded as a plain <script src="financial-center.js"></script> right before
-// </body> in index.html -- the ONLY change made to index.html for this
-// feature. Everything else (nav item, page rendering, styling) is added at
-// runtime from here, so the existing hand-rolled router/renderShell in
-// index.html's inline script never has to be touched or risk breaking.
-//
-// This script runs in the SAME global scope as index.html's inline <script>
-// (classic scripts, not modules, share one global lexical environment), so
-// it can reference `state`, `api()`, etc. directly, exactly like the rest of
-// the app's code does. IMPORTANT: `state` is declared with `const` in that
-// inline script, so it's accessible here as the bare identifier `state` --
-// but it is NOT a property of `window` (that's only true for `var`/function
-// declarations at top level, not `let`/`const`). Always reference it as
-// bare `state`, never `window.state` (which will always be undefined).
-"use strict";
+// financial-center.js -- Owner-only Financial Center (advisor).
+// Rewritten to drop the ClickUp integration. Reads uploaded bank / QuickBooks
+// (CSV) + Rethink payroll (.xlsx) data via /api/fin/* and presents a plain-
+// English money advisor: overview, budgets & goals, wage-cost simulator, and
+// "where you're losing money" insights. The native router in index.html calls
+// window.__renderFinancialCenter(mount) directly (first-class route).
 
-// ---------------- Styles (injected once) ----------------
-(function injectStyles() {
-  const style = document.createElement("style");
-  style.textContent = `
-    .fc-tabs { display:flex; gap:6px; margin-bottom:18px; border-bottom:1px solid var(--border); flex-wrap:wrap; }
-    .fc-tab { padding:10px 16px; text-decoration:none; color: var(--text-muted); font-weight:600; border-bottom:2px solid transparent; }
-    .fc-tab.active { color: var(--brand); border-bottom-color: var(--brand); }
-    .conn-pill { display:inline-block; padding:4px 12px; border-radius:999px; font-weight:700; font-size:13px; color:#fff; }
-    .conn-pill.connected { background:#22c55e; }
-    .conn-pill.connection_failed { background:#dc2626; }
-    .conn-pill.disconnected { background:#6b7280; }
-  `;
-  document.head.appendChild(style);
-})();
-
-// ---------------- Permissions ----------------
-// Mirrors the existing Authorization Alerts permission model used elsewhere
-// in this app: admin/billing/clinical (BCBA) can view financial data, only
-// admin/billing can edit or trigger a sync, only admin can change API
-// credentials. Any other role (intake, scheduling -- and any future RBT
-// login) gets no access, per the "RBTs: No access" requirement.
-// Financials are owner-only: only the Owner (and a co-owner Super Admin) may
-// see or manage any financial data. Every other role gets no access at all.
 function canViewFinancial() {
   return typeof state !== "undefined" && !!state.user && ["owner", "super_admin"].includes(state.user.role);
 }
-function canEditFinancial() {
-  return typeof state !== "undefined" && !!state.user && ["owner", "super_admin"].includes(state.user.role);
-}
-function canAdminFinancial() {
-  return typeof state !== "undefined" && !!state.user && ["owner", "super_admin"].includes(state.user.role);
-}
 
-const FINANCIAL_TABS = [
-  { key: "overview", label: "Overview" },
-  { key: "claims", label: "Claims" },
-  { key: "credentialing", label: "Credentialing" },
-  { key: "alerts", label: "Financial Alerts" },
-  { key: "settings", label: "Integration Settings" },
-];
+(function () {
+  "use strict";
+  function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+  function money(n) { const v = Math.round((Number(n) || 0) * 100) / 100; return "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function curMonth() { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); }
+  function monthLabel(m) { if (!m) return ""; const [y, mo] = m.split("-"); const n = ["", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]; return (n[+mo] || mo) + " " + y; }
 
-// ---------------- Page rendering ----------------
-async function renderFinancialCenter(mount, tabParam) {
-  if (!canViewFinancial()) {
-    mount.innerHTML =
-      '<div class="page-header"><div><h1>Financial Center</h1></div></div>' +
-      '<div class="empty-state">You don\'t have permission to view this page.</div>';
-    return;
-  }
-  const activeTab = FINANCIAL_TABS.some((t) => t.key === tabParam) ? tabParam : "overview";
+  let month = curMonth();
+  let tab = "overview";
 
-  mount.innerHTML = `
-    <div class="page-header">
-      <div><h1>Financial Center</h1><p>Executive billing &amp; credentialing intelligence, powered by your ClickUp workspace.</p></div>
-    </div>
-    <div class="fc-tabs">
-      ${FINANCIAL_TABS.filter((t) => t.key !== "settings" || canAdminFinancial())
-        .map(
-          (t) =>
-            `<a href="#/financial-center/${t.key}" class="fc-tab${t.key === activeTab ? " active" : ""}">${t.label}</a>`
-        )
-        .join("")}
-    </div>
-    <div id="fc-tab-content"></div>
-  `;
+  const TABS = [
+    { key: "overview", label: "Overview" },
+    { key: "transactions", label: "Transactions" },
+    { key: "budgets", label: "Budgets & Goals" },
+    { key: "wagesim", label: "Wage Simulator" },
+  ];
 
-  const content = document.getElementById("fc-tab-content");
-  if (activeTab === "settings" && canAdminFinancial()) {
-    await renderFinancialSettings(content);
-  } else {
-    await renderFinancialDataTab(content, activeTab);
-  }
-}
-
-async function renderFinancialDataTab(content, tab) {
-  let status;
-  try {
-    status = await api("/api/financial/config-status");
-  } catch (e) {
-    status = { configured: false, connection_status: "disconnected" };
-  }
-
-  if (!status.configured) {
-    content.innerHTML = `
-      <div class="card empty-state">
-        <p><strong>ClickUp isn't connected yet.</strong></p>
-        <p>${
-          canAdminFinancial()
-            ? `Head to <a href="#/financial-center/settings">Integration Settings</a> to enter your ClickUp Personal API Token and start syncing billing data.`
-            : `Ask an administrator to connect ClickUp under Financial Center &rarr; Integration Settings.`
-        }</p>
+  function shell(inner) {
+    return `<div class="page-header">
+        <div><h1>💰 Financial Center</h1><p>Owner-only. Upload your bank, QuickBooks, and payroll exports to see where the money goes — in plain English.</p></div>
+        <input type="month" id="fc-month" value="${month}" />
       </div>
-    `;
-    return;
+      <div style="display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--border,#e5e7eb); margin-bottom:16px;">
+        ${TABS.map((t) => `<button class="fc-tab" data-fc-tab="${t.key}" style="background:none; border:none; border-bottom:3px solid ${t.key === tab ? "var(--brand-navy,#1b2a6b)" : "transparent"}; color:${t.key === tab ? "var(--brand-navy,#1b2a6b)" : "var(--text-muted)"}; font-weight:700; font-size:13.5px; padding:8px 12px; cursor:pointer;">${t.label}</button>`).join("")}
+      </div>
+      <div id="fc-body">${inner}</div>`;
   }
 
-  // Configured but this specific tab's live dashboard/claims/credentialing/
-  // alerts numbers are built in a follow-up pass once real synced data is
-  // flowing through clickup_tasks. Wiring proves out end-to-end here first.
-  const labels = {
-    overview: "Overview",
-    claims: "Claims",
-    credentialing: "Credentialing",
-    alerts: "Financial Alerts",
-  };
-  content.innerHTML = `
-    <div class="card">
-      <div class="section-title" style="margin-top:0;">${labels[tab] || "Overview"}</div>
-      <p class="empty-state" style="margin:0;">ClickUp is connected. This view populates automatically once the next sync completes.</p>
-    </div>
-  `;
-}
-
-async function renderFinancialSettings(content) {
-  let status, syncStatus, mappings;
-  try {
-    [status, syncStatus, mappings] = await Promise.all([
-      api("/api/financial/config-status"),
-      api("/api/financial/sync-status"),
-      api("/api/financial/category-mappings"),
-    ]);
-  } catch (e) {
-    content.innerHTML = `<div class="card empty-state">Failed to load settings: ${e.message}</div>`;
-    return;
-  }
-
-  const statusLabel =
-    status.connection_status === "connected"
-      ? "Connected"
-      : status.connection_status === "connection_failed"
-      ? "Connection Failed"
-      : "Disconnected";
-
-  content.innerHTML = `
-    <div class="card" style="margin-bottom:20px;">
-      <div class="section-title" style="margin-top:0;">Connection</div>
-      <p>Status: <span class="conn-pill ${status.connection_status || "disconnected"}">${statusLabel}</span></p>
-      <form id="fc-config-form">
-        <label>Personal API Token ${status.configured ? "(leave blank to keep the current token)" : ""}<br/>
-          <input type="password" id="fc-token" placeholder="${
-            status.configured ? "•••••••• (saved)" : "pk_xxxxxxxxxxxx"
-          }" style="width:100%;max-width:420px;" />
-        </label><br/><br/>
-        <label>Workspace ID<br/><input type="text" id="fc-workspace" value="${status.workspace_id || ""}" style="width:100%;max-width:420px;" /></label><br/><br/>
-        <label>Space ID<br/><input type="text" id="fc-space" value="${status.space_id || ""}" style="width:100%;max-width:420px;" /></label><br/><br/>
-        <label>Folder ID<br/><input type="text" id="fc-folder" value="${status.folder_id || ""}" style="width:100%;max-width:420px;" /></label><br/><br/>
-        <label>List IDs (comma-separated)<br/><input type="text" id="fc-lists" value="${status.list_ids || ""}" style="width:100%;max-width:420px;" /></label><br/><br/>
-        <button type="submit" class="btn">Save</button>
-        <button type="button" id="fc-test-btn" class="btn" style="margin-left:8px;">Test Connection</button>
-      </form>
-      <p id="fc-test-result" style="margin-top:10px;"></p>
-    </div>
-
-    <div class="card" style="margin-bottom:20px;">
-      <div class="section-title" style="margin-top:0;">Sync Status</div>
-      <p>Last Sync: ${
-        syncStatus.lastSync
-          ? new Date(syncStatus.lastSync.finishedAt || syncStatus.lastSync.startedAt).toLocaleString()
-          : "Never"
-      }
-        ${
-          syncStatus.lastSync
-            ? ` — <span class="alert-badge ${syncStatus.lastSync.status === "success" ? "informational" : "critical"}">${syncStatus.lastSync.status}</span>`
-            : ""
-        }
-      </p>
-      <p>Next Sync: ${syncStatus.nextSync ? new Date(syncStatus.nextSync).toLocaleString() : "—"}</p>
-      <p>Last Successful Sync: ${
-        syncStatus.lastSuccessfulSync
-          ? new Date(syncStatus.lastSuccessfulSync.finishedAt).toLocaleString() +
-            ` (${syncStatus.lastSuccessfulSync.tasksSynced} tasks)`
-          : "None yet"
-      }</p>
-      <p>Errors: ${syncStatus.lastSync && syncStatus.lastSync.error ? syncStatus.lastSync.error : "None"}</p>
-      <button id="fc-sync-now-btn" class="btn">Run Sync Now</button>
-    </div>
-
-    <div class="card">
-      <div class="section-title" style="margin-top:0;">Task Category Mappings</div>
-      <p class="empty-state" style="margin-top:0;">Map each ClickUp List ID to a category so synced tasks show up in the right dashboard section.</p>
-      <table style="width:100%;margin-bottom:14px;border-collapse:collapse;">
-        <thead><tr style="text-align:left;border-bottom:1px solid var(--border);"><th style="padding:6px 8px;">List ID</th><th style="padding:6px 8px;">List Name</th><th style="padding:6px 8px;">Category</th></tr></thead>
-        <tbody>
-          ${
-            mappings
-              .map(
-                (m) =>
-                  `<tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 8px;">${m.list_id}</td><td style="padding:6px 8px;">${m.list_name || "—"}</td><td style="padding:6px 8px;">${m.category}</td></tr>`
-              )
-              .join("") || `<tr><td style="padding:6px 8px;" colspan="3">No mappings yet.</td></tr>`
-          }
-        </tbody>
-      </table>
-      <form id="fc-mapping-form">
-        <input type="text" id="fc-map-list-id" placeholder="List ID" style="width:140px;" />
-        <input type="text" id="fc-map-list-name" placeholder="List Name (optional)" style="width:180px;" />
-        <select id="fc-map-category" style="width:200px;">
-          ${["Billing", "Credentialing", "Authorizations", "Appeals", "Provider Enrollment", "Insurance Follow-up", "Client Billing", "Collections", "Other"]
-            .map((c) => `<option value="${c}">${c}</option>`)
-            .join("")}
-        </select>
-        <button type="submit" class="btn">Add Mapping</button>
-      </form>
-    </div>
-  `;
-
-  document.getElementById("fc-config-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const body = {
-      workspace_id: document.getElementById("fc-workspace").value.trim(),
-      space_id: document.getElementById("fc-space").value.trim(),
-      folder_id: document.getElementById("fc-folder").value.trim(),
-      list_ids: document.getElementById("fc-lists").value.trim(),
-    };
-    const token = document.getElementById("fc-token").value.trim();
-    if (token) body.token = token;
-    await api("/api/financial/config", { method: "POST", body });
-    await renderFinancialSettings(content);
-  });
-
-  document.getElementById("fc-test-btn").addEventListener("click", async () => {
-    const resultEl = document.getElementById("fc-test-result");
-    resultEl.textContent = "Testing…";
+  async function render(mount) {
+    if (!canViewFinancial()) { mount.innerHTML = `<div class="page-header"><div><h1>Financial Center</h1></div></div><div class="empty-state">Financials are owner-only.</div>`; return; }
+    mount.innerHTML = shell(`<div class="empty-state">Loading…</div>`);
+    mount.querySelector("#fc-month").addEventListener("change", (e) => { month = e.target.value || curMonth(); render(mount); });
+    mount.querySelectorAll("[data-fc-tab]").forEach((b) => b.addEventListener("click", () => { tab = b.dataset.fcTab; render(mount); }));
+    const body = mount.querySelector("#fc-body");
     try {
-      const result = await api("/api/financial/test-connection", { method: "POST" });
-      resultEl.textContent = result.detail;
-    } catch (e) {
-      resultEl.textContent = "Test failed: " + e.message;
-    }
-    await renderFinancialSettings(content);
-  });
-
-  document.getElementById("fc-sync-now-btn").addEventListener("click", async () => {
-    await api("/api/financial/sync-now", { method: "POST" }).catch(() => {});
-    await renderFinancialSettings(content);
-  });
-
-  document.getElementById("fc-mapping-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const list_id = document.getElementById("fc-map-list-id").value.trim();
-    const list_name = document.getElementById("fc-map-list-name").value.trim();
-    const category = document.getElementById("fc-map-category").value;
-    if (!list_id) return;
-    await api("/api/financial/category-mappings", { method: "POST", body: { list_id, list_name, category } });
-    await renderFinancialSettings(content);
-  });
-}
-
-// ---------------- Non-invasive wiring into the existing app shell ----------------
-// The existing renderShell()/route() functions in index.html fully replace
-// #app's innerHTML on every navigation, and don't know this nav item or page
-// exist. For any hash it doesn't recognize (including #/financial-center),
-// the native route() falls through to rendering the Dashboard into
-// #view-mount -- and since that's async (awaits several API calls first),
-// it can finish AFTER this script's own render and silently overwrite it.
-//
-// A MutationObserver watches #app and, after every mutation:
-//   1. (Re-)injects the "Financial Center" sidebar button if missing (or
-//      removes it if permission was lost, e.g. after logout).
-//   2. If the current hash is #/financial-center[...] and permitted, checks
-//      whether #view-mount's content is ACTUALLY still this page's content
-//      (by looking for the #fc-tab-content marker this script renders) --
-//      not just a remembered flag -- and re-renders if the native router's
-//      Dashboard fallback stomped it. This makes recovery self-healing
-//      regardless of how the two async render paths happen to interleave.
-
-function syncNavButton() {
-  const nav = document.querySelector(".sidebar nav");
-  if (!nav) return;
-  let btn = nav.querySelector('[data-nav="financial-center"]');
-  if (!canViewFinancial()) {
-    if (btn) btn.remove();
-    return;
+      if (tab === "overview") await renderOverview(body, mount);
+      else if (tab === "transactions") await renderTransactions(body, mount);
+      else if (tab === "budgets") await renderBudgets(body);
+      else if (tab === "wagesim") renderWageSim(body);
+    } catch (e) { body.innerHTML = `<div class="empty-state">Couldn't load: ${esc(e.message)}</div>`; }
   }
-  const isActive = location.hash.startsWith("#/financial-center");
-  if (!btn) {
-    btn = document.createElement("button");
-    btn.className = "nav-item";
-    btn.dataset.nav = "financial-center";
-    btn.innerHTML = "<span>💰</span> Financial Center";
-    btn.addEventListener("click", () => {
-      location.hash = "#/financial-center";
+
+  function tile(val, label, color) {
+    return `<div style="flex:1; min-width:150px; background:var(--bg,#f7f8fb); border:1px solid var(--border,#e5e7eb); border-radius:12px; padding:16px 18px;">
+      <div style="font-size:26px; font-weight:800; color:${color || "var(--brand-navy,#1b2a6b)"};">${val}</div>
+      <div style="font-size:12.5px; color:var(--text-muted);">${label}</div></div>`;
+  }
+
+  async function renderOverview(body, mount) {
+    const d = await api("/api/fin/overview?month=" + encodeURIComponent(month));
+    const insightColor = { good: "#166534", warn: "#92400e", bad: "#991b1b", info: "#3730a3" };
+    const insightBg = { good: "#dcfce7", warn: "#fef3c7", bad: "#fee2e2", info: "#e0e7ff" };
+    const cats = d.categories.length ? d.categories.map((c) => {
+      const pct = c.budget ? Math.min(100, Math.round((c.spent / c.budget) * 100)) : 0;
+      return `<div style="margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:3px;">
+          <span>${esc(c.category)}</span>
+          <strong>${money(c.spent)}${c.budget ? ` <span style="color:var(--text-muted); font-weight:400;">/ ${money(c.budget)}</span>` : ""}</strong>
+        </div>
+        ${c.budget ? `<div style="background:#eef0f5; border-radius:999px; height:8px; overflow:hidden;"><div style="width:${pct}%; height:8px; border-radius:999px; background:${c.over ? "#dc2626" : "var(--brand-navy,#1b2a6b)"};"></div></div>` : ""}
+      </div>`;
+    }).join("") : `<div class="empty-state">No expenses recorded for ${esc(monthLabel(month))} yet.</div>`;
+
+    const recon = d.payroll_recon ? `<div class="card" style="margin-top:16px;">
+      <div class="section-title" style="margin-top:0;">Payroll reconciliation</div>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:8px;">
+        ${tile(money(d.payroll_recon.rethink_gross), "Rethink gross")}
+        ${tile(money(d.payroll_recon.bank_payroll), "Bank payroll")}
+        ${tile(money(d.payroll_recon.difference), "Difference", Math.abs(d.payroll_recon.difference) < 1 ? "#166534" : "#b45309")}
+      </div>
+      <div style="font-size:12.5px; color:var(--text-muted);">${esc(d.payroll_recon.note)}</div>
+    </div>` : "";
+
+    body.innerHTML = `
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+        ${tile(money(d.income), "Income", "#166534")}
+        ${tile(money(d.expense), "Expenses", "#991b1b")}
+        ${tile(money(d.net), d.net >= 0 ? "Kept (profit)" : "Shortfall", d.net >= 0 ? "#166534" : "#991b1b")}
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;">
+        <button class="btn secondary" id="fc-up-bank">⬆ Upload bank / QuickBooks (CSV)</button>
+        <button class="btn secondary" id="fc-up-payroll">⬆ Upload Rethink payroll (.xlsx)</button>
+        <span id="fc-up-status" style="font-size:12.5px; color:var(--text-muted); align-self:center;"></span>
+      </div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+        <div class="card" style="margin:0;">
+          <div class="section-title" style="margin-top:0;">What the numbers say</div>
+          ${d.insights.map((i) => `<div style="background:${insightBg[i.level] || "#eef0f5"}; color:${insightColor[i.level] || "#333"}; border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:8px;">${esc(i.text)}</div>`).join("") || `<div class="empty-state">—</div>`}
+        </div>
+        <div class="card" style="margin:0;">
+          <div class="section-title" style="margin-top:0;">Spending by category (vs. budget)</div>
+          ${cats}
+        </div>
+      </div>
+      ${recon}`;
+
+    body.querySelector("#fc-up-bank").addEventListener("click", () => uploadCsv(mount));
+    body.querySelector("#fc-up-payroll").addEventListener("click", () => uploadPayroll(mount));
+  }
+
+  function uploadCsv(mount) {
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".csv,text/csv";
+    inp.addEventListener("change", () => {
+      const f = inp.files[0]; if (!f) return;
+      const st = mount.querySelector("#fc-up-status"); if (st) st.textContent = "Importing…";
+      const r = new FileReader();
+      r.onload = async () => {
+        try {
+          const res = await api("/api/fin/import", { method: "POST", body: { csv: String(r.result), source: "bank" } });
+          if (st) st.textContent = `Imported ${res.imported} transactions.`;
+          if (res.months && res.months.length && res.months.indexOf(month) < 0) month = res.months[0];
+          render(mount);
+        } catch (e) { if (st) st.textContent = e.message || "Import failed."; }
+      };
+      r.readAsText(f);
     });
-    nav.appendChild(btn);
+    inp.click();
   }
-  btn.classList.toggle("active", isActive);
-  if (isActive) {
-    nav.querySelectorAll(".nav-item").forEach((b) => {
-      if (b !== btn) b.classList.remove("active");
+
+  function uploadPayroll(mount) {
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".xlsx";
+    inp.addEventListener("change", () => {
+      const f = inp.files[0]; if (!f) return;
+      const st = mount.querySelector("#fc-up-status"); if (st) st.textContent = "Importing payroll…";
+      const r = new FileReader();
+      r.onload = async () => {
+        try {
+          const res = await api("/api/fin/import-payroll", { method: "POST", body: { month, content_base64: String(r.result).split(",")[1] } });
+          if (st) st.textContent = `Payroll gross ${money(res.gross)} recorded for ${monthLabel(res.month)}.`;
+          render(mount);
+        } catch (e) { if (st) st.textContent = e.message || "Import failed."; }
+      };
+      r.readAsDataURL(f);
+    });
+    inp.click();
+  }
+
+  async function renderTransactions(body, mount) {
+    const d = await api("/api/fin/transactions?month=" + encodeURIComponent(month));
+    const opts = (sel) => d.categories.map((c) => `<option ${c === sel ? "selected" : ""}>${esc(c)}</option>`).join("");
+    body.innerHTML = `<div class="card">
+      <div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+        <thead><tr style="text-align:left; color:var(--text-muted); font-size:11px; text-transform:uppercase;">
+          <th style="padding:6px 8px;">Date</th><th style="padding:6px 8px;">Description</th><th style="padding:6px 8px; text-align:right;">Amount</th><th style="padding:6px 8px;">Category</th><th></th>
+        </tr></thead><tbody>
+        ${d.transactions.length ? d.transactions.map((t) => `<tr>
+          <td style="padding:6px 8px; border-top:1px solid var(--border,#eee);">${esc((t.txn_date || "").slice(0, 10))}</td>
+          <td style="padding:6px 8px; border-top:1px solid var(--border,#eee);">${esc(t.description)}</td>
+          <td style="padding:6px 8px; border-top:1px solid var(--border,#eee); text-align:right; color:${Number(t.amount) >= 0 ? "#166534" : "#991b1b"}; font-weight:600;">${money(t.amount)}</td>
+          <td style="padding:6px 8px; border-top:1px solid var(--border,#eee);"><select data-cat="${t.id}">${opts(t.category)}</select></td>
+          <td style="padding:6px 8px; border-top:1px solid var(--border,#eee);"><button class="btn small secondary" data-del="${t.id}">✕</button></td>
+        </tr>`).join("") : `<tr><td colspan="5"><div class="empty-state">No transactions for ${esc(monthLabel(month))}. Upload a CSV on the Overview tab.</div></td></tr>`}
+        </tbody></table></div>
+    </div>`;
+    body.querySelectorAll("[data-cat]").forEach((sel) => sel.addEventListener("change", async () => {
+      try { await api("/api/fin/transactions/" + sel.dataset.cat, { method: "PATCH", body: { category: sel.value } }); } catch (e) { alert(e.message); }
+    }));
+    body.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
+      if (!confirm("Delete this transaction?")) return;
+      try { await api("/api/fin/transactions/" + b.dataset.del, { method: "DELETE" }); renderTransactions(body, mount); } catch (e) { alert(e.message); }
+    }));
+  }
+
+  async function renderBudgets(body) {
+    const d = await api("/api/fin/budgets");
+    const map = {}; d.budgets.forEach((b) => { map[b.category] = b.monthly_limit; });
+    body.innerHTML = `<div class="card">
+      <div class="section-title" style="margin-top:0;">Monthly budgets &amp; goals</div>
+      <p style="font-size:12.5px; color:var(--text-muted); margin-top:0;">Set a monthly spending limit per category. The Overview tab shows actual vs. budget and flags anything over.</p>
+      <div class="form-grid" style="gap:10px;">
+        ${d.categories.filter((c) => c !== "Income").map((c) => `<div class="field"><label>${esc(c)}</label>
+          <div style="display:flex; gap:6px;"><input type="number" step="1" data-budget="${esc(c)}" value="${map[c] != null ? map[c] : ""}" placeholder="0" style="flex:1;" /><button class="btn small secondary" data-save-budget="${esc(c)}">Save</button></div></div>`).join("")}
+      </div>
+    </div>`;
+    body.querySelectorAll("[data-save-budget]").forEach((b) => b.addEventListener("click", async () => {
+      const cat = b.dataset.saveBudget;
+      const val = body.querySelector(`[data-budget="${cat}"]`).value || 0;
+      b.disabled = true; b.textContent = "…";
+      try { await api("/api/fin/budgets", { method: "POST", body: { category: cat, monthly_limit: Number(val) } }); b.textContent = "✓"; }
+      catch (e) { alert(e.message); b.textContent = "Save"; } finally { b.disabled = false; setTimeout(() => { b.textContent = "Save"; }, 1200); }
+    }));
+  }
+
+  function renderWageSim(body) {
+    body.innerHTML = `<div class="card" style="max-width:640px;">
+      <div class="section-title" style="margin-top:0;">Wage cost simulator</div>
+      <p style="font-size:12.5px; color:var(--text-muted); margin-top:0;">See what a hire (or a raise) really costs the company per month and year — including employer burden — and, for billable roles, the revenue and margin it could generate.</p>
+      <div class="form-grid" style="gap:10px;">
+        <div class="field"><label>Hourly rate ($)</label><input type="number" id="ws-rate" value="25" step="0.5" /></div>
+        <div class="field"><label>Hours per week</label><input type="number" id="ws-hours" value="30" step="1" /></div>
+        <div class="field"><label>How many people</label><input type="number" id="ws-count" value="1" step="1" /></div>
+        <div class="field"><label>Employer burden %</label><input type="number" id="ws-burden" value="12" step="1" /></div>
+      </div>
+      <button class="btn" id="ws-go" style="margin-top:12px;">Calculate</button>
+      <div id="ws-out" style="margin-top:16px;"></div>
+    </div>`;
+    body.querySelector("#ws-go").addEventListener("click", async () => {
+      const out = body.querySelector("#ws-out"); out.innerHTML = `<div class="empty-state">Calculating…</div>`;
+      try {
+        const r = await api("/api/fin/wage-sim", { method: "POST", body: {
+          rate: body.querySelector("#ws-rate").value, hours_per_week: body.querySelector("#ws-hours").value,
+          count: body.querySelector("#ws-count").value, burden_pct: body.querySelector("#ws-burden").value,
+        } });
+        out.innerHTML = `<div style="display:flex; gap:12px; flex-wrap:wrap;">
+          ${tile(money(r.monthly_total_cost), "Total monthly cost", "#991b1b")}
+          ${tile(money(r.annual_total_cost), "Total annual cost", "#991b1b")}
+          ${r.monthly_revenue_potential != null ? tile(money(r.monthly_revenue_potential), "Billable revenue potential/mo", "#166534") : ""}
+          ${r.monthly_margin != null ? tile(money(r.monthly_margin), "Est. monthly margin", r.monthly_margin >= 0 ? "#166534" : "#991b1b") : ""}
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:8px;">Monthly gross ${money(r.monthly_gross)} + burden ${money(r.monthly_burden)}.${r.rev_per_hour ? ` Revenue uses your avg $${r.rev_per_hour}/billable-hour setting.` : " Set an avg revenue/hour in Financial Settings to see revenue potential."}</div>`;
+      } catch (e) { out.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
     });
   }
-}
 
-let fcRenderInFlight = false;
-
-function syncFinancialView() {
-  const mount = document.getElementById("view-mount");
-  if (!mount) return;
-  if (!location.hash.startsWith("#/financial-center")) return;
-  if (fcRenderInFlight) return; // a render is already in progress; let it finish
-
-  if (!canViewFinancial()) {
-    if (mount.dataset.fcState !== "denied") {
-      mount.dataset.fcState = "denied";
-      renderFinancialCenter(mount, undefined);
-    }
-    return;
-  }
-
-  const parts = location.hash.split("/");
-  const param = parts[2] || "overview";
-  const wantedKey = "granted:" + param;
-  // Self-healing: only skip re-render if we previously rendered THIS exact
-  // tab AND the DOM still actually shows our content. If the native
-  // router's async Dashboard fallback overwrote #view-mount after we last
-  // rendered, #fc-tab-content will be missing and we render again.
-  if (mount.dataset.fcState === wantedKey && mount.querySelector("#fc-tab-content")) {
-    return;
-  }
-  mount.dataset.fcState = wantedKey;
-  fcRenderInFlight = true;
-  renderFinancialCenter(mount, param).finally(() => {
-    fcRenderInFlight = false;
-  });
-}
-
-function onAppMutated() {
-  syncNavButton();
-  syncFinancialView();
-}
-
-// The native router in index.html owns the #/financial-center route + sidebar
-// button now, calling window.__renderFinancialCenter(mount) directly. The old
-// MutationObserver/hashchange self-healing raced the router (and could leave
-// the wrong view showing), so it's replaced by this single entry point.
-window.__renderFinancialCenter = function (mount) {
-  if (!canViewFinancial()) return renderFinancialCenter(mount, undefined);
-  const param = (location.hash.split("/")[2]) || "overview";
-  return renderFinancialCenter(mount, param);
-};
+  window.__renderFinancialCenter = function (mount) { return render(mount); };
+})();
