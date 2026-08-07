@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Spectrum Squad Occupational Therapy — Family Intake</title>
+<style>
+  :root{
+    --navy:#29225c; --navy2:#6660a8; --teal:#2f8f89; --gold:#e0a430;
+    --bg:#f4f1ea; --card:#ffffff; --ink:#2b2a35; --muted:#8a8797; --line:#e9e4d8;
+    --green:#22a565; --soft:#faf8f2;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:linear-gradient(170deg,#eef3f2 0%,var(--bg) 55%,#f2eee6 100%);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:640px;margin:0 auto;padding:18px 14px 60px;}
+  .brand{display:flex;align-items:center;gap:10px;justify-content:center;margin:8px 0 14px;color:var(--navy);font-weight:800;letter-spacing:.2px;}
+  .brand .dot{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--navy),var(--teal));display:inline-block}
+  .progress-wrap{margin:0 auto 16px;max-width:560px}
+  .progress-top{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .bar{height:8px;background:#e7e2d6;border-radius:20px;overflow:hidden}
+  .bar > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--teal),var(--navy2));border-radius:20px;transition:width .4s cubic-bezier(.2,.8,.2,1)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:22px;box-shadow:0 14px 40px rgba(41,34,92,.10);padding:26px 22px;animation:rise .45s cubic-bezier(.2,.8,.2,1) both}
+  @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+  h1{font-size:23px;margin:2px 0 6px;color:var(--navy);line-height:1.25}
+  h2{font-size:20px;margin:2px 0 6px;color:var(--navy)}
+  .sub{color:var(--muted);font-size:14.5px;margin:0 0 18px;line-height:1.5}
+  label.f{display:block;font-size:13px;font-weight:700;color:#4a4860;margin:14px 0 5px}
+  input[type=text],input[type=email],input[type=tel],input[type=date],select,textarea{
+    width:100%;padding:13px 14px;border:1.5px solid var(--line);border-radius:12px;font-size:16px;font-family:inherit;background:#fff;color:var(--ink)}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px rgba(47,143,137,.15)}
+  textarea{min-height:110px;resize:vertical;line-height:1.5}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .row > .col{flex:1;min-width:120px}
+  .hint{font-size:12.5px;color:var(--muted);margin-top:6px;line-height:1.45}
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}
+  @media (max-width:460px){.cards{grid-template-columns:1fr}}
+  .opt{border:1.5px solid var(--line);border-radius:14px;padding:13px 14px;font-size:14.5px;font-weight:600;cursor:pointer;background:#fff;transition:.15s;display:flex;align-items:center;gap:9px}
+  .opt:hover{border-color:var(--teal)}
+  .opt.sel{border-color:var(--teal);background:#eff6f5;box-shadow:0 0 0 2px rgba(47,143,137,.18)}
+  .opt .tick{width:20px;height:20px;border-radius:50%;border:2px solid var(--line);flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff}
+  .opt.sel .tick{background:var(--teal);border-color:var(--teal)}
+  .avail{width:100%;border-collapse:separate;border-spacing:6px;margin-top:6px}
+  .avail th{font-size:12px;color:var(--muted);font-weight:700;padding-bottom:2px}
+  .avail td{padding:0}
+  .slot{width:100%;padding:11px 4px;border:1.5px solid var(--line);border-radius:11px;background:#fff;font-size:12.5px;font-weight:700;cursor:pointer;color:#4a4860}
+  .slot.sel{background:#eff6f5;border-color:var(--teal);color:var(--teal)}
+  .daylbl{font-size:12.5px;font-weight:800;color:#4a4860;text-align:left;padding-right:6px;white-space:nowrap}
+  .up{border:1.8px dashed var(--line);border-radius:14px;padding:16px;text-align:center;background:var(--soft);cursor:pointer;transition:.15s}
+  .up:hover{border-color:var(--teal);background:#f0f7f6}
+  .up .em{font-size:24px}
+  .up .t{font-weight:700;font-size:14px;margin-top:4px}
+  .up .s{font-size:12px;color:var(--muted);margin-top:2px}
+  .up.done{border-color:var(--green);background:#eefaf1}
+  .up.done .t{color:#177a3c}
+  .btns{display:flex;gap:10px;margin-top:22px}
+  .btn{flex:1;border:none;border-radius:14px;padding:15px;font-size:16px;font-weight:800;cursor:pointer;font-family:inherit;transition:.15s}
+  .btn.primary{background:linear-gradient(135deg,var(--teal),#3aa79f);color:#fff;box-shadow:0 8px 20px rgba(47,143,137,.35)}
+  .btn.primary:active{transform:translateY(1px)}
+  .btn.ghost{background:#fff;color:var(--navy);border:1.8px solid var(--line);flex:0 0 auto;min-width:110px}
+  .btn[disabled]{opacity:.55;cursor:default;box-shadow:none}
+  .rev{border:1px solid var(--line);border-radius:14px;margin:10px 0;overflow:hidden}
+  .rev summary{list-style:none;cursor:pointer;padding:13px 15px;font-weight:700;color:var(--navy);display:flex;justify-content:space-between;align-items:center;background:var(--soft)}
+  .rev summary::-webkit-details-marker{display:none}
+  .rev .body{padding:12px 15px;font-size:14px;color:#4a4860;line-height:1.6;white-space:pre-wrap}
+  .rev .edit{font-size:12px;color:var(--teal);font-weight:700}
+  .chk{display:flex;gap:10px;align-items:flex-start;margin-top:14px;font-size:13.5px;color:#4a4860;line-height:1.45}
+  .chk input{width:20px;height:20px;margin-top:1px;flex:0 0 auto}
+  .sign{font-family:"Segoe Script","Brush Script MT",cursive;font-size:22px;text-align:center}
+  .success{text-align:center;padding:22px 6px}
+  .success .big{font-size:48px}
+  .next{background:var(--soft);border:1px solid var(--line);border-radius:14px;padding:16px 18px;text-align:left;margin-top:16px}
+  .next ol{margin:8px 0 0;padding-left:20px;line-height:1.8;color:#4a4860}
+  .pill{display:inline-block;background:#eff6f5;color:var(--teal);border-radius:20px;padding:4px 11px;font-size:12px;font-weight:700;margin:3px 4px 0 0}
+  .saved{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#2b2a35;color:#fff;font-size:12.5px;padding:7px 14px;border-radius:20px;opacity:0;transition:.3s;pointer-events:none}
+  .saved.show{opacity:.92}
+  .err{color:#a3282e;font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><span class="dot"></span> Spectrum Squad · Occupational Therapy</div>
+  <div class="progress-wrap" id="progwrap" style="display:none">
+    <div class="progress-top"><span id="progstep">Getting started</span><span id="progpct">0%</span></div>
+    <div class="bar"><i id="progbar"></i></div>
+  </div>
+  <div id="stage"></div>
+</div>
+<div class="saved" id="savedToast">Progress saved ✓</div>
+
+<script>
+(function(){
+  var API = "/api/ot/public/intake";
+  var token = null;
+  var A = { caregivers:[{}], settings:[], diagnoses:[], support_needs:[], barriers:[], availability:{}, interests:[] };
+  var uploaded = {}; // kind -> true
+  var step = 0;
+
+  function $(id){return document.getElementById(id);}
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
+  function toast(){var t=$("savedToast");t.classList.add("show");setTimeout(function(){t.classList.remove("show");},1400);}
+
+  function apiReq(path, opts){opts=opts||{};return fetch(path,{method:opts.method||"GET",headers:opts.body?{"Content-Type":"application/json"}:undefined,body:opts.body?JSON.stringify(opts.body):undefined}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.error||"Something went wrong");return d;});});}
+
+  function save(){ if(!token)return Promise.resolve(); return apiReq(API+"/"+token,{method:"PATCH",body:{data:A,progress:pct()}}).then(function(){toast();}).catch(function(){}); }
+
+  function pct(){ return Math.round((step)/(STEPS.length-1)*100); }
+  function setProgress(){
+    var show = step>0 && step<STEPS.length-1;
+    $("progwrap").style.display = show?"block":"none";
+    $("progbar").style.width = pct()+"%";
+    $("progpct").textContent = pct()+"%";
+    $("progstep").textContent = STEPS[step].name || "";
+  }
+
+  // ---------- reusable field helpers ----------
+  function textField(label,key,type,ph){ return '<label class="f">'+esc(label)+'</label><input type="'+(type||"text")+'" data-k="'+key+'" value="'+esc(getPath(key)||"")+'" placeholder="'+esc(ph||"")+'" />'; }
+  function areaField(label,key,ph){ return '<label class="f">'+esc(label)+'</label><textarea data-k="'+key+'" placeholder="'+esc(ph||"")+'">'+esc(getPath(key)||"")+'</textarea>'; }
+  function getPath(k){ return A[k]; }
+  function bindInputs(root){
+    root.querySelectorAll("[data-k]").forEach(function(el){
+      el.addEventListener("input",function(){ A[el.getAttribute("data-k")] = el.value; });
+    });
+  }
+  function multi(key, options){
+    var arr = A[key] || (A[key]=[]);
+    return '<div class="cards">'+options.map(function(o){
+      var sel = arr.indexOf(o)>=0;
+      return '<div class="opt'+(sel?" sel":"")+'" data-multi="'+key+'" data-val="'+esc(o)+'"><span class="tick">'+(sel?"✓":"")+'</span><span>'+esc(o)+'</span></div>';
+    }).join("")+"</div>";
+  }
+  function bindMulti(root){
+    root.querySelectorAll("[data-multi]").forEach(function(el){
+      el.addEventListener("click",function(){
+        var key=el.getAttribute("data-multi"), val=el.getAttribute("data-val");
+        var arr=A[key]||(A[key]=[]); var i=arr.indexOf(val);
+        if(i>=0){arr.splice(i,1);el.classList.remove("sel");el.querySelector(".tick").textContent="";}
+        else{arr.push(val);el.classList.add("sel");el.querySelector(".tick").textContent="✓";}
+      });
+    });
+  }
+  function uploader(kind, title, sub){
+    var done = uploaded[kind];
+    return '<div class="up'+(done?" done":"")+'" data-up="'+kind+'"><div class="em">'+(done?"✅":"📎")+'</div>'+
+      '<div class="t" data-uptitle>'+(done?"Uploaded ✓":esc(title))+'</div><div class="s">'+esc(sub||"Take a photo or choose a file")+'</div>'+
+      '<input type="file" accept="image/*,application/pdf" style="display:none" /></div>';
+  }
+  function bindUploaders(root){
+    root.querySelectorAll("[data-up]").forEach(function(box){
+      var input=box.querySelector("input[type=file]"); var kind=box.getAttribute("data-up");
+      box.addEventListener("click",function(){input.click();});
+      input.addEventListener("change",function(){
+        var f=input.files[0]; if(!f)return;
+        box.querySelector("[data-uptitle]").textContent="Uploading…";
+        var reader=new FileReader();
+        reader.onload=function(){
+          apiReq(API+"/"+token+"/upload",{method:"POST",body:{kind:kind,filename:f.name,mime_type:f.type,content_base64:String(reader.result).split(",")[1]}})
+          .then(function(){uploaded[kind]=true;box.classList.add("done");box.querySelector("[data-uptitle]").textContent="Uploaded ✓";box.querySelector(".em").textContent="✅";})
+          .catch(function(e){box.querySelector("[data-uptitle]").textContent="Upload failed — tap to retry";});
+        };
+        reader.readAsDataURL(f);
+      });
+    });
+  }
+
+  // ---------- steps ----------
+  var STEPS = [
+    { name:"Welcome", render:function(){ return {
+      html:'<div class="card"><div style="font-size:40px">💛</div>'+
+        '<h1>Welcome to Spectrum Squad Occupational Therapy</h1>'+
+        '<p class="sub">A few gentle questions help our OT team understand your child — their strengths, what support would help, and your family\'s goals. It takes about 5–7 minutes, and your progress saves as you go.</p>'+
+        '<div><span class="pill">Warm & simple</span><span class="pill">Save & resume</span><span class="pill">Private & secure</span></div>'+
+        '<div class="btns"><button class="btn primary" data-next>Let\'s Get Started</button></div></div>' }; } },
+
+    { name:"Your child", render:function(){ return { title:"Tell us about your child 💛", sub:"Let’s start with the basics.", html:
+      textField("Child’s First Name","child_first")+
+      textField("Middle Name (optional)","child_middle")+
+      textField("Child’s Last Name","child_last")+
+      textField("Date of Birth","dob","date")+
+      textField("Preferred name / nickname (optional)","child_nickname") }; } },
+
+    { name:"Caregivers", render:function(){
+      var cg=A.caregivers[0]||(A.caregivers[0]={});
+      return { title:"Who can we contact?", sub:"Your primary caregiver contact. You can add a second below.", html:
+        '<label class="f">Parent / Caregiver Name</label><input type="text" data-cg="name" value="'+esc(cg.name||"")+'" />'+
+        '<label class="f">Relationship to Child</label><input type="text" data-cg="relationship" value="'+esc(cg.relationship||"")+'" placeholder="Parent, Guardian, Grandparent…" />'+
+        '<div class="row"><div class="col"><label class="f">Primary Phone</label><input type="tel" data-cg="phone" value="'+esc(cg.phone||"")+'" /></div>'+
+        '<div class="col"><label class="f">Email Address</label><input type="email" data-cg="email" value="'+esc(cg.email||"")+'" /></div></div>'+
+        '<label class="f">Preferred Contact Method</label>'+multi("preferred_contact_arr",["Phone","Text","Email"])+
+        '<div id="cg2"></div><div style="margin-top:12px"><button class="btn ghost" data-addcg>+ Add another caregiver</button></div>' }; } },
+
+    { name:"Home address", render:function(){ return { title:"Where is home?", sub:"So we can coordinate services and mailings.", html:
+      textField("Street Address","street")+
+      textField("Apartment / Unit (optional)","apt")+
+      '<div class="row"><div class="col">'+textField("City","city")+'</div><div class="col" style="max-width:110px">'+textField("State","state")+'</div><div class="col" style="max-width:130px">'+textField("Zip Code","zip")+'</div></div>' }; } },
+
+    { name:"Insurance", render:function(){
+      A.insurance=A.insurance||{};
+      var prev = A.previous_ot_nv;
+      return { title:"Insurance & billing", sub:"We’ll verify your benefits so you don’t have to.", html:
+        '<label class="f">Primary Insurance Provider</label><input type="text" data-ins="provider" value="'+esc(A.insurance.provider||"")+'" />'+
+        '<label class="f">Member ID Number</label><input type="text" data-ins="member_id" value="'+esc(A.insurance.member_id||"")+'" />'+
+        '<label class="f">Insurance Card</label>'+
+        '<div class="row"><div class="col">'+uploader("insurance_front","Front of card","Photo or PDF")+'</div><div class="col">'+uploader("insurance_back","Back of card","Photo or PDF")+'</div></div>'+
+        '<div id="sec2"></div><div style="margin-top:10px"><button class="btn ghost" data-addsec>+ Add secondary insurance</button></div>'+
+        '<label class="f" style="margin-top:20px">Has your child previously received Occupational Therapy in Nevada?</label>'+
+        '<div class="cards" style="grid-template-columns:1fr 1fr"><div class="opt'+(prev===true?" sel":"")+'" data-prev="yes"><span class="tick">'+(prev===true?"✓":"")+'</span>Yes</div><div class="opt'+(prev===false?" sel":"")+'" data-prev="no"><span class="tick">'+(prev===false?"✓":"")+'</span>No</div></div>'+
+        '<div id="dischargebox"></div>' }; } },
+
+    { name:"Your goals", render:function(){ return { title:"How can OT make everyday life easier?", sub:"Tell us what matters most to your family.", html:
+      areaField("What are your primary goals for your child, and how can we best support their daily life?","reason","You can tell us about routines, independence, school, play, sensory needs, feeding, motor skills, emotional regulation, or anything else that matters to your family.") }; } },
+
+    { name:"Background", render:function(){ return { title:"A little clinical background", sub:"This helps our OT prepare. Only share what you’re comfortable with.", html:
+      '<label class="f">Does your child have any medical diagnoses or neurodivergent identities?</label>'+
+      multi("diagnoses",["Autistic","ADHD","Sensory Processing differences","Developmental variations","Genetic conditions","Neurological conditions","Something else"])+
+      areaField("Anything else important about your child’s medical or developmental history?","history","Optional — anything you’d like our OT to know.") }; } },
+
+    { name:"What they love", render:function(){ return { title:"Let’s talk about what makes your child light up ✨", sub:"We use their passions and strengths to make therapy engaging and meaningful.", html:
+      areaField("What brings your child the most joy?","strengths","Favorite activities, toys, characters, music, games, topics, sensory play, or anything they love.") }; } },
+
+    { name:"Support needs", render:function(){ return { title:"Where could your child use the most support?", sub:"Choose any that fit — there are no wrong answers.", html:
+      multi("support_needs",["Dressing","Feeding / Eating","Toileting","Bathing / Hygiene","Brushing Teeth","Fine Motor Skills","Handwriting","Cutting / Scissors","Gross Motor Skills","Coordination","Balance","Sensory Sensitivities","Sensory Seeking","Transitions","Daily Routines","Emotional Regulation","Attention / Participation","Play Skills","School Participation","Sleep Routines","Community Participation","Other"])+
+      areaField("Are there things your child strongly dislikes, avoids, or finds overwhelming?","aversions","Optional — this helps us plan a comfortable experience.") }; } },
+
+    { name:"Session settings", render:function(){ return { title:"Which therapy settings are you open to?", sub:"Check all that apply.", html:
+      multi("settings",["In-Clinic Sessions","Telehealth / Virtual Sessions","In-Person Mobile / Community Sessions"])+
+      '<div class="hint">Mobile / community can include home, school, daycare, or other community settings.</div>' }; } },
+
+    { name:"Availability", render:function(){ return { title:"What days and times work best?", sub:"Tap any that work — you can pick as many as you like.", html:
+      availabilityGrid()+
+      '<label class="f" style="margin-top:16px">Tell us your specific availability (optional)</label><textarea data-k="availability_text" placeholder="e.g. Monday 3:00 PM – 6:00 PM">'+esc(A.availability_text||"")+'</textarea>'+
+      '<label class="f">How flexible is your schedule?</label>'+
+      '<div class="cards" style="grid-template-columns:1fr"><div class="opt'+(A.flexibility==="Very flexible"?" sel":"")+'" data-flex="Very flexible"><span class="tick">'+(A.flexibility==="Very flexible"?"✓":"")+'</span>Very flexible</div>'+
+      '<div class="opt'+(A.flexibility==="Somewhat flexible"?" sel":"")+'" data-flex="Somewhat flexible"><span class="tick">'+(A.flexibility==="Somewhat flexible"?"✓":"")+'</span>Somewhat flexible</div>'+
+      '<div class="opt'+(A.flexibility==="Limited to the times provided"?" sel":"")+'" data-flex="Limited to the times provided"><span class="tick">'+(A.flexibility==="Limited to the times provided"?"✓":"")+'</span>Limited to the times provided</div></div>'+
+      '<label class="f" style="margin-top:16px">Any barriers or accommodations we should know about?</label>'+
+      multi("barriers",["Language interpreter needed","Transportation challenges","Accessibility accommodations","Scheduling limitations","Caregiver work schedule","School schedule considerations","Other","None"])+
+      '<div id="langbox"></div>' }; } },
+
+    { name:"Documents", render:function(){ return { title:"Any documents to share?", sub:"All optional — upload whatever you have handy. You can always send more later.", html:
+      uploader("referral","Referral","Optional")+
+      '<div style="height:10px"></div>'+uploader("order","Physician Order","Optional")+
+      '<div style="height:10px"></div>'+uploader("prev_eval","Previous OT Evaluation","Optional")+
+      '<div style="height:10px"></div>'+uploader("iep","IEP","Optional")+
+      '<div style="height:10px"></div>'+uploader("medical","Medical Records","Optional")+
+      '<div style="height:10px"></div>'+uploader("other","Other Supporting Documentation","Optional") }; } },
+
+    { name:"Review", render:function(){ return { title:"Quick review", sub:"Take a look before you send. Tap any section to edit.", html: reviewHtml()+
+      '<div class="chk"><input type="checkbox" id="consent" /><label for="consent">I confirm the information above is accurate to the best of my knowledge, and I authorize Spectrum Squad to use it to coordinate my child’s Occupational Therapy services and verify insurance benefits.</label></div>'+
+      '<label class="f" style="margin-top:14px">Parent / Caregiver Full Name (electronic signature)</label><input type="text" class="sign" data-k="signed_name" value="'+esc(A.signed_name||"")+'" placeholder="Type your full name" />'+
+      '<div class="hint">Date: '+new Date().toLocaleDateString()+'</div><div class="err" id="reviewErr"></div>' }; } },
+
+    { name:"Done", render:function(){ return { html:
+      '<div class="card success"><div class="big">💛</div><h1>You’re all set!</h1>'+
+      '<p class="sub">Thank you for telling us about your child. Our Spectrum Squad Occupational Therapy team will review your information and begin the next steps.</p>'+
+      '<div class="next"><b style="color:var(--navy)">What happens next</b><ol><li>We review your intake.</li><li>We verify your insurance benefits.</li><li>Our team reaches out about next steps.</li><li>We work toward scheduling your child’s OT evaluation.</li></ol></div>'+
+      '<p class="hint" style="margin-top:14px">You don’t need to call us to confirm — we’ve received your intake. 💛</p></div>' }; } },
+  ];
+
+  function availabilityGrid(){
+    var days=["Mon","Tue","Wed","Thu","Fri","Sat"]; var parts=["Morning","Afternoon","Evening"];
+    var rows=days.map(function(d){
+      var tds=parts.map(function(p){
+        var sel = A.availability[d] && A.availability[d][p];
+        return '<td><button class="slot'+(sel?" sel":"")+'" data-day="'+d+'" data-part="'+p+'">'+p+'</button></td>';
+      }).join("");
+      return '<tr><td class="daylbl">'+d+'</td>'+tds+'</tr>';
+    }).join("");
+    return '<table class="avail"><thead><tr><th></th><th>Morning</th><th>Afternoon</th><th>Evening</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+
+  function reviewHtml(){
+    function sec(title,body,goto){ return '<details class="rev"><summary><span>'+esc(title)+'</span><span class="edit" data-goto="'+goto+'">Edit</span></summary><div class="body">'+(body||"—")+'</div></details>'; }
+    var cg=A.caregivers[0]||{};
+    var child=[A.child_first,A.child_middle,A.child_last].filter(Boolean).join(" ");
+    var avail=Object.keys(A.availability).map(function(d){var ps=Object.keys(A.availability[d]||{}).filter(function(p){return A.availability[d][p];});return ps.length?d+": "+ps.join(", "):null;}).filter(Boolean).join("\n");
+    return sec("Child", esc(child)+(A.dob?" · DOB "+esc(A.dob):""), 1)+
+      sec("Caregiver", esc(cg.name||"")+" ("+esc(cg.relationship||"")+")\n"+esc(cg.phone||"")+" · "+esc(cg.email||""), 2)+
+      sec("Address", esc([A.street,A.apt,A.city,A.state,A.zip].filter(Boolean).join(", ")), 3)+
+      sec("Insurance", esc((A.insurance&&A.insurance.provider)||"")+" · Member "+esc((A.insurance&&A.insurance.member_id)||"")+(A.previous_ot_nv?"\nPrevious OT in NV: Yes":""), 4)+
+      sec("Goals", esc(A.reason||""), 5)+
+      sec("Support needs", esc((A.support_needs||[]).join(", ")), 8)+
+      sec("Settings", esc((A.settings||[]).join(", ")), 9)+
+      sec("Availability", esc(avail||A.availability_text||""), 10);
+  }
+
+  // ---------- render + navigation ----------
+  function render(){
+    var s = STEPS[step].render();
+    var inner = s.html;
+    if(s.title!==undefined){
+      inner = '<div class="card"><h2>'+esc(s.title)+'</h2>'+(s.sub?'<p class="sub">'+esc(s.sub)+'</p>':'')+s.html+navButtons()+'</div>';
+    }
+    $("stage").innerHTML = inner;
+    var root=$("stage");
+    bindInputs(root); bindMulti(root); bindUploaders(root);
+    wireSpecial(root);
+    setProgress();
+    window.scrollTo({top:0,behavior:"smooth"});
+  }
+  function navButtons(){
+    var last = step===STEPS.length-2; // Review step
+    return '<div class="btns">'+(step>1?'<button class="btn ghost" data-prev>Previous</button>':'')+
+      '<button class="btn primary" data-'+(last?"submit":"next")+'>'+(last?"Submit Intake":"Continue")+'</button></div>';
+  }
+
+  function wireSpecial(root){
+    root.querySelectorAll("[data-next]").forEach(function(b){b.addEventListener("click",function(){ save(); step++; render(); });});
+    root.querySelectorAll("[data-prev]").forEach(function(b){b.addEventListener("click",function(){ step--; render(); });});
+    root.querySelectorAll("[data-goto]").forEach(function(b){b.addEventListener("click",function(e){e.preventDefault();step=parseInt(b.getAttribute("data-goto"),10);render();});});
+    root.querySelectorAll("[data-submit]").forEach(function(b){b.addEventListener("click",submit);});
+    // caregiver primary fields
+    root.querySelectorAll("[data-cg]").forEach(function(el){el.addEventListener("input",function(){A.caregivers[0]=A.caregivers[0]||{};A.caregivers[0][el.getAttribute("data-cg")]=el.value;});});
+    // second caregiver add
+    var addcg=root.querySelector("[data-addcg]");
+    if(addcg)addcg.addEventListener("click",function(){ if($("cg2").innerHTML)return; A.caregivers[1]=A.caregivers[1]||{}; var c=A.caregivers[1];
+      $("cg2").innerHTML='<div style="margin-top:16px;padding-top:12px;border-top:1px dashed var(--line)"><label class="f">Second Caregiver Name</label><input type="text" data-cg2="name" value="'+esc(c.name||"")+'"/><div class="row"><div class="col"><label class="f">Phone</label><input type="tel" data-cg2="phone" value="'+esc(c.phone||"")+'"/></div><div class="col"><label class="f">Email</label><input type="email" data-cg2="email" value="'+esc(c.email||"")+'"/></div></div></div>';
+      $("cg2").querySelectorAll("[data-cg2]").forEach(function(el){el.addEventListener("input",function(){A.caregivers[1][el.getAttribute("data-cg2")]=el.value;});});
+    });
+    // insurance fields
+    root.querySelectorAll("[data-ins]").forEach(function(el){el.addEventListener("input",function(){A.insurance=A.insurance||{};A.insurance[el.getAttribute("data-ins")]=el.value;});});
+    var addsec=root.querySelector("[data-addsec]");
+    if(addsec)addsec.addEventListener("click",function(){ if($("sec2").innerHTML)return; A.secondary=A.secondary||{};
+      $("sec2").innerHTML='<div style="margin-top:12px;padding-top:12px;border-top:1px dashed var(--line)"><label class="f">Secondary Insurance Provider</label><input type="text" data-sec="provider" value="'+esc(A.secondary.provider||"")+'"/><label class="f">Secondary Member ID</label><input type="text" data-sec="member_id" value="'+esc(A.secondary.member_id||"")+'"/><label class="f">Secondary Card</label><div class="row"><div class="col">'+uploader("secondary_front","Front","Optional")+'</div><div class="col">'+uploader("secondary_back","Back","Optional")+'</div></div></div>';
+      $("sec2").querySelectorAll("[data-sec]").forEach(function(el){el.addEventListener("input",function(){A.secondary[el.getAttribute("data-sec")]=el.value;});});
+      bindUploaders($("sec2"));
+    });
+    // previous OT yes/no
+    root.querySelectorAll("[data-prev]").forEach(function(el){ if(el.hasAttribute("data-prev")&&el.classList.contains("opt")){
+      el.addEventListener("click",function(){
+        A.previous_ot_nv = el.getAttribute("data-prev")==="yes";
+        root.querySelectorAll(".opt[data-prev]").forEach(function(x){x.classList.remove("sel");x.querySelector(".tick").textContent="";});
+        el.classList.add("sel");el.querySelector(".tick").textContent="✓";
+        renderDischarge();
+      });
+    }});
+    renderDischarge();
+    // flexibility
+    root.querySelectorAll("[data-flex]").forEach(function(el){el.addEventListener("click",function(){
+      A.flexibility=el.getAttribute("data-flex");
+      root.querySelectorAll("[data-flex]").forEach(function(x){x.classList.remove("sel");x.querySelector(".tick").textContent="";});
+      el.classList.add("sel");el.querySelector(".tick").textContent="✓";
+    });});
+    // availability slots
+    root.querySelectorAll(".slot").forEach(function(b){b.addEventListener("click",function(){
+      var d=b.getAttribute("data-day"),p=b.getAttribute("data-part");
+      A.availability[d]=A.availability[d]||{}; A.availability[d][p]=!A.availability[d][p];
+      b.classList.toggle("sel",A.availability[d][p]);
+    });});
+    // interpreter language (barriers)
+    renderLang(root);
+    root.querySelectorAll('[data-multi="barriers"]').forEach(function(el){el.addEventListener("click",function(){setTimeout(function(){renderLang(root);},0);});});
+  }
+  function renderDischarge(){
+    var box=$("dischargebox"); if(!box)return;
+    if(A.previous_ot_nv===true){
+      box.innerHTML='<div style="margin-top:12px;background:#fff7e6;border:1px solid #f0e2bf;border-radius:12px;padding:12px 14px;font-size:13.5px;color:#7a5a12">To transition OT services, we may need a discharge letter from your child’s previous OT provider.</div>'+
+        '<div style="margin-top:10px">'+uploader("discharge_letter","Upload Previous OT Discharge Letter","Photo or PDF")+'</div>'+
+        '<div class="opt'+(A.no_discharge_yet?" sel":"")+'" data-nodischarge style="margin-top:10px"><span class="tick">'+(A.no_discharge_yet?"✓":"")+'</span>I don’t have this yet</div>';
+      bindUploaders(box);
+      var nd=box.querySelector("[data-nodischarge]");
+      nd.addEventListener("click",function(){A.no_discharge_yet=!A.no_discharge_yet;nd.classList.toggle("sel",A.no_discharge_yet);nd.querySelector(".tick").textContent=A.no_discharge_yet?"✓":"";});
+    } else { box.innerHTML=""; }
+  }
+  function renderLang(root){
+    var box=root.querySelector("#langbox"); if(!box)return;
+    var need=(A.barriers||[]).indexOf("Language interpreter needed")>=0;
+    if(need && !box.innerHTML){ box.innerHTML='<label class="f">Preferred language</label><input type="text" data-k="interpreter_language" value="'+esc(A.interpreter_language||"")+'"/>'; bindInputs(box); }
+    else if(!need){ box.innerHTML=""; }
+  }
+
+  function submit(){
+    var consent=$("consent"); var err=$("reviewErr");
+    if(consent && !consent.checked){ err.textContent="Please check the box to confirm and authorize."; return; }
+    if(!A.signed_name || !A.signed_name.trim()){ err.textContent="Please type your full name to sign."; return; }
+    var btn=document.querySelector("[data-submit]"); if(btn){btn.disabled=true;btn.textContent="Submitting…";}
+    apiReq(API+"/"+token+"/submit",{method:"POST",body:{data:A,signed_name:A.signed_name}})
+      .then(function(){ step=STEPS.length-1; render(); })
+      .catch(function(e){ err.textContent=e.message||"Could not submit. Please try again."; if(btn){btn.disabled=false;btn.textContent="Submit Intake";} });
+  }
+
+  // ---------- boot ----------
+  function boot(){
+    var url=new URL(location.href);
+    var existing=url.searchParams.get("token");
+    if(existing){
+      token=existing;
+      apiReq(API+"/"+token).then(function(d){ if(d.submitted){step=STEPS.length-1;render();return;} A=Object.assign(A,d.data||{}); if(!A.caregivers||!A.caregivers.length)A.caregivers=[{}]; render(); })
+        .catch(function(){ startFresh(); });
+    } else { startFresh(); }
+  }
+  function startFresh(){
+    apiReq(API+"/start",{method:"POST"}).then(function(d){ token=d.token; var u=new URL(location.href); u.searchParams.set("token",token); history.replaceState(null,"",u.toString()); render(); })
+      .catch(function(){ $("stage").innerHTML='<div class="card"><h2>We’re sorry</h2><p class="sub">We couldn’t start the intake right now. Please refresh, or contact our team and we’ll help you get started.</p></div>'; });
+  }
+  boot();
+})();
+</script>
+</body>
+</html>
