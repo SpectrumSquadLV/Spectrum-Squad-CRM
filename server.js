@@ -4674,9 +4674,18 @@ const ot = require("./ot")({
 // ===== EMPLOYEE ATTENDANCE MANAGEMENT add-on: points engine, discipline,
 // bonus cycles, policy editor, attendance emails, historical import. Reuses the
 // existing hr_employees identity + Resend. Owns all /api/attendance/* routes. =====
-const attendance = require("./hr-attendance")({
-  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
-});
+let attendance;
+try {
+  attendance = require("./hr-attendance")({
+    dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
+  });
+} catch (e) {
+  // The hr-attendance module file isn't present yet. Keep the app booting with a
+  // no-op stub so the rest of the CRM works; full Employee Attendance features
+  // activate automatically once hr-attendance.js is added to the repo.
+  console.error("hr-attendance module not found — Employee Attendance features disabled until hr-attendance.js is added:", e.message);
+  attendance = { initTables: async () => {}, handleApi: async () => false, dailySweep: async () => {} };
+}
 // ===== CLINIC SUPPLY / SHOPPING REQUESTS add-on: public submit link, tokenized
 // tracking, full status flow with requester email updates. Owns /api/supply/*. =====
 const supply = require("./supply-requests")({
