@@ -1451,6 +1451,9 @@ async function openClientModal(id) {
 
       ${authSectionHtml(client)}
 
+      <div class="section-title">Behavior Intervention Plan</div>
+      <div id="bip-mount"></div>
+
       <div class="section-title">Assessment</div>
       <div class="form-grid" style="gap:10px;">
         <div class="field"><label>In-clinic / in-home assessment date</label><input type="date" id="asmt-date" value="${(client.in_clinic_assessment_date || "").slice(0, 10)}" /></div>
@@ -1639,6 +1642,11 @@ async function openClientModal(id) {
     </div>
   `;
   document.body.appendChild(backdrop);
+
+  // The BIP workspace renders itself into the card. It loads after the modal is
+  // attached so it can measure the modal for its sticky header.
+  const bipMount = backdrop.querySelector("#bip-mount");
+  if (bipMount && window.__renderBipSection) window.__renderBipSection(bipMount, id);
 
   const close = () => {
     clientDetailsEditing = false;
@@ -3373,6 +3381,16 @@ async function renderAdmin(mount) {
           <button class="btn small secondary" id="save-owner-email">Save</button>
         </div>
       </div>
+      <div class="task-row">
+        <div class="info">
+          <strong>Clinical Director email</strong>
+          <div class="due">Who receives BIP questions from BCBAs and plans submitted for review. The link in those emails opens the client's BIP directly.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="cd-email" type="email" placeholder="clinicaldirector@spectrumsquadlv.com" style="width:260px;" />
+          <button class="btn small secondary" id="save-cd-email">Save</button>
+        </div>
+      </div>
     </div>
     <div class="card" style="margin-bottom:20px;">
       <div class="section-title" style="margin-top:0;">Department Notification Emails</div>
@@ -3420,6 +3438,8 @@ async function renderAdmin(mount) {
     if (screenerInput) screenerInput.value = settings.screener_completed_recipient || "";
     const ownerInput = mount.querySelector("#owner-email");
     if (ownerInput) ownerInput.value = settings.owner_notification_email || "";
+    const cdInput = mount.querySelector("#cd-email");
+    if (cdInput) cdInput.value = settings.clinical_director_email || "";
   } catch (e) {}
   const wireSetting = (btnId, inputId, key) => {
     const btn = mount.querySelector("#" + btnId);
@@ -3438,6 +3458,7 @@ async function renderAdmin(mount) {
   wireSetting("save-elig-email", "elig-email", "eligibility_check_email");
   wireSetting("save-screener-email", "screener-email", "screener_completed_recipient");
   wireSetting("save-owner-email", "owner-email", "owner_notification_email");
+  wireSetting("save-cd-email", "cd-email", "clinical_director_email");
 
   await renderTeamSection(mount);
 }
@@ -3684,6 +3705,7 @@ function openAccessModal(u, onDone) {
   <script src="growth-frontend.js"></script>
   <script src="supply-requests-frontend.js"></script>
   <script src="geo-map-frontend.js"></script>
+  <script src="bip-frontend.js"></script>
 
 </body>
 </html>

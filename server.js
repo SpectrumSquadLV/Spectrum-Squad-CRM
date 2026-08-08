@@ -2093,7 +2093,7 @@ setInterval(() => {
 
 const AUTH_MILESTONES = [60, 30, 14, 7, 0]; // days-before-expiration thresholds
 const AUTH_ALERT_LEVELS = { 60: "informational", 30: "attention", 14: "urgent", 7: "critical", 0: "overdue" };
-const APP_BASE_URL = (process.env.APP_BASE_URL || "https://web4-production-16ed.up.railway.app").replace(/\/$/, "");
+const APP_BASE_URL = (process.env.APP_BASE_URL || "https://crm.spectrumsquadlv.com").replace(/\/$/, "");
 
 // Roles allowed to view authorization/insurance fields at all. Any role not
 // in this list (e.g. intake, scheduling, and any future RBT login) never
@@ -2991,6 +2991,11 @@ async function handle(req, res, pathname, method, query = {}) {
     const ledgerHandled = await finLedger.handleApi(req, res, pathname, method, query, user);
     if (ledgerHandled) return true;
     const handled = await financialAdvisor.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/bip")) {
+    const handled = await bip.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -4416,6 +4421,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         eligibility_check_email: await getAppSetting("eligibility_check_email", ""),
         screener_completed_recipient: await getAppSetting("screener_completed_recipient", ""),
         owner_notification_email: await getAppSetting("owner_notification_email", ""),
+        clinical_director_email: await getAppSetting("clinical_director_email", ""),
       });
     }
     if (pathname === "/api/admin/settings" && method === "PATCH") {
@@ -4426,6 +4432,12 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         const email = (body.eligibility_check_email || "").trim();
         if (!validEmail(email)) return json(res, 400, { error: "Please enter a valid email address." });
         await setAppSetting("eligibility_check_email", email);
+      }
+      if ("clinical_director_email" in body) {
+        // Who receives BIP questions and review requests. Never hard-coded.
+        const email = (body.clinical_director_email || "").trim();
+        if (!validEmail(email)) return json(res, 400, { error: "Please enter a valid Clinical Director email address." });
+        await setAppSetting("clinical_director_email", email);
       }
       if ("owner_notification_email" in body) {
         const email = (body.owner_notification_email || "").trim();
@@ -4931,6 +4943,7 @@ const PUBLIC_FILES = new Set([
   "/growth-frontend.js",
   "/supply-requests-frontend.js",
   "/geo-map-frontend.js",
+  "/bip-frontend.js",
 ]);
 
 function serveStatic(req, res, pathname) {
@@ -5050,6 +5063,13 @@ const growth = require("./growth")({
   extractPdfLines: (buf) => financialAdvisor.extractPdfLines(buf),
   unzip: (buf) => financialAdvisor.unzip(buf),
 });
+// ===== BEHAVIOR INTERVENTION PLAN workspace: lives inside the client card.
+// Owns /api/bip/*. Reuses the clients table, auth, permissions and email. =====
+const bip = require("./bip")({
+  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json,
+  sendEmail, APP_BASE_URL, getAppSetting, canAccessClients,
+});
+
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
@@ -5150,6 +5170,7 @@ async function start() {
   await supervision.initTables().catch((e) => console.error("Supervision initTables failed:", e));
   await financialAdvisor.initTables().catch((e) => console.error("Financial advisor initTables failed:", e));
   await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
+  await bip.initTables().catch((e) => console.error("BIP initTables failed:", e));
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
