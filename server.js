@@ -2827,6 +2827,40 @@ async function silentFastForward(clientId, targetStageKey) {
   await dbRun("UPDATE clients SET stage = ?, updated_at = ? WHERE id = ?", [targetStageKey, nowISO(), clientId]);
 }
 
+// ---- Login throttling -------------------------------------------------
+// In-memory only: 10 bad attempts per IP+email pair locks that pair out for
+// 15 minutes. Resets on deploy, which is fine -- this is here to stop
+// password guessing, not to be an audit trail.
+const LOGIN_MAX_ATTEMPTS = 10;
+const LOGIN_LOCK_MS = 15 * 60 * 1000;
+const loginAttempts = new Map();
+
+function loginKey(req, email) {
+  const fwd = (req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const ip = fwd || (req.socket && req.socket.remoteAddress) || "unknown";
+  return `${ip}|${String(email || "").toLowerCase()}`;
+}
+function loginLockRemaining(key) {
+  const rec = loginAttempts.get(key);
+  if (!rec || rec.count < LOGIN_MAX_ATTEMPTS) return 0;
+  const left = rec.last + LOGIN_LOCK_MS - Date.now();
+  if (left <= 0) { loginAttempts.delete(key); return 0; }
+  return Math.ceil(left / 60000);
+}
+function noteFailedLogin(key) {
+  const rec = loginAttempts.get(key) || { count: 0, last: 0 };
+  rec.count += 1;
+  rec.last = Date.now();
+  loginAttempts.set(key, rec);
+}
+function clearFailedLogins(key) {
+  loginAttempts.delete(key);
+}
+setInterval(() => {
+  const cutoff = Date.now() - LOGIN_LOCK_MS;
+  for (const [k, v] of loginAttempts) if (v.last < cutoff) loginAttempts.delete(k);
+}, LOGIN_LOCK_MS).unref?.();
+
 // Returns true if the route was handled.
 async function handle(req, res, pathname, method, query = {}) {
   if (!pathname.startsWith("/api/")) return false;
@@ -2848,8 +2882,26 @@ async function handle(req, res, pathname, method, query = {}) {
         pathname.startsWith("/api/leads") ? "leads" :
         pathname.startsWith("/api/policies") ? "policies" :
         pathname.startsWith("/api/geo") ? "map" :
-        pathname.startsWith("/api/supply/") ? "supply" :
+        pathname.startsWith("/api/supply") ? "supply" :
+        // NOTE: this is mapped to "staff" only because that is what the
+        // Access editor currently ships. It is the wrong label (see punch
+        // list item 14) and should get its own "attendance" key -- left as-is
+        // here so this security batch does not change existing behaviour.
         pathname.startsWith("/api/attendance") ? "staff" :
+        // The sections below were listed in the Access editor but never
+        // enforced server-side, so switching them off only hid the sidebar
+        // button -- the data was still reachable by URL.
+        pathname.startsWith("/api/clients") ? "pipeline" :
+        pathname.startsWith("/api/stages") ? "pipeline" :
+        pathname.startsWith("/api/tasks") ? "tasks" :
+        pathname.startsWith("/api/staff-tasks") ? "tasks" :
+        pathname.startsWith("/api/schedule") ? "schedule" :
+        pathname.startsWith("/api/dashboard") ? "dashboard" :
+        pathname.startsWith("/api/notifications") ? "outbox" :
+        pathname.startsWith("/api/email-templates") ? "email-templates" :
+        pathname.startsWith("/api/failed-emails") ? "failed-emails" :
+        pathname.startsWith("/api/auth-alerts") ? "auth-alerts" :
+        pathname.startsWith("/api/admin") ? "admin" :
         null
       );
       if (prefixKey && ma[prefixKey] === false) {
@@ -2976,8 +3028,17 @@ async function handle(req, res, pathname, method, query = {}) {
     // ---------- AUTH ----------
     if (pathname === "/api/auth/login" && method === "POST") {
       const { email, password } = await readBody(req);
+      const who = loginKey(req, email);
+      const lock = loginLockRemaining(who);
+      if (lock > 0) {
+        return json(res, 429, { error: `Too many failed attempts. Try again in ${lock} minute${lock === 1 ? "" : "s"}.` });
+      }
       const result = await auth.login(email || "", password || "");
-      if (!result) return json(res, 401, { error: "Invalid email or password" });
+      if (!result) {
+        noteFailedLogin(who);
+        return json(res, 401, { error: "Invalid email or password" });
+      }
+      clearFailedLogins(who);
       // Session-only cookie (no Max-Age/Expires): it is cleared when the
       // browser closes, so providers must re-enter their password each new
       // browser session rather than staying logged in indefinitely.
@@ -3817,14 +3878,22 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const { password } = await readBody(req);
       if (!password) return json(res, 400, { error: "Password is required" });
 
-      const owner = await auth.findUserByEmail("admin@spectrumsquadlv.com");
-      if (!owner || !verifyPassword(password, owner.password_salt, owner.password_hash)) {
+      // Confirm with the password of whoever is actually logged in, and only
+      // let owner-level roles delete. (This used to check the seeded
+      // admin@ account's password, which meant the published default
+      // password could delete client records.)
+      if (!user || !["owner", "super_admin", "admin"].includes(user.role)) {
+        return json(res, 403, { error: "Not permitted to delete clients" });
+      }
+      const me = await auth.findUserByEmail(user.email);
+      if (!me || !verifyPassword(password, me.password_salt, me.password_hash)) {
         return json(res, 403, { error: "Incorrect password" });
       }
 
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
       if (!client) return json(res, 404, { error: "Not found" });
 
+      await dbRun("DELETE FROM client_notes WHERE client_id = ?", [clientId]);
       await dbRun("DELETE FROM client_tasks WHERE client_id = ?", [clientId]);
       await dbRun("DELETE FROM schedule_sessions WHERE client_id = ?", [clientId]);
       await dbRun("DELETE FROM notifications_log WHERE client_id = ?", [clientId]);
@@ -4527,43 +4596,42 @@ async function seedStageTasks() {
   }
 }
 
+const LEGACY_SEED_PASSWORD = "ChangeMe123!";
+const SEEDED_EMAILS = [
+  "admin@spectrumsquadlv.com",
+  "intake@spectrumsquadlv.com",
+  "clinical@spectrumsquadlv.com",
+  "billing@spectrumsquadlv.com",
+  "scheduling@spectrumsquadlv.com",
+];
+
 async function seedUsers() {
   if (await findUserByEmail("admin@spectrumsquadlv.com")) return;
-  await createUser({
-    name: "Quiana Blake",
-    email: "admin@spectrumsquadlv.com",
-    password: "ChangeMe123!",
-    role: "admin",
-    department_id: null,
-  });
-  await createUser({
-    name: "Intake Staff",
-    email: "intake@spectrumsquadlv.com",
-    password: "ChangeMe123!",
-    role: "intake",
-    department_id: await deptId("intake"),
-  });
-  await createUser({
-    name: "Clinical Staff",
-    email: "clinical@spectrumsquadlv.com",
-    password: "ChangeMe123!",
-    role: "clinical",
-    department_id: await deptId("clinical"),
-  });
-  await createUser({
-    name: "Billing Staff",
-    email: "billing@spectrumsquadlv.com",
-    password: "ChangeMe123!",
-    role: "billing",
-    department_id: await deptId("billing"),
-  });
-  await createUser({
-    name: "Scheduling Staff",
-    email: "scheduling@spectrumsquadlv.com",
-    password: "ChangeMe123!",
-    role: "scheduling",
-    department_id: await deptId("scheduling"),
-  });
+  // Fresh installs get a random, unusable password for every seeded account.
+  // The owner sets real passwords from Admin Settings > Users. Nothing is
+  // ever printed to the deploy log.
+  const rnd = () => crypto.randomBytes(24).toString("base64url");
+  await createUser({ name: "Quiana Blake", email: "admin@spectrumsquadlv.com", password: rnd(), role: "admin", department_id: null });
+  await createUser({ name: "Intake Staff", email: "intake@spectrumsquadlv.com", password: rnd(), role: "intake", department_id: await deptId("intake") });
+  await createUser({ name: "Clinical Staff", email: "clinical@spectrumsquadlv.com", password: rnd(), role: "clinical", department_id: await deptId("clinical") });
+  await createUser({ name: "Billing Staff", email: "billing@spectrumsquadlv.com", password: rnd(), role: "billing", department_id: await deptId("billing") });
+  await createUser({ name: "Scheduling Staff", email: "scheduling@spectrumsquadlv.com", password: rnd(), role: "scheduling", department_id: await deptId("scheduling") });
+}
+
+// One-time remediation for installs that were seeded before the above change:
+// any seeded account still sitting on the published default password gets a
+// random one, which locks it until the owner resets it in Admin Settings.
+// Accounts whose password was already changed are left completely alone.
+async function retireDefaultPasswords() {
+  for (const email of SEEDED_EMAILS) {
+    const u = await findUserByEmail(email);
+    if (!u) continue;
+    if (!verifyPassword(LEGACY_SEED_PASSWORD, u.password_salt, u.password_hash)) continue;
+    const { hash, salt } = hashPassword(crypto.randomBytes(24).toString("base64url"));
+    await dbRun("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?", [hash, salt, u.id]);
+    await dbRun("DELETE FROM sessions WHERE user_id = ?", [u.id]);
+    console.log(`Security: retired default password on ${email} -- reset it in Admin Settings if this account is still in use.`);
+  }
 }
 
 async function seedTherapists() {
@@ -4794,13 +4862,47 @@ async function ensureSeeded() {
   }
 }
 
+// Only these files are public. Everything else in the app folder -- backend
+// modules, package.json, and crucially the /data volume where uploaded
+// insurance cards, diagnoses, resumes and signed forms live -- is never
+// served directly. Uploaded documents are reachable only through the
+// authenticated /api/... download routes.
+const PUBLIC_FILES = new Set([
+  "/index.html",
+  "/logo.png",
+  "/clinical-screener.html",
+  "/ot-intake.html",
+  "/supply-request.html",
+  // Front-end bundles loaded by index.html
+  "/theme.js",
+  "/attendance.js",
+  "/email-templates.js",
+  "/financial-center.js",
+  "/owner-financials.js",
+  "/pipeline-v2.js",
+  "/screener-admin.js",
+  "/hr-recruiting.js",
+  "/ot-frontend.js",
+  "/hr-attendance-frontend.js",
+  "/supervision-frontend.js",
+  "/growth-frontend.js",
+  "/supply-requests-frontend.js",
+  "/geo-map-frontend.js",
+]);
+
 function serveStatic(req, res, pathname) {
-  if (pathname === "/server.js" || pathname === "/package.json") {
-    res.writeHead(404);
-    res.end("Not found");
-    return;
-  }
   let filePath = pathname === "/" ? "/index.html" : pathname;
+  // Anything not on the allowlist that *looks* like a file is refused
+  // outright; app routes (no dot in the last segment) still fall through to
+  // the SPA handler below so deep links keep working.
+  if (!PUBLIC_FILES.has(filePath)) {
+    const last = filePath.split("/").pop() || "";
+    if (last.includes(".")) {
+      res.writeHead(404);
+      res.end("Not found");
+      return;
+    }
+  }
   filePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
   let fullPath = path.join(PUBLIC_DIR, filePath);
 
@@ -4982,6 +5084,7 @@ async function start() {
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
   await hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));
   await ensureSeeded();
+  await retireDefaultPasswords().catch((e) => console.error("Default-password retirement failed:", e.message));
   await pipeline.checkOverdueTasks();
   await authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
   await clickupIntegration.syncNow("scheduled").catch((e) => console.error("ClickUp sync failed:", e));
@@ -5049,7 +5152,6 @@ async function start() {
 
   server.listen(PORT, () => {
     console.log(`Spectrum Squad CRM running at http://localhost:${PORT}`);
-    console.log(`Demo login: admin@spectrumsquadlv.com / ChangeMe123!`);
   });
 }
 
