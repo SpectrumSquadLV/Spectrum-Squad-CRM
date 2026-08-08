@@ -17,7 +17,12 @@ module.exports = function initGeo(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, crypto } = ctx;
 
   const VIEW_ROLES = ["owner", "super_admin", "admin", "scheduling"];
-  function canView(user) { return !!user && VIEW_ROLES.includes(user.role); }
+
+  // A per-user grant from the Access editor unlocks this module's ordinary
+  // access tier even when the role list wouldn't. Manage/sensitive tiers stay
+  // role-gated.
+  const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
+  function canView(user) { return !!user && (VIEW_ROLES.includes(user.role) || granted(user, "map")); }
 
   // Default map center: Las Vegas.
   const CENTER = { lat: 36.1699, lng: -115.1398 };

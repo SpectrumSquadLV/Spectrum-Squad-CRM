@@ -101,8 +101,13 @@ module.exports = function initHr(ctx) {
   const HR_ACCESS_ROLES = HR_MANAGE_ROLES.concat(["hiring_manager", "interviewer"]);
   const HR_SENSITIVE_ROLES = ["owner", "super_admin"]; // owner-only per spec (super_admin included as top-tier)
 
+
+  // A per-user grant from the Access editor unlocks this module's ordinary
+  // access tier even when the role list wouldn't. Manage/sensitive tiers stay
+  // role-gated.
+  const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
   function hrCanAccess(user) {
-    return !!user && HR_ACCESS_ROLES.includes(user.role);
+    return !!user && (HR_ACCESS_ROLES.includes(user.role) || granted(user, "hr"));
   }
   function hrCanManage(user) {
     return !!user && HR_MANAGE_ROLES.includes(user.role);
@@ -2497,6 +2502,56 @@ module.exports = function initHr(ctx) {
         const flags = await dbAll("SELECT * FROM hr_timecard_flags WHERE timecard_id = ? ORDER BY id", [tc.id]);
         return json(res, 200, { ...tc, entries: parseJson(tc.entries, []), employee: emp, flags });
       }
+      // Preview exactly what the employee will get, WITHOUT sending anything,
+      // creating a link, or touching the timecard's status. Read-only.
+      const tcPreviewMatch = pathname.match(/^\/api\/hr\/timecards\/(\d+)\/preview$/);
+      if (tcPreviewMatch && method === "GET") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [tcPreviewMatch[1]]);
+        if (!tc) return json(res, 404, { error: "Not found" });
+        const emp = tc.employee_id ? await dbGet("SELECT name, email, role_title FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
+        const entries = parseJson(tc.entries, []);
+        const flags = await dbAll("SELECT * FROM hr_timecard_flags WHERE timecard_id = ? ORDER BY id", [tc.id]);
+        const total = Math.round(entries.reduce((s, e) => s + (Number(e.hours) || 0), 0) * 100) / 100;
+        const period = `${tc.pay_period_start || ""} – ${tc.pay_period_end || ""}`;
+        return json(res, 200, {
+          id: tc.id,
+          status: tc.status,
+          employee_name: emp ? emp.name : null,
+          employee_email: emp ? emp.email : null,
+          has_email: !!(emp && emp.email),
+          already_sent_at: tc.verification_requested_at || null,
+          pay_period_start: tc.pay_period_start,
+          pay_period_end: tc.pay_period_end,
+          entries,
+          flags,
+          total_hours: total,
+          subject: "✨ Your timecard is ready to review — Spectrum Squad",
+          // The real email, with the button pointing nowhere (nothing is
+          // generated until you actually send).
+          email_html: timecardEmailHtml(firstNameOf(emp ? emp.name : "there"), period, "#preview-only"),
+        });
+      }
+
+      // Bulk send to a chosen set, rather than all-or-nothing.
+      if (pathname === "/api/hr/timecards/send" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const ids = (Array.isArray(b.ids) ? b.ids : []).map((n) => Number(n)).filter((n) => n > 0);
+        if (!ids.length) return json(res, 400, { error: "Select at least one timecard." });
+        let sent = 0;
+        const skipped = [];
+        for (const id of ids) {
+          const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [id]);
+          if (!tc) continue;
+          const r = await sendTimecardVerification(tc);
+          if (r.sent) sent++;
+          else skipped.push(await employeeName(tc.employee_id));
+          await audit(actor, "timecard_verification_requested", "timecard", tc.id, "bulk");
+        }
+        return json(res, 200, { ok: true, sent, skipped });
+      }
+
       const tcVerifyMatch = pathname.match(/^\/api\/hr\/timecards\/(\d+)\/request-verification$/);
       if (tcVerifyMatch && method === "POST") {
         if (!canManage) return json(res, 403, { error: "Not permitted" });

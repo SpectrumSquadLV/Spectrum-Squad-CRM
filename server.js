@@ -885,6 +885,17 @@ function canManageUsers(user) {
   return !!user && USER_ADMIN_ROLES.includes(user.role);
 }
 
+// Roles allowed to see client (family) records at all. HR-side roles
+// (hr_admin, hiring_manager, interviewer) and OT-only roles are deliberately
+// excluded -- they have no reason to see a child's PHI. Mirrors
+// CLIENT_ACCESS_ROLES in index.html.
+const CLIENT_ACCESS_ROLES = [
+  "owner", "super_admin", "admin", "intake", "clinical", "billing", "scheduling",
+];
+function canAccessClients(user) {
+  return !!user && CLIENT_ACCESS_ROLES.includes(user.role);
+}
+
 // Metadata shown in the admin UI: human-readable label/category/description,
 // plus the exact list of merge fields available for that template so the
 // editor can offer an "insert field" picker instead of making the admin guess.
@@ -2912,6 +2923,27 @@ async function handle(req, res, pathname, method, query = {}) {
     }
   }
 
+  // ---- OT-ONLY LOCKDOWN ----
+  // OT Admin / OT Staff may only reach OT routes and their own auth/session.
+  // This MUST run before the add-on dispatch below: the screener and
+  // client-forms modules were being handed the request first, which let an
+  // OT-only login read ABA clinical screeners and client financial forms by
+  // calling those URLs directly. Public sub-routes (the "/public/" convention
+  // every add-on follows, plus the login endpoint) stay reachable so a logged-in
+  // OT user can still open a public form link.
+  if (user && (user.role === "ot_admin" || user.role === "ot_staff")) {
+    const otAllowed =
+      pathname.startsWith("/api/ot/") ||
+      pathname.startsWith("/api/auth/") ||
+      pathname === "/api/logout" ||
+      pathname.includes("/public") ||
+      PUBLIC_ROUTES.has(pathname);
+    if (!otAllowed) {
+      json(res, 403, { error: "Not permitted." });
+      return true;
+    }
+  }
+
   if (pathname.startsWith("/api/screener/")) {
     const handled = await screener.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -2985,18 +3017,19 @@ async function handle(req, res, pathname, method, query = {}) {
     return true;
   }
 
-  // ---- OT-ONLY LOCKDOWN (belt-and-suspenders) ----
-  // OT Admin / OT Staff may only reach OT routes and their own auth/session.
-  // Every other API (all ABA clinical, authorization, billing, financial, HR,
-  // scheduling, client records, etc.) is refused at the server, so an OT-only
-  // login can never see ABA data even by calling an endpoint directly.
-  if (user && (user.role === "ot_admin" || user.role === "ot_staff")) {
-    const otAllowed =
-      pathname.startsWith("/api/ot/") ||
-      pathname.startsWith("/api/auth/") ||
-      pathname === "/api/logout";
-    if (!otAllowed) {
-      json(res, 403, { error: "Not permitted." });
+  // (The OT-only lockdown now runs above the add-on dispatch, so that OT logins
+  // cannot reach add-on routes such as the clinical screener.)
+
+  // ---- CLIENT RECORD LOCK ----
+  // Client records are a child's PHI: name, DOB, home address, parent contact
+  // and insurance. Previously any logged-in staff member in any role could
+  // list, edit, add notes to and upload documents against every family --
+  // including HR-side roles (hiring_manager, interviewer) that have no reason
+  // to see them. An explicit "pipeline" grant from the Access editor still
+  // opens it for a specific person.
+  if (/^\/api\/clients(\/|$)/.test(pathname) || /^\/api\/stages(\/|$)/.test(pathname)) {
+    if (!canAccessClients(user) && !moduleGranted(user, "pipeline")) {
+      json(res, 403, { error: "Not permitted to access client records" });
       return true;
     }
   }
@@ -4355,11 +4388,17 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     // ---------- ADMIN ----------
     if (pathname === "/api/admin/check-overdue" && method === "POST") {
+      // Can fire a burst of staff emails; admin-only like the rest of /api/admin.
+      if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted" });
       const n = await pipeline.checkOverdueTasks();
       return json(res, 200, { flagged: n });
     }
 
     if (pathname === "/api/admin/departments" && method === "PATCH") {
+      // Department alert emails carry child names, parent names and stage
+      // details. Without this check any logged-in account could redirect them
+      // to an outside address.
+      if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted" });
       const { id, notify_email } = await readBody(req);
       await dbRun("UPDATE departments SET notify_email = ? WHERE id = ?", [notify_email, id]);
       return json(res, 200, { ok: true });
@@ -4926,19 +4965,33 @@ function serveStatic(req, res, pathname) {
     res.end(data);
   });
 }
+// ---- Per-user module grants ------------------------------------------
+// The Access editor can switch a section explicitly ON for a user whose role
+// would not normally include it. `handle()` above enforces the OFF case;
+// this is the ON case, which each add-on consults alongside its role list.
+// A grant unlocks a module's ordinary access tier only -- manage/sensitive
+// tiers (HR compensation, payroll, offers) stay role-gated on purpose, so
+// flipping a nav toggle can never hand over payroll data.
+function moduleGranted(user, key) {
+  if (!user || !user.module_access || !key) return false;
+  let ma = user.module_access;
+  if (typeof ma === "string") { try { ma = JSON.parse(ma); } catch (e) { return false; } }
+  return !!ma && ma[key] === true;
+}
+
 // ===== SCREENER add-on: clinical screener automation (send, remind, host, save) =====
 const screener = require("./screener")({
-  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, PUBLIC_DIR,
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, PUBLIC_DIR, moduleGranted,
 });
 // ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
 const hr = require("./hr")({
-  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR,
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR, moduleGranted,
 });
 const clientForms = require("./client-forms")({
-  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
 });
 const ot = require("./ot")({
-  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile,
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
 });
 // ===== EMPLOYEE ATTENDANCE MANAGEMENT add-on: points engine, discipline,
 // bonus cycles, policy editor, attendance emails, historical import. Reuses the
@@ -4958,26 +5011,30 @@ try {
 // ===== CLINIC SUPPLY / SHOPPING REQUESTS add-on: public submit link, tokenized
 // tracking, full status flow with requester email updates. Owns /api/supply/*. =====
 const supply = require("./supply-requests")({
-  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile,
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
 });
 // ===== CLIENTS & CLINICIANS MAP add-on: geocodes existing client + employee
 // addresses (OpenStreetMap) and pairs nearest clinicians for in-homes. =====
 const geoMap = require("./geo-map")({
-  dbGet, dbAll, dbRun, nowISO, crypto, json,
+  dbGet, dbAll, dbRun, nowISO, crypto, json, moduleGranted,
 });
 // ===== RBT SUPERVISION TRACKER add-on: monthly supervision logs per employee,
 // Rethink-hours import, BCBA sign-off with auto-email + PDF. Owns /api/supervision/*. =====
 const supervision = require("./supervision")({
-  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
 });
 // ===== FINANCIAL CENTER ADVISOR add-on: owner-only money advisor from uploaded
 // bank/QuickBooks/payroll data — budgets, wage sim, reconciliation, insights. =====
 const financialAdvisor = require("./financial-advisor")({
-  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json,
+  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, moduleGranted,
 });
 // ===== GROWTH add-on: Lead Management + Policies/SOPs (public QR viewer). =====
+// Gets the PDF/zip readers from the financial advisor (initialised above) so
+// policy uploads can read .pdf and .docx without a second copy of that code.
 const growth = require("./growth")({
-  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json,
+  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, moduleGranted,
+  extractPdfLines: (buf) => financialAdvisor.extractPdfLines(buf),
+  unzip: (buf) => financialAdvisor.unzip(buf),
 });
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);

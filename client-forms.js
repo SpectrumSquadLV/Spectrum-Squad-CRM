@@ -504,8 +504,13 @@ module.exports = function initClientForms(ctx) {
       return true;
     }
 
-    // ---- Staff (auth required) ----
+    // ---- Staff (auth + role required) ----
+    // These routes create a financial-responsibility form with whatever copay /
+    // deductible / out-of-pocket figures the caller sends and email it to the
+    // family for signature, so "any logged-in account" was too broad.
     if (!user) { json(res, 401, { error: "Not authenticated" }); return true; }
+    const CF_ROLES = ["owner", "super_admin", "admin", "intake", "billing", "scheduling", "clinical"];
+    if (!CF_ROLES.includes(user.role)) { json(res, 403, { error: "Not permitted" }); return true; }
 
     if (pathname === "/api/client-forms/financial" && method === "POST") {
       const body = await readBody(req);

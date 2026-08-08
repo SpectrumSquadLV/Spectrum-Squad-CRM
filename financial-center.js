@@ -89,7 +89,7 @@ function canViewFinancial() {
         ${tile(money(d.net), d.net >= 0 ? "Kept (profit)" : "Shortfall", d.net >= 0 ? "#166534" : "#991b1b")}
       </div>
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;">
-        <button class="btn secondary" id="fc-up-bank">⬆ Upload bank / QuickBooks (CSV)</button>
+        <button class="btn secondary" id="fc-up-bank">⬆ Upload bank / QuickBooks (CSV or PDF)</button>
         <button class="btn secondary" id="fc-up-payroll">⬆ Upload Rethink payroll (.xlsx)</button>
         <span id="fc-up-status" style="font-size:12.5px; color:var(--text-muted); align-self:center;"></span>
       </div>
@@ -110,11 +110,32 @@ function canViewFinancial() {
   }
 
   function uploadCsv(mount) {
-    const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".csv,text/csv";
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".csv,text/csv,.pdf,application/pdf";
     inp.addEventListener("change", () => {
       const f = inp.files[0]; if (!f) return;
-      const st = mount.querySelector("#fc-up-status"); if (st) st.textContent = "Importing…";
+      const st = mount.querySelector("#fc-up-status");
+      const isPdf = /\.pdf$/i.test(f.name) || f.type === "application/pdf";
       const r = new FileReader();
+
+      if (isPdf) {
+        // PDF statements get a confirm-before-saving preview: layouts vary a lot
+        // more than CSV, so the figures get checked before they hit the books.
+        if (st) st.textContent = "Reading PDF…";
+        r.onload = async () => {
+          try {
+            const res = await api("/api/fin/parse-pdf", {
+              method: "POST",
+              body: { content_base64: String(r.result).split(",")[1] },
+            });
+            if (st) st.textContent = "";
+            showPdfPreview(mount, res.txns || [], f.name);
+          } catch (e) { if (st) st.textContent = e.message || "Could not read that PDF."; }
+        };
+        r.readAsDataURL(f);
+        return;
+      }
+
+      if (st) st.textContent = "Importing…";
       r.onload = async () => {
         try {
           const res = await api("/api/fin/import", { method: "POST", body: { csv: String(r.result), source: "bank" } });
@@ -126,6 +147,80 @@ function canViewFinancial() {
       r.readAsText(f);
     });
     inp.click();
+  }
+
+  // Preview + confirm for PDF statements. Each row can be flipped between
+  // money in / money out, or dropped entirely, before anything is saved.
+  function showPdfPreview(mount, txns, fileName) {
+    if (!txns.length) return;
+    const back = document.createElement("div");
+    back.style.cssText = "position:fixed; inset:0; background:rgba(15,20,45,0.45); z-index:9000; display:flex; align-items:center; justify-content:center; padding:24px;";
+    const money2 = (n) => (n < 0 ? "-" : "") + "$" + Math.abs(Number(n) || 0).toFixed(2);
+    back.innerHTML = `
+      <div style="background:#fff; border-radius:12px; max-width:900px; width:100%; max-height:86vh; display:flex; flex-direction:column; box-shadow:0 18px 50px rgba(0,0,0,0.3);">
+        <div style="padding:16px 20px; border-bottom:1px solid #e6e8f0;">
+          <div style="font-weight:600; font-size:15px;">Check these before saving</div>
+          <div style="font-size:12.5px; color:#666; margin-top:3px;">
+            Found <strong>${txns.length}</strong> transactions in ${esc(fileName)}.
+            PDF statements don't always say which way the money went &mdash; fix any that look wrong, then save.
+          </div>
+        </div>
+        <div style="overflow:auto; padding:6px 20px; flex:1;">
+          <table class="data-table" style="width:100%; font-size:12.5px;">
+            <thead><tr><th>Date</th><th>Description</th><th style="text-align:right;">Amount</th><th>Direction</th><th></th></tr></thead>
+            <tbody id="fcp-rows">
+              ${txns.map((t, i) => `
+                <tr data-i="${i}">
+                  <td style="white-space:nowrap;">${esc(t.txn_date)}</td>
+                  <td>${esc(t.description)}</td>
+                  <td style="text-align:right; white-space:nowrap;" data-amt>${money2(t.amount)}</td>
+                  <td>
+                    <select data-dir style="font-size:12px;">
+                      <option value="out"${t.amount < 0 ? " selected" : ""}>Money out</option>
+                      <option value="in"${t.amount >= 0 ? " selected" : ""}>Money in</option>
+                    </select>
+                  </td>
+                  <td><button class="btn small secondary" data-drop>Remove</button></td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:14px 20px; border-top:1px solid #e6e8f0; display:flex; justify-content:flex-end; gap:8px;">
+          <span id="fcp-status" style="margin-right:auto; font-size:12.5px; color:#666;"></span>
+          <button class="btn secondary" id="fcp-cancel">Cancel</button>
+          <button class="btn" id="fcp-save">Save transactions</button>
+        </div>
+      </div>`;
+    document.body.appendChild(back);
+    const close = () => back.remove();
+
+    back.querySelectorAll("[data-drop]").forEach((b) => {
+      b.addEventListener("click", () => { b.closest("tr").remove(); });
+    });
+    back.querySelectorAll("[data-dir]").forEach((sel) => {
+      sel.addEventListener("change", () => {
+        const tr = sel.closest("tr");
+        const i = Number(tr.dataset.i);
+        const mag = Math.abs(Number(txns[i].amount) || 0);
+        txns[i].amount = sel.value === "in" ? mag : -mag;
+        tr.querySelector("[data-amt]").textContent = money2(txns[i].amount);
+      });
+    });
+    back.querySelector("#fcp-cancel").addEventListener("click", close);
+    back.querySelector("#fcp-save").addEventListener("click", async () => {
+      const keep = [...back.querySelectorAll("#fcp-rows tr")].map((tr) => txns[Number(tr.dataset.i)]);
+      const st2 = back.querySelector("#fcp-status");
+      if (!keep.length) { st2.textContent = "Nothing left to save."; return; }
+      st2.textContent = "Saving…";
+      try {
+        const res = await api("/api/fin/import", { method: "POST", body: { txns: keep, source: "pdf" } });
+        close();
+        const st = mount.querySelector("#fc-up-status");
+        if (st) st.textContent = `Imported ${res.imported} transactions.`;
+        if (res.months && res.months.length && res.months.indexOf(month) < 0) month = res.months[0];
+        render(mount);
+      } catch (e) { st2.textContent = e.message || "Import failed."; }
+    });
   }
 
   function uploadPayroll(mount) {

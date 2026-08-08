@@ -22,7 +22,12 @@ module.exports = function initSupply(ctx) {
   if (!fs.existsSync(SUPPLY_DIR)) fs.mkdirSync(SUPPLY_DIR, { recursive: true });
 
   const ADMIN_ROLES = ["owner", "super_admin", "admin"];
-  function canAdmin(user) { return !!user && ADMIN_ROLES.includes(user.role); }
+
+  // A per-user grant from the Access editor unlocks this module's ordinary
+  // access tier even when the role list wouldn't. Manage/sensitive tiers stay
+  // role-gated.
+  const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
+  function canAdmin(user) { return !!user && (ADMIN_ROLES.includes(user.role) || granted(user, "supply")); }
 
   // Full status flow. Denied is reachable from any open state; Received/Denied
   // are terminal.

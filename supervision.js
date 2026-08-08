@@ -43,7 +43,12 @@ module.exports = function initSupervision(ctx) {
   }
 
   function role(u) { return (u && (u.role || u.role_key || "")) || ""; }
-  function canManage(u) { return ["owner", "super_admin", "admin", "hr_admin", "clinical"].includes(role(u)); }
+
+  // A per-user grant from the Access editor unlocks this module's ordinary
+  // access tier even when the role list wouldn't. Manage/sensitive tiers stay
+  // role-gated.
+  const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
+  function canManage(u) { return ["owner", "super_admin", "admin", "hr_admin", "clinical"].includes(role(u)) || granted(u, "supervision"); }
 
   function num(v) { const n = parseFloat(v); return isFinite(n) ? n : 0; }
   function supHours(entries) {

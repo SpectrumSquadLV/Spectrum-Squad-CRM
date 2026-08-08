@@ -35,29 +35,13 @@
   let loaded = false;
   let mountObserver = null;
 
-  function injectNavButton() {
-    const nav = document.querySelector(".sidebar nav");
-    if (!nav || document.getElementById("pv2-nav-btn")) return;
-    const btn = document.createElement("button");
-    btn.className = "nav-item";
-    btn.id = "pv2-nav-btn";
-btn.textContent = "▤ Client Pipeline";
-    btn.addEventListener("click", () => {
-      location.hash = HASH;
-    });
-    // Insert right after the first existing nav item so this reads as the
-    // primary pipeline view rather than an extra item tacked on at the
-    // bottom of the sidebar.
-    const items = nav.querySelectorAll(".nav-item");
-    if (items.length > 1) {
-      nav.insertBefore(btn, items[1]);
-    } else {
-      nav.appendChild(btn);
-    }
-  }
+  // The sidebar button used to be injected here, for every logged-in user,
+  // with no role check -- which meant HR-only roles could open the client
+  // pipeline and the owner's Access toggle for it did nothing. index.html now
+  // renders "Client Pipeline" as a normal nav item with a proper role check.
 
   function setActiveNav(isActive) {
-    const btn = document.getElementById("pv2-nav-btn");
+    const btn = document.querySelector('.sidebar nav [data-nav="pipeline"]');
     if (!btn) return;
     if (isActive) {
       document.querySelectorAll(".sidebar nav .nav-item").forEach((el) => el.classList.remove("active"));
@@ -293,15 +277,6 @@ btn.textContent = "▤ Client Pipeline";
   }
 
   function boot() {
-    // This MutationObserver only re-injects the nav button if the app's own
-    // re-renders wipe it out of the sidebar. It must NOT call onHashChange
-    // or render(), since those mutate the DOM themselves -- calling them
-    // from here would make the observer react to its own changes forever.
-    const tryInject = () => {
-      injectNavButton();
-    };
-    [150, 500, 1200, 2500, 4000].forEach((ms) => setTimeout(tryInject, ms));
-    new MutationObserver(tryInject).observe(document.body, { childList: true, subtree: true });
     window.addEventListener("hashchange", onHashChange);
     if (location.hash === HASH) onHashChange();
   }

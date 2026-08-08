@@ -239,6 +239,10 @@ module.exports = function initScreener(ctx) {
     // Staff view of a client's submission (auth required).
     if (pathname.startsWith("/api/screener/submission/") && method === "GET") {
       if (!user) { json(res, 401, { error: "Not authenticated" }); return true; }
+      // A screener holds diagnoses, self-injury history and medical background.
+      // "Logged in" is not enough -- HR-side and OT-only accounts must not read it.
+      const SCREENER_ROLES = ["owner", "super_admin", "admin", "intake", "clinical", "billing", "scheduling"];
+      if (!SCREENER_ROLES.includes(user.role)) { json(res, 403, { error: "Not permitted" }); return true; }
       const clientId = pathname.split("/").pop();
       const row = await dbGet(
         "SELECT * FROM screener_submissions WHERE client_id = ? ORDER BY submitted_at DESC LIMIT 1",

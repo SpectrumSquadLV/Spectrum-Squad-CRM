@@ -23,7 +23,7 @@ module.exports = function initFinancialAdvisor(ctx) {
   const RULES = [
     ["Income", /deposit|payment recv|zelle from|remote dep|ach credit|insurance pay|claim|tricare|medicaid|molina|aetna|reimburse|invoice/i],
     ["Payroll", /payroll|gusto|adp|rippling|wage|salary|paychex|direct dep.*payroll|rethink pay/i],
-    ["Rent & Utilities", /rent|lease|nv energy|electric|water|gas co|internet|comcast|cox|centurylink|utility|waste/i],
+    ["Rent & Utilities", /\brent\b|\blease\b|nv energy|electric|water|gas co|internet|comcast|cox|centurylink|utility|waste/i],
     ["Software & Subscriptions", /google|microsoft|zoom|adobe|slack|clickup|dropbox|notion|quickbooks|intuit|canva|calendly|subscription|saas|openai|anthropic/i],
     ["Supplies & Materials", /amazon|walmart|target|staples|office depot|supplies|materials|therapy|toys|lakeshore/i],
     ["Insurance", /insurance|liability|workers comp|hiscox|next insurance|policy/i],
@@ -74,7 +74,12 @@ module.exports = function initFinancialAdvisor(ctx) {
   }
 
   function role(u) { return (u && (u.role || u.role_key || "")) || ""; }
-  function canView(u) { return ["owner", "super_admin"].includes(role(u)); }
+
+  // A per-user grant from the Access editor unlocks this module's ordinary
+  // access tier even when the role list wouldn't. Manage/sensitive tiers stay
+  // role-gated.
+  const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
+  function canView(u) { return ["owner", "super_admin"].includes(role(u)) || granted(u, "financial-center"); }
 
   function num(v) { const n = parseFloat(String(v == null ? "" : v).replace(/[$,()]/g, (m) => (m === "(" || m === ")" ? "" : ""))); return isFinite(n) ? n : 0; }
   function money(n) { return Math.round((n || 0) * 100) / 100; }
@@ -133,6 +138,152 @@ module.exports = function initFinancialAdvisor(ctx) {
       txns.push({ txn_date: date, month: monthOf(date), description: desc, amount: money(amount), category: categorize(desc, amount), source: source || "csv" });
     }
     return { imported: txns.length, txns };
+  }
+
+  // ---- PDF bank statements -------------------------------------------
+  // Most bank/credit-card statements are text-based PDFs (not scans), so the
+  // transaction lines can be pulled straight out of the content streams. Same
+  // dependency-free approach as the .xlsx reader below: inflate the streams
+  // with zlib, then read the text-showing operators.
+  function pdfDecodeString(raw) {
+    // A PDF literal string: escapes plus \ooo octal.
+    let out = "";
+    for (let i = 0; i < raw.length; i++) {
+      const c = raw[i];
+      if (c !== "\\") { out += c; continue; }
+      const n = raw[++i];
+      if (n === "n") out += "\n";
+      else if (n === "r") out += "\r";
+      else if (n === "t") out += "\t";
+      else if (n === "b" || n === "f") out += " ";
+      else if (n >= "0" && n <= "7") {
+        let oct = n;
+        while (oct.length < 3 && raw[i + 1] >= "0" && raw[i + 1] <= "7") oct += raw[++i];
+        out += String.fromCharCode(parseInt(oct, 8));
+      } else out += n;
+    }
+    return out;
+  }
+
+  function pdfContentToLines(content) {
+    // Walk the text operators in order. Any operator that moves to a new line
+    // (Td / TD / T* / Tm) or ends a text object (ET) breaks the current line,
+    // which is what keeps one statement row on one line.
+    const lines = [];
+    let cur = "";
+    const push = () => { if (cur.trim()) lines.push(cur.replace(/\s+/g, " ").trim()); cur = ""; };
+    const re = /\((?:\\.|[^\\()])*\)\s*Tj|\[(?:\\.|[^\\\]])*\]\s*TJ|<[0-9A-Fa-f\s]*>\s*Tj|(?:^|\s)(?:T\*|ET|BT)(?=\s|$)|[-\d.]+\s+[-\d.]+\s+(?:Td|TD)|[-\d.]+(?:\s+[-\d.]+){5}\s+Tm/g;
+    let m;
+    while ((m = re.exec(content))) {
+      const tok = m[0].trim();
+      if (/(?:Td|TD|Tm|T\*|ET|BT)$/.test(tok)) { push(); continue; }
+      if (tok.endsWith("TJ")) {
+        // Array form: [(He) -250 (llo)] TJ, or the hex equivalent
+        // [<48656c> 80 <6c6f>] TJ, which is what many PDF writers emit.
+        // Large negative kerning means a visible gap, so treat it as a space.
+        const inner = tok.slice(tok.indexOf("[") + 1, tok.lastIndexOf("]"));
+        const partRe = /\((?:\\.|[^\\()])*\)|<[0-9A-Fa-f\s]*>|-?\d+(?:\.\d+)?/g;
+        let p;
+        while ((p = partRe.exec(inner))) {
+          const t = p[0];
+          if (t.startsWith("(")) cur += pdfDecodeString(t.slice(1, -1));
+          else if (t.startsWith("<")) {
+            const hex = t.slice(1, -1).replace(/\s+/g, "");
+            for (let i = 0; i + 1 < hex.length; i += 2) cur += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+          } else if (parseFloat(t) <= -100) cur += " ";
+        }
+      } else if (tok.startsWith("<")) {
+        const hex = tok.slice(1, tok.lastIndexOf(">")).replace(/\s+/g, "");
+        for (let i = 0; i + 1 < hex.length; i += 2) cur += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+      } else {
+        cur += pdfDecodeString(tok.slice(tok.indexOf("(") + 1, tok.lastIndexOf(")")));
+      }
+    }
+    push();
+    return lines;
+  }
+
+  function extractPdfLines(buffer) {
+    if (buffer.slice(0, 5).toString("latin1") !== "%PDF-") throw new Error("That file isn't a PDF.");
+    const raw = buffer.toString("latin1");
+    const lines = [];
+    let idx = 0;
+    let streams = 0;
+    while (true) {
+      const s = raw.indexOf("stream", idx);
+      if (s < 0) break;
+      const e = raw.indexOf("endstream", s);
+      if (e < 0) break;
+      // The stream's own dictionary is the one that opens at the last "<<"
+      // before the keyword. (Taking a fixed-size lookback window instead would
+      // drag in neighbouring objects -- e.g. a page's /ProcSet listing
+      // /ImageB /ImageC -- and wrongly skip a perfectly readable text stream.)
+      const dictStart = raw.lastIndexOf("<<", s);
+      const dict = dictStart >= 0 ? raw.slice(dictStart, s) : "";
+      let start = s + 6;
+      if (raw[start] === "\r") start++;
+      if (raw[start] === "\n") start++;
+      const bytes = buffer.slice(start, e);
+      idx = e + 9;
+      if (/\/Subtype\s*\/Image|\/DCTDecode|\/JPXDecode|\/CCITTFaxDecode|\/ObjStm|\/XRef/.test(dict)) continue;
+      let data = null;
+      if (/\/FlateDecode/.test(dict)) {
+        try { data = zlib.inflateSync(bytes); }
+        catch (err) { try { data = zlib.inflateRawSync(bytes); } catch (e2) { data = null; } }
+      } else if (!/\/Filter/.test(dict)) {
+        data = bytes;
+      }
+      if (!data) continue;
+      streams++;
+      lines.push(...pdfContentToLines(data.toString("latin1")));
+    }
+    if (!streams) throw new Error("This PDF's pages couldn't be read. If it's a scanned statement, download the CSV version from your bank instead.");
+    return lines;
+  }
+
+  // Pull transactions out of statement lines. Handles the common layouts:
+  //   01/15/2026  STARBUCKS #123          -5.42
+  //   01/15  ACH DEPOSIT  1,200.00  4,318.22   (last figure is a running balance)
+  const MONEY_RE = /\(?-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})\)?-?/g;
+  const DATE_RE = /^\s*(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,?\s+\d{4})?)/i;
+  const CREDIT_RE = /\b(deposit|credit|refund|interest paid|transfer in|payment received|payment recv|reversal|rebate|zelle from|ach credit|remote dep|incoming)\b/i;
+
+  function parseStatementLines(lines, opts) {
+    const year = (opts && opts.year) || new Date().getUTCFullYear();
+    const txns = [];
+    for (const line of lines) {
+      const dm = line.match(DATE_RE);
+      if (!dm) continue;
+      const amounts = line.match(MONEY_RE);
+      if (!amounts || !amounts.length) continue;
+      // Two or more figures usually means the last one is the running balance.
+      const amtRaw = amounts.length >= 2 ? amounts[amounts.length - 2] : amounts[amounts.length - 1];
+      let amount = Math.abs(num(amtRaw));
+      if (!amount) continue;
+      let desc = line.slice(dm[0].length);
+      amounts.forEach((a) => { desc = desc.replace(a, " "); });
+      desc = desc.replace(/\s{2,}/g, " ").trim();
+      if (!desc) continue;
+      const explicitNegative = /^\(.*\)$/.test(amtRaw.trim()) || /^-/.test(amtRaw.trim()) || /-$/.test(amtRaw.trim());
+      const looksLikeCredit = CREDIT_RE.test(line) && !explicitNegative;
+      amount = looksLikeCredit ? amount : -amount;
+      let date = dm[0].trim();
+      // "01/15" with no year -- assume the statement year.
+      if (/^\d{1,2}\/\d{1,2}$/.test(date)) date = `${date}/${year}`;
+      txns.push({
+        txn_date: date,
+        month: monthOf(date),
+        description: desc.slice(0, 200),
+        amount: money(amount),
+        category: categorize(desc, amount),
+        source: "pdf",
+      });
+    }
+    return txns;
+  }
+
+  function importPdf(buffer, opts) {
+    return parseStatementLines(extractPdfLines(buffer), opts);
   }
 
   // ---- Rethink payroll .xlsx → monthly gross (TotalPay sum) ----
@@ -252,10 +403,50 @@ module.exports = function initFinancialAdvisor(ctx) {
         return json(res, 200, { transactions: rows, categories: CATEGORIES });
       }
 
+      // Parse a PDF bank statement and hand back a preview. Nothing is saved
+      // until the owner confirms on screen -- PDF layouts vary far more than
+      // CSV, so the figures get eyes on them before they land in the books.
+      if (pathname === "/api/fin/parse-pdf" && method === "POST") {
+        const b = await readBody(req);
+        if (!b.content_base64) return json(res, 400, { error: "No file provided." });
+        let buf;
+        try {
+          let s = String(b.content_base64);
+          const ci = s.indexOf(",");
+          if (s.startsWith("data:") && ci >= 0) s = s.slice(ci + 1);
+          buf = Buffer.from(s, "base64");
+        } catch (e) { return json(res, 400, { error: "Could not read file." }); }
+        let txns;
+        try { txns = importPdf(buf, { year: b.year }); }
+        catch (e) { return json(res, 400, { error: e.message }); }
+        if (!txns.length) {
+          return json(res, 400, {
+            error: "No transactions found in that PDF. Some banks lay statements out in a way this can't read -- downloading the CSV version from your bank will always work.",
+          });
+        }
+        return json(res, 200, { ok: true, txns });
+      }
+
       if (pathname === "/api/fin/import" && method === "POST") {
         const b = await readBody(req);
-        if (!b.csv) return json(res, 400, { error: "No CSV content provided." });
-        const { txns } = importCsv(b.csv, b.source || "bank");
+        // Either raw CSV text, or an already-parsed set of rows confirmed from
+        // the PDF preview above.
+        let txns;
+        if (Array.isArray(b.txns)) {
+          txns = b.txns
+            .filter((t) => t && (t.txn_date || t.description))
+            .map((t) => ({
+              txn_date: String(t.txn_date || ""),
+              month: monthOf(String(t.txn_date || "")),
+              description: String(t.description || "").slice(0, 200),
+              amount: money(num(t.amount)),
+              category: CATEGORIES.includes(t.category) ? t.category : categorize(t.description, num(t.amount)),
+              source: b.source || "pdf",
+            }));
+        } else {
+          if (!b.csv) return json(res, 400, { error: "No CSV content provided." });
+          txns = importCsv(b.csv, b.source || "bank").txns;
+        }
         if (!txns.length) return json(res, 400, { error: "No transactions found. Make sure the file has Date, Description, and Amount columns." });
         let n = 0;
         for (const t of txns) {
@@ -326,5 +517,9 @@ module.exports = function initFinancialAdvisor(ctx) {
     }
   }
 
-  return { initTables, handleApi, _internal: { importCsv, parsePayrollGross, categorize } };
+  // extractPdfLines / unzip are generic document readers that happen to live
+  // here because this was the first module that needed them. They are
+  // exported so the Policies & SOPs module can reuse them for uploads
+  // instead of carrying a second copy.
+  return { initTables, handleApi, extractPdfLines, unzip, _internal: { importCsv, parsePayrollGross, categorize } };
 };

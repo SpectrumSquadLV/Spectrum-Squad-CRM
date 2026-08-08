@@ -1341,13 +1341,23 @@ async function hrRenderTimecards(body) {
         .join("")
     : `<p class="hr-muted">No employees yet.</p>`;
 
+  const tcHours = (t) => {
+    let entries = t.entries;
+    if (typeof entries === "string") { try { entries = JSON.parse(entries); } catch (e) { entries = []; } }
+    if (!Array.isArray(entries)) return "";
+    const n = entries.reduce((sum, e) => sum + (Number(e.hours) || 0), 0);
+    return n ? (Math.round(n * 100) / 100) + "h" : "";
+  };
   const tcRows = timecards.length
-    ? `<table class="hr-table"><thead><tr><th>Employee</th><th>Period</th><th>Source</th><th>Status</th><th>Flags</th><th></th></tr></thead><tbody>${timecards
+    ? `<table class="hr-table"><thead><tr>${canManage ? `<th style="width:28px"><input type="checkbox" id="tc-check-all" title="Select all" /></th>` : ""}<th>Employee</th><th>Period</th><th>Hours</th><th>Source</th><th>Status</th><th>Flags</th><th></th></tr></thead><tbody>${timecards
         .map(
           (t) => {
-            const sendBtn = canManage ? `<button class="hr-btn sm" data-tcsend="${t.id}">${t.verification_requested_at ? "Resend" : "Send to employee"}</button>` : "";
+            const sendBtn = canManage ? `<button class="hr-btn sm" data-tcsend="${t.id}">${t.verification_requested_at ? "Resend" : "Send"}</button>` : "";
+            const previewBtn = canManage ? `<button class="hr-btn sm ghost" data-tcpreview="${t.id}">👁 Preview</button>` : "";
             const pdfLink = t.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${t.pdf_doc_id}" target="_blank">📄 Signed PDF</a>` : "";
-            return `<tr><td>${hrEsc(t.employee_name || "—")}</td><td>${hrEsc((t.pay_period_start || "?") + " → " + (t.pay_period_end || "?"))}</td><td>${hrEsc(t.source || "")}</td><td><span class="hr-badge ${Number(t.open_flags) ? "paused" : "qualified"}">${hrEsc(t.status)}</span></td><td>${t.open_flags}/${t.flag_count} open</td><td style="white-space:nowrap"><button class="hr-btn sm ghost" data-tc="${t.id}">View</button> ${sendBtn} ${pdfLink}</td></tr>`;
+            const check = canManage ? `<td><input type="checkbox" class="tc-pick" value="${t.id}" ${t.status === "accepted" ? "disabled" : ""} /></td>` : "";
+            const sentMark = t.verification_requested_at ? `<div class="hr-muted" style="font-size:11px">sent</div>` : "";
+            return `<tr>${check}<td>${hrEsc(t.employee_name || "—")}${sentMark}</td><td>${hrEsc((t.pay_period_start || "?") + " → " + (t.pay_period_end || "?"))}</td><td>${hrEsc(tcHours(t))}</td><td>${hrEsc(t.source || "")}</td><td><span class="hr-badge ${Number(t.open_flags) ? "paused" : "qualified"}">${hrEsc(t.status)}</span></td><td>${t.open_flags}/${t.flag_count} open</td><td style="white-space:nowrap">${previewBtn} <button class="hr-btn sm ghost" data-tc="${t.id}">View</button> ${sendBtn} ${pdfLink}</td></tr>`;
           }
         )
         .join("")}</tbody></table>`
@@ -1375,7 +1385,7 @@ async function hrRenderTimecards(body) {
         <div class="hr-row"><button class="hr-btn sm" id="tc-batch-import">Import all</button><span class="hr-status" id="tc-batch-status"></span></div>` : `<p class="hr-muted">Managers can import timecards.</p>`}
       </div>
     </div>
-    <div class="hr-card"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><h2 style="margin:0;">Timecards</h2>${canManage && timecards.length ? `<div style="display:flex;align-items:center;gap:8px;"><button class="hr-btn sm" id="tc-send-all">📧 Send to all (unaccepted)</button><span class="hr-status" id="tc-send-all-status"></span></div>` : ""}</div>${tcRows}</div>`;
+    <div class="hr-card"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><h2 style="margin:0;">Timecards</h2>${canManage && timecards.length ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><button class="hr-btn sm" id="tc-send-selected" disabled>📧 Send selected (0)</button><button class="hr-btn sm ghost" id="tc-send-all">Send to all unaccepted</button><span class="hr-status" id="tc-send-all-status"></span></div>` : ""}</div>${tcRows}</div>`;
 
   if (canManage) {
     document.getElementById("emp-add").addEventListener("click", async () => {
@@ -1443,8 +1453,110 @@ async function hrRenderTimecards(body) {
         } catch (e) { alert(e.message); b.disabled = false; b.textContent = old; }
       })
     );
+
+    // ---- pick-and-send ------------------------------------------------
+    const picks = () => [...body.querySelectorAll(".tc-pick:checked")].map((c) => c.value);
+    const selBtn = document.getElementById("tc-send-selected");
+    const syncSel = () => {
+      if (!selBtn) return;
+      const n = picks().length;
+      selBtn.textContent = `📧 Send selected (${n})`;
+      selBtn.disabled = n === 0;
+    };
+    body.querySelectorAll(".tc-pick").forEach((c) => c.addEventListener("change", syncSel));
+    const allBox = document.getElementById("tc-check-all");
+    if (allBox) allBox.addEventListener("change", () => {
+      body.querySelectorAll(".tc-pick:not([disabled])").forEach((c) => { c.checked = allBox.checked; });
+      syncSel();
+    });
+    if (selBtn) selBtn.addEventListener("click", async () => {
+      const ids = picks();
+      if (!ids.length) return;
+      if (!confirm(`Send the timecard review email to ${ids.length} employee${ids.length === 1 ? "" : "s"}?`)) return;
+      const st = document.getElementById("tc-send-all-status");
+      selBtn.disabled = true; st.textContent = "Sending…"; st.className = "hr-status";
+      try {
+        const r = await hrApi("/api/hr/timecards/send", { method: "POST", body: { ids } });
+        st.textContent = `Sent ${r.sent}.` + (r.skipped && r.skipped.length ? ` Skipped (no email on file): ${r.skipped.join(", ")}` : "");
+        st.className = r.skipped && r.skipped.length ? "hr-status err" : "hr-status ok";
+        hrRenderTimecards(body);
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; selBtn.disabled = false; }
+    });
+
+    body.querySelectorAll("[data-tcpreview]").forEach((b) =>
+      b.addEventListener("click", () => hrOpenTimecardPreview(b.dataset.tcpreview, body))
+    );
   }
   body.querySelectorAll("[data-tc]").forEach((b) => b.addEventListener("click", () => hrOpenTimecardModal(b.dataset.tc, body)));
+}
+
+// Read-only look at exactly what the employee will receive, before anything
+// goes out: the hours, the flags, and the actual email. Nothing is generated,
+// nothing is sent, and the timecard's status is untouched until you press Send.
+function hrOpenTimecardPreview(id, tcBody) {
+  hrApi("/api/hr/timecards/" + id + "/preview").then((p) => {
+    const entriesHtml = (p.entries || []).length
+      ? `<table class="hr-table"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th></tr></thead><tbody>${(p.entries || [])
+          .map((e) => `<tr><td>${hrEsc(e.date || "")}</td><td>${hrEsc(e.clock_in || "—")}</td><td>${hrEsc(e.clock_out || "—")}</td><td>${hrEsc(e.hours != null ? e.hours : "")}</td></tr>`)
+          .join("")}<tr><td colspan="3" style="text-align:right"><strong>Total</strong></td><td><strong>${hrEsc(p.total_hours)}h</strong></td></tr></tbody></table>`
+      : `<p class="hr-muted">No entries on this timecard.</p>`;
+    const openFlags = (p.flags || []).filter((f) => !["approved", "corrected"].includes(f.status));
+    const flagWarn = openFlags.length
+      ? `<div class="hr-alert" style="margin-bottom:10px">⚠ ${openFlags.length} open flag${openFlags.length === 1 ? "" : "s"} on this timecard: ${hrEsc(openFlags.map((f) => f.flag_type.replace(/_/g, " ")).join(", "))}. The employee will see these too.</div>`
+      : "";
+    const noEmail = !p.has_email
+      ? `<div class="hr-alert" style="margin-bottom:10px">This employee has no email on file, so nothing can be sent yet. Add their email in the Employees list first.</div>`
+      : "";
+    const alreadySent = p.already_sent_at
+      ? `<p class="hr-muted" style="margin:0 0 10px">Already sent once — pressing Send again re-sends the same link.</p>`
+      : "";
+
+    const back = document.createElement("div");
+    back.className = "hr-modal-back";
+    back.innerHTML = `<div class="hr-modal" style="max-width:760px">
+      <button class="hr-close" id="hr-pclose">×</button>
+      <h2>Preview — ${hrEsc(p.employee_name || "Unassigned")}</h2>
+      <p class="hr-muted">${hrEsc((p.pay_period_start || "?") + " → " + (p.pay_period_end || "?"))} · <strong>${hrEsc(p.total_hours)} hours</strong> · status: ${hrEsc(p.status)}</p>
+      <p class="hr-muted">Goes to: <strong>${hrEsc(p.employee_email || "no email on file")}</strong><br>Subject: ${hrEsc(p.subject)}</p>
+      ${noEmail}${flagWarn}${alreadySent}
+      <div class="hr-muted" style="font-weight:600;margin:12px 0 6px">Hours the employee will see</div>
+      ${entriesHtml}
+      <div class="hr-muted" style="font-weight:600;margin:16px 0 6px">The email they'll get</div>
+      <div style="border:1px solid #e6e8f0;border-radius:10px;overflow:hidden;background:#f4f1ea;">
+        <iframe id="tc-pv-frame" style="width:100%;height:340px;border:0;display:block;background:#f4f1ea;"></iframe>
+      </div>
+      <div class="hr-row" style="margin-top:14px">
+        <button class="hr-btn" id="tc-pv-send"${p.has_email ? "" : " disabled"}>${p.already_sent_at ? "Re-send to employee" : "Send to employee"}</button>
+        <button class="hr-btn sm ghost" id="tc-pv-cancel">Close without sending</button>
+        <span class="hr-status" id="tc-pv-status"></span>
+      </div>
+    </div>`;
+    document.body.appendChild(back);
+    // Written into the iframe rather than inlined so the email's own styles
+    // can't leak into the app.
+    const fr = back.querySelector("#tc-pv-frame");
+    try {
+      const d = fr.contentDocument || fr.contentWindow.document;
+      d.open(); d.write(p.email_html || ""); d.close();
+    } catch (e) { /* preview is best-effort */ }
+
+    const close = () => back.remove();
+    back.querySelector("#hr-pclose").addEventListener("click", close);
+    back.querySelector("#tc-pv-cancel").addEventListener("click", close);
+    back.addEventListener("click", (e) => { if (e.target === back) close(); });
+    const sendBtn = back.querySelector("#tc-pv-send");
+    sendBtn.addEventListener("click", async () => {
+      const st = back.querySelector("#tc-pv-status");
+      sendBtn.disabled = true; st.textContent = "Sending…"; st.className = "hr-status";
+      try {
+        const r = await hrApi("/api/hr/timecards/" + id + "/request-verification", { method: "POST", body: {} });
+        st.textContent = r.sent ? "Sent." : "Link created, but no email on file.";
+        st.className = r.sent ? "hr-status ok" : "hr-status err";
+        if (tcBody) hrRenderTimecards(tcBody);
+        setTimeout(close, 900);
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; sendBtn.disabled = false; }
+    });
+  }).catch((e) => alert(e.message));
 }
 
 function hrOpenTimecardModal(id, tcBody) {

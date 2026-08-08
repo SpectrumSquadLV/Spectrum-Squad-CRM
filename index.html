@@ -493,11 +493,19 @@ async function route() {
     loadTherapists(),
   ]);
 
-  const [, view, param] = hash.split("/");
+  const [, rawView, param] = hash.split("/");
+  // The milestone pipeline lives at #/pipeline-v2 but is the same nav section
+  // (and the same permission key) as "pipeline".
+  const view = rawView === "pipeline-v2" ? "pipeline" : rawView;
 
   // Enforce per-user module access on direct hash navigation.
   const maGuard = getModuleAccess(state.user);
   if (maGuard && view && maGuard[view] === false) { location.hash = "#/dashboard"; return; }
+  // Role check for the client pipeline / client records themselves.
+  if (view === "pipeline" && !canAccessClients() && !(maGuard && maGuard.pipeline === true)) {
+    location.hash = "#/dashboard";
+    return;
+  }
 
   renderShell(view || "dashboard");
 
@@ -508,7 +516,11 @@ async function route() {
     const handled = window.__renderHR ? await window.__renderHR(mount) : false;
     if (!handled) await renderDashboard(mount);
   }
-  else if (hash.startsWith("#/dashboard") || !view) await renderDashboard(mount);
+  else if (hash.startsWith("#/dashboard") || !rawView) await renderDashboard(mount);
+  // pipeline-v2.js owns the milestone view and renders into the mount itself.
+  // Claiming the route here (instead of letting it fall through to the old
+  // pipeline view) is what stops the two from overwriting each other.
+  else if (hash.startsWith("#/pipeline-v2")) { /* rendered by pipeline-v2.js */ }
   else if (hash.startsWith("#/pipeline")) await renderPipeline(mount);
   else if (hash.startsWith("#/tasks")) await renderTasks(mount);
   else if (hash.startsWith("#/schedule")) await renderSchedule(mount);
@@ -544,7 +556,7 @@ async function loadTherapists() {
 // Catalog of grantable nav modules (for per-user granular access).
 const MODULE_CATALOG = {
   dashboard: { label: "Dashboard", icon: "◧" },
-  pipeline: { label: "Client Pipeline", icon: "▤" },
+  pipeline: { label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" },
   tasks: { label: "Tasks & Alerts", icon: "✓" },
   schedule: { label: "Therapy Schedule", icon: "▦" },
   staff: { label: "Staff", icon: "🧑‍⚕️" },
@@ -560,6 +572,13 @@ const MODULE_CATALOG = {
   "auth-alerts": { label: "Authorization Alerts", icon: "⏰" },
   admin: { label: "Admin Settings", icon: "⚙" },
 };
+// Roles allowed to see client (family) records at all. HR-side roles such as
+// hiring_manager and interviewer are deliberately excluded -- they have no
+// reason to see a child's PHI. Mirrors CLIENT_ACCESS_ROLES on the server.
+const CLIENT_ACCESS_ROLES = ["owner", "super_admin", "admin", "intake", "clinical", "billing", "scheduling"];
+function canAccessClients() {
+  return !!state.user && CLIENT_ACCESS_ROLES.includes(state.user.role);
+}
 function getModuleAccess(user) {
   if (!user || !user.module_access) return null;
   try { return typeof user.module_access === "string" ? JSON.parse(user.module_access) : user.module_access; }
@@ -573,9 +592,17 @@ function renderShell(active) {
   const OT_ONLY = ["ot_admin", "ot_staff"].includes(state.user.role);
   const navItems = OT_ONLY ? [] : [
     { key: "dashboard", label: "Dashboard", icon: "◧" },
-    { key: "tasks", label: "Tasks & Alerts", icon: "✓" },
-    { key: "schedule", label: "Therapy Schedule", icon: "▦" },
   ];
+  // Client Pipeline: previously this button was injected into the sidebar by
+  // pipeline-v2.js for every logged-in user with no role check at all, so HR
+  // roles could see the whole client pipeline and the Access toggle for it did
+  // nothing. It is a normal nav item now, with a role check like everything else.
+  if (!OT_ONLY && canAccessClients())
+    navItems.push({ key: "pipeline", label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" });
+  if (!OT_ONLY) {
+    navItems.push({ key: "tasks", label: "Tasks & Alerts", icon: "✓" });
+    navItems.push({ key: "schedule", label: "Therapy Schedule", icon: "▦" });
+  }
   // The Message Outbox is private to the owner (and a co-owner super admin).
   if (!OT_ONLY && ["owner", "super_admin"].includes(state.user.role))
     navItems.push({ key: "outbox", label: "Message Outbox", icon: "✉" });
@@ -605,7 +632,7 @@ function renderShell(active) {
   if (ma) {
     for (let i = navItems.length - 1; i >= 0; i--) if (ma[navItems[i].key] === false) navItems.splice(i, 1);
     Object.keys(ma).forEach((k) => {
-      if (ma[k] === true && !navItems.some((n) => n.key === k) && MODULE_CATALOG[k]) navItems.push({ key: k, label: MODULE_CATALOG[k].label, icon: MODULE_CATALOG[k].icon });
+      if (ma[k] === true && !navItems.some((n) => n.key === k) && MODULE_CATALOG[k]) navItems.push({ key: k, label: MODULE_CATALOG[k].label, icon: MODULE_CATALOG[k].icon, hash: MODULE_CATALOG[k].hash });
     });
   }
 
@@ -616,7 +643,7 @@ function renderShell(active) {
         <nav>
           ${navItems
             .map(
-              (n) => `<button class="nav-item ${active === n.key ? "active" : ""}" data-nav="${n.key}">
+              (n) => `<button class="nav-item ${active === n.key ? "active" : ""}" data-nav="${n.key}"${n.hash ? ` data-nav-hash="${n.hash}"` : ""}>
               <span>${n.icon}</span> ${n.label}</button>`
             )
             .join("")}
@@ -633,7 +660,7 @@ function renderShell(active) {
     </div>
   `;
   root.querySelectorAll("[data-nav]").forEach((btn) => {
-    btn.addEventListener("click", () => (location.hash = "#/" + btn.dataset.nav));
+    btn.addEventListener("click", () => (location.hash = btn.dataset.navHash || "#/" + btn.dataset.nav));
   });
   document.getElementById("logout-btn").addEventListener("click", async () => {
     await api("/api/auth/logout", { method: "POST" });
@@ -749,7 +776,12 @@ async function renderDashboard(mount) {
     </div>` : ""}
   `;
 
-  document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
+  // Null-safe: two views define this id, and a fast second nav click can
+  // replace the mount between the innerHTML write above and this line.
+  // Without the guard the rest of the render (staffing panel, click
+  // handlers) was silently skipped.
+  const newClientBtn = mount.querySelector("#new-client-btn") || document.getElementById("new-client-btn");
+  if (newClientBtn) newClientBtn.addEventListener("click", openNewClientModal);
   mount.querySelectorAll("[data-auth-bucket]").forEach((el) => {
     el.addEventListener("click", () => (location.hash = "#/auth-alerts/" + el.dataset.authBucket));
   });
@@ -870,7 +902,12 @@ async function renderPipeline(mount) {
     </div>
     <div class="kanban" id="kanban"></div>
   `;
-  document.getElementById("new-client-btn").addEventListener("click", openNewClientModal);
+  // Null-safe: two views define this id, and a fast second nav click can
+  // replace the mount between the innerHTML write above and this line.
+  // Without the guard the rest of the render (staffing panel, click
+  // handlers) was silently skipped.
+  const newClientBtn = mount.querySelector("#new-client-btn") || document.getElementById("new-client-btn");
+  if (newClientBtn) newClientBtn.addEventListener("click", openNewClientModal);
   document.getElementById("filter-all-btn").addEventListener("click", () => {
     state.pipelineWaitlistOnly = false;
     renderPipeline(mount);

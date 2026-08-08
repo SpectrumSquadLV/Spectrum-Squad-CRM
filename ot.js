@@ -52,7 +52,12 @@ module.exports = function initOt(ctx) {
   // ---- permissions ----
   const OT_VIEW_ROLES = ["owner", "super_admin", "admin", "ot_admin", "ot_staff"];
   const OT_ADMIN_ROLES = ["owner", "super_admin", "admin", "ot_admin"];
-  function canViewOT(user) { return !!user && OT_VIEW_ROLES.includes(user.role); }
+
+  // A per-user grant from the Access editor unlocks this module's ordinary
+  // access tier even when the role list wouldn't. Manage/sensitive tiers stay
+  // role-gated.
+  const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
+  function canViewOT(user) { return !!user && (OT_VIEW_ROLES.includes(user.role) || granted(user, "ot")); }
   function canAdminOT(user) { return !!user && OT_ADMIN_ROLES.includes(user.role); }
   // OT-only users must never see ABA data anywhere.
   function isOtOnly(user) { return !!user && (user.role === "ot_admin" || user.role === "ot_staff"); }
