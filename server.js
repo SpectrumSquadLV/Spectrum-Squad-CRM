@@ -2986,6 +2986,10 @@ async function handle(req, res, pathname, method, query = {}) {
   }
 
   if (pathname.startsWith("/api/fin/")) {
+    // The ledger module claims only the routes it owns and returns false for
+    // the rest, so the original Financial Center routes below still run.
+    const ledgerHandled = await finLedger.handleApi(req, res, pathname, method, query, user);
+    if (ledgerHandled) return true;
     const handled = await financialAdvisor.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
@@ -5028,6 +5032,16 @@ const supervision = require("./supervision")({
 const financialAdvisor = require("./financial-advisor")({
   dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, moduleGranted,
 });
+// ===== FINANCIAL CENTER LEDGER add-on: document upload ledger, normalization
+// and the reconciliation engine (bank + payroll). Owns /api/fin/documents,
+// /api/fin/ledger, /api/fin/reconcile, /api/fin/unrecognized, /api/fin/vendor-rules
+// and /api/fin/trace; the older overview routes stay in financial-advisor.js. =====
+const finLedger = require("./fin-ledger")({
+  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, moduleGranted,
+  extractPdfLines: (buf) => financialAdvisor.extractPdfLines(buf),
+  unzip: (buf) => financialAdvisor.unzip(buf),
+});
+
 // ===== GROWTH add-on: Lead Management + Policies/SOPs (public QR viewer). =====
 // Gets the PDF/zip readers from the financial advisor (initialised above) so
 // policy uploads can read .pdf and .docx without a second copy of that code.
@@ -5135,6 +5149,7 @@ async function start() {
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
   await supervision.initTables().catch((e) => console.error("Supervision initTables failed:", e));
   await financialAdvisor.initTables().catch((e) => console.error("Financial advisor initTables failed:", e));
+  await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));

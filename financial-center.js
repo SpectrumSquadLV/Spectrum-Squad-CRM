@@ -6,7 +6,14 @@
 // window.__renderFinancialCenter(mount) directly (first-class route).
 
 function canViewFinancial() {
-  return typeof state !== "undefined" && !!state.user && ["owner", "super_admin"].includes(state.user.role);
+  if (typeof state === "undefined" || !state.user) return false;
+  if (["owner", "super_admin"].includes(state.user.role)) return true;
+  // An explicit per-user grant from the Access editor also opens it. The
+  // server enforces the same rule; this only keeps the UI in step.
+  try {
+    const ma = typeof state.user.module_access === "string" ? JSON.parse(state.user.module_access) : state.user.module_access;
+    return !!ma && ma["financial-center"] === true;
+  } catch (e) { return false; }
 }
 
 (function () {
@@ -21,6 +28,8 @@ function canViewFinancial() {
 
   const TABS = [
     { key: "overview", label: "Overview" },
+    { key: "reconcile", label: "Reconciliation" },
+    { key: "documents", label: "Documents" },
     { key: "transactions", label: "Transactions" },
     { key: "budgets", label: "Budgets & Goals" },
     { key: "wagesim", label: "Wage Simulator" },
@@ -45,6 +54,8 @@ function canViewFinancial() {
     const body = mount.querySelector("#fc-body");
     try {
       if (tab === "overview") await renderOverview(body, mount);
+      else if (tab === "reconcile") await renderReconcile(body, mount);
+      else if (tab === "documents") await renderDocuments(body, mount);
       else if (tab === "transactions") await renderTransactions(body, mount);
       else if (tab === "budgets") await renderBudgets(body);
       else if (tab === "wagesim") renderWageSim(body);
@@ -316,6 +327,235 @@ function canViewFinancial() {
         <div style="font-size:12px; color:var(--text-muted); margin-top:8px;">Monthly gross ${money(r.monthly_gross)} + burden ${money(r.monthly_burden)}.${r.rev_per_hour ? ` Revenue uses your avg $${r.rev_per_hour}/billable-hour setting.` : " Set an avg revenue/hour in Financial Settings to see revenue potential."}</div>`;
       } catch (e) { out.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
     });
+  }
+
+
+  // ================= RECONCILIATION =================
+  // The point of this tab: does what the paperwork says match what the bank
+  // actually did. Status is a traffic light, the explanation is plain English,
+  // and every figure can be opened to show the rows it came from.
+  const PILL = {
+    MATCHED:      { bg: "#e9f9ee", fg: "#177a3c", label: "Matched" },
+    DISCREPANCY:  { bg: "#fdecec", fg: "#a3282e", label: "Needs investigating" },
+    INCOMPLETE:   { bg: "#fef3e0", fg: "#946213", label: "Not enough data yet" },
+  };
+  function pill(status) {
+    const p = PILL[status] || PILL.INCOMPLETE;
+    return `<span style="background:${p.bg}; color:${p.fg}; border-radius:999px; padding:3px 11px; font-size:11.5px; font-weight:700;">${p.label}</span>`;
+  }
+  function figure(label, value, opts) {
+    const o = opts || {};
+    return `<div style="min-width:132px;">
+      <div style="font-size:11.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.03em;">${esc(label)}</div>
+      <div style="font-size:${o.big ? "21px" : "17px"}; font-weight:${o.big ? 800 : 700}; color:${o.color || "var(--brand-navy,#1b2a6b)"};">${value}</div>
+    </div>`;
+  }
+
+  async function renderReconcile(body, mount) {
+    body.innerHTML = `<div class="empty-state">Checking the numbers…</div>`;
+    const d = await api("/api/fin/reconcile/overview");
+    if (!d.months.length) {
+      body.innerHTML = `<div class="card" style="margin:0;">
+        <div class="section-title" style="margin-top:0;">Nothing to reconcile yet</div>
+        <p style="font-size:13px; color:var(--text-muted);">Upload a bank statement and a payroll export on the <strong>Documents</strong> tab and this page will tell you whether they agree with each other.</p>
+      </div>`;
+      return;
+    }
+    body.innerHTML = d.months.map((m) => {
+      const b = m.bank, p = m.payroll;
+      const bankRow = `
+        <div class="card" style="margin:0 0 12px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+            <div class="section-title" style="margin:0;">Bank — ${esc(monthLabel(m.month))}</div>
+            ${pill(b.status)}
+          </div>
+          <div style="display:flex; gap:22px; flex-wrap:wrap; margin:12px 0 10px;">
+            ${figure("Beginning", b.statement ? money(b.statement.beginning_balance) : "—")}
+            ${figure("Money in", money(b.computed ? b.computed.deposits : 0), { color: "#177a3c" })}
+            ${figure("Money out", money(b.computed ? b.computed.withdrawals : 0), { color: "#a3282e" })}
+            ${figure("Fees", money(b.computed ? b.computed.fees : 0), { color: "#946213" })}
+            ${figure("Should end at", b.expected_ending != null ? money(b.expected_ending) : "—", { big: true })}
+            ${figure("Statement says", b.statement ? money(b.statement.ending_balance) : "—", { big: true })}
+            ${b.difference != null && Math.abs(b.difference) >= 0.01 ? figure("Unexplained", money(b.difference), { big: true, color: "#a3282e" }) : ""}
+          </div>
+          <div style="font-size:13px; line-height:1.6; color:#2b2f3a; background:var(--bg,#f7f8fb); border-radius:10px; padding:12px 14px;">${esc(b.explanation)}</div>
+          ${b.evidence && b.evidence.transaction_ids && b.evidence.transaction_ids.length
+            ? `<button class="btn small secondary" style="margin-top:10px;" data-trace="transactions" data-ids="${b.evidence.transaction_ids.join(",")}">Show me the numbers (${b.evidence.transaction_ids.length} transactions)</button>` : ""}
+        </div>`;
+      const payRow = `
+        <div class="card" style="margin:0 0 20px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+            <div class="section-title" style="margin:0;">Payroll — ${esc(monthLabel(m.month))}</div>
+            ${pill(p.status)}
+          </div>
+          ${p.expected != null ? `<div style="display:flex; gap:22px; flex-wrap:wrap; margin:12px 0 10px;">
+            ${figure("Payroll report says", money(p.expected), { big: true })}
+            ${figure("Left the bank", money(p.actual), { big: true })}
+            ${figure("Difference", money(p.difference), { big: true, color: Math.abs(p.difference || 0) < 0.01 ? "#177a3c" : "#a3282e" })}
+            ${figure("Employees", p.employee_count == null ? "—" : p.employee_count)}
+            ${p.totals ? figure("Hours paid", p.totals.hours ? p.totals.hours : "—") : ""}
+          </div>` : ""}
+          <div style="font-size:13px; line-height:1.6; color:#2b2f3a; background:var(--bg,#f7f8fb); border-radius:10px; padding:12px 14px;">${esc(p.explanation)}</div>
+          ${p.matched_transactions && p.matched_transactions.length ? `
+            <div style="margin-top:10px; font-size:12.5px;">
+              <div style="color:var(--text-muted); margin-bottom:4px;">Withdrawals counted as payroll:</div>
+              ${p.matched_transactions.map((t) => `<div style="display:flex; justify-content:space-between; gap:10px; padding:3px 0; border-bottom:1px dashed var(--border,#e5e7eb);"><span>${esc(t.date)} &middot; ${esc(t.description)}</span><span style="font-weight:600;">${money(t.amount)}</span></div>`).join("")}
+            </div>` : ""}
+          ${p.evidence && p.evidence.payroll_line_ids && p.evidence.payroll_line_ids.length
+            ? `<button class="btn small secondary" style="margin-top:10px;" data-trace="payroll" data-ids="${p.evidence.payroll_line_ids.join(",")}">Show me the numbers (${p.evidence.payroll_line_ids.length} payroll rows)</button>` : ""}
+        </div>`;
+      return bankRow + payRow;
+    }).join("");
+
+    body.querySelectorAll("[data-trace]").forEach((b) =>
+      b.addEventListener("click", () => showTrace(b.dataset.trace, b.dataset.ids)));
+  }
+
+  // Click a number, see exactly which source rows produced it — including the
+  // untouched original line from the uploaded file.
+  async function showTrace(kind, ids) {
+    const back = document.createElement("div");
+    back.className = "modal-backdrop";
+    back.innerHTML = `<div class="modal" style="width:900px; max-width:96vw;">
+      <div class="modal-header"><h2>Where this number comes from</h2><button class="close-btn">✕</button></div>
+      <div id="fc-trace-body"><div class="empty-state">Loading…</div></div>
+    </div>`;
+    document.body.appendChild(back);
+    const close = () => back.remove();
+    back.querySelector(".close-btn").addEventListener("click", close);
+    back.addEventListener("click", (e) => { if (e.target === back) close(); });
+    try {
+      const d = await api(`/api/fin/trace?kind=${encodeURIComponent(kind)}&ids=${encodeURIComponent(ids)}`);
+      const rows = d.rows || [];
+      back.querySelector("#fc-trace-body").innerHTML = rows.length ? `
+        <p style="font-size:12.5px; color:var(--text-muted); margin-top:0;">${rows.length} source record${rows.length === 1 ? "" : "s"}. The grey line under each is the original row exactly as it appeared in the file you uploaded.</p>
+        <div style="max-height:60vh; overflow:auto;">
+        ${rows.map((r) => `
+          <div style="border-bottom:1px solid var(--border,#e5e7eb); padding:9px 0;">
+            <div style="display:flex; justify-content:space-between; gap:12px; font-size:13px;">
+              <span><strong>${esc(r.employee_name || r.description || r.client_name || "—")}</strong>
+                ${r.txn_date ? ` &middot; ${esc(r.txn_date)}` : ""}${r.category ? ` &middot; ${esc(r.category)}` : ""}</span>
+              <span style="font-weight:700; white-space:nowrap;">${money(r.amount != null ? r.amount : (r.total_employer_cost != null ? r.total_employer_cost : r.amount_billed))}</span>
+            </div>
+            <div style="font-size:11.5px; color:var(--text-muted); margin-top:3px;">
+              ${esc(r.filename || "")} &middot; row ${esc(r.source_row)} &middot; confidence: ${esc(r.confidence || "—")}
+            </div>
+            <div style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#555; background:var(--bg,#f7f8fb); border-radius:6px; padding:6px 8px; margin-top:5px; white-space:pre-wrap; word-break:break-word;">${esc(r.source_text || "")}</div>
+          </div>`).join("")}
+        </div>` : `<div class="empty-state">No source rows found.</div>`;
+    } catch (e) {
+      back.querySelector("#fc-trace-body").innerHTML = `<div class="empty-state">${esc(e.message)}</div>`;
+    }
+  }
+
+  // ================= DOCUMENTS =================
+  const DOC_LABELS = {
+    bank_statement: "Bank statement", credit_card_statement: "Credit card statement",
+    payroll: "Payroll", profit_loss: "Profit & Loss", billing_export: "Billing export",
+    ar_aging: "A/R aging", claims_report: "Claims report", remittance: "Remittance / ERA",
+    general_ledger: "General ledger", expense_report: "Expense report", invoice: "Invoice",
+    merchant_statement: "Merchant statement", unknown: "Not identified",
+  };
+  const STATUS_STYLE = {
+    processed: { bg: "#e9f9ee", fg: "#177a3c", label: "Imported" },
+    needs_review: { bg: "#fef3e0", fg: "#946213", label: "Needs review" },
+    failed: { bg: "#fdecec", fg: "#a3282e", label: "Couldn't read" },
+    received: { bg: "#eef0f5", fg: "#555", label: "Received" },
+  };
+
+  async function renderDocuments(body, mount) {
+    body.innerHTML = `<div class="empty-state">Loading…</div>`;
+    const [d, unrec] = await Promise.all([
+      api("/api/fin/documents"),
+      api("/api/fin/unrecognized").catch(() => ({ rows: [], count: 0 })),
+    ]);
+    const docs = d.documents || [];
+    body.innerHTML = `
+      <div class="card" style="margin:0 0 16px;">
+        <div class="section-title" style="margin-top:0;">Upload financial documents</div>
+        <p style="font-size:13px; color:var(--text-muted); margin-top:0;">
+          Bank and credit card statements, payroll exports, billing and claims exports, A/R aging, P&amp;L, general ledger, invoices.
+          PDF, CSV and Excel. I work out what each one is, pull the rows out, and tell you what I couldn't read — nothing gets quietly dropped.
+        </p>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button class="btn" id="fc-doc-upload">⬆ Upload documents</button>
+          <span id="fc-doc-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+        </div>
+      </div>
+
+      ${unrec.count ? `<div class="card" style="margin:0 0 16px; border-left:4px solid #e0a430;">
+        <div class="section-title" style="margin-top:0;">Rows I couldn't read (${unrec.count})</div>
+        <p style="font-size:12.5px; color:var(--text-muted); margin-top:0;">These were in your files but I couldn't interpret them, so they are <strong>not</strong> counted in any total. Nothing was thrown away.</p>
+        <div style="max-height:260px; overflow:auto;">
+        ${unrec.rows.map((r) => `<div style="border-bottom:1px solid var(--border,#e5e7eb); padding:7px 0; font-size:12.5px;">
+          <div><strong>${esc(r.filename || "")}</strong> &middot; row ${esc(r.source_row)} — ${esc(r.reason)}</div>
+          <div style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#555; margin-top:3px; word-break:break-word;">${esc(r.source_text || "")}</div>
+          <button class="btn small secondary" style="margin-top:5px;" data-unrec="${r.id}">Mark handled</button>
+        </div>`).join("")}
+        </div>
+      </div>` : ""}
+
+      <div class="card" style="margin:0;">
+        <div class="section-title" style="margin-top:0;">Document ledger</div>
+        ${docs.length ? `<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+          <thead><tr style="text-align:left; color:var(--text-muted);">
+            <th style="padding:6px 8px;">File</th><th>Type</th><th>Period</th><th>Rows</th><th>Unreadable</th><th>Status</th><th>Uploaded</th><th></th>
+          </tr></thead><tbody>
+          ${docs.map((x) => {
+            const st = STATUS_STYLE[x.status] || STATUS_STYLE.received;
+            return `<tr style="border-top:1px solid var(--border,#e5e7eb);">
+              <td style="padding:7px 8px;">${esc(x.filename)}</td>
+              <td>${esc(DOC_LABELS[x.doc_type] || x.doc_type)}<div style="font-size:11px; color:var(--text-muted);">${esc(x.doc_type_confidence || "")}</div></td>
+              <td>${x.period_start ? esc(x.period_start + " → " + (x.period_end || "")) : "—"}</td>
+              <td>${x.record_count || 0}</td>
+              <td style="color:${x.error_count ? "#a3282e" : "inherit"};">${x.error_count || 0}</td>
+              <td><span style="background:${st.bg}; color:${st.fg}; border-radius:999px; padding:2px 9px; font-size:11px; font-weight:700;">${st.label}</span></td>
+              <td>${esc(String(x.uploaded_at || "").slice(0, 10))}</td>
+              <td style="white-space:nowrap;"><button class="btn small secondary" data-doc-del="${x.id}" style="color:#b91c1c;">Remove</button></td>
+            </tr>${x.notes ? `<tr><td colspan="8" style="padding:0 8px 8px; font-size:12px; color:var(--text-muted);">${esc(x.notes)}</td></tr>` : ""}`;
+          }).join("")}
+          </tbody></table></div>` : `<div class="empty-state">No documents uploaded yet.</div>`}
+      </div>`;
+
+    body.querySelector("#fc-doc-upload").addEventListener("click", () => {
+      const inp = document.createElement("input");
+      inp.type = "file"; inp.multiple = true;
+      inp.accept = ".pdf,.csv,.tsv,.txt,.xlsx,application/pdf,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      inp.addEventListener("change", async () => {
+        const files = [...inp.files];
+        if (!files.length) return;
+        const st = body.querySelector("#fc-doc-status");
+        let ok = 0; const problems = [];
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          st.textContent = `Reading ${f.name} (${i + 1} of ${files.length})…`;
+          try {
+            const b64 = await new Promise((res, rej) => {
+              const r = new FileReader();
+              r.onload = () => res(String(r.result).split(",")[1]);
+              r.onerror = () => rej(new Error("Could not read " + f.name));
+              r.readAsDataURL(f);
+            });
+            await api("/api/fin/documents/upload", { method: "POST", body: { filename: f.name, content_base64: b64 } });
+            ok++;
+          } catch (e) { problems.push(`${f.name}: ${e.message}`); }
+        }
+        await renderDocuments(body, mount);
+        const st2 = body.querySelector("#fc-doc-status");
+        if (st2) st2.textContent = `Imported ${ok} document${ok === 1 ? "" : "s"}.` + (problems.length ? ` ${problems.join(" · ")}` : "");
+      });
+      inp.click();
+    });
+
+    body.querySelectorAll("[data-doc-del]").forEach((b) => b.addEventListener("click", async () => {
+      if (!confirm("Remove this document and everything imported from it? Your other documents are unaffected.")) return;
+      try { await api("/api/fin/documents/" + b.dataset.docDel, { method: "DELETE" }); renderDocuments(body, mount); }
+      catch (e) { alert(e.message); }
+    }));
+    body.querySelectorAll("[data-unrec]").forEach((b) => b.addEventListener("click", async () => {
+      try { await api("/api/fin/unrecognized/" + b.dataset.unrec + "/resolve", { method: "POST" }); renderDocuments(body, mount); }
+      catch (e) { alert(e.message); }
+    }));
   }
 
   window.__renderFinancialCenter = function (mount) { return render(mount); };
