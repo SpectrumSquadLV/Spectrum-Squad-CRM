@@ -3393,6 +3393,18 @@ async function renderAdmin(mount) {
       </div>
     </div>
     <div class="card" style="margin-bottom:20px;">
+      <div class="section-title" style="margin-top:0;">Import Behavior Intervention Plans</div>
+      <p style="font-size:13px; color:var(--text-muted); margin-top:0;">
+        Upload the extracted plans file. Every plan is matched to a client and shown to you before anything is saved,
+        and a client who already has a BIP is never overwritten.
+      </p>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button class="btn" id="bip-import-btn">Choose plans file</button>
+        <span id="bip-import-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+      </div>
+      <div id="bip-import-preview" style="margin-top:14px;"></div>
+    </div>
+    <div class="card" style="margin-bottom:20px;">
       <div class="section-title" style="margin-top:0;">Department Notification Emails</div>
       ${state.departments
         .map(
@@ -3459,8 +3471,105 @@ async function renderAdmin(mount) {
   wireSetting("save-screener-email", "screener-email", "screener_completed_recipient");
   wireSetting("save-owner-email", "owner-email", "owner_notification_email");
   wireSetting("save-cd-email", "cd-email", "clinical_director_email");
+  wireBipImport(mount);
 
   await renderTeamSection(mount);
+}
+
+// ---- BIP import: preview, confirm each match, then commit -------------
+// Extraction happens outside the CRM (the CRM holds no Google credentials).
+// This takes the resulting file, asks the server to match each plan against
+// real client records, and shows every match for confirmation before saving.
+function wireBipImport(mount) {
+  const btn = mount.querySelector("#bip-import-btn");
+  if (!btn) return;
+  const status = mount.querySelector("#bip-import-status");
+  const panel = mount.querySelector("#bip-import-preview");
+  let previewed = [];
+
+  btn.addEventListener("click", () => {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".json,application/json";
+    inp.addEventListener("change", async () => {
+      const f = inp.files[0]; if (!f) return;
+      status.textContent = "Reading " + f.name + "…";
+      try {
+        const text = await f.text();
+        const parsed = JSON.parse(text);
+        const imports = Array.isArray(parsed) ? parsed : parsed.imports;
+        if (!Array.isArray(imports) || !imports.length) throw new Error("That file has no plans in it.");
+        const r = await api("/api/bip/import/preview", { method: "POST", body: { imports } });
+        previewed = r.items;
+        status.textContent = `${r.summary.total} plan(s): ${r.summary.would_create} ready to import, ${r.summary.needs_match} need a client, ${r.summary.would_skip} already have a BIP.`;
+        drawPreview();
+      } catch (e) { status.textContent = e.message; panel.innerHTML = ""; }
+    });
+    inp.click();
+  });
+
+  function drawPreview() {
+    if (!previewed.length) { panel.innerHTML = ""; return; }
+    panel.innerHTML = previewed.map((it, i) => {
+      const m = it.match;
+      const tone = it.existing_bip ? "#946213" : m && m.confidence === "confident" ? "#177a3c" : m ? "#946213" : "#a3282e";
+      const label = it.existing_bip ? "Already has a BIP — will skip"
+        : m && m.confidence === "confident" ? "Confident match"
+        : m ? "Please confirm this match" : "No match found";
+      const opts = (it.alternatives || []).map((a) =>
+        `<option value="${a.client_id}" ${m && m.client_id === a.client_id ? "selected" : ""}>${adminEsc(a.child_name)} — ${a.reasons.join(", ")}</option>`).join("");
+      return `<div style="border:1px solid var(--border,#e5e7eb); border-left:3px solid ${tone}; border-radius:12px; padding:12px 14px; margin-bottom:9px;">
+        <div style="display:flex; gap:9px; align-items:center; flex-wrap:wrap;">
+          <strong style="font-size:13.5px;">${adminEsc(it.source_name || "Untitled plan")}</strong>
+          <span style="background:${tone}1a; color:${tone}; border-radius:999px; padding:2px 9px; font-size:11px; font-weight:700;">${label}</span>
+        </div>
+        <div style="font-size:12.5px; color:var(--text-muted); margin-top:5px;">
+          Found ${it.found.target_behaviors} target behavior(s), ${it.found.operational_definitions} definition(s),
+          ${it.found.prevention_strategies} prevention strateg(ies), ${it.found.response_strategies} response strateg(ies).
+          ${it.found.functions ? "" : "No hypothesized functions in the source — those stay blank."}
+        </div>
+        ${(it.warnings || []).length ? `<div style="font-size:12px; color:#946213; margin-top:5px;">${it.warnings.map(adminEsc).join("<br>")}</div>` : ""}
+        <div style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <label style="font-size:12.5px;">Client:</label>
+          <select data-imp="${i}" ${it.existing_bip ? "disabled" : ""} style="font-size:12.5px; min-width:280px;">
+            <option value="">— choose a client —</option>${opts}
+          </select>
+          <button class="btn small secondary" data-imp-view="${i}">See what will be imported</button>
+        </div>
+        <div id="imp-detail-${i}" style="display:none; margin-top:9px; background:var(--bg,#f7f8fb); border-radius:9px; padding:10px 12px; font-size:12.5px; max-height:260px; overflow:auto;">
+          ${it.behaviors.map((b) => `<div style="margin-bottom:8px;">
+            <strong>${adminEsc(b.name)}</strong>
+            <div style="color:var(--text-muted); white-space:pre-wrap; margin-top:2px;">${adminEsc((b.operational_definition || "Not documented").slice(0, 260))}</div>
+          </div>`).join("") || "<em>Nothing readable in this document.</em>"}
+        </div>
+      </div>`;
+    }).join("") + `<div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
+        <button class="btn" id="imp-commit">Import the confirmed plans</button>
+        <span id="imp-commit-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+      </div>`;
+
+    panel.querySelectorAll("[data-imp-view]").forEach((b) => b.addEventListener("click", () => {
+      const el = panel.querySelector("#imp-detail-" + b.dataset.impView);
+      el.style.display = el.style.display === "none" ? "block" : "none";
+    }));
+    panel.querySelector("#imp-commit").addEventListener("click", async () => {
+      const payload = [];
+      panel.querySelectorAll("[data-imp]").forEach((sel) => {
+        const it = previewed[Number(sel.dataset.imp)];
+        if (it.existing_bip || !sel.value) return;
+        payload.push({ ...it, client_id: Number(sel.value) });
+      });
+      if (!payload.length) { panel.querySelector("#imp-commit-status").textContent = "Nothing selected to import."; return; }
+      if (!confirm(`Import ${payload.length} plan(s)? Existing BIPs are never overwritten.`)) return;
+      const st = panel.querySelector("#imp-commit-status");
+      st.textContent = "Importing…";
+      try {
+        const r = await api("/api/bip/import/commit", { method: "POST", body: { imports: payload } });
+        st.textContent = `Imported ${r.created.length} plan(s).` + (r.skipped.length ? ` Skipped ${r.skipped.length}.` : "");
+        panel.innerHTML = `<div style="font-size:13px;">${r.created.map((c) => `Imported <strong>${adminEsc(c.client)}</strong> — ${c.behaviors} target behavior(s).`).join("<br>")}
+          ${r.skipped.map((s2) => `<div style="color:#946213;">Skipped ${adminEsc(s2.client || s2.source || "")}: ${adminEsc(s2.reason)}</div>`).join("")}</div>`;
+      } catch (e) { st.textContent = e.message; }
+    });
+  }
 }
 
 async function renderTeamSection(mount) {

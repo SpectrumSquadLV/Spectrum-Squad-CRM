@@ -180,6 +180,33 @@ module.exports = function initBip(ctx) {
     )`).catch((e) => console.error("bip_history:", e.message));
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_bip_hist ON bip_history(bip_id)`).catch(() => {});
 
+    // CRM client <-> Google Drive client folder. Saved once so the folder is
+    // never rediscovered, and so Client Files can link straight to it.
+    await dbRun(`CREATE TABLE IF NOT EXISTS client_drive_folders (
+      id SERIAL PRIMARY KEY,
+      client_id INTEGER NOT NULL UNIQUE,
+      folder_id TEXT,
+      folder_name TEXT,
+      folder_url TEXT,
+      matched_by TEXT,
+      confirmed_by TEXT,
+      created_at TEXT
+    )`).catch((e) => console.error("client_drive_folders:", e.message));
+
+    // Documents discovered in that folder, linked rather than copied.
+    await dbRun(`CREATE TABLE IF NOT EXISTS client_drive_files (
+      id SERIAL PRIMARY KEY,
+      client_id INTEGER NOT NULL,
+      file_id TEXT,
+      title TEXT,
+      kind TEXT,
+      mime_type TEXT,
+      modified_time TEXT,
+      view_url TEXT,
+      created_at TEXT
+    )`).catch((e) => console.error("client_drive_files:", e.message));
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_cdf ON client_drive_files(client_id)`).catch(() => {});
+
     await dbRun(`CREATE TABLE IF NOT EXISTS bip_reviews (
       id SERIAL PRIMARY KEY,
       bip_id INTEGER NOT NULL,
@@ -400,6 +427,103 @@ module.exports = function initBip(ctx) {
             ORDER BY b.next_review_date`, [today()]
         );
         json(res, 200, { questions: rows, pending_review: pending, overdue_reviews: overdue });
+        return true;
+      }
+
+      // ---- IMPORT FROM GOOGLE DRIVE -------------------------------
+      // The CRM has no Google credentials, and giving it any would be a
+      // standing key to every client's clinical file. So extraction happens
+      // outside and the CRM receives a payload: it does the client matching
+      // against its own records, shows a preview, and only writes on confirm.
+      // Nothing is ever overwritten.
+      if (pathname === "/api/bip/import/preview" && method === "POST") {
+        if (!canEditBip(user)) { json(res, 403, { error: "Only clinical staff can import plans." }); return true; }
+        const b = await readBody(req);
+        const items = Array.isArray(b.imports) ? b.imports : [];
+        if (!items.length) { json(res, 400, { error: "That file didn't contain any plans to import." }); return true; }
+        const clients = await dbAll("SELECT id, child_name, dob FROM clients ORDER BY id");
+        const out = [];
+        for (const it of items) out.push(await previewOne(it, clients));
+        json(res, 200, {
+          items: out,
+          summary: {
+            total: out.length,
+            matched: out.filter((x) => x.match && x.match.client_id).length,
+            needs_match: out.filter((x) => !x.match || !x.match.client_id).length,
+            would_create: out.filter((x) => x.match && x.match.client_id && !x.existing_bip).length,
+            would_skip: out.filter((x) => x.existing_bip).length,
+          },
+        });
+        return true;
+      }
+
+      if (pathname === "/api/bip/import/commit" && method === "POST") {
+        if (!canEditBip(user)) { json(res, 403, { error: "Only clinical staff can import plans." }); return true; }
+        const b = await readBody(req);
+        const items = Array.isArray(b.imports) ? b.imports : [];
+        const created = [], skipped = [];
+        for (const it of items) {
+          const clientId = Number(it.client_id || 0);
+          if (!clientId) { skipped.push({ source: it.source_name, reason: "No client chosen." }); continue; }
+          const client = await dbGet("SELECT id, child_name FROM clients WHERE id = ?", [clientId]);
+          if (!client) { skipped.push({ source: it.source_name, reason: "That client no longer exists." }); continue; }
+          // Never silently overwrite an existing plan.
+          const existing = await dbGet("SELECT id FROM client_bips WHERE client_id = ?", [clientId]);
+          if (existing) {
+            skipped.push({ source: it.source_name, client: client.child_name, reason: "This client already has a BIP in the CRM. Nothing was changed." });
+            continue;
+          }
+          const bipRow = await dbGet(
+            `INSERT INTO client_bips (client_id, status, effective_date, source_document_name, source_document_url,
+               source_document_date, imported_at, created_by, last_updated_by, created_at, updated_at)
+             VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+            [clientId, it.source_date || null, it.source_name || null, it.source_url || null,
+             it.source_date || null, nowISO(), who, who, nowISO(), nowISO()]
+          );
+          let n = 0;
+          for (const bh of (it.behaviors || [])) {
+            const name = clean(bh.name);
+            if (!name) continue;
+            const cols = ["bip_id", "sort_order", "name", ...BEHAVIOR_KEYS, "created_at", "updated_at"];
+            const vals = [bipRow.id, ++n, name.slice(0, 160),
+              ...BEHAVIOR_KEYS.map((k) => (clean(bh[k]) ? clean(bh[k]).slice(0, 8000) : null)),
+              nowISO(), nowISO()];
+            await dbRun(`INSERT INTO bip_behaviors (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, vals);
+          }
+          await logChange(bipRow.id, null, "Plan", "",
+            `Imported from ${it.source_name || "Google Drive"} with ${n} target behavior${n === 1 ? "" : "s"}`, who);
+          // Remember the folder so it is never rediscovered.
+          if (it.folder_id) {
+            await dbRun(
+              `INSERT INTO client_drive_folders (client_id, folder_id, folder_name, folder_url, matched_by, confirmed_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (client_id) DO UPDATE SET folder_id = EXCLUDED.folder_id,
+                 folder_name = EXCLUDED.folder_name, folder_url = EXCLUDED.folder_url, confirmed_by = EXCLUDED.confirmed_by`,
+              [clientId, it.folder_id, it.folder_name || null, it.folder_url || null, it.matched_by || "manual", who, nowISO()]
+            );
+          }
+          for (const f of (it.files || [])) {
+            await dbRun(
+              `INSERT INTO client_drive_files (client_id, file_id, title, kind, mime_type, modified_time, view_url, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [clientId, f.file_id || null, f.title || null, f.kind || "Other Clinical Document",
+               f.mime_type || null, f.modified_time || null, f.view_url || null, nowISO()]
+            );
+          }
+          created.push({ client: client.child_name, client_id: clientId, behaviors: n, bip_id: bipRow.id });
+        }
+        json(res, 200, { ok: true, created, skipped });
+        return true;
+      }
+
+      // ---- client files (linked, not copied) ----
+      const filesMatch = pathname.match(/^\/api\/bip\/client\/(\d+)\/files$/);
+      if (filesMatch && method === "GET") {
+        const clientId = Number(filesMatch[1]);
+        json(res, 200, {
+          folder: await dbGet("SELECT * FROM client_drive_folders WHERE client_id = ?", [clientId]),
+          files: await dbAll("SELECT * FROM client_drive_files WHERE client_id = ? ORDER BY kind, title", [clientId]),
+        });
         return true;
       }
 
@@ -697,6 +821,97 @@ module.exports = function initBip(ctx) {
       json(res, 500, { error: "BIP error: " + e.message });
       return true;
     }
+  }
+
+
+  // ---- client matching -------------------------------------------------
+  // Drive folders here are named by initials (KaPo = Kay Posey), and carry no
+  // client id or date of birth, so an exact identifier match is not available.
+  // We score name evidence and never auto-accept a weak match: anything below
+  // "confident" comes back for a human to confirm.
+  function normName(s) {
+    return String(s || "").toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function initialsOf(fullName) {
+    const parts = normName(fullName).split(" ").filter(Boolean);
+    if (parts.length < 2) return "";
+    return (parts[0].slice(0, 2) + parts[parts.length - 1].slice(0, 2));
+  }
+  function scoreClient(item, client) {
+    const target = normName(client.child_name);
+    const first = target.split(" ")[0] || "";
+    let score = 0; const why = [];
+
+    const claimed = normName(item.client_name);
+    if (claimed && claimed === target) { score += 100; why.push("full name matches"); }
+    else if (claimed && (target.includes(claimed) || claimed.includes(target))) { score += 60; why.push("name is contained in the client's name"); }
+
+    const code = String(item.initials || "").toLowerCase().replace(/[^a-z]/g, "");
+    if (code && code === initialsOf(client.child_name)) { score += 55; why.push(`initials ${code.toUpperCase()} match`); }
+
+    const firstOnly = normName(item.first_name);
+    if (firstOnly && first && firstOnly === first) { score += 35; why.push("first name matches"); }
+
+    // A stated date of birth is strong corroboration when we have one.
+    if (item.dob && client.dob && String(item.dob).slice(0, 10) === String(client.dob).slice(0, 10)) {
+      score += 80; why.push("date of birth matches");
+    } else if (item.dob && client.dob) {
+      score -= 40; why.push("date of birth does NOT match");
+    }
+    return { score, why };
+  }
+
+  async function previewOne(item, clients) {
+    const scored = clients
+      .map((c) => ({ client: c, ...scoreClient(item, c) }))
+      .sort((a, b) => b.score - a.score);
+    const best = scored[0];
+    const runnerUp = scored[1];
+    // "Confident" is deliberately hard to reach. Initials plus a first name is
+    // not enough on a child's clinical record -- Kay Posey and Kayla Post share
+    // both. It takes corroborating evidence (a matching date of birth, or an
+    // exact full-name match on top of the initials) AND a clear gap over the
+    // runner-up. Everything else comes back for a human to confirm.
+    const confident = best && best.score >= 135 && (!runnerUp || best.score - runnerUp.score >= 40);
+    const likely = best && best.score >= 55;
+
+    const behaviors = (item.behaviors || []).filter((b) => clean(b.name));
+    const counts = {};
+    for (const f of BEHAVIOR_FIELDS) counts[f.key] = behaviors.filter((b) => clean(b[f.key])).length;
+
+    let existing = null;
+    if (best && (confident || likely)) {
+      existing = await dbGet("SELECT id FROM client_bips WHERE client_id = ?", [best.client.id]);
+    }
+
+    return {
+      source_name: item.source_name || "",
+      source_url: item.source_url || "",
+      source_date: item.source_date || "",
+      folder_id: item.folder_id || null,
+      folder_name: item.folder_name || null,
+      folder_url: item.folder_url || null,
+      files: item.files || [],
+      stated_client: item.client_name || item.initials || "",
+      match: best && (confident || likely)
+        ? { client_id: best.client.id, child_name: best.client.child_name, score: best.score,
+            confidence: confident ? "confident" : "needs confirmation", reasons: best.why }
+        : null,
+      alternatives: scored.slice(0, 5).filter((x) => x.score > 0)
+        .map((x) => ({ client_id: x.client.id, child_name: x.client.child_name, score: x.score, reasons: x.why })),
+      existing_bip: !!existing,
+      behaviors,
+      found: {
+        target_behaviors: behaviors.length,
+        operational_definitions: counts.operational_definition || 0,
+        prevention_strategies: counts.prevention_strategies || 0,
+        response_strategies: counts.response_strategy || 0,
+        functions: counts.hypothesized_function || 0,
+      },
+      warnings: (item.warnings || []).concat(
+        behaviors.length ? [] : ["No target behaviors could be read out of this document."]
+      ),
+    };
   }
 
   function labelFor(key) {
