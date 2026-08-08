@@ -221,6 +221,14 @@ module.exports = function initFinLedger(ctx) {
       created_at TEXT
     )`).catch((e) => console.error("fin_billing_lines:", e.message));
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_fin_bill_month ON fin_billing_lines(month)`).catch(() => {});
+    // Fields a Rethink BillableExport gives us that matter for the
+    // hours-paid vs hours-billed analysis. Additive.
+    await dbRun(`ALTER TABLE fin_billing_lines ADD COLUMN IF NOT EXISTS appt_type TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE fin_billing_lines ADD COLUMN IF NOT EXISTS billable BOOLEAN`).catch(() => {});
+    await dbRun(`ALTER TABLE fin_billing_lines ADD COLUMN IF NOT EXISTS unit_rate NUMERIC`).catch(() => {});
+    await dbRun(`ALTER TABLE fin_billing_lines ADD COLUMN IF NOT EXISTS service_name TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE fin_billing_lines ADD COLUMN IF NOT EXISTS authorization_ref TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE fin_billing_lines ADD COLUMN IF NOT EXISTS appt_status TEXT`).catch(() => {});
 
     // ---- anything we could not confidently interpret ----------------
     await dbRun(`CREATE TABLE IF NOT EXISTS fin_unrecognized (
@@ -331,17 +339,28 @@ module.exports = function initFinLedger(ctx) {
     return rows.filter((r) => r.some((c) => String(c).trim() !== ""));
   }
 
+  function unescapeXml(str) {
+    return String(str == null ? "" : str)
+      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'").replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+  }
+
   // Reads the first worksheet of an .xlsx into rows of strings.
   function parseXlsx(buffer) {
     const files = unzip(buffer);
     const dec = (b) => (b ? b.toString("utf8") : "");
+    // Some exporters (Rethink's BillableExport among them) write the sheet XML
+    // with a namespace prefix -- <x:row>, <x:c>, <x:v> instead of <row>, <c>,
+    // <v>. Matching only the unprefixed form silently produced zero rows, so
+    // every tag below tolerates an optional prefix.
+    const NS = "(?:[A-Za-z0-9]+:)?";
     const shared = [];
     const sx = dec(files["xl/sharedStrings.xml"]);
-    const sre = /<si>([\s\S]*?)<\/si>/g; let sm;
+    const sre = new RegExp(`<${NS}si>([\\s\\S]*?)<\\/${NS}si>`, "g"); let sm;
     while ((sm = sre.exec(sx))) {
-      let str = ""; const t = /<t[^>]*>([\s\S]*?)<\/t>/g; let tm;
+      let str = ""; const t = new RegExp(`<${NS}t[^>]*>([\\s\\S]*?)<\\/${NS}t>`, "g"); let tm;
       while ((tm = t.exec(sm[1]))) str += tm[1];
-      shared.push(str.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'"));
+      shared.push(unescapeXml(str));
     }
     // First sheet by relationship order.
     let sheetKey = Object.keys(files).find((k) => /^xl\/worksheets\/sheet1\.xml$/.test(k))
@@ -354,21 +373,24 @@ module.exports = function initFinLedger(ctx) {
       return n - 1;
     };
     const rows = [];
-    const rre = /<row[^>]*>([\s\S]*?)<\/row>/g; let rm;
+    const rre = new RegExp(`<${NS}row[^>]*>([\\s\\S]*?)<\\/${NS}row>`, "g"); let rm;
+    const creSrc = `<${NS}c\\s+r="([A-Z]+\\d+)"([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/${NS}c>)`;
+    const inlineSrc = `<${NS}t[^>]*>([\\s\\S]*?)<\\/${NS}t>`;
+    const vSrc = `<${NS}v>([\\s\\S]*?)<\\/${NS}v>`;
     while ((rm = rre.exec(xml))) {
       const cells = [];
-      const cre = /<c\s+r="([A-Z]+\d+)"([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g; let cm;
+      const cre = new RegExp(creSrc, "g"); let cm;
       while ((cm = cre.exec(rm[1]))) {
         const ci = colIdx(cm[1]);
         const attrs = cm[2] || "", inner = cm[3] || "";
         const t = (attrs.match(/t="([^"]+)"/) || [])[1] || "";
         let val = "";
-        if (t === "inlineStr") { const is = inner.match(/<t[^>]*>([\s\S]*?)<\/t>/); val = is ? is[1] : ""; }
-        else {
-          const v = inner.match(/<v>([\s\S]*?)<\/v>/);
-          if (v) val = t === "s" ? (shared[Number(v[1])] || "") : v[1];
-        }
-        cells[ci] = val;
+        const is = inner.match(new RegExp(inlineSrc));
+        const v = inner.match(new RegExp(vSrc));
+        if (t === "inlineStr" && is) val = is[1];
+        else if (v) val = t === "s" ? (shared[Number(v[1])] || "") : v[1];
+        else if (is) val = is[1];
+        cells[ci] = unescapeXml(val);
       }
       for (let i = 0; i < cells.length; i++) if (cells[i] === undefined) cells[i] = "";
       rows.push(cells);
@@ -446,6 +468,13 @@ module.exports = function initFinLedger(ctx) {
       /(?:statement|pay|billing|report)\s*period[:\s]*([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{2,4}|\d{4}-\d{2}-\d{2})\s*(?:-|–|—|to|through)\s*([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{2,4}|\d{4}-\d{2}-\d{2})/i,
       /([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{2,4}|\d{4}-\d{2}-\d{2})\s*(?:-|–|—|to|through)\s*([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{2,4}|\d{4}-\d{2}-\d{2})/,
     ];
+    // Long form, e.g. "1 January, 2026 - 31 January, 2026".
+    const longForm = t.match(/(\d{1,2})\s+([A-Za-z]{3,9}),?\s+(\d{4})\s*(?:-|–|—|to|through)\s*(\d{1,2})\s+([A-Za-z]{3,9}),?\s+(\d{4})/);
+    if (longForm) {
+      const a = normDate(`${longForm[2].slice(0, 3)} ${longForm[1]} ${longForm[3]}`);
+      const b = normDate(`${longForm[5].slice(0, 3)} ${longForm[4]} ${longForm[6]}`);
+      if (a && b && a <= b) return { period_start: a, period_end: b };
+    }
     for (const re of patterns) {
       const m = t.match(re);
       if (m) {
@@ -635,18 +664,139 @@ module.exports = function initFinLedger(ctx) {
     return { txns, unrecognized, note: "" };
   }
 
+  // Some statements (Lili's among them) print each field on its own line
+  // rather than one transaction per line:
+  //     01/06/2026
+  //     11976068                <- authorization code
+  //     CHECKR, INC ...         <- description
+  //     $-323.29                <- amount
+  //     $2,510.24               <- running balance
+  // Detected by shape: lots of lines that are ONLY a date and lots that are
+  // ONLY a money value, with hardly any line carrying both.
+  const ONLY_DATE = /^(\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4}-\d{2}-\d{2})$/;
+  const ONLY_MONEY = /^\(?-?\$?-?[\d,]+\.\d{2}\)?-?$/;
+
+  function looksVertical(lines) {
+    let dateOnly = 0, moneyOnly = 0, both = 0;
+    for (const raw of lines) {
+      const l = String(raw || "").trim();
+      if (!l) continue;
+      if (ONLY_DATE.test(l)) { dateOnly++; continue; }
+      if (ONLY_MONEY.test(l)) { moneyOnly++; continue; }
+      if (LINE_DATE.test(l) && MONEY_TOKEN.test(l)) both++;
+      MONEY_TOKEN.lastIndex = 0;
+    }
+    return dateOnly >= 5 && moneyOnly >= dateOnly && both < dateOnly / 2;
+  }
+
+  function parseBankLinesVertical(lines, yearGuess) {
+    const txns = [], unrecognized = [];
+    let pageRepeats = 0;
+    const clean = lines.map((l) => String(l || "").trim());
+    for (let i = 0; i < clean.length; i++) {
+      if (!ONLY_DATE.test(clean[i])) continue;
+      const date = normDate(clean[i], yearGuess);
+      if (!date) continue;
+
+      // Collect the block up to the next date line, stopping as soon as the
+      // amount and running balance have been seen. Without that stop, the last
+      // transaction on the statement swallows the page footer text.
+      const parts = [];
+      let moneySeen = 0;
+      for (let j = i + 1; j < clean.length && !ONLY_DATE.test(clean[j]) && parts.length < 8; j++) {
+        if (!clean[j]) continue;
+        parts.push(clean[j]);
+        if (ONLY_MONEY.test(clean[j])) { moneySeen++; if (moneySeen >= 2) break; }
+      }
+      const monies = parts.filter((x) => ONLY_MONEY.test(x));
+      const words = parts.filter((x) => !ONLY_MONEY.test(x));
+      if (!monies.length) {
+        unrecognized.push({ source_row: i + 1, source_text: [clean[i], ...parts].join(" | ").slice(0, 500), reason: "A date with no amount after it." });
+        continue;
+      }
+      // With two figures the last is the running balance, as in the flat layout.
+      const amtRaw = monies.length >= 2 ? monies[monies.length - 2] : monies[0];
+      const balRaw = monies.length >= 2 ? monies[monies.length - 1] : null;
+      const amount = num(amtRaw);
+      if (!amount) {
+        unrecognized.push({ source_row: i + 1, source_text: [clean[i], ...parts].join(" | ").slice(0, 500), reason: "Amount read as zero." });
+        continue;
+      }
+      // The first purely-numeric word is the authorization code, not the payee.
+      const descParts = words.filter((w) => !/^\d{4,}$/.test(w));
+      const description = (descParts.join(" ") || words.join(" ")).slice(0, 220);
+      if (!description) {
+        unrecognized.push({ source_row: i + 1, source_text: [clean[i], ...parts].join(" | ").slice(0, 500), reason: "No description found for this transaction." });
+        continue;
+      }
+      const row = {
+        txn_date: date,
+        description,
+        amount: money(amount),
+        balance: balRaw != null ? num(balRaw) : null,
+        source_row: i + 1,
+        source_text: [clean[i], ...parts].join(" | ").slice(0, 500),
+        // The statement prints the sign itself, so direction is stated, not guessed.
+        direction_confidence: CONFIDENCE.VERIFIED,
+      };
+
+      // Multi-page statements repeat the last transaction of a page as the
+      // first line of the next one. A genuine second transaction cannot carry
+      // the same running balance as the one before it -- the balance would
+      // have moved -- so an exact repeat of date + description + amount +
+      // balance is a page-break echo, not money that moved twice.
+      const prev = txns[txns.length - 1];
+      if (prev && prev.balance != null && row.balance != null &&
+          prev.txn_date === row.txn_date && prev.description === row.description &&
+          prev.amount === row.amount && prev.balance === row.balance) {
+        pageRepeats++;
+        continue;
+      }
+      txns.push(row);
+    }
+    const note = pageRepeats
+      ? `Skipped ${pageRepeats} transaction${pageRepeats === 1 ? "" : "s"} that the statement reprints across a page break. They carried the same running balance as the line before them, so counting them would have double-charged the month.`
+      : "";
+    return { txns, unrecognized, note };
+  }
+
   // Beginning / ending balance and the bank's own stated totals, which are what
   // make a real reconciliation possible rather than just a sum of rows.
-  function parseStatementTotals(text) {
+  function parseStatementTotals(text, lines) {
     const t = String(text || "").replace(/\s+/g, " ");
     const grab = (re) => { const m = t.match(re); return m ? num(m[1]) : null; };
-    const money$ = "\\(?-?\\$?[\\d,]+\\.\\d{2}\\)?-?";
+    const money$ = "\\(?-?\\$?-?[\\d,]+\\.\\d{2}\\)?-?";
+    // Statements that print one field per line put the label and its value on
+    // separate lines, so a same-line regex finds nothing. Fall back to "the
+    // next money-looking line after this label".
+    const byLabel = (re) => {
+      if (!Array.isArray(lines)) return null;
+      for (let i = 0; i < lines.length; i++) {
+        if (!re.test(String(lines[i] || ""))) continue;
+        for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+          const v = String(lines[j] || "").trim();
+          if (ONLY_MONEY.test(v)) return num(v);
+        }
+      }
+      return null;
+    };
+    const pick = (inline, labelRe) => (inline != null ? inline : byLabel(labelRe));
     return {
-      beginning_balance: grab(new RegExp(`(?:beginning|opening|previous statement|starting)\\s*(?:balance|bal)[^\\d\\-(]{0,20}(${money$})`, "i")),
-      ending_balance: grab(new RegExp(`(?:ending|closing|new|current)\\s*(?:balance|bal)[^\\d\\-(]{0,20}(${money$})`, "i")),
-      stated_deposits: grab(new RegExp(`(?:total\\s*)?deposits?(?:\\s*(?:and|&)\\s*(?:credits|additions|other credits))?[^\\d\\-(]{0,20}(${money$})`, "i")),
-      stated_withdrawals: grab(new RegExp(`(?:total\\s*)?withdrawals?(?:\\s*(?:and|&)\\s*(?:debits|subtractions|other debits))?[^\\d\\-(]{0,20}(${money$})`, "i")),
-      stated_fees: grab(new RegExp(`(?:total\\s*)?(?:service\\s*charges?|fees?)[^\\d\\-(]{0,20}(${money$})`, "i")),
+      beginning_balance: pick(
+        grab(new RegExp(`(?:beginning|opening|previous statement|starting)\\s*(?:balance|bal)[^\\d\\-(]{0,20}(${money$})`, "i")),
+        /^\s*(beginning|opening|starting)\s+balance\b/i),
+      ending_balance: pick(
+        grab(new RegExp(`(?:ending|closing|new|current)\\s*(?:balance|bal)[^\\d\\-(]{0,20}(${money$})`, "i")),
+        /^\s*(ending|closing)\s+balance\b/i),
+      stated_deposits: pick(
+        grab(new RegExp(`(?:total\\s*)?deposits?(?:\\s*(?:and|&)\\s*(?:credits|additions|other credits))?[^\\d\\-(]{0,20}(${money$})`, "i")),
+        /^\s*(total\s*)?deposits?\b/i),
+      stated_withdrawals: pick(
+        grab(new RegExp(`(?:total\\s*)?withdrawals?(?:\\s*(?:and|&)\\s*(?:debits|subtractions|other debits))?[^\\d\\-(]{0,20}(${money$})`, "i")),
+        /^\s*(total\s*)?withdrawals?\b/i),
+      stated_fees: pick(
+        grab(new RegExp(`(?:total\\s*)?(?:service\\s*charges?|fees?)[^\\d\\-(]{0,20}(${money$})`, "i")),
+        /^\s*(total\s*)?(service\s*charges?|fees)\s*$/i),
     };
   }
 
@@ -744,6 +894,122 @@ module.exports = function initFinLedger(ctx) {
     outstanding: ["outstanding", "balance", "open balance", "amount due", "ar balance"],
   };
 
+  // ---- Rethink BillableExport ----------------------------------------
+  // Rethink's export is 71 columns wide, most of which are addresses, NPIs,
+  // modifiers, audit stamps and verification flags. Feeding all of that
+  // through the generic column-guesser produced wrong matches, so this reads
+  // the sheet by its exact column names and deliberately ignores the rest.
+  // The columns kept are the ones the money analysis actually needs.
+  const RETHINK_COLUMNS = {
+    appt_type: "Appt Type",
+    appt_status: "Appt Status",
+    funder: "Funder",
+    date_of_service: "Date of Service",
+    client_name: "Client Name",
+    provider_name: "Provider Name",
+    rendering_provider: "Rendering Provider Name",
+    service_name: "Service",
+    service_code: "Billing Code",
+    hours: "# of Hours",
+    units: "# of Units",
+    unit_rate: "Unit Rate",
+    amount_billed: "Total Charges",
+    authorization_ref: "Authorization #",
+  };
+
+  function isRethinkBillableExport(rows) {
+    return rows.some((r) => {
+      const set = new Set(r.map((c) => String(c || "").trim()));
+      return set.has("Date of Service") && set.has("Billing Code") && set.has("# of Units");
+    });
+  }
+
+  function parseRethinkBillable(rows, yearGuess) {
+    const hIdx = rows.findIndex((r) => {
+      const set = new Set(r.map((c) => String(c || "").trim()));
+      return set.has("Date of Service") && set.has("Billing Code");
+    });
+    if (hIdx < 0) return { lines: [], unrecognized: [], note: "", meta: {} };
+    const header = rows[hIdx].map((c) => String(c || "").trim());
+    const col = {};
+    for (const [key, label] of Object.entries(RETHINK_COLUMNS)) col[key] = header.indexOf(label);
+    const get = (r, key) => (col[key] >= 0 ? String(r[col[key]] == null ? "" : r[col[key]]).trim() : "");
+
+    // The block above the header carries the report's own date range.
+    const meta = {};
+    for (let i = 0; i < hIdx; i++) {
+      const r = rows[i] || [];
+      for (let j = 0; j < r.length; j++) {
+        const label = String(r[j] || "").trim();
+        if (/^start date:?$/i.test(label)) meta.period_start = normDate(r[j + 1], yearGuess);
+        if (/^end date:?$/i.test(label)) meta.period_end = normDate(r[j + 1], yearGuess);
+      }
+    }
+
+    const lines = [], unrecognized = [];
+    let controlTotal = null;
+    let ignoredColumns = header.filter((h) => h && !Object.values(RETHINK_COLUMNS).includes(h)).length;
+
+    for (let i = hIdx + 1; i < rows.length; i++) {
+      const r = rows[i];
+      const rawText = header.map((h, j) => (h && String(r[j] || "").trim() ? `${h}: ${r[j]}` : null)).filter(Boolean).join(" | ");
+      const client = get(r, "client_name");
+      const dos = normDate(get(r, "date_of_service"), yearGuess);
+      const code = get(r, "service_code");
+      const hours = col.hours >= 0 ? num(get(r, "hours")) : null;
+      const units = col.units >= 0 ? num(get(r, "units")) : null;
+      const billed = num(get(r, "amount_billed"));
+      const apptType = get(r, "appt_type");
+      const status = get(r, "appt_status");
+
+      if (!client && !dos && !billed && !hours) continue;         // spacer row
+      if (/^(total|totals|grand total)\b/i.test(client)) continue; // the export's own total
+      // Rethink puts its own control total in the Validation column. Use it to
+      // check our arithmetic instead of reporting it as an unreadable row.
+      if (/^totals?:?$/i.test(String(r[0] || "").trim())) { controlTotal = num(get(r, "amount_billed")); continue; }
+      if (!dos) { unrecognized.push({ source_row: i + 1, source_text: rawText.slice(0, 500), reason: `No readable date of service${client ? ` for ${client}` : ""}.` }); continue; }
+      if (!hours && !units && !billed) { unrecognized.push({ source_row: i + 1, source_text: rawText.slice(0, 500), reason: `Row for ${client || "an unnamed client"} on ${dos} has no hours, units or charges.` }); continue; }
+
+      // "Billable" vs "Non-Billable" is the export's own word, kept as-is --
+      // paid hours and billable hours are not the same thing and must not be
+      // silently merged.
+      const billable = /^billable$/i.test(apptType);
+
+      lines.push({
+        client_name: client.slice(0, 120),
+        provider_name: (get(r, "rendering_provider") || get(r, "provider_name")).slice(0, 120),
+        date_of_service: dos,
+        month: monthOf(dos),
+        service_code: code.slice(0, 20),
+        service_name: get(r, "service_name").slice(0, 80),
+        units, hours,
+        unit_rate: col.unit_rate >= 0 ? num(get(r, "unit_rate")) : null,
+        amount_billed: money(billed),
+        expected_reimbursement: 0,
+        amount_paid: 0,
+        payer: get(r, "funder").slice(0, 80),
+        claim_status: status.slice(0, 40),
+        appt_status: status.slice(0, 40),
+        appt_type: apptType.slice(0, 40),
+        billable,
+        authorization_ref: get(r, "authorization_ref").slice(0, 40),
+        payment_date: "",
+        outstanding: money(billed),
+        confidence: CONFIDENCE.VERIFIED,
+        source_row: i + 1,
+        source_text: rawText.slice(0, 1000),
+      });
+    }
+    let note = `Read as a Rethink billable export: ${Object.keys(RETHINK_COLUMNS).length} columns used, ${ignoredColumns} ignored (addresses, NPIs, modifiers, verification flags and audit stamps).`;
+    if (controlTotal != null) {
+      const summed = money(lines.reduce((a, l) => a + Number(l.amount_billed || 0), 0));
+      note += Math.abs(summed - money(controlTotal)) < 0.01
+        ? ` Charges add up to $${fmt(summed)}, which matches the total printed on the export.`
+        : ` WARNING: charges add up to $${fmt(summed)} but the export's own total says $${fmt(controlTotal)} — a difference of $${fmt(Math.abs(summed - controlTotal))}. Something was misread; check the unreadable-rows queue.`;
+    }
+    return { lines, unrecognized, meta, note, controlTotal };
+  }
+
   function parseBillingTable(rows, yearGuess) {
     const hIdx = findHeaderRow(rows, [BILL_ALIASES.client, BILL_ALIASES.dos, BILL_ALIASES.billed.concat(BILL_ALIASES.units, BILL_ALIASES.code)]);
     if (hIdx < 0) return { lines: [], unrecognized: [], note: "No header row found." };
@@ -834,7 +1100,9 @@ module.exports = function initFinLedger(ctx) {
 
     try {
       if (detected.doc_type === "bank_statement" || detected.doc_type === "credit_card_statement" || detected.doc_type === "merchant_statement") {
-        const parsed = read.rows ? parseBankTable(read.rows, year) : parseBankLines(read.lines, year);
+        const parsed = read.rows
+          ? parseBankTable(read.rows, year)
+          : (looksVertical(read.lines) ? parseBankLinesVertical(read.lines, year) : parseBankLines(read.lines, year));
         unrec.push(...parsed.unrecognized);
         if (parsed.note) result.notes.push(parsed.note);
         const rules = await loadVendorRules();
@@ -851,7 +1119,7 @@ module.exports = function initFinLedger(ctx) {
           records++;
         }
         // Statement totals make a real reconciliation possible.
-        const totals = parseStatementTotals(read.text);
+        const totals = parseStatementTotals(read.text, read.lines);
         if (totals.beginning_balance != null || totals.ending_balance != null) {
           await dbRun(
             `INSERT INTO fin_statement_periods (document_id, account_label, period_start, period_end, month,
@@ -892,18 +1160,29 @@ module.exports = function initFinLedger(ctx) {
         if (!read.rows) {
           result.notes.push("Billing data came in as a PDF. The CSV/Excel export gives reliable per-claim figures; a PDF can't be split into claim lines safely.");
         } else {
-          const parsed = parseBillingTable(read.rows, year);
+          const parsed = isRethinkBillableExport(read.rows)
+            ? parseRethinkBillable(read.rows, year)
+            : parseBillingTable(read.rows, year);
           unrec.push(...parsed.unrecognized);
           if (parsed.note) result.notes.push(parsed.note);
+          // A Rethink export states its own reporting window; prefer it over
+          // whatever was guessed from the raw text.
+          if (parsed.meta && (parsed.meta.period_start || parsed.meta.period_end)) {
+            await dbRun("UPDATE fin_documents SET period_start = ?, period_end = ? WHERE id = ?",
+              [parsed.meta.period_start || null, parsed.meta.period_end || null, doc.id]);
+          }
           for (const l of parsed.lines) {
             await dbRun(
               `INSERT INTO fin_billing_lines (document_id, client_name, provider_name, date_of_service, month, service_code,
                 units, hours, amount_billed, expected_reimbursement, amount_paid, payer, claim_status, payment_date,
-                outstanding, confidence, source_row, source_text, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                outstanding, confidence, source_row, source_text, created_at,
+                appt_type, billable, unit_rate, service_name, authorization_ref, appt_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [doc.id, l.client_name, l.provider_name, l.date_of_service, l.month, l.service_code,
                l.units, l.hours, l.amount_billed, l.expected_reimbursement, l.amount_paid, l.payer, l.claim_status,
-               l.payment_date || null, l.outstanding, l.confidence, l.source_row, l.source_text, nowISO()]
+               l.payment_date || null, l.outstanding, l.confidence, l.source_row, l.source_text, nowISO(),
+               l.appt_type || null, l.billable == null ? null : !!l.billable, l.unit_rate == null ? null : l.unit_rate,
+               l.service_name || null, l.authorization_ref || null, l.appt_status || null]
             );
             records++;
           }
@@ -1373,8 +1652,9 @@ module.exports = function initFinLedger(ctx) {
     _lib: {
       headerIndex, findHeaderRow,
       ingest, reconcileBank, reconcilePayroll, fmt, shiftDate,
-      parseBankTable, parseBankLines, parseStatementTotals,
+      parseBankTable, parseBankLines, parseBankLinesVertical, looksVertical, parseStatementTotals,
       parsePayrollTable, parseBillingTable,
+      isRethinkBillableExport, parseRethinkBillable,
       CONFIDENCE, DOC_TYPES, CATEGORIES, SEED_RULES,
       num, money, isMoneyish, normDate, monthOf, pad, daysBetween,
       parseCsv, parseXlsx, readDocument,

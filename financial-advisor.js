@@ -152,10 +152,16 @@ module.exports = function initFinancialAdvisor(ctx) {
       const c = raw[i];
       if (c !== "\\") { out += c; continue; }
       const n = raw[++i];
+      // These must keep their real byte values. With an embedded subset font
+      // the byte IS the glyph code -- 0x08 might be "G" -- so turning \b into
+      // a space here silently rewrote letters before the font map ever saw
+      // them. Whitespace conversion happens later, only for fonts that have
+      // no code map.
       if (n === "n") out += "\n";
       else if (n === "r") out += "\r";
       else if (n === "t") out += "\t";
-      else if (n === "b" || n === "f") out += " ";
+      else if (n === "b") out += "\b";
+      else if (n === "f") out += "\f";
       else if (n >= "0" && n <= "7") {
         let oct = n;
         while (oct.length < 3 && raw[i + 1] >= "0" && raw[i + 1] <= "7") oct += raw[++i];
@@ -165,17 +171,145 @@ module.exports = function initFinancialAdvisor(ctx) {
     return out;
   }
 
-  function pdfContentToLines(content) {
+  // ---- embedded font decoding ---------------------------------------
+  // Real bank statements almost always embed subsetted fonts with their own
+  // character codes -- the byte in the content stream is a glyph index, not a
+  // letter. Reading those bytes as ASCII produces convincing-looking garbage
+  // ("7Yeekdj" instead of "Account"). Each font carries a /ToUnicode CMap that
+  // maps its codes back to real characters, so that is what we follow.
+  function inflateStreamAt(buffer, raw, objNum) {
+    const re = new RegExp(`(?:^|[^0-9])${objNum}\\s+0\\s+obj`, "g");
+    const m = re.exec(raw);
+    if (!m) return null;
+    const objStart = m.index;
+    const sIdx = raw.indexOf("stream", objStart);
+    if (sIdx < 0) return null;
+    const eIdx = raw.indexOf("endstream", sIdx);
+    if (eIdx < 0) return null;
+    const dict = raw.slice(objStart, sIdx);
+    let start = sIdx + 6;
+    if (raw[start] === "\r") start++;
+    if (raw[start] === "\n") start++;
+    const bytes = buffer.slice(start, eIdx);
+    if (!/\/FlateDecode/.test(dict)) return bytes;
+    try { return zlib.inflateSync(bytes); }
+    catch (e) { try { return zlib.inflateRawSync(bytes); } catch (e2) { return null; } }
+  }
+
+  function hexToStr(hex) {
+    const h = String(hex).replace(/\s+/g, "");
+    let out = "";
+    // ToUnicode values are UTF-16BE, so consume four hex digits at a time.
+    for (let i = 0; i + 3 < h.length; i += 4) out += String.fromCharCode(parseInt(h.substr(i, 4), 16));
+    if (h.length % 4 === 2) out += String.fromCharCode(parseInt(h.substr(h.length - 2, 2), 16));
+    return out;
+  }
+
+  function parseToUnicodeCMap(text) {
+    const map = new Map();
+    let m;
+    const charBlocks = /beginbfchar([\s\S]*?)endbfchar/g;
+    while ((m = charBlocks.exec(text))) {
+      const pairRe = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g;
+      let p;
+      while ((p = pairRe.exec(m[1]))) map.set(parseInt(p[1], 16), hexToStr(p[2]));
+    }
+    const rangeBlocks = /beginbfrange([\s\S]*?)endbfrange/g;
+    while ((m = rangeBlocks.exec(text))) {
+      const body = m[1];
+      // <lo> <hi> <dstStart>
+      const simple = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g;
+      let r;
+      while ((r = simple.exec(body))) {
+        const lo = parseInt(r[1], 16), hi = parseInt(r[2], 16);
+        const dstHex = r[3];
+        const base = parseInt(dstHex.slice(-4) || "0", 16);
+        const prefix = dstHex.length > 4 ? hexToStr(dstHex.slice(0, dstHex.length - 4)) : "";
+        for (let c = lo; c <= hi && c - lo < 65536; c++) map.set(c, prefix + String.fromCharCode(base + (c - lo)));
+      }
+      // <lo> <hi> [ <d1> <d2> ... ]
+      const arrayForm = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*\[([\s\S]*?)\]/g;
+      while ((r = arrayForm.exec(body))) {
+        const lo = parseInt(r[1], 16);
+        const items = r[3].match(/<([0-9A-Fa-f]*)>/g) || [];
+        items.forEach((it, i) => map.set(lo + i, hexToStr(it.slice(1, -1))));
+      }
+    }
+    return map;
+  }
+
+  // Resource name (/F1, /F2 ...) -> code map, plus whether the font is
+  // two-byte (Identity-H) so string bytes are paired correctly.
+  function buildFontMaps(buffer, raw) {
+    const fonts = {};
+    const objNumByName = {};
+    const resRe = /\/Font\s*<<([\s\S]*?)>>/g;
+    let rm;
+    while ((rm = resRe.exec(raw))) {
+      const pairRe = /\/([A-Za-z0-9]+)\s+(\d+)\s+0\s+R/g;
+      let p;
+      while ((p = pairRe.exec(rm[1]))) if (!objNumByName[p[1]]) objNumByName[p[1]] = Number(p[2]);
+    }
+    for (const [name, objNum] of Object.entries(objNumByName)) {
+      const objRe = new RegExp(`(?:^|[^0-9])${objNum}\\s+0\\s+obj([\\s\\S]{0,1200}?)(?:endobj|stream)`);
+      const om = raw.match(objRe);
+      if (!om) continue;
+      const dict = om[1];
+      const twoByte = /\/Encoding\s*\/Identity-[HV]/.test(dict) || /\/Type0/.test(dict);
+      const tu = dict.match(/\/ToUnicode\s+(\d+)\s+0\s+R/);
+      let map = null;
+      if (tu) {
+        const data = inflateStreamAt(buffer, raw, Number(tu[1]));
+        if (data) { try { map = parseToUnicodeCMap(data.toString("latin1")); } catch (e) { map = null; } }
+      }
+      fonts[name] = { map, twoByte };
+    }
+    return fonts;
+  }
+
+  // Turns the raw bytes of one PDF string into text, using the current font's
+  // CMap when there is one and falling back to the bytes themselves when there
+  // isn't (plain WinAnsi fonts).
+  function decodeWithFont(bytes, font) {
+    if (!font || !font.map || !font.map.size) {
+      // No code map: the bytes really are characters, so control codes are
+      // layout whitespace rather than glyphs.
+      return String(bytes).replace(/[\b\f\t\r\n]/g, " ");
+    }
+    let out = "";
+    if (font.twoByte) {
+      for (let i = 0; i + 1 < bytes.length; i += 2) {
+        const code = (bytes.charCodeAt(i) << 8) | bytes.charCodeAt(i + 1);
+        const u = font.map.get(code);
+        out += u != null ? u : "";
+      }
+      if (bytes.length % 2 === 1) {
+        const u = font.map.get(bytes.charCodeAt(bytes.length - 1));
+        if (u != null) out += u;
+      }
+    } else {
+      for (let i = 0; i < bytes.length; i++) {
+        const u = font.map.get(bytes.charCodeAt(i));
+        out += u != null ? u : bytes[i];
+      }
+    }
+    return out;
+  }
+
+  function pdfContentToLines(content, fonts) {
     // Walk the text operators in order. Any operator that moves to a new line
     // (Td / TD / T* / Tm) or ends a text object (ET) breaks the current line,
     // which is what keeps one statement row on one line.
     const lines = [];
     let cur = "";
     const push = () => { if (cur.trim()) lines.push(cur.replace(/\s+/g, " ").trim()); cur = ""; };
-    const re = /\((?:\\.|[^\\()])*\)\s*Tj|\[(?:\\.|[^\\\]])*\]\s*TJ|<[0-9A-Fa-f\s]*>\s*Tj|(?:^|\s)(?:T\*|ET|BT)(?=\s|$)|[-\d.]+\s+[-\d.]+\s+(?:Td|TD)|[-\d.]+(?:\s+[-\d.]+){5}\s+Tm/g;
+    let font = null;
+    const re = /\/([A-Za-z0-9]+)\s+[-\d.]+\s+Tf|\((?:\\.|[^\\()])*\)\s*Tj|\[(?:\\.|[^\\\]])*\]\s*TJ|<[0-9A-Fa-f\s]*>\s*Tj|(?:^|\s)(?:T\*|ET|BT)(?=\s|$)|[-\d.]+\s+[-\d.]+\s+(?:Td|TD)|[-\d.]+(?:\s+[-\d.]+){5}\s+Tm/g;
     let m;
     while ((m = re.exec(content))) {
       const tok = m[0].trim();
+      // "/F2 9 Tf" switches font; every following string decodes through it.
+      if (/Tf$/.test(tok)) { font = fonts ? fonts[m[1]] : null; continue; }
       if (/(?:Td|TD|Tm|T\*|ET|BT)$/.test(tok)) { push(); continue; }
       if (tok.endsWith("TJ")) {
         // Array form: [(He) -250 (llo)] TJ, or the hex equivalent
@@ -186,17 +320,21 @@ module.exports = function initFinancialAdvisor(ctx) {
         let p;
         while ((p = partRe.exec(inner))) {
           const t = p[0];
-          if (t.startsWith("(")) cur += pdfDecodeString(t.slice(1, -1));
+          if (t.startsWith("(")) cur += decodeWithFont(pdfDecodeString(t.slice(1, -1)), font);
           else if (t.startsWith("<")) {
             const hex = t.slice(1, -1).replace(/\s+/g, "");
-            for (let i = 0; i + 1 < hex.length; i += 2) cur += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+            let bytes = "";
+            for (let i = 0; i + 1 < hex.length; i += 2) bytes += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+            cur += decodeWithFont(bytes, font);
           } else if (parseFloat(t) <= -100) cur += " ";
         }
       } else if (tok.startsWith("<")) {
         const hex = tok.slice(1, tok.lastIndexOf(">")).replace(/\s+/g, "");
-        for (let i = 0; i + 1 < hex.length; i += 2) cur += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+        let bytes = "";
+        for (let i = 0; i + 1 < hex.length; i += 2) bytes += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+        cur += decodeWithFont(bytes, font);
       } else {
-        cur += pdfDecodeString(tok.slice(tok.indexOf("(") + 1, tok.lastIndexOf(")")));
+        cur += decodeWithFont(pdfDecodeString(tok.slice(tok.indexOf("(") + 1, tok.lastIndexOf(")"))), font);
       }
     }
     push();
@@ -206,6 +344,7 @@ module.exports = function initFinancialAdvisor(ctx) {
   function extractPdfLines(buffer) {
     if (buffer.slice(0, 5).toString("latin1") !== "%PDF-") throw new Error("That file isn't a PDF.");
     const raw = buffer.toString("latin1");
+    const fonts = buildFontMaps(buffer, raw);
     const lines = [];
     let idx = 0;
     let streams = 0;
@@ -235,7 +374,7 @@ module.exports = function initFinancialAdvisor(ctx) {
       }
       if (!data) continue;
       streams++;
-      lines.push(...pdfContentToLines(data.toString("latin1")));
+      lines.push(...pdfContentToLines(data.toString("latin1"), fonts));
     }
     if (!streams) throw new Error("This PDF's pages couldn't be read. If it's a scanned statement, download the CSV version from your bank instead.");
     return lines;
@@ -307,8 +446,12 @@ module.exports = function initFinancialAdvisor(ctx) {
   }
   function parsePayrollGross(buffer) {
     const files = unzip(buffer); const dec = (b) => (b ? b.toString("utf8") : "");
-    const shared = []; const sx = dec(files["xl/sharedStrings.xml"]); const sre = /<si>([\s\S]*?)<\/si>/g; let sm;
-    while ((sm = sre.exec(sx))) { let s = ""; const t = /<t[^>]*>([\s\S]*?)<\/t>/g; let tm; while ((tm = t.exec(sm[1]))) s += tm[1]; shared.push(s); }
+    // Tags may carry a namespace prefix (<x:si>, <x:row>, <x:c>, <x:v>) depending
+    // on which library wrote the workbook; match either form.
+    const NS = "(?:[A-Za-z0-9]+:)?";
+    const shared = []; const sx = dec(files["xl/sharedStrings.xml"]);
+    const sre = new RegExp(`<${NS}si>([\\s\\S]*?)<\\/${NS}si>`, "g"); let sm;
+    while ((sm = sre.exec(sx))) { let s = ""; const t = new RegExp(`<${NS}t[^>]*>([\\s\\S]*?)<\\/${NS}t>`, "g"); let tm; while ((tm = t.exec(sm[1]))) s += tm[1]; shared.push(s); }
     const rels = dec(files["xl/_rels/workbook.xml.rels"]); const relMap = {}; let rr; const rx = /<Relationship\b([^>]*)\/>/g;
     while ((rr = rx.exec(rels))) { const id = (rr[1].match(/Id="([^"]+)"/) || [])[1], tg = (rr[1].match(/Target="([^"]+)"/) || [])[1]; if (id && tg) relMap[id] = tg; }
     const wb = dec(files["xl/workbook.xml"]); let target = "", startDate = ""; let sh; const shx = /<sheet\b([^>]*)\/>/g;
@@ -317,8 +460,9 @@ module.exports = function initFinancialAdvisor(ctx) {
     if (!target.startsWith("xl/")) target = "xl/" + target.replace(/^\//, "");
     const xml = dec(files[target]);
     const colIdx = (r) => { const m = r.match(/^([A-Z]+)/); let n = 0; for (const c of m[1]) n = n * 26 + (c.charCodeAt(0) - 64); return n - 1; };
-    const rows = []; const rre = /<row[^>]*>([\s\S]*?)<\/row>/g; let rm;
-    while ((rm = rre.exec(xml))) { const cells = []; const cre = /<c\s+r="([A-Z]+\d+)"([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g; let cm; while ((cm = cre.exec(rm[1]))) { const ci = colIdx(cm[1]); const a = cm[2] || "", inner = cm[3] || ""; const tt = (a.match(/t="([^"]+)"/) || [])[1] || ""; const v = inner.match(/<v>([\s\S]*?)<\/v>/); let val = ""; if (tt === "s" && v) val = shared[+v[1]] || ""; else if (v) val = v[1]; cells[ci] = val; } rows.push(cells); }
+    const rows = []; const rre = new RegExp(`<${NS}row[^>]*>([\\s\\S]*?)<\\/${NS}row>`, "g"); let rm;
+    const creSrc = `<${NS}c\\s+r="([A-Z]+\\d+)"([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/${NS}c>)`;
+    while ((rm = rre.exec(xml))) { const cells = []; const cre = new RegExp(creSrc, "g"); let cm; while ((cm = cre.exec(rm[1]))) { const ci = colIdx(cm[1]); const a = cm[2] || "", inner = cm[3] || ""; const tt = (a.match(/t="([^"]+)"/) || [])[1] || ""; const v = inner.match(new RegExp(`<${NS}v>([\\s\\S]*?)<\\/${NS}v>`)); let val = ""; if (tt === "s" && v) val = shared[+v[1]] || ""; else if (v) val = v[1]; cells[ci] = val; } rows.push(cells); }
     // Row 0 has Start Date; header row has "Id"/"TotalPay".
     const meta = rows[0] || []; for (let i = 0; i < meta.length; i++) if (/start date/i.test(String(meta[i]))) startDate = meta[i + 1] || "";
     let h = rows.findIndex((r) => String((r || [])[0] || "").trim().toLowerCase() === "id"); if (h < 0) h = 1;
@@ -521,5 +665,5 @@ module.exports = function initFinancialAdvisor(ctx) {
   // here because this was the first module that needed them. They are
   // exported so the Policies & SOPs module can reuse them for uploads
   // instead of carrying a second copy.
-  return { initTables, handleApi, extractPdfLines, unzip, _internal: { importCsv, parsePayrollGross, categorize } };
+  return { initTables, handleApi, extractPdfLines, unzip, buildFontMaps, parseToUnicodeCMap, _internal: { importCsv, parsePayrollGross, categorize } };
 };
