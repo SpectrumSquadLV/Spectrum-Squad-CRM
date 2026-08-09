@@ -741,8 +741,8 @@ module.exports = function initScheduling(ctx) {
       if (pathname === "/api/sched/bootstrap" && method === "GET") {
         const locations = await dbAll("SELECT * FROM sched_locations WHERE active IS NOT FALSE ORDER BY sort_order NULLS LAST, name");
         const staff = canViewAll(user)
-          ? await dbAll("SELECT id, name, email, role_title FROM hr_employees WHERE status IN ('active','onboarding') ORDER BY name")
-          : await dbAll("SELECT id, name, email, role_title FROM hr_employees WHERE id = ?", [myEmployeeId]);
+          ? await dbAll("SELECT id, name, email, role_title, (hr_photo IS NOT NULL) AS has_photo FROM hr_employees WHERE status IN ('active','onboarding') ORDER BY name")
+          : await dbAll("SELECT id, name, email, role_title, (hr_photo IS NOT NULL) AS has_photo FROM hr_employees WHERE id = ?", [myEmployeeId]);
         const clients = canAccessClients(user)
           ? await dbAll("SELECT id, child_name, auth_start_date, auth_expiration_date, authorization_status FROM clients ORDER BY child_name")
           : [];

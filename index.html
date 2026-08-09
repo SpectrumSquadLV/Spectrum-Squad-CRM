@@ -2883,12 +2883,16 @@ async function renderStaff(mount) {
         + `<span class="tag" style="background:#eef0fb; color:#1b2a6b; font-size:13px; padding:6px 12px; margin-left:8px;">🎉 Milestone check-ins this week: <strong>${mw}</strong></span>`;
     }
   } catch (e) {}
-  // Lazy-load photo thumbnails for staff who have one.
+  // Lazy-load photo thumbnails for staff who have one. Kept on the shared
+  // helper so the directory, the team list and the scheduler all behave the
+  // same way and there is one place to change it.
   mount.querySelectorAll('.staff-av[data-hasphoto="1"]').forEach((av) => {
     const img = new Image();
+    img.alt = "";
     img.src = `/api/hr/employees/${av.dataset.av}/photo?t=${Date.now()}`;
     img.style.cssText = "width:100%;height:100%;object-fit:cover;";
     img.onload = () => { av.innerHTML = ""; av.appendChild(img); };
+    img.onerror = () => { /* keep the initials */ };
   });
 }
 
@@ -3643,8 +3647,13 @@ async function renderTeamSection(mount) {
               .map(
                 (u) => `<tr data-user-row="${u.id}">
               <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3);">
-                <div><strong>${adminEsc(u.name)}</strong>${String(u.id) === String(state.user.id) ? ` <span class="tag">you</span>` : ""}</div>
-                <div style="color:var(--text-muted); font-size:12px;">${adminEsc(u.email)}</div>
+                <div style="display:flex; align-items:center; gap:9px;">
+                  ${window.StaffAvatar ? window.StaffAvatar.html(u.employee_id, u.name, { size: 30, hasPhoto: u.has_photo }) : ""}
+                  <span>
+                    <div><strong>${adminEsc(u.name)}</strong>${String(u.id) === String(state.user.id) ? ` <span class="tag">you</span>` : ""}</div>
+                    <div style="color:var(--text-muted); font-size:12px;">${adminEsc(u.email)}</div>
+                  </span>
+                </div>
               </td>
               <td style="padding:9px 10px; border-bottom:1px solid var(--border,#f0f0f3);">
                 <select data-user-role="${u.id}" style="min-width:150px;">${roleOptions(u.role)}</select>
@@ -3690,6 +3699,8 @@ async function renderTeamSection(mount) {
         .join("")}
     </div>
   `;
+
+  if (window.StaffAvatar) window.StaffAvatar.hydrate(body);
 
   const setStatus = (msg, ok) => {
     const el = body.querySelector("#team-status");

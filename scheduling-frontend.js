@@ -200,6 +200,12 @@
   };
 
   const initials = (n) => clean(n).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
+  // Asking for a photo that isn't there would 404 on every card, so the flag
+  // comes from the staff list rather than being assumed.
+  const staffHasPhoto = (id) => {
+    const e = ((S.boot && S.boot.staff) || []).find((x) => String(x.id) === String(id));
+    return !!(e && e.has_photo);
+  };
 
   function rangeFor() {
     if (S.view === "day") return { from: S.anchor, to: S.anchor };
@@ -273,7 +279,7 @@
       return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
     }
     const staff = (S.boot && S.boot.staff) || [];
-    const rows = staff.map((e) => ({ id: e.id, name: e.name, role: e.role_title || "Staff" }));
+    const rows = staff.map((e) => ({ id: e.id, name: e.name, role: e.role_title || "Staff", photo: !!e.has_photo, employee_id: e.id }));
     // Anything unassigned needs a home on the board, or coverage gaps vanish.
     if (list.some((s) => !s.staff_id)) rows.push({ id: 0, name: "Unassigned", role: "Needs coverage" });
     return rows;
@@ -306,8 +312,12 @@
           : `<div class="sc-open" data-add-row="${row.id}" data-add-date="${d}" role="button" tabindex="0">Open</div>`;
         return `<td data-drop-row="${row.id}" data-drop-date="${d}">${inner}</td>`;
       }).join("");
+      // Only the staff lens shows a face; a client or location row has none.
+      const av = (S.lens === "staff" && window.StaffAvatar && row.employee_id)
+        ? window.StaffAvatar.html(row.employee_id, row.name, { size: 32, hasPhoto: row.photo })
+        : `<span class="sc-av">${esc(initials(row.name))}</span>`;
       return `<tr>
-        <td class="sc-staffcell"><div class="sc-staff"><span class="sc-av">${esc(initials(row.name))}</span>
+        <td class="sc-staffcell"><div class="sc-staff">${av}
           <span><span class="n">${esc(row.name)}</span><div class="r">${esc(row.role)}</div></span></div></td>
         ${cells}
       </tr>`;
@@ -485,6 +495,7 @@
     </div>`;
 
     wire(mount);
+    if (window.StaffAvatar) window.StaffAvatar.hydrate(mount);
   }
 
   // ---------- interactions ----------
@@ -688,7 +699,10 @@
       </div>
       <table style="width:100%; font-size:13.5px;">
         <tr><td style="color:#6b7280; width:130px; padding:4px 0;">When</td><td>${esc(s.session_date)} &middot; ${esc(s.start_label)} – ${esc(s.end_label)} (${s.hours} hr${s.hours === 1 ? "" : "s"})</td></tr>
-        <tr><td style="color:#6b7280; padding:4px 0;">Staff</td><td>${esc(s.staff_display)}</td></tr>
+        <tr><td style="color:#6b7280; padding:4px 0;">Staff</td><td>
+          <span style="display:inline-flex; align-items:center; gap:8px;">
+            ${s.staff_id && window.StaffAvatar ? window.StaffAvatar.html(s.staff_id, s.staff_display, { size: 26, hasPhoto: staffHasPhoto(s.staff_id) }) : ""}
+            ${esc(s.staff_display)}</span></td></tr>
         ${s.supervisor_name ? `<tr><td style="color:#6b7280; padding:4px 0;">Supervisor</td><td>${esc(s.supervisor_name)}</td></tr>` : ""}
         <tr><td style="color:#6b7280; padding:4px 0;">Location</td><td>${esc(s.location_name || "Not set")}</td></tr>
         <tr><td style="color:#6b7280; padding:4px 0;">Service</td><td>${esc(s.service_label || "Not set")}${s.service_code ? " · " + esc(s.service_code) : ""}</td></tr>
@@ -712,6 +726,7 @@
         </div>` : ""}
     </div>`;
     document.body.appendChild(backdrop);
+    if (window.StaffAvatar) window.StaffAvatar.hydrate(backdrop);
     const close = () => backdrop.remove();
     backdrop.querySelector(".close-btn").addEventListener("click", close);
     backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });

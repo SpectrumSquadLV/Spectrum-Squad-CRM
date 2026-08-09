@@ -530,11 +530,53 @@
       }));
   }
 
+
+  // =====================================================================
+  // STAFF AVATAR -- one implementation, used everywhere a staff member is
+  // named. Initials render immediately; the photo swaps in only for people
+  // who actually have one, so no screen fires a request that 404s. If the
+  // image fails for any reason the initials simply stay, which is why they
+  // are the markup rather than a placeholder behind it.
+  // =====================================================================
+  function avatarInitials(name) {
+    return clean(name).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
+  }
+
+  function staffAvatarHtml(employeeId, name, opts = {}) {
+    const size = opts.size || 32;
+    const has = opts.hasPhoto ? "1" : "0";
+    return `<span class="staff-avatar" data-avatar-emp="${employeeId == null ? "" : employeeId}" data-avatar-has="${has}"
+      title="${esc(name || "")}"
+      style="width:${size}px; height:${size}px; border-radius:50%; background:#eceafd; color:#4c34b5;
+             font-size:${Math.max(9, Math.round(size * 0.36))}px; font-weight:750; display:inline-flex;
+             align-items:center; justify-content:center; overflow:hidden; flex:0 0 auto; ${opts.style || ""}"
+      >${esc(avatarInitials(name))}</span>`;
+  }
+
+  // Call after inserting markup that contains staff avatars.
+  function hydrateAvatars(root) {
+    (root || document).querySelectorAll('.staff-avatar[data-avatar-has="1"]:not([data-avatar-done])').forEach((el) => {
+      const id = el.dataset.avatarEmp;
+      if (!id) return;
+      el.setAttribute("data-avatar-done", "1");
+      const img = new Image();
+      img.alt = el.getAttribute("title") || "";
+      img.style.cssText = "width:100%;height:100%;object-fit:cover;";
+      img.onload = () => { el.textContent = ""; el.appendChild(img); };
+      img.onerror = () => { /* keep the initials */ };
+      img.src = `/api/hr/employees/${encodeURIComponent(id)}/photo`;
+    });
+  }
+
   window.PeopleUI = {
+    staffAvatarHtml,
+    hydrateAvatars,
+    avatarInitials,
     renderEmergencyContacts,
     renderCertifications,
     renderCertBanner,
     renderNewHirePacket,
     renderDepartmentsAdmin,
   };
+  window.StaffAvatar = { html: staffAvatarHtml, hydrate: hydrateAvatars, initials: avatarInitials };
 })();

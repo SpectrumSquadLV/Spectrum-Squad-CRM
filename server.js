@@ -4613,6 +4613,16 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         `SELECT id, name, email, role, department_id, can_view_financials, module_access, created_at
          FROM users ORDER BY created_at NULLS LAST, id`
       );
+      // A login and a staff record are separate rows joined only by email, so
+      // the photo has to be looked up rather than assumed to be on the user.
+      for (const u of rows) {
+        const emp = await dbGet(
+          "SELECT id, (hr_photo IS NOT NULL) AS has_photo FROM hr_employees WHERE LOWER(email) = LOWER(?)",
+          [u.email]
+        ).catch(() => null);
+        u.employee_id = emp ? emp.id : null;
+        u.has_photo = !!(emp && emp.has_photo);
+      }
       return json(res, 200, { users: rows, roles: ROLE_CATALOG });
     }
 
