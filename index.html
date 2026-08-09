@@ -1443,7 +1443,10 @@ function clientDetailsHtml(client, editing) {
 
 async function openClientModal(id) {
   const data = await api(`/api/clients/${id}`);
-  const { client, tasks, sessions, notifications, documents } = data;
+  // `sessions` is still returned by the API and deliberately not destructured:
+  // nothing on this card renders them any more, and pulling it out would leave
+  // an unused binding that reads like an oversight rather than a decision.
+  const { client, tasks, notifications, documents } = data;
   const enrollmentPacket = data.enrollmentPacket || null;
   const signnowConfigured = data.signnowConfigured;
   const sMap = stageMap();
@@ -1642,16 +1645,12 @@ async function openClientModal(id) {
       <button class="btn secondary small" id="delete-lead-btn" style="color:#fff; background:#b91c1c; border-color:#b91c1c;">Delete Lead</button>
       </div>
 
-      ${
-        sessions.length
-          ? `<div class="section-title">Weekly Schedule</div>
-          ${sessions
-            .map(
-              (s) => `<div class="task-row"><div class="info"><strong>${dayName(s.day_of_week)}</strong> ${s.start_time}–${s.end_time}</div><div>${s.therapist_name}</div></div>`
-            )
-            .join("")}`
-          : ""
-      }
+      <!-- The Weekly Schedule list was the last piece of scheduling still on
+           screen -- sessions, and the session notes hanging off them, belong to
+           the scheduling system that is switched off. The sessions themselves
+           and /api/schedule are untouched in the database; only this block is
+           gone, so restoring it is deleting this comment and putting the
+           template back. -->
 
       <div class="section-title">Communications &amp; Forms Sent to Parents</div>
       <p style="font-size:12px; color:var(--text-muted); margin:-4px 0 8px;">Every email, form, and file sent to this family. Click <strong>View</strong> to read the full message. Forms are also linked in their sections above.</p>

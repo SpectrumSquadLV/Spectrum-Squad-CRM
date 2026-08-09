@@ -85,6 +85,9 @@ const { chromium } = require("playwright");
     const ffSection = await page.evaluate(() => !!document.querySelector("#financial-form-section"));
     check("#financial-form-section not in the DOM", !ffSection);
 
+    // Sessions and the notes hanging off them went with scheduling.
+    check("no Weekly Schedule section on the card", !/Weekly Schedule/i.test(modalText), modalText.slice(0, 200));
+
     // The rest of the card must still work -- these sit either side of what was removed.
     check("authorizations section still there", /authoriz/i.test(modalText), modalText.slice(0, 200));
     check("case notes still there", /case note/i.test(modalText));
