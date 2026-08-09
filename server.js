@@ -3026,6 +3026,7 @@ async function handle(req, res, pathname, method, query = {}) {
         // contacts exist on both client and staff records, so they follow
         // whichever record is being asked for -- which is why every call sends
         // owner_type on the query string, not only in the body.
+        pathname.startsWith("/api/sched/") ? "schedule" :
         pathname.startsWith("/api/people/certifications") ? "staff" :
         pathname.startsWith("/api/people/departments") ? "admin" :
         pathname.startsWith("/api/people/emergency-contacts")
@@ -3119,6 +3120,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/people/")) {
     const handled = await people.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/sched/")) {
+    const handled = await scheduling.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -5220,6 +5226,15 @@ const people = require("./people")({
   sendEmail, APP_BASE_URL, getAppSetting, canAccessClients,
 });
 
+// ===== SCHEDULING CENTER add-on: dated sessions on the real staff directory,
+// recurrence series, conflict detection, availability and time off, and the
+// day operations board. Replaces the old weekly-pattern Therapy Schedule; the
+// legacy rows are converted once by /api/sched/migrate-legacy. Owns
+// /api/sched/*. =====
+const scheduling = require("./scheduling")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, canAccessClients, moduleGranted,
+});
+
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
@@ -5322,6 +5337,7 @@ async function start() {
   await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
   await bip.initTables().catch((e) => console.error("BIP initTables failed:", e));
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
+  await scheduling.initTables().catch((e) => console.error("Scheduling initTables failed:", e));
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
@@ -5356,6 +5372,16 @@ async function start() {
   setInterval(() => {
     people.certificationSweep().catch((e) => console.error("Certification sweep failed:", e));
   }, 24 * 60 * 60 * 1000);
+
+  // Scheduling: flip sessions whose end time has passed to completed (which is
+  // what raises "session note required"), and keep open-ended recurring series
+  // materialised a few months ahead. Every 10 minutes so the Day board is live.
+  const schedSweep = () => {
+    scheduling.sweepEndedSessions().catch((e) => console.error("Session sweep failed:", e));
+    scheduling.extendOpenSeries().catch((e) => console.error("Series extension failed:", e));
+  };
+  schedSweep();
+  setInterval(schedSweep, 10 * 60 * 1000);
 
   // Daily authorization-expiration check (also runs once on boot above).
   setInterval(() => {
