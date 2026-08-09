@@ -43,6 +43,7 @@ module.exports = function initHr(ctx) {
   // Starting the document portal and sending the welcome email are part of
   // accepting an offer, but they live in onboarding.js.
   const startOnboarding = ctx.startOnboarding || (async () => null);
+  const onCompletion = ctx.onCompletion || (() => {});
 
   // The welcome-and-documents email, chosen by role, carrying that role's
   // credentialing link and the hire's own portal link.
@@ -1430,6 +1431,12 @@ module.exports = function initHr(ctx) {
         const now = nowISO();
         await dbRun("UPDATE hr_offers SET status = 'accepted', signed_name = ?, signed_at = ?, updated_at = ? WHERE id = ?", [b.signed_name.trim(), now, now, o.id]);
         const applicant = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [o.applicant_id]);
+        onCompletion("offer_accepted", {
+          subject: applicant ? applicant.full_name : (b.signed_name || "").trim(),
+          detail: o.job_title ? `for ${o.job_title}` : null,
+          dedupeKey: `offer:${o.id}`,
+          link: `${APP_BASE_URL}/#/hr`,
+        });
         if (applicant) {
           await moveStageInternal(applicant, "hired", "candidate", "Accepted offer");
           await dbRun("UPDATE hr_applicants SET offer_status = 'accepted', final_decision = 'hired', automation_paused = TRUE, updated_at = ? WHERE id = ?", [now, applicant.id]);

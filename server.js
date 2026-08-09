@@ -1451,6 +1451,19 @@ async function enterStage(clientId, stageKey) {
 
   await dbRun("UPDATE clients SET stage = ?, updated_at = ?, stage_entered_at = ? WHERE id = ?", [stageKey, nowISO(), nowISO(), clientId]);
 
+  // Reaching Active Therapy is the one every other stage is working towards,
+  // so it is reported as its own thing rather than buried among stage moves.
+  if (stageKey !== client.stage) {
+    const stageDef = STAGES.find((s) => s.key === stageKey);
+    completions.record(stageKey === "active" ? "client_active" : "client_stage_advanced", {
+      subject: client.child_name,
+      detail: stageKey === "active" ? null : `Now in ${(stageDef && stageDef.label) || stageKey}`,
+      clientId,
+      dedupeKey: `stage:${clientId}:${stageKey}`,
+      link: `${APP_BASE_URL}/#/pipeline/${clientId}`,
+    });
+  }
+
   const tasks = await dbAll("SELECT * FROM stage_tasks WHERE stage_key = ?", [stageKey]);
   for (const task of tasks) {
     const dueDate = addBusinessDays(new Date(), task.sla_days).toISOString();
@@ -1515,6 +1528,17 @@ async function completeTask(taskId, completedByUserId) {
 
   // If all tasks for the client's current stage are complete, auto-advance.
   const client = await dbGet("SELECT * FROM clients WHERE id = ?", [task.client_id]);
+
+  const taskLabel = await dbGet("SELECT label FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
+  completions.record("stage_task_completed", {
+    subject: client && client.child_name,
+    detail: taskLabel && taskLabel.label,
+    clientId: task.client_id,
+    // A task can be un-ticked and re-ticked; each completion is real news, so
+    // the timestamp is part of the key rather than the task id alone.
+    dedupeKey: `stage_task:${taskId}:${nowISO()}`,
+    link: `${APP_BASE_URL}/#/pipeline/${task.client_id}`,
+  });
   const stageTaskRows = await dbAll("SELECT id FROM stage_tasks WHERE stage_key = ?", [client.stage]);
   const stageTaskIds = stageTaskRows.map((r) => r.id);
 
@@ -2162,6 +2186,15 @@ const SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV = process.env.SIGNNOW_NEWHIRE_TEMPLATE_ID 
 // Settings that need a real stored value from the first boot, because more
 // than one part of the app reads them.
 const DEFAULT_SETTINGS = {
+  // Quiana's SignNow "New Hire Employee Packet" template. Verified against the
+  // account: it is a prepared template whose single role is "Recipient 1",
+  // which is exactly the role sendNewHirePacket() invites -- so an offer
+  // acceptance now actually sends instead of recording a blocked packet.
+  // Seeded, not hard-coded: if she pastes a different ID in Admin Settings the
+  // stored value wins and this line is never read again. Note there are two
+  // templates by this name in the account; this is the one she gave, and the
+  // more recently updated of the pair.
+  signnow_newhire_template_id: "9b5e62f356aa42b297d72e71b965dfa4266ed957",
   credentialing_link_bcba: "https://sparkz.clickup.com/forms/3501350/f/3av96-450954/AMW0KVAC3YL07DEEMM",
   credentialing_link_rbt: "https://sparkz.clickup.com/forms/3501350/f/3av96-450934/OFTQKDCKHXT758222Z",
   class_dojo_link: "https://teach.classdojo.com/#/singleLinkSignup/TT6SYWAH3",
@@ -2306,6 +2339,17 @@ async function checkEnrollmentPackets() {
         nowISO(),
         packet.id,
       ]);
+      if (signNowStatus === "completed") {
+        const pc = await dbGet("SELECT child_name FROM clients WHERE id = ?", [packet.client_id]).catch(() => null);
+        // This sweep re-reads the same packet every hour until its row flips,
+        // so the packet id is the dedupe key -- one notice per packet, ever.
+        completions.record("enrollment_packet_completed", {
+          subject: pc && pc.child_name,
+          clientId: packet.client_id,
+          dedupeKey: `enrollment_packet:${packet.id}`,
+          link: `${APP_BASE_URL}/#/pipeline/${packet.client_id}`,
+        });
+      }
       continue;
     }
 
@@ -3219,6 +3263,9 @@ async function handle(req, res, pathname, method, query = {}) {
         pathname.startsWith("/api/staff-tasks") ? "tasks" :
         pathname.startsWith("/api/schedule") ? "schedule" :
         pathname.startsWith("/api/dashboard") ? "dashboard" :
+        // The completions feed renders on the dashboard, so it follows the
+        // dashboard's access. Its own handler is owner/admin only on top.
+        pathname.startsWith("/api/completions") ? "dashboard" :
         pathname.startsWith("/api/notifications") ? "outbox" :
         pathname.startsWith("/api/email-templates") ? "email-templates" :
         pathname.startsWith("/api/failed-emails") ? "failed-emails" :
@@ -3324,6 +3371,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/people/")) {
     const handled = await people.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/completions")) {
+    const handled = await completions.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -4376,8 +4428,20 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       }
       if (!sets.length) return json(res, 400, { error: "Nothing to update." });
       params.push(id);
+      const beforeTask = await dbGet("SELECT status FROM staff_tasks WHERE id = ?", [id]).catch(() => null);
       await dbRun(`UPDATE staff_tasks SET ${sets.join(", ")} WHERE id = ?`, params);
-      return json(res, 200, await dbGet("SELECT * FROM staff_tasks WHERE id = ?", [id]));
+      const afterTask = await dbGet("SELECT * FROM staff_tasks WHERE id = ?", [id]);
+      // Only the open -> done transition is news. Re-saving a task that was
+      // already done, or editing its title, is not.
+      if (afterTask && afterTask.status === "done" && (!beforeTask || beforeTask.status !== "done")) {
+        completions.record("staff_task_completed", {
+          subject: afterTask.assigned_name || null,
+          detail: afterTask.title,
+          clientId: afterTask.client_id || null,
+          dedupeKey: `staff_task:${id}:${afterTask.completed_at || nowISO()}`,
+        });
+      }
+      return json(res, 200, afterTask);
     }
     if (staffTaskMatch && method === "DELETE") {
       await dbRun("DELETE FROM staff_tasks WHERE id = ?", [Number(staffTaskMatch[1])]);
@@ -4787,6 +4851,8 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         screener_completed_recipient: await getAppSetting("screener_completed_recipient", ""),
         owner_notification_email: await getAppSetting("owner_notification_email", ""),
         clinical_director_email: await getAppSetting("clinical_director_email", ""),
+        completion_digest_recipients: await getAppSetting("completion_digest_recipients", ""),
+        completion_digest_hour: await getAppSetting("completion_digest_hour", "18"),
         signnow_newhire_template_id: await getAppSetting("signnow_newhire_template_id", ""),
         credentialing_link_bcba: await getAppSetting("credentialing_link_bcba", DEFAULT_SETTINGS.credentialing_link_bcba),
         credentialing_link_rbt: await getAppSetting("credentialing_link_rbt", DEFAULT_SETTINGS.credentialing_link_rbt),
@@ -4817,6 +4883,24 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         const email = (body.owner_notification_email || "").trim();
         if (!validEmail(email)) return json(res, 400, { error: "Please enter a valid owner email address." });
         await setAppSetting("owner_notification_email", email);
+      }
+      // Who gets the nightly "here's what finished" email. Blank is allowed and
+      // means "fall back to the owner address", which is what most installs
+      // want; a typo is not allowed, because a digest sent to a dead address
+      // fails silently every night.
+      if ("completion_digest_recipients" in body) {
+        const raw = String(body.completion_digest_recipients || "").trim();
+        const list = raw ? raw.split(/[,;]/).map((s) => s.trim()).filter(Boolean) : [];
+        const bad = list.filter((e) => !validEmail(e));
+        if (bad.length) return json(res, 400, { error: `Not a valid email address: ${bad.join(", ")}` });
+        await setAppSetting("completion_digest_recipients", list.join(", "));
+      }
+      if ("completion_digest_hour" in body) {
+        const h = Number(body.completion_digest_hour);
+        if (!Number.isInteger(h) || h < 0 || h > 23) {
+          return json(res, 400, { error: "Digest hour must be a whole number from 0 to 23." });
+        }
+        await setAppSetting("completion_digest_hour", String(h));
       }
       // The two credentialing forms are different per role, so they live here
       // rather than being pasted into a template body where a change means
@@ -5425,10 +5509,12 @@ function moduleGranted(user, key) {
 // ===== SCREENER add-on: clinical screener automation (send, remind, host, save) =====
 const screener = require("./screener")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, PUBLIC_DIR, moduleGranted,
+  onCompletion: (...a) => completions.record(...a),
 });
 // ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
 const hr = require("./hr")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR, moduleGranted,
+  onCompletion: (...a) => completions.record(...a),
   // New-hire employment packet (SignNow). Passed in rather than reimplemented so
   // there is one SignNow client, one token cache, and one place that knows how
   // a packet send is recorded.
@@ -5440,6 +5526,7 @@ const hr = require("./hr")({
 });
 const clientForms = require("./client-forms")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
+  onCompletion: (...a) => completions.record(...a),
 });
 const ot = require("./ot")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
@@ -5473,6 +5560,13 @@ const geoMap = require("./geo-map")({
 // Rethink-hours import, BCBA sign-off with auto-email + PDF. Owns /api/supervision/*. =====
 const supervision = require("./supervision")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
+  onCompletion: (...args) => completions.record(...args),
+});
+// ===== COMPLETIONS: one recorder for every "X finished" event, a dashboard
+// feed, and a single daily digest email. Constructed early so every module
+// below can be handed completions.record. =====
+const completions = require("./completions")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, json, readBody, getAppSetting, setAppSetting, APP_BASE_URL,
 });
 // ===== FINANCIAL CENTER ADVISOR add-on: owner-only money advisor from uploaded
 // bank/QuickBooks/payroll data — budgets, wage sim, reconciliation, insights. =====
@@ -5525,6 +5619,7 @@ const people = require("./people")({
 const onboarding = require("./onboarding")({
   dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, sendFile,
   sendEmail, APP_BASE_URL, getAppSetting,
+  onCompletion: (...a) => completions.record(...a),
   // There is no shared renderer on the templates module, so this mirrors the
   // one hr.js uses: pull the row, substitute {{merge}} fields.
   renderTemplate: async (key, fields) => {
@@ -5672,6 +5767,7 @@ async function start() {
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
   await scheduling.initTables().catch((e) => console.error("Scheduling initTables failed:", e));
   await onboarding.initTables().catch((e) => console.error("Onboarding initTables failed:", e));
+  await completions.initTables().catch((e) => console.error("Completions initTables failed:", e));
   // Seed the credentialing links rather than defaulting them at read time.
   // Two places read them -- the settings screen and the onboarding portal --
   // and a default that only exists in one of them is a link that silently
@@ -5777,6 +5873,15 @@ async function start() {
   setInterval(() => {
     hr.processHrMilestones().catch((e) => console.error("HR milestone sweep failed:", e));
   }, 6 * 60 * 60 * 1000);
+
+  // Daily completion digest. Checked every 20 minutes rather than scheduled
+  // for one exact moment, because the process restarts on every deploy and a
+  // once-a-day timer would simply never fire in a week with a few pushes.
+  // maybeSendDaily() holds the once-per-day rule itself, keyed on the date it
+  // last actually sent, so extra checks cost nothing.
+  setInterval(() => {
+    completions.maybeSendDaily().catch((e) => console.error("Completion digest failed:", e));
+  }, 20 * 60 * 1000);
 
   server.listen(PORT, () => {
     console.log(`Spectrum Squad CRM running at http://localhost:${PORT}`);

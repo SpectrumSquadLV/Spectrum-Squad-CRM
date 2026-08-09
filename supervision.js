@@ -17,6 +17,7 @@ const zlib = require("zlib");
 
 module.exports = function initSupervision(ctx) {
   const { dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json } = ctx;
+  const onCompletion = ctx.onCompletion || (() => {});
 
   const DATA_DIR = path.join(__dirname, "data");
   const SUP_DIR = path.join(DATA_DIR, "supervision");
@@ -393,6 +394,14 @@ module.exports = function initSupervision(ctx) {
           await sendEmail({ to, subject: `Supervision signed off — ${emp.name} (${mo})`, html: body, type: "supervision_signoff" }).catch((e) => console.error("supervision email:", e.message));
         }
         await logActivity(empId, `Supervision for ${mo} signed off by ${supervisor} (${p == null ? "n/a" : p + "%"}).`);
+        // Keyed on employee + month + the moment it was signed, because a month
+        // that is amended and re-signed is a genuinely new sign-off.
+        onCompletion("supervision_signed_off", {
+          subject: emp.name,
+          detail: `${mo} — ${sup} supervision hrs${p == null ? "" : ` (${p}%)`}, signed by ${supervisor}`,
+          employeeId: empId,
+          dedupeKey: `supervision:${empId}:${mo}:${signedAt}`,
+        });
         return json(res, 200, { ok: true, emailed: [...new Set(recipients)], has_pdf: !!stored });
       }
 

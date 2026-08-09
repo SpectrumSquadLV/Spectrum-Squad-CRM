@@ -25,6 +25,9 @@ const path = require("path");
 
 module.exports = function initScreener(ctx) {
   const { dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, PUBLIC_DIR } = ctx;
+  // Optional so this module still loads standalone; a missing recorder must
+  // never break a parent's submission.
+  const onCompletion = ctx.onCompletion || (() => {});
 
   // --- Config (override via Railway env vars; sensible defaults otherwise) ---
   // Comma-separated list supported, e.g. "owner@x.com, clinical@x.com"
@@ -240,6 +243,12 @@ module.exports = function initScreener(ctx) {
       );
       await dbRun("UPDATE clients SET clinical_screener_completed = true, updated_at = ? WHERE id = ?", [nowISO(), client.id]);
       await dbRun("UPDATE screener_invites SET status = 'completed', completed_at = ? WHERE id = ?", [nowISO(), inv.id]);
+      onCompletion("screener_completed", {
+        subject: client.child_name,
+        clientId: client.id,
+        dedupeKey: `screener:${inv.id}`,
+        link: `${APP_BASE_URL}/#/pipeline/${client.id}`,
+      });
       notifyTeam(client, body).catch((e) => console.error("[screener] team notify failed:", e.message));
       json(res, 200, { ok: true });
       return true;

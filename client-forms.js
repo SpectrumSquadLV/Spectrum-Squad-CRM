@@ -15,6 +15,7 @@ const path = require("path");
 const fs = require("fs");
 
 module.exports = function initClientForms(ctx) {
+  const onCompletion = ctx.onCompletion || (() => {});
   const {
     dbGet,
     dbAll,
@@ -25,6 +26,8 @@ module.exports = function initClientForms(ctx) {
     APP_BASE_URL,
     readBody,
     json,
+    // Optional: modules are constructed in different orders, and a missing
+    // recorder must never be the reason a parent's signature fails to save.
   } = ctx;
 
   // ============================ SCHEMA ============================
@@ -176,6 +179,17 @@ module.exports = function initClientForms(ctx) {
 
     const client = await dbGet("SELECT * FROM clients WHERE id = ?", [form.client_id]);
 
+    // The one Quiana named first: nothing used to tell anyone this had been
+    // signed. The form id is the dedupe key -- a form can only be signed once,
+    // and the early return above already handles a double submit.
+    onCompletion("financial_form_signed", {
+      subject: client && client.child_name,
+      detail: `Signed by ${name}`,
+      clientId: form.client_id,
+      dedupeKey: `financial_form:${form.id}`,
+      link: `${APP_BASE_URL}/#/pipeline/${form.client_id}`,
+    });
+
     // Keep the signed acknowledgment in the client's file as a viewable link.
     await dbRun(
       `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
@@ -291,6 +305,13 @@ module.exports = function initClientForms(ctx) {
     );
     // Store a friendly summary on the client's desired_schedule for quick reference.
     const client = await dbGet("SELECT * FROM clients WHERE id = ?", [reqRow.client_id]);
+    onCompletion("schedule_request_submitted", {
+      subject: client && client.child_name,
+      detail: `${v.total} hrs/week requested`,
+      clientId: reqRow.client_id,
+      dedupeKey: `schedule_request:${reqRow.id}`,
+      link: `${APP_BASE_URL}/#/pipeline/${reqRow.client_id}`,
+    });
     await dbRun("UPDATE clients SET desired_schedule = ?, updated_at = ? WHERE id = ?", [
       `${v.total} hrs/wk (parent-selected)`, nowISO(), reqRow.client_id,
     ]);

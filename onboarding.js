@@ -32,6 +32,7 @@ const fs = require("fs");
 const path = require("path");
 
 module.exports = function initOnboarding(ctx) {
+  const onCompletion = ctx.onCompletion || (() => {});
   const {
     dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, sendFile,
     sendEmail, APP_BASE_URL, getAppSetting, renderTemplate,
@@ -220,6 +221,17 @@ module.exports = function initOnboarding(ctx) {
       "UPDATE onboarding_records SET docs_complete_at = ?, status = 'documents_complete', updated_at = ? WHERE id = ?",
       [nowISO(), nowISO(), rec.id]
     );
+
+    // The docs_complete_at guard above already makes this once-only, but the
+    // record id is used as the key anyway so a manual reset cannot produce a
+    // second notice for the same hire.
+    onCompletion("onboarding_docs_complete", {
+      subject: employee && employee.name,
+      detail: `${docs.length} document${docs.length === 1 ? "" : "s"} received`,
+      employeeId: employee && employee.id,
+      dedupeKey: `onboarding_docs:${rec.id}`,
+      link: `${APP_BASE_URL}/#/staff`,
+    });
 
     // Tell the people who act on it, and leave the two tasks they have to do.
     const owner = clean(await getAppSetting("owner_notification_email", ""));

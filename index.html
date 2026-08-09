@@ -789,6 +789,10 @@ async function renderDashboard(mount) {
       <div class="section-title" style="margin-top:0;">RBT Supervision — this month</div>
       ${renderSupervisionWidget(dash.supervision)}
     </div>` : ""}
+    <div class="card" style="margin-top:20px;">
+      <div class="section-title" style="margin-top:0;">Just completed</div>
+      <div id="dash-completions"><div class="empty-state">Loading…</div></div>
+    </div>
   `;
 
   // Null-safe: two views define this id, and a fast second nav click can
@@ -797,6 +801,7 @@ async function renderDashboard(mount) {
   // handlers) was silently skipped.
   const newClientBtn = mount.querySelector("#new-client-btn") || document.getElementById("new-client-btn");
   if (newClientBtn) newClientBtn.addEventListener("click", openNewClientModal);
+  fillCompletionsFeed(mount);
   mount.querySelectorAll("[data-auth-bucket]").forEach((el) => {
     el.addEventListener("click", () => (location.hash = "#/auth-alerts/" + el.dataset.authBucket));
   });
@@ -817,6 +822,73 @@ function renderSupervisionWidget(s) {
     </div>
     ${s.need_hours_upload ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">⬆ Upload this month's Rethink hours export on the <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a> page to calculate percentages.</div>` : ""}
     <div style="margin-top:10px;"><a href="#/supervision" class="btn small secondary">Open supervision tracker</a></div>`;
+}
+
+// "Just completed" -- the same rows the evening digest will carry, visible any
+// time without waiting for an email. Owner/admin only server-side; for anyone
+// else the fetch 403s and the card removes itself rather than showing an error
+// for something they were never meant to see.
+async function fillCompletionsFeed(mount) {
+  const box = mount.querySelector("#dash-completions");
+  if (!box) return;
+  let d;
+  try { d = await api("/api/completions?limit=15"); }
+  catch (e) {
+    const card = box.closest(".card");
+    if (card) card.remove();
+    return;
+  }
+  const rows = d.completions || [];
+  if (!rows.length) {
+    box.innerHTML = `<div class="empty-state">Nothing finished yet today. Signed forms, submitted schedules and completed tasks land here.</div>`;
+    return;
+  }
+  const esc = (s) => { const el = document.createElement("div"); el.textContent = s == null ? "" : String(s); return el.innerHTML; };
+  const when = (iso) => {
+    try {
+      const dt = new Date(iso);
+      const mins = Math.round((Date.now() - dt.getTime()) / 60000);
+      if (mins < 1) return "just now";
+      if (mins < 60) return mins + "m ago";
+      const hrs = Math.round(mins / 60);
+      if (hrs < 24) return hrs + "h ago";
+      return dt.toLocaleDateString();
+    } catch (e) { return ""; }
+  };
+  box.innerHTML = rows.map((r) => `<div class="task-row">
+      <div class="info">
+        <strong>${esc(r.title)}</strong>${r.subject ? ` — ${esc(r.subject)}` : ""}
+        <div class="due">${esc(when(r.occurred_at))}${r.detail ? " · " + esc(r.detail) : ""}</div>
+      </div>
+      ${r.link ? `<a class="btn small secondary" href="${esc(r.link)}">Open</a>` : ""}
+    </div>`).join("")
+    + ((d.recipients || []).length
+        // A digest with nowhere to go fails quietly every night, which is the
+        // one failure mode that looks exactly like "nothing happened today".
+        // Say it loudly rather than in grey footnote text.
+        ? `<div style="font-size:12px; color:var(--text-muted); margin-top:10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+             <span>${d.pending_digest
+               ? `${d.pending_digest} waiting for tonight's ${d.digest_hour}:00 summary email to ${esc(d.recipients.join(", "))}`
+               : `Everything here has been emailed to ${esc(d.recipients.join(", "))}`}</span>
+             ${d.pending_digest ? `<button class="btn small secondary" id="send-digest-now">Email me now</button>` : ""}
+           </div>`
+        : `<div style="margin-top:10px; background:#fffbeb; border:1px solid #fde68a; color:#92400e; border-radius:8px; padding:9px 11px; font-size:12.5px;">
+             <strong>No one is getting the daily summary.</strong> This list still fills up, but nothing is emailed until you set an address under
+             Admin Settings → Daily "what finished today" email.
+           </div>`);
+  const btn = box.querySelector("#send-digest-now");
+  if (btn) {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Sending…";
+      try {
+        const r = await api("/api/completions/digest", { method: "POST" });
+        btn.textContent = r.sent
+          ? `Sent (${r.count})`
+          : r.reason === "no_recipient" ? "No recipient set in Admin Settings" : "Couldn't send";
+      } catch (e) { btn.textContent = e.message || "Couldn't send"; }
+    });
+  }
 }
 
 async function fillDashStaffing(mount) {
@@ -3460,6 +3532,26 @@ async function renderAdmin(mount) {
       </div>
       <div class="task-row">
         <div class="info">
+          <strong>Daily "what finished today" email</strong>
+          <div class="due">One email listing everything completed that day — signed financial forms, submitted schedules, finished screeners, completed tasks, hiring milestones. Comma-separate for more than one person. Leave blank to use the owner notification email above.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="digest-to" type="text" placeholder="qblake@spectrumsquadlv.com" style="width:260px;" />
+          <button class="btn small secondary" id="save-digest-to">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
+          <strong>What time it sends</strong>
+          <div class="due">Hour of the day, 0–23, on the server's clock. Anything that finishes after it goes out is carried to the next day's email — nothing is dropped.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="digest-hour" type="number" min="0" max="23" style="width:80px;" />
+          <button class="btn small secondary" id="save-digest-hour">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
           <strong>Clinical Director email</strong>
           <div class="due">Who receives BIP questions from BCBAs and plans submitted for review. The link in those emails opens the client's BIP directly.</div>
         </div>
@@ -3562,6 +3654,10 @@ async function renderAdmin(mount) {
     if (ownerInput) ownerInput.value = settings.owner_notification_email || "";
     const cdInput = mount.querySelector("#cd-email");
     if (cdInput) cdInput.value = settings.clinical_director_email || "";
+    const digestTo = mount.querySelector("#digest-to");
+    if (digestTo) digestTo.value = settings.completion_digest_recipients || "";
+    const digestHour = mount.querySelector("#digest-hour");
+    if (digestHour) digestHour.value = settings.completion_digest_hour || "18";
     const setVal = (id, v) => { const el = mount.querySelector(id); if (el) el.value = v || ""; };
     setVal("#cred-bcba", settings.credentialing_link_bcba);
     setVal("#cred-rbt", settings.credentialing_link_rbt);
@@ -3602,6 +3698,8 @@ async function renderAdmin(mount) {
   wireSetting("save-screener-email", "screener-email", "screener_completed_recipient");
   wireSetting("save-owner-email", "owner-email", "owner_notification_email");
   wireSetting("save-cd-email", "cd-email", "clinical_director_email");
+  wireSetting("save-digest-to", "digest-to", "completion_digest_recipients");
+  wireSetting("save-digest-hour", "digest-hour", "completion_digest_hour");
   wireSetting("save-newhire-template", "newhire-template", "signnow_newhire_template_id");
   wireSetting("save-cred-bcba", "cred-bcba", "credentialing_link_bcba");
   wireSetting("save-cred-rbt", "cred-rbt", "credentialing_link_rbt");
