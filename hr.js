@@ -31,6 +31,16 @@ module.exports = function initHr(ctx) {
     sendFile,
   } = ctx;
 
+  // The new-hire employment packet is sent through SignNow, which lives in
+  // server.js. If an older server.js is running without it, degrade to a
+  // recorded no-op rather than crashing offer acceptance.
+  const sendNewHirePacket = ctx.sendNewHirePacket || (async () => ({
+    ok: false, status: "blocked", error: "The new-hire packet sender is not available on this server build.",
+  }));
+  const getNewHirePacket = ctx.getNewHirePacket || (async () => ({
+    packet: null, configured: false, signnow_connected: false, template_set: false,
+  }));
+
   // ---- file storage (Railway volume at /app/data) ----
   const DATA_DIR = path.join(__dirname, "data");
   const RESUME_DIR = path.join(DATA_DIR, "hr-resumes");
@@ -983,6 +993,42 @@ module.exports = function initHr(ctx) {
     await dbRun("UPDATE hr_employees SET hr_activity = ? WHERE id = ?", [JSON.stringify(arr.slice(0, 200)), employeeId]);
   }
 
+  // A candidate who accepts an offer becomes a staff record, because that is
+  // where onboarding, documents and certifications live. Matches an existing
+  // record first (by applicant id, then by email) so accepting an offer for
+  // someone who already works here -- a rehire, or a record created by hand
+  // ahead of time -- updates that person instead of creating a duplicate.
+  async function ensureEmployeeForApplicant(applicant, offer) {
+    if (!applicant) return null;
+    let emp = await dbGet("SELECT * FROM hr_employees WHERE applicant_id = ?", [applicant.id]);
+    if (!emp && applicant.email) {
+      emp = await dbGet("SELECT * FROM hr_employees WHERE LOWER(email) = LOWER(?)", [applicant.email]);
+    }
+    const startDate = (offer && offer.start_date) || null;
+    if (emp) {
+      await dbRun(
+        `UPDATE hr_employees SET applicant_id = COALESCE(applicant_id, ?), hr_stage = 'Offer Accepted',
+           hr_offer_accepted_date = COALESCE(hr_offer_accepted_date, ?),
+           hr_hire_date = COALESCE(hr_hire_date, ?),
+           role_title = COALESCE(role_title, ?), email = COALESCE(email, ?)
+         WHERE id = ?`,
+        [applicant.id, nowISO().slice(0, 10), startDate, (offer && offer.job_title) || null, applicant.email || null, emp.id]
+      );
+      return await dbGet("SELECT * FROM hr_employees WHERE id = ?", [emp.id]);
+    }
+    const row = await dbRun(
+      `INSERT INTO hr_employees (applicant_id, name, email, phone, role_title, employment_type,
+         hire_date, hr_stage, hr_offer_accepted_date, hr_hire_date, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'Offer Accepted', ?, ?, 'onboarding', ?) RETURNING id`,
+      [applicant.id, applicant.full_name, applicant.email || null, applicant.phone || null,
+       (offer && offer.job_title) || null, (offer && offer.employment_type) || null,
+       startDate, nowISO().slice(0, 10), startDate, nowISO()]
+    );
+    const id = row.rows[0].id;
+    await audit("system", "employee_created_from_offer", "employee", id, applicant.full_name).catch(() => {});
+    return await dbGet("SELECT * FROM hr_employees WHERE id = ?", [id]);
+  }
+
   async function getOrCreateAvailLink(employeeId) {
     const existing = await dbGet("SELECT token FROM hr_avail_links WHERE employee_id = ? ORDER BY id DESC LIMIT 1", [employeeId]);
     if (existing) return existing.token;
@@ -1378,6 +1424,39 @@ module.exports = function initHr(ctx) {
             emailOwner: true,
           });
         }
+        // The candidate has said yes, so they are a hire. Make sure a staff
+        // record exists for them (the Staff directory is where onboarding
+        // lives) and send the new-hire employment packet through SignNow.
+        //
+        // This runs on the candidate's own click, so it must never be able to
+        // fail their acceptance -- every step is caught and logged, and the
+        // packet sender itself is keyed on employee id so a second acceptance,
+        // or the staff-card path below, cannot send a duplicate.
+        try {
+          const employee = await ensureEmployeeForApplicant(applicant, o);
+          if (employee) {
+            const packet = await sendNewHirePacket(employee, { actor: "offer accepted (candidate)" });
+            await logEmpActivity(
+              employee.id,
+              packet.ok
+                ? (packet.already ? "Offer accepted — new-hire packet had already been sent." : "Offer accepted — new-hire employment packet sent via SignNow.")
+                : `Offer accepted — new-hire packet NOT sent: ${packet.error}`
+            ).catch(() => {});
+            if (!packet.ok) {
+              await notify({
+                type: "newhire_packet_failed",
+                applicantId: applicant ? applicant.id : null,
+                title: "⚠ New-hire packet did not send",
+                body: `${employee.name} accepted their offer, but the employment packet could not be sent: ${packet.error}`,
+                severity: "urgent",
+                emailOwner: true,
+              }).catch(() => {});
+            }
+          }
+        } catch (e) {
+          console.error("New-hire packet automation failed after offer acceptance:", e.message);
+        }
+
         await audit("candidate", "offer_accepted", "applicant", o.applicant_id, `signed=${b.signed_name.trim()}`);
         return json(res, 200, { ok: true });
       }
@@ -2378,9 +2457,56 @@ module.exports = function initHr(ctx) {
         if (a.task_homebase) { await hrMakeStaffTask(`Add ${emp.name} to Homebase`, empId); fired.push("Task: Add to Homebase"); }
         if (a.task_rethink) { await hrMakeStaffTask(`Add ${emp.name} to Rethink`, empId); fired.push("Task: Add to Rethink"); }
 
+        // New-hire employment packet via SignNow. Defaults to ON: this is the
+        // automation the offer-acceptance trigger exists for. Sending is
+        // deduplicated on the employee, so a candidate who already got their
+        // packet when they clicked accept will not get a second one here.
+        let packetResult = null;
+        if (a.newhire_packet !== false) {
+          packetResult = await sendNewHirePacket(
+            { id: empId, name: emp.name, email: emp.email, role_title: emp.role_title },
+            { actor: actor || "offer accepted (staff card)" }
+          );
+          if (packetResult.ok) {
+            fired.push(packetResult.already
+              ? "New-hire employment packet (already sent — not duplicated)"
+              : "New-hire employment packet sent via SignNow");
+          } else {
+            // Surfaced rather than swallowed: a packet that silently did not
+            // send is how a new hire shows up on day one with no paperwork.
+            fired.push(`New-hire packet NOT sent — ${packetResult.error}`);
+          }
+        }
+
         await logEmpActivity(empId, "Offer Accepted — fired: " + (fired.length ? fired.join("; ") : "no actions selected") + (hireDate ? ` (start ${hireDate})` : ""));
         await audit(actor, "offer_accepted_bundle", "employee", empId, fired.join("; "));
-        return json(res, 200, { ok: true, fired, employee: await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empId]) });
+        return json(res, 200, {
+          ok: true, fired, packet: packetResult,
+          employee: await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empId]),
+        });
+      }
+
+      // New-hire packet status for the staff card, plus a manual send/resend.
+      const packetMatch = pathname.match(/^\/api\/hr\/employees\/(\d+)\/newhire-packet$/);
+      if (packetMatch && method === "GET") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        return json(res, 200, await getNewHirePacket(Number(packetMatch[1])));
+      }
+      if (packetMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const empId = Number(packetMatch[1]);
+        const emp = await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empId]);
+        if (!emp) return json(res, 404, { error: "Not found" });
+        const b = await readBody(req).catch(() => ({}));
+        const result = await sendNewHirePacket(
+          { id: empId, name: emp.name, email: emp.email, role_title: emp.role_title },
+          { actor, force: !!(b && b.force) }
+        );
+        await logEmpActivity(empId, result.ok
+          ? (result.already ? "New-hire packet: already sent (no duplicate created)." : "New-hire employment packet sent via SignNow.")
+          : `New-hire packet failed to send: ${result.error}`).catch(() => {});
+        await audit(actor, "newhire_packet_send", "employee", empId, result.ok ? result.status : result.error);
+        return json(res, result.ok ? 200 : 400, result);
       }
 
       // Bulk import staff from the Rethink payroll sheet (NO pay). Upserts by

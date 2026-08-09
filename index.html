@@ -1451,6 +1451,9 @@ async function openClientModal(id) {
 
       ${authSectionHtml(client)}
 
+      <div class="section-title">Emergency Contacts</div>
+      <div id="emergency-mount"></div>
+
       <div class="section-title">Behavior Intervention Plan</div>
       <div id="bip-mount"></div>
 
@@ -1647,6 +1650,9 @@ async function openClientModal(id) {
   // attached so it can measure the modal for its sticky header.
   const bipMount = backdrop.querySelector("#bip-mount");
   if (bipMount && window.__renderBipSection) window.__renderBipSection(bipMount, id);
+
+  const emergencyMount = backdrop.querySelector("#emergency-mount");
+  if (emergencyMount && window.PeopleUI) window.PeopleUI.renderEmergencyContacts(emergencyMount, "client", id);
 
   const close = () => {
     clientDetailsEditing = false;
@@ -2822,6 +2828,7 @@ async function renderStaff(mount) {
         <button class="btn" id="staff-add-btn">+ Add Staff</button>
       </div>
     </div>
+    <div id="cert-banner" style="margin-bottom:14px;"></div>
     <div id="docs-outstanding" style="margin-bottom:14px;"></div>
     <div id="staff-bulk-bar" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; background:var(--brand-light,#e8ecfa); border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:10px 14px; margin-bottom:12px;">
       <strong id="staff-bulk-count" style="font-size:13px;"></strong>
@@ -2855,6 +2862,7 @@ async function renderStaff(mount) {
       </div>
     </div>
   `;
+  if (window.PeopleUI) window.PeopleUI.renderCertBanner(mount.querySelector("#cert-banner"));
   mount.querySelector("#staff-add-btn").addEventListener("click", () => openStaffModal(null, mount));
   mount.querySelector("#staff-import-btn").addEventListener("click", () => openStaffImportModal(mount));
   mount.querySelector("#payroll-import-btn").addEventListener("click", () => openPayrollImportModal(mount));
@@ -2925,6 +2933,9 @@ async function openStaffModal(id, pageMount) {
         <button class="btn" id="staff-save">${id ? "Save" : "Add"}</button>
         <span id="staff-save-status" style="font-size:12.5px; color:var(--text-muted); align-self:center;"></span>
       </div>
+      ${id ? `<div class="section-title">Emergency Contacts</div><div id="staff-emergency"></div>` : ""}
+      ${id ? `<div class="section-title">Certifications &amp; Renewals</div><div id="staff-certs"></div>` : ""}
+      ${id ? `<div class="section-title">Onboarding Paperwork</div><div id="staff-packet"></div>` : ""}
       ${id ? `<div class="section-title">Documents</div><div id="staff-docs"></div>` : ""}
       ${id ? `<div class="section-title">Timecards</div><div id="staff-timecards">${timecardsHtml}</div>` : ""}
       ${id ? `<div class="section-title">Supervision</div><div id="staff-supervision"></div>` : ""}
@@ -2976,6 +2987,14 @@ async function openStaffModal(id, pageMount) {
     }
   }
 
+  if (id && window.PeopleUI) {
+    const ecEl = backdrop.querySelector("#staff-emergency");
+    if (ecEl) window.PeopleUI.renderEmergencyContacts(ecEl, "staff", id);
+    const certEl = backdrop.querySelector("#staff-certs");
+    if (certEl) window.PeopleUI.renderCertifications(certEl, id);
+    const packetEl = backdrop.querySelector("#staff-packet");
+    if (packetEl) window.PeopleUI.renderNewHirePacket(packetEl, id);
+  }
   if (id) renderStaffDocs(backdrop, id, emp.documents || []);
   if (id && window.HRAttendance) {
     const attEl = backdrop.querySelector("#staff-attendance");
@@ -3139,7 +3158,8 @@ function openOfferAcceptedModal(id, emp, onDone) {
       <div class="modal-header"><h2>🎉 Offer accepted — start onboarding</h2><button class="close-btn">✕</button></div>
       <p style="font-size:13px; color:var(--text-muted); margin-top:0;">Choose what to send <strong>${staffEsc(emp.name)}</strong> now. Uncheck anything you'd rather handle later.</p>
       <div class="field"><label>Start / hire date</label><input id="oa-hire" type="date" value="${staffEsc(hire)}" /></div>
-      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:10px;"><input type="checkbox" data-oa="dojo" checked /><span><strong>Class Dojo welcome email</strong><br><span style="font-size:12px; color:var(--text-muted);">Warm welcome + start date.</span></span></label>
+      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:10px;"><input type="checkbox" data-oa="newhire_packet" checked /><span><strong>New hire employment packet (SignNow)</strong><br><span style="font-size:12px; color:var(--text-muted);">Sends their packet to sign. If they already received it when they accepted online, it won't be sent twice.</span></span></label>
+      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="dojo" checked /><span><strong>Class Dojo welcome email</strong><br><span style="font-size:12px; color:var(--text-muted);">Warm welcome + start date.</span></span></label>
       <div class="field" style="margin:6px 0 6px 26px;"><label>Class Dojo invite link (optional)</label><input id="oa-dojo-link" placeholder="https://…" /></div>
       <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="rethink" checked /><span><strong>Rethink credentials email</strong><br><span style="font-size:12px; color:var(--text-muted);">Username only — send the password by a separate secure channel.</span></span></label>
       <div class="field" style="margin:6px 0 6px 26px;"><label>Rethink username (optional)</label><input id="oa-rethink-user" placeholder="jsmith" /></div>
@@ -3391,6 +3411,16 @@ async function renderAdmin(mount) {
           <button class="btn small secondary" id="save-cd-email">Save</button>
         </div>
       </div>
+      <div class="task-row">
+        <div class="info">
+          <strong>New-hire employment packet (SignNow)</strong>
+          <div class="due">The SignNow template the new hire packet is copied from. When an offer is accepted — whether the candidate clicks accept on their offer link or you set the stage to Offer Accepted — the packet is sent to them automatically. Copy the template ID from the template's URL in SignNow. <span id="signnow-state"></span></div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="newhire-template" type="text" placeholder="SignNow template ID" style="width:260px;" />
+          <button class="btn small secondary" id="save-newhire-template">Save</button>
+        </div>
+      </div>
     </div>
     <div class="card" style="margin-bottom:20px;">
       <div class="section-title" style="margin-top:0;">Import Behavior Intervention Plans</div>
@@ -3405,18 +3435,8 @@ async function renderAdmin(mount) {
       <div id="bip-import-preview" style="margin-top:14px;"></div>
     </div>
     <div class="card" style="margin-bottom:20px;">
-      <div class="section-title" style="margin-top:0;">Department Notification Emails</div>
-      ${state.departments
-        .map(
-          (d) => `<div class="task-row">
-          <div class="info"><span class="badge" style="background:${d.color}">${d.name}</span></div>
-          <div style="display:flex; gap:8px;">
-            <input data-dept-email="${d.id}" value="${adminEsc(d.notify_email || "")}" style="width:240px;" />
-            <button class="btn small secondary" data-save-dept="${d.id}">Save</button>
-          </div>
-        </div>`
-        )
-        .join("")}
+      <div class="section-title" style="margin-top:0;">Departments</div>
+      <div id="departments-mount"></div>
     </div>
     <div class="card">
       <div class="section-title" style="margin-top:0;">Overdue Sweep</div>
@@ -3426,15 +3446,7 @@ async function renderAdmin(mount) {
     </div>
   `;
 
-  mount.querySelectorAll("[data-save-dept]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const id = btn.dataset.saveDept;
-      const email = mount.querySelector(`[data-dept-email="${id}"]`).value;
-      await api("/api/admin/departments", { method: "PATCH", body: { id: Number(id), notify_email: email } });
-      btn.textContent = "Saved ✓";
-      setTimeout(() => (btn.textContent = "Save"), 1500);
-    });
-  });
+  if (window.PeopleUI) window.PeopleUI.renderDepartmentsAdmin(mount.querySelector("#departments-mount"));
 
   mount.querySelector("#run-sweep").addEventListener("click", async () => {
     const { flagged } = await api("/api/admin/check-overdue", { method: "POST" });
@@ -3452,6 +3464,20 @@ async function renderAdmin(mount) {
     if (ownerInput) ownerInput.value = settings.owner_notification_email || "";
     const cdInput = mount.querySelector("#cd-email");
     if (cdInput) cdInput.value = settings.clinical_director_email || "";
+    const tplInput = mount.querySelector("#newhire-template");
+    if (tplInput) tplInput.value = settings.signnow_newhire_template_id || "";
+    const sn = mount.querySelector("#signnow-state");
+    if (sn) {
+      // Say plainly whether the automation can actually fire, rather than
+      // leaving an empty box that looks configured.
+      if (!settings.signnow_connected) {
+        sn.innerHTML = `<strong style="color:#b91c1c;">SignNow isn't connected on the server yet, so the packet can't send.</strong>`;
+      } else if (!settings.signnow_newhire_template_id && !settings.signnow_newhire_env_default) {
+        sn.innerHTML = `<strong style="color:#92400e;">No template set yet — the automation is off until you add one.</strong>`;
+      } else {
+        sn.innerHTML = `<strong style="color:#166534;">Connected and ready.</strong>`;
+      }
+    }
   } catch (e) {}
   const wireSetting = (btnId, inputId, key) => {
     const btn = mount.querySelector("#" + btnId);
@@ -3471,6 +3497,7 @@ async function renderAdmin(mount) {
   wireSetting("save-screener-email", "screener-email", "screener_completed_recipient");
   wireSetting("save-owner-email", "owner-email", "owner_notification_email");
   wireSetting("save-cd-email", "cd-email", "clinical_director_email");
+  wireSetting("save-newhire-template", "newhire-template", "signnow_newhire_template_id");
   wireBipImport(mount);
 
   await renderTeamSection(mount);
@@ -3815,6 +3842,7 @@ function openAccessModal(u, onDone) {
   <script src="supply-requests-frontend.js"></script>
   <script src="geo-map-frontend.js"></script>
   <script src="bip-frontend.js"></script>
+  <script src="people-frontend.js"></script>
 
 </body>
 </html>

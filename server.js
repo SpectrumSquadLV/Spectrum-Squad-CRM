@@ -326,6 +326,19 @@ CREATE TABLE IF NOT EXISTS enrollment_packets (
   completed_at TEXT,
   FOREIGN KEY (client_id) REFERENCES clients(id)
   );
+CREATE TABLE IF NOT EXISTS newhire_packets (
+  id SERIAL PRIMARY KEY,
+  employee_id INTEGER NOT NULL UNIQUE,
+  signnow_document_id TEXT,
+  status TEXT NOT NULL DEFAULT 'sent', -- sent | completed | failed | blocked
+  recipient_email TEXT,
+  sent_at TEXT,
+  completed_at TEXT,
+  error_detail TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at TEXT,
+  triggered_by TEXT
+  );
 `;
 
 // Small forward-compatible migrations for columns/tables added after the
@@ -1976,6 +1989,101 @@ async function sendEnrollmentPacket(client) {
   }
 }
 
+// ============================== NEW-HIRE EMPLOYMENT PACKET ==============================
+// The staff-side twin of the enrollment packet: the moment an offer is
+// accepted, the new hire gets their employment packet to sign in SignNow.
+//
+// The template id is read from the admin settings first and the environment
+// second, so the packet can be pointed at a new SignNow template from the
+// Admin screen without a redeploy.
+//
+// It is deliberately keyed on employee_id with a UNIQUE constraint: an offer
+// can be marked accepted from the candidate's public link AND from the staff
+// card, and neither path should be able to send a second packet to the same
+// person.
+const SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV = process.env.SIGNNOW_NEWHIRE_TEMPLATE_ID || "";
+
+async function newHireTemplateId() {
+  const fromSettings = (await getAppSetting("signnow_newhire_template_id", "")) || "";
+  return String(fromSettings || SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV).trim();
+}
+
+async function recordNewHirePacket(employeeId, { status, documentId = null, error = null, email = null, actor = null }) {
+  await dbRun(
+    `INSERT INTO newhire_packets (employee_id, signnow_document_id, status, recipient_email, sent_at,
+       error_detail, attempts, last_attempt_at, triggered_by)
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+     ON CONFLICT (employee_id) DO UPDATE SET
+       status = EXCLUDED.status,
+       signnow_document_id = COALESCE(EXCLUDED.signnow_document_id, newhire_packets.signnow_document_id),
+       recipient_email = COALESCE(EXCLUDED.recipient_email, newhire_packets.recipient_email),
+       error_detail = EXCLUDED.error_detail,
+       attempts = newhire_packets.attempts + 1,
+       last_attempt_at = EXCLUDED.last_attempt_at,
+       triggered_by = COALESCE(EXCLUDED.triggered_by, newhire_packets.triggered_by),
+       sent_at = CASE WHEN EXCLUDED.status = 'sent' THEN EXCLUDED.sent_at ELSE newhire_packets.sent_at END`,
+    [employeeId, documentId, status, email, nowISO(), error, nowISO(), actor]
+  );
+}
+
+// employee: { id, name, email, role_title }. `force` re-sends after a failure
+// or when someone deliberately asks for a second copy from the staff card.
+async function sendNewHirePacket(employee, { actor = "automation", force = false } = {}) {
+  if (!employee || !employee.id) return { ok: false, status: "blocked", error: "No employee record." };
+
+  const existing = await dbGet("SELECT * FROM newhire_packets WHERE employee_id = ?", [employee.id]);
+  if (existing && ["sent", "completed"].includes(existing.status) && !force) {
+    return { ok: true, status: existing.status, already: true, documentId: existing.signnow_document_id };
+  }
+
+  const templateId = await newHireTemplateId();
+  const hasAuth = (SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY;
+  if (!hasAuth || !templateId) {
+    const msg = !hasAuth
+      ? "SignNow is not connected on the server (needs SIGNNOW_BASIC_TOKEN / SIGNNOW_USERNAME / SIGNNOW_PASSWORD, or SIGNNOW_API_KEY)."
+      : "No new-hire packet template is set. Add the SignNow template ID in Admin Settings → New-hire employment packet.";
+    await recordNewHirePacket(employee.id, { status: "blocked", error: msg, email: employee.email || null, actor }).catch(() => {});
+    return { ok: false, status: "blocked", error: msg };
+  }
+  if (!employee.email) {
+    const msg = "No email address on file for this staff member — the employment packet could not be sent.";
+    await recordNewHirePacket(employee.id, { status: "blocked", error: msg, actor }).catch(() => {});
+    return { ok: false, status: "blocked", error: msg };
+  }
+
+  try {
+    const copy = await signNowRequest(`/template/${templateId}/copy`, {
+      method: "POST",
+      body: JSON.stringify({ document_name: `New Hire Employment Packet - ${employee.name}` }),
+    });
+    const documentId = copy.id;
+    const firstName = String(employee.name || "").trim().split(/\s+/)[0] || "there";
+    await signNowRequest(`/document/${documentId}/invite`, {
+      method: "POST",
+      body: JSON.stringify({
+        to: [{ email: employee.email, role: "Recipient 1", order: 1 }],
+        from: SIGNNOW_SENDER_EMAIL,
+        subject: `Welcome to Spectrum Squad — please complete your new hire paperwork`,
+        message: `Hi ${firstName}, welcome to the team! Please review and sign your New Hire Employment Packet${employee.role_title ? ` for the ${employee.role_title} role` : ""} using the link below. Getting this back before your start date keeps your onboarding on track. If anything looks off, just reply to this email.`,
+      }),
+    });
+    await recordNewHirePacket(employee.id, { status: "sent", documentId, email: employee.email, actor });
+    console.log(`New-hire packet sent to ${employee.email} for employee ${employee.id}`);
+    return { ok: true, status: "sent", documentId };
+  } catch (err) {
+    console.error("Failed to send new-hire packet for employee", employee.id, err.message);
+    await recordNewHirePacket(employee.id, { status: "failed", error: err.message, email: employee.email, actor }).catch(() => {});
+    return { ok: false, status: "failed", error: err.message };
+  }
+}
+
+async function getNewHirePacket(employeeId) {
+  const row = await dbGet("SELECT * FROM newhire_packets WHERE employee_id = ?", [employeeId]);
+  const templateId = await newHireTemplateId();
+  const hasAuth = !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY);
+  return { packet: row || null, configured: hasAuth && !!templateId, signnow_connected: hasAuth, template_set: !!templateId };
+}
+
 // Self-healing sweep: re-attempts the enrollment packet for any early-stage
 // client whose packet never successfully sent (missing row, or status
 // failed/blocked). Runs on the same hourly cadence as the packet checker, so a
@@ -2913,6 +3021,16 @@ async function handle(req, res, pathname, method, query = {}) {
         pathname.startsWith("/api/failed-emails") ? "failed-emails" :
         pathname.startsWith("/api/auth-alerts") ? "auth-alerts" :
         pathname.startsWith("/api/admin") ? "admin" :
+        // People add-on. Certifications live on the staff card and departments
+        // are an admin setting, so each follows its host section. Emergency
+        // contacts exist on both client and staff records, so they follow
+        // whichever record is being asked for -- which is why every call sends
+        // owner_type on the query string, not only in the body.
+        pathname.startsWith("/api/people/certifications") ? "staff" :
+        pathname.startsWith("/api/people/departments") ? "admin" :
+        pathname.startsWith("/api/people/emergency-contacts")
+          ? (String(query.owner_type || "") === "staff" ? "staff" : "pipeline")
+          :
         null
       );
       if (prefixKey && ma[prefixKey] === false) {
@@ -2996,6 +3114,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/bip")) {
     const handled = await bip.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/people/")) {
+    const handled = await people.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -4422,6 +4545,9 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         screener_completed_recipient: await getAppSetting("screener_completed_recipient", ""),
         owner_notification_email: await getAppSetting("owner_notification_email", ""),
         clinical_director_email: await getAppSetting("clinical_director_email", ""),
+        signnow_newhire_template_id: await getAppSetting("signnow_newhire_template_id", ""),
+        signnow_newhire_env_default: SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV ? "set" : "",
+        signnow_connected: !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY),
       });
     }
     if (pathname === "/api/admin/settings" && method === "PATCH") {
@@ -4443,6 +4569,16 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         const email = (body.owner_notification_email || "").trim();
         if (!validEmail(email)) return json(res, 400, { error: "Please enter a valid owner email address." });
         await setAppSetting("owner_notification_email", email);
+      }
+      if ("signnow_newhire_template_id" in body) {
+        // Which SignNow template the new-hire employment packet is copied from.
+        // Kept in settings rather than only in the environment so the packet can
+        // be re-pointed at a new template without a redeploy.
+        const tpl = (body.signnow_newhire_template_id || "").trim();
+        if (tpl && !/^[A-Za-z0-9_-]{10,80}$/.test(tpl)) {
+          return json(res, 400, { error: "That doesn't look like a SignNow template ID. Copy it from the template's URL in SignNow." });
+        }
+        await setAppSetting("signnow_newhire_template_id", tpl);
       }
       if ("screener_completed_recipient" in body) {
         // May be a comma/semicolon-separated list of addresses.
@@ -4944,6 +5080,7 @@ const PUBLIC_FILES = new Set([
   "/supply-requests-frontend.js",
   "/geo-map-frontend.js",
   "/bip-frontend.js",
+  "/people-frontend.js",
 ]);
 
 function serveStatic(req, res, pathname) {
@@ -5003,6 +5140,10 @@ const screener = require("./screener")({
 // ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
 const hr = require("./hr")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR, moduleGranted,
+  // New-hire employment packet (SignNow). Passed in rather than reimplemented so
+  // there is one SignNow client, one token cache, and one place that knows how
+  // a packet send is recorded.
+  sendNewHirePacket, getNewHirePacket,
 });
 const clientForms = require("./client-forms")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
@@ -5067,6 +5208,15 @@ const growth = require("./growth")({
 // Owns /api/bip/*. Reuses the clients table, auth, permissions and email. =====
 const bip = require("./bip")({
   dbGet, dbAll, dbRun, nowISO, crypto, readBody, json,
+  sendEmail, APP_BASE_URL, getAppSetting, canAccessClients,
+});
+
+// ===== PEOPLE add-on: department management, emergency contacts on client and
+// staff cards, and staff certification expiry with staged notices. Owns
+// /api/people/*. Extends the existing departments table rather than replacing
+// it, so every stage-routing reference keeps working. =====
+const people = require("./people")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json,
   sendEmail, APP_BASE_URL, getAppSetting, canAccessClients,
 });
 
@@ -5171,6 +5321,7 @@ async function start() {
   await financialAdvisor.initTables().catch((e) => console.error("Financial advisor initTables failed:", e));
   await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
   await bip.initTables().catch((e) => console.error("BIP initTables failed:", e));
+  await people.initTables().catch((e) => console.error("People initTables failed:", e));
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
@@ -5197,6 +5348,14 @@ async function start() {
   setInterval(() => {
     processStaffTaskReminders().catch((e) => console.error("Staff task reminder sweep failed:", e));
   }, 6 * 60 * 60 * 1000);
+
+  // Staff certification expiry -- staged notices to the staff member and the
+  // Clinical Director. Runs on boot and then daily. Each stage sends at most
+  // once per certification per expiration date, so a restart cannot re-send.
+  people.certificationSweep().catch((e) => console.error("Certification sweep failed:", e));
+  setInterval(() => {
+    people.certificationSweep().catch((e) => console.error("Certification sweep failed:", e));
+  }, 24 * 60 * 60 * 1000);
 
   // Daily authorization-expiration check (also runs once on boot above).
   setInterval(() => {
