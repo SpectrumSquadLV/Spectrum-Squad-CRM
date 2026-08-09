@@ -412,6 +412,15 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_tricare_completed BOOLEAN 
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_tricare_date TEXT;
 -- Rename the old Vineland stage task to the In-Clinic Assessment.
 UPDATE stage_tasks SET label = 'Schedule In-Clinic Assessment' WHERE stage_key = 'assessment_scheduling' AND label = 'Schedule Vineland / Intake Assessment';
+-- "Intake Packet" was retired as a phase. Anyone parked in it moves to the
+-- next stage along. This is a plain UPDATE rather than enterStage() on
+-- purpose: enterStage fires the department alert and the parent milestone
+-- email, and a family should not receive "great news, time for your
+-- assessment" because of a schema change. Their existing intake-packet tasks
+-- are deliberately left alone -- still visible, still tickable -- rather than
+-- silently marked done on someone's behalf. Idempotent: after the first run
+-- there is nothing left to match.
+UPDATE clients SET stage = 'assessment_scheduling', updated_at = to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') WHERE stage = 'intake_packet';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS can_view_financials BOOLEAN NOT NULL DEFAULT false;
 -- Per-user granular module access overrides: JSON map { moduleKey: bool }.
 -- Absent key = fall back to the role default. Lets the owner grant or restrict
@@ -1404,7 +1413,12 @@ const STAGES = [
   { key: "new_submission", label: "New Submission", color: "#6b7280" },
   { key: "clinical_screener", label: "Clinical Screener", color: "#3f8f89" },
   { key: "insurance_verification", label: "Insurance Verification", color: "#3f56b5" },
-  { key: "intake_packet", label: "Intake Packet", color: "#5fa8a0" },
+  // "Intake Packet" was retired at Quiana's request. The SignNow enrollment
+  // packet is unaffected -- it is sent at new submission and chased on its own
+  // clock, and never depended on a client being parked in a stage named after
+  // it. The migration below moves anyone who was in that stage on to the next
+  // one; the key is deliberately left out of STAGE_ORDER so nextStageKey()
+  // steps straight from insurance verification to the assessment.
   { key: "assessment_scheduling", label: "In-Clinic Assessment", color: "#1b2a6b" },
   { key: "authorization", label: "Authorization Pending", color: "#c98a1b" },
   { key: "first_day_scheduled", label: "First Day Scheduling", color: "#e0a430" },
@@ -1473,7 +1487,7 @@ async function enterStage(clientId, stageKey) {
 // Stages that trigger a parent-facing milestone email. Each maps to a
 // "milestone_<stageKey>" row in the email_templates table (editable under
 // Settings -> Email Templates).
-const MILESTONE_STAGE_KEYS = ["new_submission", "intake_packet", "authorization", "first_day_scheduled", "active"];
+const MILESTONE_STAGE_KEYS = ["new_submission", "authorization", "first_day_scheduled", "active"];
 
 async function sendParentMilestone(client, stageKey) {
   if (!MILESTONE_STAGE_KEYS.includes(stageKey) || !client.parent_email) return;
@@ -1694,6 +1708,9 @@ async function processStaffTaskReminders() {
 
 const MILESTONES = [
   { key: 1, label: "New Lead", stages: ["new_submission"] },
+  // "intake_packet" stays listed here so any client still carrying the retired
+  // stage key -- an old row, a stale browser tab mid-save -- still resolves to
+  // a milestone instead of silently falling back to "New Lead".
   { key: 2, label: "Intake & Eligibility", stages: ["clinical_screener", "insurance_verification", "intake_packet"] },
   { key: 3, label: "Clinical Assessment", stages: ["assessment_scheduling"] },
   { key: 4, label: "Authorization", stages: ["authorization"] },
@@ -2387,9 +2404,14 @@ const APP_BASE_URL = (process.env.APP_BASE_URL || "https://crm.spectrumsquadlv.c
 // Roles allowed to view authorization/insurance fields at all. Any role not
 // in this list (e.g. intake, scheduling, and any future RBT login) never
 // receives these fields in API responses -- least-privilege by default.
-const AUTH_VIEW_ROLES = ["admin", "billing", "clinical"];
+// "owner" and "super_admin" were missing here while being present in every
+// other role list in the app, so the business owner's own account was the one
+// login that could not see authorization data -- sanitizeClientForRole strips
+// those fields, which would have blanked the auth section of every client card
+// and left the dashboard's expiry counts empty. Restored to match.
+const AUTH_VIEW_ROLES = ["owner", "super_admin", "admin", "billing", "clinical"];
 // Roles allowed to fully create/edit authorization fields + manage alerts.
-const AUTH_EDIT_ROLES = ["admin", "billing"];
+const AUTH_EDIT_ROLES = ["owner", "super_admin", "admin", "billing"];
 
 const AUTH_FIELDS = [
   "insurance_payer",
@@ -3433,6 +3455,14 @@ async function handle(req, res, pathname, method, query = {}) {
         [today]
       );
       const totalClients = (await dbGet("SELECT COUNT(*) AS n FROM clients")).n;
+      // The Pipeline Snapshot hides discharged and not-moving-forward clients,
+      // so it has to divide by the same population it shows. Dividing live
+      // stages by an all-time headcount made every bar read short, and got
+      // worse with every client ever closed out.
+      const CLOSED = "('discharged','not_moving_forward')";
+      const activeClients = Number((await dbGet(`SELECT COUNT(*) AS n FROM clients WHERE stage NOT IN ${CLOSED}`)).n);
+      const closedClients = Number(totalClients) - activeClients;
+      const waitlistedActive = Number((await dbGet(`SELECT COUNT(*) AS n FROM clients WHERE waitlisted = true AND stage NOT IN ${CLOSED}`)).n);
 
       // Active-pipeline clients grouped by insurance provider (for the dashboard chart).
       const byInsuranceRaw = await dbAll(
@@ -3446,8 +3476,15 @@ async function handle(req, res, pathname, method, query = {}) {
 
       let authCounts = null;
       if (authAlerts.canViewAuth(user)) {
+        // Discharged and not-moving-forward clients are excluded: an expired
+        // authorization for a family who left is not a problem anyone can
+        // act on, and leaving them in made the dashboard's expiry counts
+        // permanently overstated.
         const activeAuths = await dbAll(
-          "SELECT auth_expiration_date FROM clients WHERE authorization_status != 'Not Required' AND auth_expiration_date IS NOT NULL"
+          `SELECT auth_expiration_date FROM clients
+            WHERE authorization_status != 'Not Required'
+              AND auth_expiration_date IS NOT NULL
+              AND stage NOT IN ${CLOSED}`
         );
         // Cumulative buckets: a client 5 days out counts toward every window
         // it falls within (≤60, ≤30, ≤14, ≤7), matching "expiring within X
@@ -3481,6 +3518,9 @@ async function handle(req, res, pathname, method, query = {}) {
         pending,
         upcomingFirstDays,
         totalClients,
+        activeClients,
+        closedClients,
+        waitlistedActive,
         stages: pipeline.STAGES,
         byInsurance,
         authCounts,
@@ -5020,7 +5060,6 @@ async function seedStageTasks() {
     ["new_submission", "Welcome call / initial contact", "intake", 1, 1],
     ["clinical_screener", "Complete Clinical Screener", "clinical", 2, 1],
     ["insurance_verification", "Verify Insurance Benefits", "billing", 3, 1],
-    ["intake_packet", "Send Intake Packet", "intake", 1, 1],
     ["assessment_scheduling", "Schedule Vineland / Intake Assessment", "clinical", 5, 1],
     ["authorization", "Submit Authorization Request", "billing", 3, 1],
     ["first_day_scheduled", "Schedule First Day of ABA", "scheduling", 5, 1],
@@ -5215,7 +5254,7 @@ async function seedDemoClients() {
     );
     // Walk the client through stages up to its target demo stage so tasks +
     // notifications get generated realistically (and land in the outbox).
-    const stagePath = ["new_submission", "clinical_screener", "insurance_verification", "intake_packet", "assessment_scheduling", "authorization", "first_day_scheduled", "active"];
+    const stagePath = ["new_submission", "clinical_screener", "insurance_verification", "assessment_scheduling", "authorization", "first_day_scheduled", "active"];
     const targetIdx = stagePath.indexOf(c.stage);
     for (let i = 0; i <= targetIdx; i++) {
       await enterStage(row.id, stagePath[i]);

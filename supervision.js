@@ -40,6 +40,24 @@ module.exports = function initSupervision(ctx) {
       updated_at TEXT,
       UNIQUE (employee_id, month)
     )`).catch((e) => console.error("supervision initTables:", e.message));
+
+    // Amendments to an already-signed month. A signed month is a compliance
+    // record: it can still be corrected -- people do log the wrong date, or a
+    // session that never happened -- but not quietly. Every change after
+    // sign-off keeps the entries as they were signed, who changed them, and
+    // why, and drops the month back to unsigned so a BCBA has to look again.
+    await dbRun(`CREATE TABLE IF NOT EXISTS hr_supervision_amendments (
+      id SERIAL PRIMARY KEY,
+      employee_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      changed_by TEXT,
+      changed_at TEXT,
+      previous_entries TEXT,
+      previous_hours_worked NUMERIC,
+      previous_signed_by TEXT,
+      previous_signed_at TEXT
+    )`).catch((e) => console.error("supervision amendments initTables:", e.message));
   }
 
   function role(u) { return (u && (u.role || u.role_key || "")) || ""; }
@@ -266,6 +284,10 @@ module.exports = function initSupervision(ctx) {
           employee: emp, month, entries, hours_worked: worked, sup_hours: sup, pct: pct(sup, worked),
           min_pct: BACB_MIN_PCT, signed_off: !!(log && log.signed_off), signed_by: log && log.signed_by, signed_at: log && log.signed_at,
           has_pdf: !!(log && log.pdf_stored),
+          amendments: await dbAll(
+            "SELECT reason, changed_by, changed_at, previous_signed_by FROM hr_supervision_amendments WHERE employee_id = ? AND month = ? ORDER BY id DESC",
+            [empId, month]
+          ).catch(() => []),
           history: hist.map((h) => { let en = []; try { en = JSON.parse(h.entries || "[]"); } catch (x) {} const s = supHours(en); return { month: h.month, sup_hours: s, hours_worked: num(h.hours_worked), pct: pct(s, num(h.hours_worked)), signed_off: !!h.signed_off }; }),
         });
       }
@@ -280,15 +302,55 @@ module.exports = function initSupervision(ctx) {
           duration: num(e.duration), face_to_face: !!e.face_to_face, supervisor: e.supervisor || "",
           observed: !!e.observed, group: e.group || "", notes: e.notes || "",
         })) : [];
-        const existing = await dbGet("SELECT hours_worked FROM hr_supervision_logs WHERE employee_id = ? AND month = ?", [empId, mo]);
+        const existing = await dbGet("SELECT * FROM hr_supervision_logs WHERE employee_id = ? AND month = ?", [empId, mo]);
         const worked = b.hours_worked != null ? num(b.hours_worked) : (existing ? num(existing.hours_worked) : 0);
+
+        // A month that has been signed off can still be corrected, but the
+        // correction is recorded and the signature is withdrawn. Leaving
+        // signed_off = TRUE would mean a stored PDF, and an email already in
+        // two inboxes, that no longer match the record they attest to.
+        let amended = false;
+        if (existing && existing.signed_off) {
+          const changed =
+            String(existing.entries || "[]") !== JSON.stringify(entries) ||
+            num(existing.hours_worked) !== worked;
+          if (changed) {
+            const reason = String(b.change_reason || "").trim();
+            if (!reason) {
+              // Human sentence in `error` because that is the field the app's
+              // api() helper surfaces; `code` is there for any caller that
+              // wants to branch on it rather than read English.
+              return json(res, 400, {
+                error: `${mo} was signed off by ${existing.signed_by || "a BCBA"}. Say what you're correcting, and the month will go back to needing a fresh sign-off.`,
+                code: "signed_off_needs_reason",
+              });
+            }
+            await dbRun(
+              `INSERT INTO hr_supervision_amendments
+                 (employee_id, month, reason, changed_by, changed_at, previous_entries, previous_hours_worked, previous_signed_by, previous_signed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [empId, mo, reason, user.name || user.email || "unknown", nowISO(),
+               existing.entries || "[]", num(existing.hours_worked), existing.signed_by, existing.signed_at]
+            );
+            // The PDF row is cleared rather than the file deleted: the signed
+            // copy stays on disk as the historical artefact, it just stops
+            // being offered as this month's current record.
+            await dbRun(
+              "UPDATE hr_supervision_logs SET signed_off = FALSE, signed_by = NULL, signed_at = NULL, pdf_stored = NULL WHERE id = ?",
+              [existing.id]
+            );
+            await logActivity(empId, `Supervision for ${mo} amended after sign-off by ${user.name || user.email}: ${reason}. Needs a fresh BCBA sign-off.`);
+            amended = true;
+          }
+        }
+
         await dbRun(
           `INSERT INTO hr_supervision_logs (employee_id, month, entries, hours_worked, signed_off, created_at, updated_at)
            VALUES (?, ?, ?, ?, FALSE, ?, ?)
            ON CONFLICT (employee_id, month) DO UPDATE SET entries = EXCLUDED.entries, hours_worked = EXCLUDED.hours_worked, updated_at = EXCLUDED.updated_at`,
           [empId, mo, JSON.stringify(entries), worked, nowISO(), nowISO()]
         );
-        return json(res, 200, { ok: true, sup_hours: supHours(entries), pct: pct(supHours(entries), worked) });
+        return json(res, 200, { ok: true, amended, sup_hours: supHours(entries), pct: pct(supHours(entries), worked) });
       }
 
       // BCBA sign-off → PDF + auto-email staff + BCBA.

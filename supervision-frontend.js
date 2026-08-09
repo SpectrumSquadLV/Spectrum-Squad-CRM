@@ -103,42 +103,83 @@
     try { d = await api("/api/supervision/employee/" + empId + "?month=" + encodeURIComponent(month)); }
     catch (e) { alert(e.message); return; }
     let entries = d.entries && d.entries.length ? d.entries.slice() : [BLANK()];
+    // What the month looked like when it was opened. Used to tell an actual
+    // correction apart from someone opening a signed month and pressing Save,
+    // so a no-op save never demands a reason.
+    let baseline = JSON.stringify({ entries: d.entries || [], worked: Number(d.hours_worked) || 0 });
     const bd = document.createElement("div"); bd.className = "modal-backdrop";
     document.body.appendChild(bd);
     const close = () => bd.remove();
+
+    // One card per session instead of an eleven-column table. The old layout
+    // scrolled sideways, which put the delete button off the right edge of the
+    // screen -- present in the markup, invisible in practice. Everything a
+    // session needs now fits the width of the modal, and Notes gets a real
+    // box instead of a 120px slot.
+    function sessionCard(e, i) {
+      const isBlank = !e.date && !e.activity && !e.duration;
+      return `<div class="sup-session" data-card="${i}" style="border:1px solid var(--border,#e5e7eb); border-radius:12px; padding:12px 14px; margin-bottom:10px; background:var(--bg,#fbfbfd);">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
+          <strong style="font-size:12.5px; color:var(--text-muted);">Session ${i + 1}${isBlank ? " — new" : ""}</strong>
+          <div style="display:flex; gap:6px;">
+            <button class="btn small secondary" data-dup="${i}" title="Copy this session as a new one">Duplicate</button>
+            <button class="btn small secondary" data-del="${i}" style="color:#b91c1c; border-color:#fecaca;">Delete</button>
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">
+          <label style="font-size:11.5px; color:var(--text-muted);">Date
+            <input data-f="date" data-i="${i}" type="date" value="${esc((e.date || "").slice(0, 10))}" style="width:100%;"/></label>
+          <label style="font-size:11.5px; color:var(--text-muted);">Activity / Client
+            <input data-f="activity" data-i="${i}" value="${esc(e.activity || "")}" placeholder="e.g. Session obs — J.R." style="width:100%;"/></label>
+          <label style="font-size:11.5px; color:var(--text-muted);">Time in
+            <input data-f="time_in" data-i="${i}" value="${esc(e.time_in || "")}" placeholder="9:00a" style="width:100%;"/></label>
+          <label style="font-size:11.5px; color:var(--text-muted);">Time out
+            <input data-f="time_out" data-i="${i}" value="${esc(e.time_out || "")}" placeholder="10:30a" style="width:100%;"/></label>
+          <label style="font-size:11.5px; color:var(--text-muted);">Duration (hrs)
+            <input data-f="duration" data-i="${i}" type="number" step="0.25" value="${esc(e.duration || "")}" style="width:100%;"/></label>
+          <label style="font-size:11.5px; color:var(--text-muted);">Supervisor (BCBA)
+            <input data-f="supervisor" data-i="${i}" value="${esc(e.supervisor || "")}" placeholder="BCBA name" style="width:100%;"/></label>
+          <label style="font-size:11.5px; color:var(--text-muted);">Type
+            <select data-f="group" data-i="${i}" style="width:100%;">
+              <option ${e.group === "Individual" ? "selected" : ""}>Individual</option>
+              <option ${e.group === "Group" ? "selected" : ""}>Group</option>
+            </select></label>
+        </div>
+        <div style="display:flex; gap:18px; margin-top:10px; flex-wrap:wrap;">
+          <label style="font-size:12.5px; display:flex; align-items:center; gap:6px;">
+            <input data-f="face_to_face" data-i="${i}" type="checkbox" ${e.face_to_face ? "checked" : ""}/> Face-to-face</label>
+          <label style="font-size:12.5px; display:flex; align-items:center; gap:6px;">
+            <input data-f="observed" data-i="${i}" type="checkbox" ${e.observed ? "checked" : ""}/> Observed with client</label>
+        </div>
+        <label style="display:block; margin-top:10px; font-size:11.5px; color:var(--text-muted);">Notes
+          <textarea data-f="notes" data-i="${i}" rows="2" placeholder="What was covered, feedback given, anything to follow up on…"
+            style="width:100%; resize:vertical; font-family:inherit; font-size:13px;">${esc(e.notes || "")}</textarea></label>
+      </div>`;
+    }
 
     function render() {
       const sup = entries.reduce((s, e) => s + (parseFloat(e.duration) || 0), 0);
       const worked = d.hours_worked || 0;
       const p = worked ? Math.round((sup / worked) * 1000) / 10 : null;
-      const rowHtml = entries.map((e, i) => `<tr>
-        <td><input data-f="date" data-i="${i}" type="date" value="${esc((e.date || "").slice(0,10))}" style="width:130px;"/></td>
-        <td><input data-f="activity" data-i="${i}" value="${esc(e.activity || "")}" placeholder="Activity/Client" style="width:150px;"/></td>
-        <td><input data-f="time_in" data-i="${i}" value="${esc(e.time_in || "")}" placeholder="9:00a" style="width:64px;"/></td>
-        <td><input data-f="time_out" data-i="${i}" value="${esc(e.time_out || "")}" placeholder="10:30a" style="width:64px;"/></td>
-        <td><input data-f="duration" data-i="${i}" type="number" step="0.25" value="${esc(e.duration || "")}" style="width:64px;"/></td>
-        <td style="text-align:center;"><input data-f="face_to_face" data-i="${i}" type="checkbox" ${e.face_to_face ? "checked" : ""}/></td>
-        <td><input data-f="supervisor" data-i="${i}" value="${esc(e.supervisor || "")}" placeholder="BCBA" style="width:120px;"/></td>
-        <td style="text-align:center;"><input data-f="observed" data-i="${i}" type="checkbox" ${e.observed ? "checked" : ""}/></td>
-        <td><select data-f="group" data-i="${i}"><option ${e.group === "Individual" ? "selected" : ""}>Individual</option><option ${e.group === "Group" ? "selected" : ""}>Group</option></select></td>
-        <td><input data-f="notes" data-i="${i}" value="${esc(e.notes || "")}" style="width:120px;"/></td>
-        <td><button class="btn small secondary" data-del="${i}">✕</button></td>
-      </tr>`).join("");
-      bd.innerHTML = `<div class="modal" style="width:min(1000px,96vw);">
+      const amendments = d.amendments || [];
+      bd.innerHTML = `<div class="modal" style="width:min(860px,96vw); max-height:92vh; overflow:auto;">
         <div class="modal-header"><h2>${esc(d.employee.name)} — Supervision (${esc(monthLabel(month))})</h2><button class="close-btn">✕</button></div>
         <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
           <label style="font-size:12.5px;">Monthly worked hours <input id="sup-worked" type="number" step="0.1" value="${esc(worked)}" style="width:90px;"/></label>
           <span class="tag" style="background:${p == null ? "#fef3c7" : (p >= d.min_pct ? "#dcfce7" : "#fee2e2")}; color:${p == null ? "#92400e" : (p >= d.min_pct ? "#166534" : "#991b1b")};">Supervision: ${sup.toFixed(2)} hrs · ${p == null ? "enter worked hours" : p + "% (min " + d.min_pct + "%)"}</span>
-          ${d.signed_off ? `<span class="tag" style="background:#dcfce7; color:#166534;">✓ Signed off by ${esc(d.signed_by || "")}</span>` : ""}
-          ${d.has_pdf ? `<a class="btn small secondary" href="/api/supervision/employee/${empId}/pdf?month=${encodeURIComponent(month)}" target="_blank" rel="noopener">Download PDF</a>` : ""}
+          ${d.has_pdf ? `<a class="btn small secondary" href="/api/supervision/employee/${empId}/pdf?month=${encodeURIComponent(month)}" target="_blank" rel="noopener">Download signed PDF</a>` : ""}
         </div>
-        <div style="overflow-x:auto;"><table style="border-collapse:collapse; font-size:12px;">
-          <thead><tr style="color:var(--text-muted); font-size:10.5px; text-transform:uppercase;">
-            <th style="padding:4px;">Date</th><th style="padding:4px;">Activity/Client</th><th style="padding:4px;">In</th><th style="padding:4px;">Out</th><th style="padding:4px;">Dur</th><th style="padding:4px;">F2F</th><th style="padding:4px;">Supervisor</th><th style="padding:4px;">Obs</th><th style="padding:4px;">Type</th><th style="padding:4px;">Notes</th><th></th>
-          </tr></thead><tbody>${rowHtml}</tbody>
-        </table></div>
-        <div style="margin-top:8px;"><button class="btn small secondary" id="sup-add-row">+ Add row</button></div>
-        <div style="margin-top:14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        ${d.signed_off ? `<div style="background:#f0fdf4; border:1px solid #bbf7d0; color:#166534; border-radius:10px; padding:10px 12px; font-size:12.5px; margin-bottom:12px;">
+          <strong>✓ Signed off by ${esc(d.signed_by || "a BCBA")}</strong>${d.signed_at ? " on " + esc(String(d.signed_at).slice(0, 10)) : ""}.
+          You can still correct this month — you'll be asked what changed, and it will go back to needing a fresh sign-off.
+        </div>` : ""}
+        ${amendments.length ? `<div style="background:#fffbeb; border:1px solid #fde68a; color:#92400e; border-radius:10px; padding:10px 12px; font-size:12.5px; margin-bottom:12px;">
+          <strong>Corrected after sign-off</strong>
+          ${amendments.map((a) => `<div style="margin-top:4px;">${esc(String(a.changed_at || "").slice(0, 10))} — ${esc(a.changed_by || "someone")}: ${esc(a.reason)}</div>`).join("")}
+        </div>` : ""}
+        <div id="sup-sessions">${entries.map(sessionCard).join("")}</div>
+        <div><button class="btn small secondary" id="sup-add-row">+ Add a session</button></div>
+        <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--border,#e5e7eb); display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
           <button class="btn" id="sup-save">Save</button>
           <input id="sup-signer" placeholder="BCBA name to sign off" style="width:200px;" value="${esc(d.signed_by || "")}"/>
           <button class="btn secondary" id="sup-signoff">Sign off &amp; email</button>
@@ -147,7 +188,22 @@
       </div>`;
       bd.querySelector(".close-btn").addEventListener("click", close);
       pull();
-      bd.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => { entries.splice(Number(b.dataset.del), 1); if (!entries.length) entries = [BLANK()]; render(); }));
+      // Deleting a session is now a labelled button that asks first. It used to
+      // be a bare ✕ that removed a compliance record with no confirmation.
+      bd.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => {
+        const i = Number(b.dataset.del);
+        const e = entries[i] || {};
+        const label = [e.date, e.activity].filter(Boolean).join(" — ") || "this empty session";
+        if (!confirm(`Delete ${label}?` + (d.signed_off ? "\n\nThis month is signed off, so you'll be asked what changed when you save." : ""))) return;
+        entries.splice(i, 1);
+        if (!entries.length) entries = [BLANK()];
+        render();
+      }));
+      bd.querySelectorAll("[data-dup]").forEach((b) => b.addEventListener("click", () => {
+        const src = entries[Number(b.dataset.dup)] || BLANK();
+        entries.splice(Number(b.dataset.dup) + 1, 0, Object.assign({}, src));
+        render();
+      }));
       bd.querySelector("#sup-add-row").addEventListener("click", () => { entries.push(BLANK()); render(); });
       bd.querySelector("#sup-save").addEventListener("click", () => save(false));
       bd.querySelector("#sup-signoff").addEventListener("click", () => signOff());
@@ -155,17 +211,68 @@
     function pull() {
       bd.querySelectorAll("[data-f]").forEach((el) => {
         const i = Number(el.dataset.i), f = el.dataset.f;
-        el.addEventListener("change", () => { entries[i][f] = (el.type === "checkbox") ? el.checked : el.value; });
+        // "input" as well as "change": a textarea the user is still typing in
+        // when they hit Save would otherwise lose its last edit.
+        const sync = () => { entries[i][f] = (el.type === "checkbox") ? el.checked : el.value; };
+        el.addEventListener("change", sync);
+        el.addEventListener("input", sync);
       });
     }
-    async function save(silent) {
+    async function save(silent, reasonOverride) {
       const worked = parseFloat(bd.querySelector("#sup-worked").value) || 0;
       const st = bd.querySelector("#sup-status"); if (!silent) st.textContent = "Saving…";
+      const body = { month, entries, hours_worked: worked };
+      // The editor already knows the month is signed off, so ask before the
+      // save rather than letting it fail and asking afterwards. The server
+      // still refuses a reasonless change -- that guard is the real one, this
+      // is only so the person isn't shown an error they didn't need to see.
+      const dirty = JSON.stringify({ entries, worked }) !== baseline;
+      let reason = reasonOverride;
+      if (!reason && d.signed_off && dirty) {
+        reason = prompt(
+          `${monthLabel(month)} has already been signed off by ${d.signed_by || "a BCBA"}.\n\n` +
+          "What are you correcting? This is recorded, and the month goes back to needing a fresh BCBA sign-off."
+        );
+        if (!reason || !reason.trim()) {
+          if (!silent) st.textContent = "Not saved — the signed month is unchanged.";
+          return false;
+        }
+        reason = reason.trim();
+      }
+      if (reason) body.change_reason = reason;
       try {
-        await api("/api/supervision/employee/" + empId, { method: "POST", body: { month, entries, hours_worked: worked } });
+        const r = await api("/api/supervision/employee/" + empId, { method: "POST", body });
+        baseline = JSON.stringify({ entries, worked });
+        if (r && r.amended) {
+          d.signed_off = false; d.signed_by = null; d.signed_at = null; d.has_pdf = false;
+          d.hours_worked = worked;
+          try {
+            const fresh = await api("/api/supervision/employee/" + empId + "?month=" + encodeURIComponent(month));
+            d.amendments = fresh.amendments || [];
+          } catch (x) {}
+          if (!silent) { render(); bd.querySelector("#sup-status").textContent = "Saved ✓ — this month needs a fresh sign-off."; }
+          return true;
+        }
         if (!silent) { st.textContent = "Saved ✓"; d.hours_worked = worked; }
         return true;
-      } catch (e) { st.textContent = e.message || "Failed."; return false; }
+      } catch (e) {
+        // The server refuses to quietly rewrite a signed month. Ask why, then
+        // retry the same save with the reason attached.
+        const msg = String((e && e.message) || "");
+        if (!reason && /signed off by/i.test(msg)) {
+          // Backstop: the record was signed off by someone else after this
+          // editor was opened, so the page's own copy said otherwise.
+          const late = prompt(
+            `${monthLabel(month)} was signed off while you had this open. What are you correcting?\n\n` +
+            "Saving will record this and put the month back to needing a fresh BCBA sign-off."
+          );
+          if (late && late.trim()) return save(silent, late.trim());
+          st.textContent = "Not saved — the signed month is unchanged.";
+          return false;
+        }
+        st.textContent = msg || "Failed.";
+        return false;
+      }
     }
     async function signOff() {
       const signer = bd.querySelector("#sup-signer").value.trim();
