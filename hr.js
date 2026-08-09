@@ -40,6 +40,26 @@ module.exports = function initHr(ctx) {
   const getNewHirePacket = ctx.getNewHirePacket || (async () => ({
     packet: null, configured: false, signnow_connected: false, template_set: false,
   }));
+  // Starting the document portal and sending the welcome email are part of
+  // accepting an offer, but they live in onboarding.js.
+  const startOnboarding = ctx.startOnboarding || (async () => null);
+
+  // The welcome-and-documents email, chosen by role, carrying that role's
+  // credentialing link and the hire's own portal link.
+  async function sendWelcomeDocumentsEmail(employee, record) {
+    if (!employee || !employee.email || !record) return { ok: false, reason: "no email or no onboarding record" };
+    const kind = record.role_kind === "bcba" ? "bcba" : "rbt";
+    const key = kind === "bcba" ? "hr_welcome_docs_bcba" : "hr_welcome_docs_rbt";
+    const credLink = (await ctx.getAppSetting?.(`credentialing_link_${kind}`, "")) || "";
+    const t = await renderHrEmail(key, {
+      first_name: firstNameOf(employee.name),
+      credentialing_form_link: credLink,
+      upload_portal_link: ctx.onboardingPortalUrl ? ctx.onboardingPortalUrl(record.portal_token) : "",
+    });
+    if (!t) return { ok: false, reason: "template missing" };
+    await sendEmail({ to: employee.email, subject: t.subject, html: t.html, type: "hr_onboarding" });
+    return { ok: true, template: key };
+  }
 
   // ---- file storage (Railway volume at /app/data) ----
   const DATA_DIR = path.join(__dirname, "data");
@@ -1435,6 +1455,16 @@ module.exports = function initHr(ctx) {
         try {
           const employee = await ensureEmployeeForApplicant(applicant, o);
           if (employee) {
+            // The document portal has to exist before the welcome email can
+            // link to it, so it is created first.
+            const record = await startOnboarding(employee, "offer accepted (candidate)").catch(() => null);
+            if (record) {
+              await sendWelcomeDocumentsEmail(employee, record)
+                .then((r) => logEmpActivity(employee.id, r.ok
+                  ? `Welcome + required documents email sent (${r.template}).`
+                  : `Welcome + documents email NOT sent: ${r.reason}`))
+                .catch((e) => console.error("welcome documents email failed:", e.message));
+            }
             const packet = await sendNewHirePacket(employee, { actor: "offer accepted (candidate)" });
             await logEmpActivity(
               employee.id,

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Welcome to Spectrum Squad</title>
+<style>
+  :root { --ink:#25293c; --muted:#6b7280; --line:#e8eaf0; --brand:#6d4ae6; --ok:#16a34a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f6f4fb; color:var(--ink); font-size:16px; line-height:1.5;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:640px; margin:0 auto; padding:22px 16px 64px; }
+  .hero { background:linear-gradient(135deg,#7c5cf0,#5b8def); color:#fff; border-radius:22px; padding:26px 24px; }
+  .hero h1 { margin:0 0 6px; font-size:25px; font-weight:780; letter-spacing:-.01em; }
+  .hero p { margin:0; opacity:.94; font-size:15px; }
+  .prog { margin-top:18px; background:rgba(255,255,255,.28); border-radius:999px; height:10px; overflow:hidden; }
+  .prog > i { display:block; height:100%; background:#fff; border-radius:999px; width:0; transition:width .6s cubic-bezier(.2,.8,.2,1); }
+  .progtext { margin-top:8px; font-size:13.5px; opacity:.95; }
+  .due { margin-top:14px; background:rgba(255,255,255,.18); border-radius:12px; padding:9px 13px; font-size:13.5px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:18px; padding:16px 18px; margin-top:14px;
+    transition:transform .16s ease, box-shadow .16s ease; }
+  .card.done { border-color:#c9ecd8; background:#f6fdf9; }
+  .card:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(40,35,80,.07); }
+  .row { display:flex; align-items:flex-start; gap:12px; }
+  .tick { width:26px; height:26px; border-radius:50%; border:2px solid #d7dae5; flex:0 0 auto; display:flex;
+    align-items:center; justify-content:center; font-size:14px; color:#fff; margin-top:2px; }
+  .done .tick { background:var(--ok); border-color:var(--ok); }
+  .ttl { font-weight:680; font-size:15.5px; }
+  .sub { color:var(--muted); font-size:13.5px; margin-top:2px; }
+  .btn { display:inline-flex; align-items:center; gap:7px; border:0; border-radius:12px; background:var(--brand);
+    color:#fff; padding:11px 18px; font-size:14.5px; font-weight:640; cursor:pointer; margin-top:11px;
+    transition:transform .12s ease, box-shadow .12s ease; }
+  .btn:hover { transform:translateY(-1px); box-shadow:0 6px 18px rgba(109,74,230,.3); }
+  .btn.ghost { background:#f2f0fd; color:#4c34b5; }
+  .btn[disabled] { opacity:.6; cursor:default; transform:none; box-shadow:none; }
+  .note { font-size:13px; color:var(--muted); margin-top:8px; }
+  .warn { background:#fff7e6; border:1px solid #fde3c4; border-radius:12px; padding:11px 13px; margin-top:11px; font-size:13.5px; }
+  .err { color:#b91c1c; font-size:13.5px; margin-top:8px; }
+  .dates { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+  .dates label { font-size:12.5px; color:var(--muted); display:block; }
+  .dates input { padding:9px 10px; border:1px solid var(--line); border-radius:10px; font-size:14.5px; }
+  .celebrate { text-align:center; padding:34px 20px; }
+  .celebrate .big { font-size:38px; }
+  .celebrate h2 { margin:10px 0 6px; font-size:21px; }
+  .foot { text-align:center; color:var(--muted); font-size:12.5px; margin-top:26px; }
+  a { color:var(--brand); }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <div class="hero"><h1>Loading…</h1></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var token = new URLSearchParams(location.search).get("token") || "";
+  var app = document.getElementById("app");
+  var esc = function (s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+
+  function api(path, opts) {
+    return fetch(path, opts || {}).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (!r.ok) throw new Error(d.error || "Something went wrong. Please try again.");
+        return d;
+      });
+    });
+  }
+
+  function dueText(iso) {
+    if (!iso) return "";
+    var ms = new Date(iso).getTime() - Date.now();
+    if (isNaN(ms)) return "";
+    if (ms <= 0) return "Your 72 hours are up — send what you can and let us know if you need more time. Nothing has changed with your offer.";
+    var h = Math.round(ms / 3600000);
+    if (h <= 26) return "About " + h + " hour" + (h === 1 ? "" : "s") + " left. If you need more time on anything, just reply to your welcome email.";
+    return "About " + Math.round(h / 24) + " days left. If you need more time on anything, just reply to your welcome email.";
+  }
+
+  function render(d) {
+    if (d.complete) {
+      app.innerHTML =
+        '<div class="hero"><h1>All done, ' + esc(d.first_name) + '!</h1>' +
+        '<p>Every document is in. Nothing else is needed from you right now.</p></div>' +
+        '<div class="card celebrate"><div class="big" aria-hidden="true">✓</div>' +
+        '<h2>Welcome to the Squad</h2>' +
+        '<p class="sub">We\'ve let the team know. You\'ll hear from us about your Class Dojo invite, your schedule, and your first day.</p></div>' +
+        '<div class="foot">Spectrum Squad &middot; Stronger Kids. Brighter Tomorrows.</div>';
+      return;
+    }
+
+    var docs = d.documents || [];
+    var done = docs.filter(function (x) { return x.status === "received"; }).length;
+    var pct = docs.length ? Math.round((done / docs.length) * 100) : 0;
+
+    var html =
+      '<div class="hero"><h1>Welcome, ' + esc(d.first_name) + '!</h1>' +
+      '<p>Just a few documents and you\'re all set. Upload them here whenever you have a minute.</p>' +
+      '<div class="prog"><i id="bar"></i></div>' +
+      '<div class="progtext">' + done + ' of ' + docs.length + ' done</div>' +
+      (d.deadline_at ? '<div class="due">' + esc(dueText(d.deadline_at)) + '</div>' : '') +
+      '</div>';
+
+    docs.forEach(function (doc) {
+      var isDone = doc.status === "received";
+      html += '<div class="card' + (isDone ? " done" : "") + '" data-doc="' + esc(doc.doc_key) + '">' +
+        '<div class="row"><span class="tick">' + (isDone ? "✓" : "") + '</span><div style="min-width:0; flex:1;">' +
+        '<div class="ttl">' + esc(doc.label) + '</div>';
+
+      if (doc.attestation) {
+        html += '<div class="sub">Complete the form, then tick this so we know.</div>' +
+          (d.credentialing_link ? '<div style="margin-top:8px;"><a href="' + esc(d.credentialing_link) + '" target="_blank" rel="noopener">Open the credentialing form</a></div>' : '') +
+          (isDone ? '' : '<button class="btn ghost" data-attest="' + esc(doc.doc_key) + '">I\'ve completed it</button>');
+      } else if (isDone) {
+        html += '<div class="sub">' + (doc.stored === false
+          ? "Received. We recorded that we have it and did not keep a copy."
+          : esc(doc.filename || "Received")) +
+          (doc.expiration_date ? " &middot; expires " + esc(doc.expiration_date) : "") + '</div>';
+      } else {
+        if (doc.stored === false) html += '<div class="sub">We record that we\'ve seen it and don\'t keep a copy of this one.</div>';
+        html += '<input type="file" style="display:none" data-file="' + esc(doc.doc_key) + '" accept="image/*,application/pdf" />' +
+          '<button class="btn" data-pick="' + esc(doc.doc_key) + '">Upload</button>' +
+          '<div class="err" data-err="' + esc(doc.doc_key) + '"></div>';
+        if (doc.needs_dates) {
+          html += '<div class="warn">We couldn\'t read the dates off that file, so please type them in.' +
+            '<div class="dates">' +
+            '<div><label>Issued (optional)</label><input type="date" data-issued="' + esc(doc.doc_key) + '" /></div>' +
+            '<div><label>Expires</label><input type="date" data-expires="' + esc(doc.doc_key) + '" /></div>' +
+            '</div><button class="btn ghost" data-savedates="' + esc(doc.doc_key) + '">Save dates</button></div>';
+        }
+      }
+      html += '</div></div></div>';
+    });
+
+    html += '<div class="foot">Questions about any of this? Reply to your welcome email and we\'ll help.<br/>Spectrum Squad</div>';
+    app.innerHTML = html;
+    requestAnimationFrame(function () { var b = document.getElementById("bar"); if (b) b.style.width = pct + "%"; });
+    wire();
+  }
+
+  function wire() {
+    app.querySelectorAll("[data-pick]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var input = app.querySelector('[data-file="' + btn.dataset.pick + '"]');
+        if (input) input.click();
+      });
+    });
+    app.querySelectorAll("[data-file]").forEach(function (input) {
+      input.addEventListener("change", function () {
+        var file = input.files && input.files[0];
+        if (!file) return;
+        var key = input.dataset.file;
+        var btn = app.querySelector('[data-pick="' + key + '"]');
+        var err = app.querySelector('[data-err="' + key + '"]');
+        if (btn) { btn.disabled = true; btn.textContent = "Uploading…"; }
+        if (err) err.textContent = "";
+        var qs = "?token=" + encodeURIComponent(token) + "&doc_key=" + encodeURIComponent(key) +
+          "&filename=" + encodeURIComponent(file.name) + "&mime=" + encodeURIComponent(file.type || "");
+        fetch("/api/onboarding/public/upload" + qs, { method: "POST", body: file })
+          .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || "Upload failed."); return d; }); })
+          .then(function () { return load(); })
+          .catch(function (e) {
+            if (err) err.textContent = e.message;
+            if (btn) { btn.disabled = false; btn.textContent = "Upload"; }
+          });
+      });
+    });
+    app.querySelectorAll("[data-attest]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        api("/api/onboarding/public/attest?token=" + encodeURIComponent(token), {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ doc_key: btn.dataset.attest }),
+        }).then(load).catch(function (e) { alert(e.message); btn.disabled = false; });
+      });
+    });
+    app.querySelectorAll("[data-savedates]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var key = btn.dataset.savedates;
+        var exp = app.querySelector('[data-expires="' + key + '"]');
+        var iss = app.querySelector('[data-issued="' + key + '"]');
+        var err = app.querySelector('[data-err="' + key + '"]');
+        if (!exp || !exp.value) { if (err) err.textContent = "Please fill in the expiration date."; return; }
+        btn.disabled = true;
+        api("/api/onboarding/public/dates?token=" + encodeURIComponent(token), {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ doc_key: key, expiration_date: exp.value, issued_date: iss ? iss.value : "" }),
+        }).then(load).catch(function (e) { if (err) err.textContent = e.message; btn.disabled = false; });
+      });
+    });
+  }
+
+  function load() {
+    return api("/api/onboarding/public/portal?token=" + encodeURIComponent(token))
+      .then(render)
+      .catch(function (e) {
+        app.innerHTML = '<div class="hero"><h1>We couldn\'t open this page</h1><p>' + esc(e.message) + '</p></div>';
+      });
+  }
+
+  if (!token) {
+    app.innerHTML = '<div class="hero"><h1>Missing link</h1><p>Please use the link from your welcome email.</p></div>';
+  } else {
+    load();
+  }
+})();
+</script>
+</body>
+</html>

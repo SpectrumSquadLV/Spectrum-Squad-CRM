@@ -2123,6 +2123,15 @@ async function sendEnrollmentPacket(client) {
 // person.
 const SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV = process.env.SIGNNOW_NEWHIRE_TEMPLATE_ID || "";
 
+// Settings that need a real stored value from the first boot, because more
+// than one part of the app reads them.
+const DEFAULT_SETTINGS = {
+  credentialing_link_bcba: "https://sparkz.clickup.com/forms/3501350/f/3av96-450954/AMW0KVAC3YL07DEEMM",
+  credentialing_link_rbt: "https://sparkz.clickup.com/forms/3501350/f/3av96-450934/OFTQKDCKHXT758222Z",
+  shirt_count_full_time: "4",
+  shirt_count_part_time: "3",
+};
+
 async function newHireTemplateId() {
   const fromSettings = (await getAppSetting("signnow_newhire_template_id", "")) || "";
   return String(fromSettings || SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV).trim();
@@ -3241,6 +3250,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/people/")) {
     const handled = await people.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/onboarding/")) {
+    const handled = await onboarding.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -4678,11 +4692,11 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         owner_notification_email: await getAppSetting("owner_notification_email", ""),
         clinical_director_email: await getAppSetting("clinical_director_email", ""),
         signnow_newhire_template_id: await getAppSetting("signnow_newhire_template_id", ""),
-        credentialing_link_bcba: await getAppSetting("credentialing_link_bcba", "https://sparkz.clickup.com/forms/3501350/f/3av96-450954/AMW0KVAC3YL07DEEMM"),
-        credentialing_link_rbt: await getAppSetting("credentialing_link_rbt", "https://sparkz.clickup.com/forms/3501350/f/3av96-450934/OFTQKDCKHXT758222Z"),
+        credentialing_link_bcba: await getAppSetting("credentialing_link_bcba", DEFAULT_SETTINGS.credentialing_link_bcba),
+        credentialing_link_rbt: await getAppSetting("credentialing_link_rbt", DEFAULT_SETTINGS.credentialing_link_rbt),
         first_day_dress_code: await getAppSetting("first_day_dress_code", ""),
-        shirt_count_full_time: await getAppSetting("shirt_count_full_time", "4"),
-        shirt_count_part_time: await getAppSetting("shirt_count_part_time", "3"),
+        shirt_count_full_time: await getAppSetting("shirt_count_full_time", DEFAULT_SETTINGS.shirt_count_full_time),
+        shirt_count_part_time: await getAppSetting("shirt_count_part_time", DEFAULT_SETTINGS.shirt_count_part_time),
         signnow_newhire_env_default: SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV ? "set" : "",
         signnow_connected: !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY),
       });
@@ -5253,6 +5267,7 @@ const PUBLIC_FILES = new Set([
   "/geo-map-frontend.js",
   "/bip-frontend.js",
   "/people-frontend.js",
+  "/new-hire.html",
   "/scheduling-frontend.js",
 ]);
 
@@ -5316,7 +5331,11 @@ const hr = require("./hr")({
   // New-hire employment packet (SignNow). Passed in rather than reimplemented so
   // there is one SignNow client, one token cache, and one place that knows how
   // a packet send is recorded.
-  sendNewHirePacket, getNewHirePacket,
+  sendNewHirePacket, getNewHirePacket, getAppSetting,
+  // Late-bound: onboarding is constructed after hr, so this resolves at call
+  // time rather than at require time.
+  startOnboarding: (employee, actor) => onboarding.startOnboarding(employee, actor),
+  onboardingPortalUrl: (token) => onboarding.portalUrl(token),
 });
 const clientForms = require("./client-forms")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
@@ -5398,6 +5417,30 @@ const people = require("./people")({
 // day operations board. Replaces the old weekly-pattern Therapy Schedule; the
 // legacy rows are converted once by /api/sched/migrate-legacy. Owns
 // /api/sched/*. =====
+// ===== NEW HIRE ONBOARDING add-on: the document portal a new hire uploads
+// into, the 72-hour clock, and the completion detection that notifies the
+// owner and Clinical Director and raises the background-check and HomeBase
+// tasks. Owns /api/onboarding/* and the public /new-hire page. =====
+const onboarding = require("./onboarding")({
+  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, sendFile,
+  sendEmail, APP_BASE_URL, getAppSetting,
+  // There is no shared renderer on the templates module, so this mirrors the
+  // one hr.js uses: pull the row, substitute {{merge}} fields.
+  renderTemplate: async (key, fields) => {
+    const row = await dbGet("SELECT subject_template, body_template FROM email_templates WHERE template_key = ?", [key]);
+    if (!row) return null;
+    const sub = (s) => String(s || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (m, k) => (fields[k] == null ? "" : String(fields[k])));
+    return { subject: sub(row.subject_template), html: sub(row.body_template) };
+  },
+  extractPdfLines: (buf) => financialAdvisor.extractPdfLines(buf),
+  makeStaffTask: async (title, employeeId) => {
+    await dbRun(
+      `INSERT INTO staff_tasks (title, description, status, created_at) VALUES (?, ?, 'open', ?)`,
+      [title, `Staff #${employeeId}`, nowISO()]
+    ).catch((e) => console.error("onboarding staff task failed:", e.message));
+  },
+});
+
 const scheduling = require("./scheduling")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, canAccessClients, moduleGranted,
 });
@@ -5423,6 +5466,18 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: "Not found" }));
     }
     return;
+  }
+
+  // Onboarding portal: /new-hire (and /new-hire/) serve the upload page. The
+  // token stays in the query string, never in the path, so it does not end up
+  // in a referrer header on the way to the credentialing form.
+  if (pathname === "/new-hire" || pathname === "/new-hire/") {
+    const file = path.join(PUBLIC_DIR, "new-hire.html");
+    if (fs.existsSync(file)) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer" });
+      res.end(fs.readFileSync(file));
+      return;
+    }
   }
 
 // SCREENER: serve the public form page at /screener/:token
@@ -5515,6 +5570,15 @@ async function start() {
   await bip.initTables().catch((e) => console.error("BIP initTables failed:", e));
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
   await scheduling.initTables().catch((e) => console.error("Scheduling initTables failed:", e));
+  await onboarding.initTables().catch((e) => console.error("Onboarding initTables failed:", e));
+  // Seed the credentialing links rather than defaulting them at read time.
+  // Two places read them -- the settings screen and the onboarding portal --
+  // and a default that only exists in one of them is a link that silently
+  // comes out blank in a real hire's email.
+  for (const [key, url] of Object.entries(DEFAULT_SETTINGS)) {
+    const existing = await dbGet("SELECT value FROM app_settings WHERE key = ?", [key]).catch(() => null);
+    if (!existing) await setAppSetting(key, url).catch(() => {});
+  }
   await authorizations.initTables().catch((e) => console.error("Authorizations initTables failed:", e));
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
@@ -5560,6 +5624,13 @@ async function start() {
   };
   schedSweep();
   setInterval(schedSweep, 10 * 60 * 1000);
+
+  // Onboarding deadlines: nudge a day out, flag when the time is up. The CRM
+  // never rescinds an offer -- it tells a person the clock ran out.
+  onboarding.deadlineSweep().catch((e) => console.error("Onboarding sweep failed:", e));
+  setInterval(() => {
+    onboarding.deadlineSweep().catch((e) => console.error("Onboarding sweep failed:", e));
+  }, 60 * 60 * 1000);
 
   // Daily authorization-expiration check (also runs once on boot above).
   setInterval(() => {
