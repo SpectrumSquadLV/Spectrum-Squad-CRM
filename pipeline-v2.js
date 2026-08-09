@@ -79,6 +79,8 @@
       if (filters.bcba && c.assigned_bcba_name !== filters.bcba) return false;
       if (filters.service && c.service_location !== filters.service) return false;
       if (filters.days && c.daysInStage < Number(filters.days)) return false;
+      if (filters.waitlist === "only" && !c.waitlisted) return false;
+      if (filters.waitlist === "hide" && c.waitlisted) return false;
       return true;
     });
   }
@@ -108,6 +110,12 @@
     );
   }
 
+  function waitlistTitle(c) {
+    const since = c.waitlisted_at ? " since " + String(c.waitlisted_at).slice(0, 10) : "";
+    const why = c.waitlist_reason ? " — " + c.waitlist_reason : "";
+    return "On the waitlist" + since + why + ". Automated reminders to this family are paused.";
+  }
+
   function cardHTML(c) {
     const ms = MILESTONES.find((m) => m.key === c.milestone) || MILESTONES[0];
     const b = BLOCKERS[c.blocker] || BLOCKERS.ready;
@@ -116,7 +124,14 @@
     const missingKeys = c.missingItemKeys || [];
     return (
       '<div style="background:#fff;border:1px solid #e6e1d4;border-radius:12px;padding:13px 14px;margin-bottom:10px;border-left:4px solid ' + ms.color + ';cursor:pointer;" data-pv2-open="' + c.id + '">' +
-        '<div style="font-weight:700;font-size:14.5px;margin-bottom:6px;">' + esc(c.child_name) + "</div>" +
+        '<div style="font-weight:700;font-size:14.5px;margin-bottom:6px;">' + esc(c.child_name) +
+          // On the card, not behind a click. A waitlisted family is waiting on
+          // purpose; without this the card is indistinguishable from one that
+          // has simply stalled, and the whole board reads as neglect.
+          (c.waitlisted
+            ? ' <span title="' + esc(waitlistTitle(c)) + '" style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#fef3c7;color:#92400e;vertical-align:middle;white-space:nowrap;">WAITLIST</span>'
+            : "") +
+        "</div>" +
         '<div style="display:flex;justify-content:space-between;font-size:12px;color:#767488;margin-bottom:2px;"><span>Owner</span><b style="color:#2b2a35;">' + esc(c.owner || "Unassigned") + "</b></div>" +
         '<div style="display:flex;justify-content:space-between;font-size:12px;color:#767488;margin-bottom:2px;"><span>Days in stage</span><b style="color:#2b2a35;">' + (c.daysInStage ?? "—") + "</b></div>" +
         '<div style="display:flex;justify-content:space-between;font-size:12px;color:#767488;margin-bottom:6px;"><span>Priority</span><span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:' + p.bg + ";color:" + p.text + ';">' + esc(c.priority || "—") + "</span></div>" +
@@ -139,13 +154,14 @@
         '<select id="pv2-f-bcba"><option value="">All BCBAs</option>' + opt(uniqueValues("assigned_bcba_name")) + "</select>" +
         '<select id="pv2-f-service"><option value="">All service types</option>' + opt(uniqueValues("service_location")) + "</select>" +
         '<select id="pv2-f-days"><option value="">Any days waiting</option><option value="7">7+ days</option><option value="14">14+ days</option><option value="21">21+ days</option></select>' +
+        '<select id="pv2-f-waitlist"><option value="">Waitlist: show all</option><option value="only">On the waitlist only</option><option value="hide">Hide waitlisted</option></select>' +
         '<button type="button" id="pv2-f-clear" style="margin-left:auto;background:none;border:none;color:#1b2a6b;text-decoration:underline;font-size:12.5px;cursor:pointer;">Clear filters</button>' +
       "</div>"
     );
   }
 
   function wireFilters(mount) {
-    const map = { milestone: "pv2-f-milestone", blocker: "pv2-f-blocker", priority: "pv2-f-priority", insurance: "pv2-f-insurance", bcba: "pv2-f-bcba", service: "pv2-f-service", days: "pv2-f-days" };
+    const map = { milestone: "pv2-f-milestone", blocker: "pv2-f-blocker", priority: "pv2-f-priority", insurance: "pv2-f-insurance", bcba: "pv2-f-bcba", service: "pv2-f-service", days: "pv2-f-days", waitlist: "pv2-f-waitlist" };
     Object.keys(map).forEach((key) => {
       const el = mount.querySelector("#" + map[key]);
       if (!el) return;

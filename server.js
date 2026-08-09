@@ -394,6 +394,9 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_rbt_name TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS schedule_finalized BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS stage_entered_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_intake_coordinator_name TEXT;
+-- A task can be assigned to someone who works here but has no CRM login, so
+-- their address is stored on the task rather than resolved through users.
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS assigned_email TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlist_reason TEXT;
@@ -1650,10 +1653,11 @@ async function processAssessmentReminders() {
 const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone, processAssessmentReminders };
 
 // ---- Staff to-do tasks (assignable, with due dates + email reminders) ----
-async function createStaffTask({ title, description, assigned_user_id, assigned_name, client_id, due_date, created_by }) {
+async function createStaffTask({ title, description, assigned_user_id, assigned_name, assigned_email, client_id, due_date, created_by }) {
   // If assigned by name only, try to resolve to a user for reminders.
   let uid = assigned_user_id || null;
   let uname = assigned_name || null;
+  let uemail = (assigned_email || "").trim() || null;
   if (!uid && uname) {
     const u = await dbGet("SELECT id, name FROM users WHERE lower(name) = lower(?) LIMIT 1", [uname]);
     if (u) uid = u.id;
@@ -1662,14 +1666,26 @@ async function createStaffTask({ title, description, assigned_user_id, assigned_
     const u = await dbGet("SELECT name FROM users WHERE id = ?", [uid]);
     if (u) uname = u.name;
   }
+  // Someone on the staff roster without a CRM login still has to hear about
+  // the task, so their address is looked up once and kept on the row rather
+  // than resolved through users on every send.
+  if (!uemail && uname) {
+    const e = await dbGet(
+      "SELECT email FROM hr_employees WHERE lower(name) = lower(?) AND email IS NOT NULL AND email <> '' LIMIT 1",
+      [uname]
+    ).catch(() => null);
+    if (e) uemail = e.email;
+  }
   const row = await dbGet(
-    `INSERT INTO staff_tasks (title, description, assigned_user_id, assigned_name, client_id, due_date, status, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING *`,
-    [title, description || null, uid, uname, client_id || null, due_date || null, created_by || "system", nowISO()]
+    `INSERT INTO staff_tasks (title, description, assigned_user_id, assigned_name, assigned_email, client_id, due_date, status, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING *`,
+    [title, description || null, uid, uname, uemail, client_id || null, due_date || null, created_by || "system", nowISO()]
   );
   // Notify the assignee immediately that a task was assigned to them.
-  if (uid) {
-    const u = await dbGet("SELECT email, name FROM users WHERE id = ?", [uid]).catch(() => null);
+  {
+    const u = uid
+      ? await dbGet("SELECT email, name FROM users WHERE id = ?", [uid]).catch(() => null)
+      : (uemail ? { email: uemail, name: uname } : null);
     if (u && u.email) {
       let childName = null;
       if (client_id) { const c = await dbGet("SELECT child_name FROM clients WHERE id = ?", [client_id]).catch(() => null); childName = c && c.child_name; }
@@ -1693,7 +1709,9 @@ async function createStaffTask({ title, description, assigned_user_id, assigned_
 async function processStaffTaskReminders() {
   const today = new Date().toISOString().slice(0, 10);
   const due = await dbAll(
-    `SELECT st.*, u.email AS assignee_email, c.child_name
+    // COALESCE so a task assigned to someone without a login still gets its
+    // reminder -- before, no login meant no email, silently.
+    `SELECT st.*, COALESCE(u.email, st.assigned_email) AS assignee_email, c.child_name
        FROM staff_tasks st
        LEFT JOIN users u ON u.id = st.assigned_user_id
        LEFT JOIN clients c ON c.id = st.client_id
@@ -4167,6 +4185,14 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
         service_location: c.service_location,
         assigned_bcba_name: c.assigned_bcba_name,
         assigned_intake_coordinator_name: c.assigned_intake_coordinator_name,
+        // Waitlist status travels with the card so the board can show it
+        // without anyone opening a client to find out. A waitlisted family is
+        // deliberately not being chased, so a card that looks stalled and a
+        // card that is waiting on purpose have to be tellable apart at a
+        // glance -- otherwise the board reads as a pile of neglected clients.
+        waitlisted: c.waitlisted === true || c.waitlisted === "t",
+        waitlisted_at: c.waitlisted_at || null,
+        waitlist_reason: c.waitlist_reason || null,
         ...pipelineV2.computeMilestoneView(c),
       }));
       return json(res, 200, shaped);
@@ -4370,8 +4396,65 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     // the "Show completed" toggle so completed tasks can be marked undone).
     // Lightweight user list for assignment dropdowns (any authenticated staff).
     if (pathname === "/api/staff" && method === "GET") {
-      const rows = await dbAll("SELECT id, name, role FROM users ORDER BY name");
-      return json(res, 200, rows);
+      // This list feeds the "Assign to" picker. It used to be the users table
+      // alone -- CRM login accounts -- which meant the only people you could
+      // assign work to were the handful who had been given a password. The
+      // team lives in the Staff directory (hr_employees), so both are offered,
+      // matched on email so someone with both a login and a staff record
+      // appears once and keeps the login (that is what drives their reminder
+      // emails and "my tasks").
+      const users = await dbAll("SELECT id, name, role, email FROM users ORDER BY name");
+      let employees = [];
+      try {
+        employees = await dbAll(
+          `SELECT id, name, email, role_title FROM hr_employees
+            WHERE COALESCE(status, 'active') NOT IN ('terminated', 'inactive')
+              AND name IS NOT NULL AND name <> ''
+            ORDER BY name`
+        );
+      } catch (e) { /* HR add-on not present: fall back to logins only */ }
+
+      const byEmail = new Map();
+      const out = [];
+      for (const u of users) {
+        const key = (u.email || "").trim().toLowerCase();
+        const entry = {
+          id: u.id, user_id: u.id, employee_id: null,
+          name: u.name, email: u.email || null,
+          role: u.role, has_login: true,
+        };
+        if (key) byEmail.set(key, entry);
+        out.push(entry);
+      }
+      for (const e of employees) {
+        const key = (e.email || "").trim().toLowerCase();
+        const existing = key ? byEmail.get(key) : null;
+        if (existing) { existing.employee_id = e.id; continue; }
+        // No login: `id` is deliberately null so the picker cannot submit a
+        // users.id that does not exist. They are assigned by name + email.
+        out.push({
+          id: null, user_id: null, employee_id: e.id,
+          name: e.name, email: e.email || null,
+          role: e.role_title || null, has_login: false,
+        });
+      }
+      // Two people can share a name, and two rows for the same person can exist
+      // (the seeded admin@ account is literally named after the owner). Merging
+      // by name would risk assigning work to the wrong person, so nothing is
+      // merged -- but an identical label twice in a dropdown is unusable, so
+      // any repeated name is disambiguated by its address.
+      const nameCounts = out.reduce((m, s) => {
+        const k = String(s.name || "").trim().toLowerCase();
+        m[k] = (m[k] || 0) + 1;
+        return m;
+      }, {});
+      for (const s of out) {
+        const k = String(s.name || "").trim().toLowerCase();
+        if (nameCounts[k] > 1 && s.email) s.label = `${s.name} (${s.email})`;
+        else s.label = s.name;
+      }
+      out.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+      return json(res, 200, out);
     }
 
     // ---------- Staff to-do tasks (assignable, due dates, reminders) ----------
@@ -4399,6 +4482,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         description: body.description,
         assigned_user_id: body.assigned_user_id ? Number(body.assigned_user_id) : null,
         assigned_name: body.assigned_name,
+        assigned_email: body.assigned_email,
         client_id: body.client_id ? Number(body.client_id) : null,
         due_date: body.due_date || null,
         created_by: user.email,

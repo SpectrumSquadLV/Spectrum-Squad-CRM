@@ -2166,7 +2166,17 @@ async function renderStaffTasks(mount) {
     body.innerHTML = `<div class="empty-state">Couldn't load staff tasks: ${esc(e.message)}</div>`;
     return;
   }
-  const staffOpts = staff.map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join("");
+  // The picker offers everyone on the roster, not only the people who happen
+  // to have a CRM login. Anyone without one is assigned by name and email --
+  // the option value carries all three so the server does not have to guess.
+  const optValue = (u) => JSON.stringify({ user_id: u.user_id != null ? u.user_id : (u.has_login ? u.id : null), name: u.name, email: u.email || "" });
+  const withLogin = staff.filter((u) => u.has_login !== false);
+  const noLogin = staff.filter((u) => u.has_login === false);
+  const optionsFor = (list) => list.map((u) => `<option value='${esc(optValue(u))}'>${esc(u.label || u.name)}${u.role ? ` — ${esc(u.role)}` : ""}</option>`).join("");
+  const staffOpts = noLogin.length
+    ? `<optgroup label="Has a CRM login">${optionsFor(withLogin)}</optgroup>` +
+      `<optgroup label="Staff without a login (emailed instead)">${optionsFor(noLogin)}</optgroup>`
+    : optionsFor(withLogin);
   const clientOpts = (state.clients || []).map((c) => `<option value="${c.id}">${esc(c.child_name)}</option>`).join("");
   const overdue = (t) => t.status !== "done" && t.due_date && new Date(t.due_date) < new Date(new Date().toDateString());
 
@@ -2216,7 +2226,18 @@ async function renderStaffTasks(mount) {
     try {
       await api("/api/staff-tasks", { method: "POST", body: {
         title,
-        assigned_user_id: body.querySelector("#stask-assignee").value || null,
+        ...(() => {
+          const raw = body.querySelector("#stask-assignee").value;
+          if (!raw) return { assigned_user_id: null };
+          try {
+            const a = JSON.parse(raw);
+            return { assigned_user_id: a.user_id || null, assigned_name: a.name || null, assigned_email: a.email || null };
+          } catch (e) {
+            // Older markup passed a bare user id. Keep accepting it rather than
+            // silently dropping the assignee.
+            return { assigned_user_id: raw };
+          }
+        })(),
         due_date: body.querySelector("#stask-due").value || null,
         client_id: body.querySelector("#stask-client").value || null,
         description: body.querySelector("#stask-desc").value || null,
@@ -4058,7 +4079,13 @@ function openAccessModal(u, onDone) {
   <script src="email-templates.js"></script>
 <script src="theme.js"></script>
   <script src="attendance.js"></script>
-  <script src="owner-financials.js"></script>
+  <!-- owner-financials.js injected an "Owner Financial Snapshot" into the client
+       cards on both boards and into the client detail modal. That is the money
+       Quiana asked to come off client cards until the Financial Center is
+       built out, so the script is not loaded. Nothing was deleted: the file,
+       its per-client overrides, the company rate settings and every
+       /api/clients/:id/financials route are untouched, so switching it back on
+       is this one line. -->
   <script src="pipeline-v2.js"></script>
     <script src="screener-admin.js"></script>
   <script src="hr-recruiting.js"></script>

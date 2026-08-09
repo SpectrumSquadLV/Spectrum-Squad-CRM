@@ -39,6 +39,7 @@
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee); text-align:right;">${e.hours_worked || "—"}</td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee);">${pctCell}</td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee);">${e.signed_off ? `<span class="tag" style="background:#dcfce7; color:#166534;">✓ signed</span>` : `<span class="tag">open</span>`}</td>
+        <td style="padding:8px 10px; border-top:1px solid var(--border,#eee); text-align:right;"><button class="btn small secondary" data-sup-untrack="${e.employee_id}" title="This person supervises rather than being supervised">Not supervised</button></td>
       </tr>`;
     }).join("");
     box.innerHTML = `
@@ -60,12 +61,39 @@
       <div class="card">
         <div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px; min-width:640px;">
           <thead><tr style="text-align:left; color:var(--text-muted); font-size:11px; text-transform:uppercase;">
-            <th style="padding:8px 10px;">Staff</th><th style="padding:8px 10px;">Role</th><th style="padding:8px 10px; text-align:right;">Sup hrs</th><th style="padding:8px 10px; text-align:right;">Worked hrs</th><th style="padding:8px 10px;">%</th><th style="padding:8px 10px;">Status</th>
+            <th style="padding:8px 10px;">Staff</th><th style="padding:8px 10px;">Role</th><th style="padding:8px 10px; text-align:right;">Sup hrs</th><th style="padding:8px 10px; text-align:right;">Worked hrs</th><th style="padding:8px 10px;">%</th><th style="padding:8px 10px;">Status</th><th></th>
           </tr></thead>
-          <tbody>${rows || `<tr><td colspan="6"><div class="empty-state">No staff.</div></td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="7"><div class="empty-state">No staff.</div></td></tr>`}</tbody>
         </table></div>
-      </div>`;
+      </div>
+      ${(d.excluded || []).length ? `<div class="card" style="margin-top:14px;">
+        <div class="section-title" style="margin-top:0;">Not on this tracker (${d.excluded.length})</div>
+        <p style="font-size:12.5px; color:var(--text-muted); margin:-4px 0 10px;">BCBAs supervise rather than being supervised, so they are left off — a certified BCBA on the list is a permanent 0% that makes the whole board read as non-compliant. Student analysts are RBTs and stay on. If someone is in the wrong place, move them.</p>
+        ${d.excluded.map((e) => `<div class="task-row">
+          <div class="info"><strong>${esc(e.name)}</strong><div class="due">${esc(e.role_title || "No job title on file")} · ${esc(e.reason)}</div></div>
+          <button class="btn small secondary" data-sup-track="${e.employee_id}">Put on the tracker</button>
+        </div>`).join("")}
+      </div>` : ""}`;
     box.querySelectorAll("[data-sup-emp]").forEach((tr) => tr.addEventListener("click", () => openEditor(tr.dataset.supEmp, curM, () => fillTable(mount))));
+    box.querySelectorAll("[data-sup-untrack]").forEach((b) => b.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const row = b.closest("tr");
+      const who = row ? (row.querySelector("strong") || {}).textContent : "this person";
+      if (!confirm(`Take ${who} off the RBT supervision tracker?\n\nUse this for BCBAs, who supervise rather than being supervised. Their logged sessions are kept and they reappear the moment you put them back.`)) return;
+      b.disabled = true;
+      try {
+        await api("/api/supervision/employee/" + b.dataset.supUntrack + "/tracked", { method: "PATCH", body: { tracked: false } });
+        await fillTable(mount);
+      } catch (e) { b.disabled = false; alert(e.message || "Couldn't update that."); }
+    }));
+    box.querySelectorAll("[data-sup-track]").forEach((b) => b.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      b.disabled = true;
+      try {
+        await api("/api/supervision/employee/" + b.dataset.supTrack + "/tracked", { method: "PATCH", body: { tracked: true } });
+        await fillTable(mount);
+      } catch (e) { b.disabled = false; alert(e.message || "Couldn't update that."); }
+    }));
   }
 
   function openHoursUpload(mount) {

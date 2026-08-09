@@ -25,6 +25,42 @@ module.exports = function initSupervision(ctx) {
 
   const BACB_MIN_PCT = 5; // BACB minimum: 5% of monthly service hours.
 
+  // Who belongs on this tracker. RBTs are supervised; BCBAs do the supervising,
+  // so a fully certified BCBA on the list is a permanently unmeetable 0% that
+  // makes the whole board look non-compliant.
+  //
+  // Student analysts are the trap. They are RBTs pursuing certification, so
+  // they DO need supervision, and several of them carry BCBA-flavoured access
+  // in the CRM. The rule therefore reads the job title, not the login role, and
+  // anything mentioning "student" stays on the tracker no matter what else the
+  // title says.
+  //
+  // A title is a guess, so it is only ever the default: hr_employees
+  // .supervision_required overrides it in either direction, and the tracker
+  // shows who has been left off so nobody is silently dropped.
+  const BCBA_TITLE = /\bBCBA\b|\bBCaBA\b|board[ -]?certified behavior analyst|clinical director/i;
+  const STUDENT_TITLE = /student|in[- ]training|trainee|candidate|\bRBT\b/i;
+
+  function supervisionDefault(emp) {
+    const title = String((emp && emp.role_title) || "");
+    if (!title.trim()) return true;               // unknown title: keep them on, visible
+    if (STUDENT_TITLE.test(title)) return true;   // student analysts are RBTs
+    return !BCBA_TITLE.test(title);
+  }
+
+  function isTracked(emp) {
+    if (emp && (emp.supervision_required === true || emp.supervision_required === "t")) return true;
+    if (emp && (emp.supervision_required === false || emp.supervision_required === "f")) return false;
+    return supervisionDefault(emp);
+  }
+
+  function whyOff(emp) {
+    if (emp && (emp.supervision_required === false || emp.supervision_required === "f")) {
+      return "Taken off the tracker by hand";
+    }
+    return `${emp.role_title || "This role"} supervises rather than being supervised`;
+  }
+
   async function initTables() {
     await dbRun(`CREATE TABLE IF NOT EXISTS hr_supervision_logs (
       id SERIAL PRIMARY KEY,
@@ -41,6 +77,11 @@ module.exports = function initSupervision(ctx) {
       updated_at TEXT,
       UNIQUE (employee_id, month)
     )`).catch((e) => console.error("supervision initTables:", e.message));
+
+    // NULL means "decide from the job title". TRUE/FALSE is a human overruling
+    // that guess for one person, which survives any later change to the rule.
+    await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS supervision_required BOOLEAN")
+      .catch((e) => console.error("supervision_required column:", e.message));
 
     // Amendments to an already-signed month. A signed month is a compliance
     // record: it can still be corrected -- people do log the wrong date, or a
@@ -157,7 +198,15 @@ module.exports = function initSupervision(ctx) {
 
   // ---- summary rollup for a month (list + overall %) -----------------------
   async function monthSummary(month) {
-    const emps = await dbAll("SELECT id, name, role_title, rethink_id, hr_stage, status FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated' ORDER BY name");
+    const allEmps = await dbAll("SELECT id, name, role_title, rethink_id, hr_stage, status, supervision_required FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated' ORDER BY name");
+    const emps = allEmps.filter(isTracked);
+    // Everyone left off, and why. Shown on the page rather than silently
+    // dropped -- a name missing from a compliance tracker with no explanation
+    // is exactly the kind of gap nobody notices until an audit.
+    const excluded = allEmps.filter((e) => !isTracked(e)).map((e) => ({
+      employee_id: e.id, name: e.name, role_title: e.role_title || "", reason: whyOff(e),
+      manual: e.supervision_required === false || e.supervision_required === "f",
+    }));
     const logs = await dbAll("SELECT * FROM hr_supervision_logs WHERE month = ?", [month]);
     const byEmp = {}; logs.forEach((l) => { byEmp[l.employee_id] = l; });
     let totSup = 0, totWorked = 0, needUpload = 0, signed = 0;
@@ -181,6 +230,7 @@ module.exports = function initSupervision(ctx) {
     return {
       month, min_pct: BACB_MIN_PCT,
       employees: list,
+      excluded,
       overall_pct: pct(totSup, totWorked),
       total_sup_hours: Math.round(totSup * 100) / 100,
       total_worked_hours: Math.round(totWorked * 100) / 100,
@@ -355,6 +405,22 @@ module.exports = function initSupervision(ctx) {
       }
 
       // BCBA sign-off → PDF + auto-email staff + BCBA.
+      // Put someone on or take them off the tracker by hand. `tracked: null`
+      // hands the decision back to the job-title rule.
+      const trackMatch = pathname.match(/^\/api\/supervision\/employee\/(\d+)\/tracked$/);
+      if (trackMatch && method === "PATCH") {
+        const empId = Number(trackMatch[1]);
+        const b = await readBody(req);
+        const emp = await dbGet("SELECT id, name, role_title FROM hr_employees WHERE id = ?", [empId]);
+        if (!emp) return json(res, 404, { error: "Not found" });
+        const val = b.tracked === null || b.tracked === "auto" ? null : !!b.tracked;
+        await dbRun("UPDATE hr_employees SET supervision_required = ? WHERE id = ?", [val, empId]);
+        await logActivity(empId, val === null
+          ? `Supervision tracking set back to automatic (by job title) by ${actor}.`
+          : `${val ? "Added to" : "Removed from"} the RBT supervision tracker by ${actor}.`);
+        return json(res, 200, { ok: true, employee_id: empId, supervision_required: val, tracked: isTracked({ ...emp, supervision_required: val }) });
+      }
+
       const signMatch = pathname.match(/^\/api\/supervision\/employee\/(\d+)\/sign-off$/);
       if (signMatch && method === "POST") {
         const empId = Number(signMatch[1]);
