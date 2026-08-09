@@ -150,25 +150,36 @@ module.exports = function initAuthorizations(ctx) {
   function authValidity(row, todayStr) {
     const today = todayStr || nowISO().slice(0, 10);
     const num = clean(row.auth_number);
-    if (!num || /^place\s*holder$/i.test(num)) {
-      return { valid: false, reason: "no_number", message: "No authorization number on file." };
-    }
+    const hasNumber = !!num && !/^place\s*holder$/i.test(num);
     const from = clean(row.effective_date).slice(0, 10);
     const to = clean(row.expiration_date).slice(0, 10);
     if (!from || !to) {
-      return { valid: false, reason: "no_dates", message: "No authorization date range on file." };
+      return { valid: false, countable: false, reason: "no_dates", message: "No authorization date range on file." };
     }
     if (today < from) {
-      return { valid: false, reason: "not_started", message: `Doesn't start until ${from}.` };
+      return { valid: false, countable: false, reason: "not_started", message: `Doesn't start until ${from}.` };
     }
     if (today > to) {
-      return { valid: false, reason: "expired", message: `Ended ${to}.` };
+      return { valid: false, countable: false, reason: "expired", message: `Ended ${to}.` };
     }
     // A repeat of a line already counted contributes no additional hours.
     if ((row.occurrence || 1) > 1) {
-      return { valid: false, reason: "duplicate_line", message: `Copy ${row.occurrence} of ${row.duplicate_of_count} identical rows in the export.` };
+      return { valid: false, countable: false, reason: "duplicate_line", message: `Copy ${row.occurrence} of ${row.duplicate_of_count} identical rows in the export.` };
     }
-    return { valid: true, reason: "valid", message: "" };
+    // In date range but no number on file. This is a gap in Rethink, not proof
+    // that no authorization exists -- Harper Hall is an active client with a
+    // live authorization whose number simply was not entered. Treating that as
+    // "no authorization" would zero her hours and drop her off Clients Needing
+    // Hours, which is the opposite of what should happen. So it counts for
+    // scheduling and is held back from anything billing-facing until the number
+    // is entered.
+    if (!hasNumber) {
+      return {
+        valid: false, countable: true, reason: "no_number",
+        message: "In date range, but no authorization number on file yet — confirm it in Rethink before billing.",
+      };
+    }
+    return { valid: true, countable: true, reason: "valid", message: "" };
   }
 
   // ======================= XLSX ==============================
@@ -659,15 +670,20 @@ module.exports = function initAuthorizations(ctx) {
           [Number(clientAuthMatch[1])]
         );
         for (const r of rows) r.validity = authValidity(r);
-        const active = rows.filter((r) => r.validity.valid);
+        const active = rows.filter((r) => r.validity.countable);
         json(res, 200, {
           authorizations: rows.map((r) => ({ ...r, row_warnings: JSON.parse(r.row_warnings || "[]") })),
-          validity_rule: "Counts only where a real authorization number is on file and today falls inside the authorization's own date range.",
+          validity_rule: ("Hours count when today falls inside the authorization's date range. An authorization "
+            + "in range but missing its number still counts for scheduling and is flagged as needing the number "
+            + "before billing. Expired, not-yet-started and duplicate rows do not count at all."),
           totals: {
             authorized_hours: round2(active.reduce((n, r) => n + (r.total_auth_hours || 0), 0)),
             scheduled_hours: round2(active.reduce((n, r) => n + (r.scheduled_hours || 0), 0)),
-            valid_authorizations: active.length,
-            excluded: rows.filter((r) => !r.validity.valid).map((r) => ({
+            valid_authorizations: active.filter((r) => r.validity.valid).length,
+            needs_auth_number: active.filter((r) => !r.validity.valid).length,
+            unverified_hours: round2(active.filter((r) => !r.validity.valid)
+              .reduce((n, r) => n + (r.total_auth_hours || 0), 0)),
+            excluded: rows.filter((r) => !r.validity.countable).map((r) => ({
               service: r.service_name, billing_code: r.billing_code,
               hours: r.total_auth_hours, why: r.validity.message,
             })),
@@ -688,18 +704,22 @@ module.exports = function initAuthorizations(ctx) {
              LEFT JOIN clients c ON c.id = a.client_id`
         );
         for (const r of all) r.validity = authValidity(r);
-        const rows = all.filter((r) => r.validity.valid);
-        const excluded = all.filter((r) => !r.validity.valid);
+        // Countable = real hours the clinic can schedule against.
+        // Valid = countable AND carrying an authorization number, so billable.
+        const rows = all.filter((r) => r.validity.countable);
+        const excluded = all.filter((r) => !r.validity.countable);
+        const unverified = rows.filter((r) => !r.validity.valid);
         const dupExtra = excluded.filter((r) => r.validity.reason === "duplicate_line");
         const byClient = {};
         for (const r of rows) {
           const key = r.client_id || `raw:${r.client_name_raw}`;
           byClient[key] = byClient[key] || {
             client_id: r.client_id, name: r.child_name || r.client_name_raw,
-            matched: !!r.client_id, authorized: 0, scheduled: 0, unscheduled: 0,
+            matched: !!r.client_id, authorized: 0, scheduled: 0, unscheduled: 0, unverified_hours: 0,
             soonest_expiration: null, services: [],
           };
           const g = byClient[key];
+          if (!r.validity.valid) g.unverified_hours = round2((g.unverified_hours || 0) + (r.total_auth_hours || 0));
           g.authorized += r.total_auth_hours || 0;
           g.scheduled += r.scheduled_hours || 0;
           g.unscheduled += r.unscheduled_hours || 0;
@@ -719,6 +739,12 @@ module.exports = function initAuthorizations(ctx) {
           unmatched_clients: clientsOut.filter((c) => !c.matched).length,
           duplicate_lines: dupExtra.length,
           duplicate_hours_excluded: round2(dupExtra.reduce((n, r) => n + (r.total_auth_hours || 0), 0)),
+          // Counted for scheduling, not yet billable.
+          needs_auth_number: {
+            rows: unverified.length,
+            hours: round2(unverified.reduce((n, r) => n + (r.total_auth_hours || 0), 0)),
+            clients: [...new Set(unverified.map((r) => r.child_name || r.client_name_raw))].sort(),
+          },
           // Every row that did not count, and why. Nothing disappears silently.
           excluded: ["no_number", "no_dates", "not_started", "expired", "duplicate_line"].map((reason) => {
             const list = excluded.filter((r) => r.validity.reason === reason);
