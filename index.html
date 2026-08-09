@@ -507,6 +507,15 @@ async function route() {
     return;
   }
 
+  // Scheduling is switched off at Quiana's request -- both the Scheduling
+  // Center and the older weekly Therapy Schedule. The code and the tables are
+  // still here and untouched; only the way in is closed, so turning it back on
+  // is this guard, the nav entry, the MODULE_CATALOG entry and the script tag.
+  // This sits above renderShell deliberately: anyone landing on an old
+  // #/schedule bookmark goes straight to the dashboard rather than flashing a
+  // shell with a nav section that no longer exists.
+  if (hash.startsWith("#/schedule")) { location.hash = "#/dashboard"; return; }
+
   renderShell(view || "dashboard");
 
   const mount = document.getElementById("view-mount");
@@ -523,13 +532,6 @@ async function route() {
   else if (hash.startsWith("#/pipeline-v2")) { /* rendered by pipeline-v2.js */ }
   else if (hash.startsWith("#/pipeline")) await renderPipeline(mount);
   else if (hash.startsWith("#/tasks")) await renderTasks(mount);
-  else if (hash.startsWith("#/schedule")) {
-    // The Scheduling Center replaces the old weekly-pattern Therapy Schedule.
-    // If its bundle failed to load for any reason, fall back to the old page
-    // rather than showing an empty screen.
-    if (window.SchedulingCenter) await window.SchedulingCenter.render(mount);
-    else await renderSchedule(mount);
-  }
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
@@ -564,7 +566,6 @@ const MODULE_CATALOG = {
   dashboard: { label: "Dashboard", icon: "◧" },
   pipeline: { label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" },
   tasks: { label: "Tasks & Alerts", icon: "✓" },
-  schedule: { label: "Scheduling", icon: "▦" },
   staff: { label: "Staff", icon: "🧑‍⚕️" },
   supervision: { label: "RBT Supervision", icon: "📋" },
   leads: { label: "Lead Management", icon: "🎯" },
@@ -607,7 +608,6 @@ function renderShell(active) {
     navItems.push({ key: "pipeline", label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" });
   if (!OT_ONLY) {
     navItems.push({ key: "tasks", label: "Tasks & Alerts", icon: "✓" });
-    navItems.push({ key: "schedule", label: "Scheduling", icon: "▦" });
   }
   // The Message Outbox is private to the owner (and a co-owner super admin).
   if (!OT_ONLY && ["owner", "super_admin"].includes(state.user.role))
@@ -829,7 +829,7 @@ async function fillDashStaffing(mount) {
       ${tile(d.totalHours, "Client hrs/wk", `${d.clientCount} client${d.clientCount === 1 ? "" : "s"}`)}
       ${tile((d.rbtsNeeded || 0) + (d.bcbasNeeded || 0), "Total staff", "recommended")}
     </div>
-    <div style="font-size:11.5px; color:var(--text-muted); margin-top:10px;">Full breakdown in the <a href="#/schedule" style="color:var(--brand-navy,#1b2a6b);">Scheduling Center</a>.</div>`;
+  `;
 }
 
 function renderInsuranceChart(rows) {
@@ -1553,9 +1553,6 @@ async function openClientModal(id) {
         <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Emails the patient's name, DOB, insurance details, and any insurance card on file to your billing/verification contact. Sent automatically at enrollment — use this to re-send once the card is uploaded.</div>
       </div>
 
-      <div class="section-title">Financial Obligation Form</div>
-      <div id="financial-form-section"><div class="empty-state">Loading…</div></div>
-
       <div class="section-title">Parent Schedule Request</div>
       <div id="schedule-req-section"><div class="empty-state">Loading…</div></div>
 
@@ -1736,7 +1733,10 @@ async function openClientModal(id) {
     });
   }
   wireCaseNotes(backdrop, id);
-  wireFinancialForm(backdrop, id);
+  // The Financial Obligation Form is off the client card for now -- it moves
+  // into the Financial Center once that is built out. The form, its data and
+  // its API are all untouched; only the section on the card is gone, so
+  // nothing anyone already filled in has been lost.
   wireScheduleRequest(backdrop, id, client);
 
   const attBtn = backdrop.querySelector("#send-attendance-btn");
@@ -3925,7 +3925,6 @@ function openAccessModal(u, onDone) {
   <script src="geo-map-frontend.js"></script>
   <script src="bip-frontend.js"></script>
   <script src="people-frontend.js"></script>
-  <script src="scheduling-frontend.js"></script>
 
 </body>
 </html>
