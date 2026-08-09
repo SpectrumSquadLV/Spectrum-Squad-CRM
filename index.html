@@ -523,7 +523,13 @@ async function route() {
   else if (hash.startsWith("#/pipeline-v2")) { /* rendered by pipeline-v2.js */ }
   else if (hash.startsWith("#/pipeline")) await renderPipeline(mount);
   else if (hash.startsWith("#/tasks")) await renderTasks(mount);
-  else if (hash.startsWith("#/schedule")) await renderSchedule(mount);
+  else if (hash.startsWith("#/schedule")) {
+    // The Scheduling Center replaces the old weekly-pattern Therapy Schedule.
+    // If its bundle failed to load for any reason, fall back to the old page
+    // rather than showing an empty screen.
+    if (window.SchedulingCenter) await window.SchedulingCenter.render(mount);
+    else await renderSchedule(mount);
+  }
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
@@ -558,7 +564,7 @@ const MODULE_CATALOG = {
   dashboard: { label: "Dashboard", icon: "◧" },
   pipeline: { label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" },
   tasks: { label: "Tasks & Alerts", icon: "✓" },
-  schedule: { label: "Therapy Schedule", icon: "▦" },
+  schedule: { label: "Scheduling", icon: "▦" },
   staff: { label: "Staff", icon: "🧑‍⚕️" },
   supervision: { label: "RBT Supervision", icon: "📋" },
   leads: { label: "Lead Management", icon: "🎯" },
@@ -601,7 +607,7 @@ function renderShell(active) {
     navItems.push({ key: "pipeline", label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" });
   if (!OT_ONLY) {
     navItems.push({ key: "tasks", label: "Tasks & Alerts", icon: "✓" });
-    navItems.push({ key: "schedule", label: "Therapy Schedule", icon: "▦" });
+    navItems.push({ key: "schedule", label: "Scheduling", icon: "▦" });
   }
   // The Message Outbox is private to the owner (and a co-owner super admin).
   if (!OT_ONLY && ["owner", "super_admin"].includes(state.user.role))
@@ -823,7 +829,7 @@ async function fillDashStaffing(mount) {
       ${tile(d.totalHours, "Client hrs/wk", `${d.clientCount} client${d.clientCount === 1 ? "" : "s"}`)}
       ${tile((d.rbtsNeeded || 0) + (d.bcbasNeeded || 0), "Total staff", "recommended")}
     </div>
-    <div style="font-size:11.5px; color:var(--text-muted); margin-top:10px;">Full breakdown on the <a href="#/schedule" style="color:var(--brand-navy,#1b2a6b);">Therapy Schedule</a> page.</div>`;
+    <div style="font-size:11.5px; color:var(--text-muted); margin-top:10px;">Full breakdown in the <a href="#/schedule" style="color:var(--brand-navy,#1b2a6b);">Scheduling Center</a>.</div>`;
 }
 
 function renderInsuranceChart(rows) {
@@ -3843,6 +3849,7 @@ function openAccessModal(u, onDone) {
   <script src="geo-map-frontend.js"></script>
   <script src="bip-frontend.js"></script>
   <script src="people-frontend.js"></script>
+  <script src="scheduling-frontend.js"></script>
 
 </body>
 </html>

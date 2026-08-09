@@ -5093,6 +5093,7 @@ const PUBLIC_FILES = new Set([
   "/geo-map-frontend.js",
   "/bip-frontend.js",
   "/people-frontend.js",
+  "/scheduling-frontend.js",
 ]);
 
 function serveStatic(req, res, pathname) {
