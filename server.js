@@ -2131,6 +2131,26 @@ async function signNowRequest(path, options = {}) {
   return body;
 }
 
+// signNowRequest parses JSON. A signed PDF is not JSON, so downloads need
+// their own path -- same auth, no parsing, and a hard size ceiling so one
+// oversized file cannot exhaust memory on a small Railway instance.
+const SIGNNOW_MAX_DOWNLOAD = 25 * 1024 * 1024;
+async function signNowFetchRaw(apiPath) {
+  const token = await getSignNowAccessToken();
+  const res = await fetch(`${SIGNNOW_API_BASE}${apiPath}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    if (res.status === 401) _signNowToken = { value: "", expiresAt: 0 };
+    throw new Error(`SignNow ${apiPath} failed (${res.status})`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > SIGNNOW_MAX_DOWNLOAD) {
+    throw new Error(`File is ${Math.round(buf.length / 1048576)} MB, over the ${SIGNNOW_MAX_DOWNLOAD / 1048576} MB ceiling`);
+  }
+  return buf;
+}
+
 // Records the outcome of every enrollment-packet attempt (success, failure, or
 // blocked) so nothing fails silently and the UI can show status + retry. Upserts
 // on client_id and bumps the attempt counter.
@@ -3284,6 +3304,7 @@ async function handle(req, res, pathname, method, query = {}) {
         // The completions feed renders on the dashboard, so it follows the
         // dashboard's access. Its own handler is owner/admin only on top.
         pathname.startsWith("/api/completions") ? "dashboard" :
+        pathname.startsWith("/api/signnow-import") ? "admin" :
         pathname.startsWith("/api/notifications") ? "outbox" :
         pathname.startsWith("/api/email-templates") ? "email-templates" :
         pathname.startsWith("/api/failed-emails") ? "failed-emails" :
@@ -3389,6 +3410,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/people/")) {
     const handled = await people.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/signnow-import")) {
+    const handled = await signnowImport.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -3750,8 +3776,21 @@ async function handle(req, res, pathname, method, query = {}) {
 
     const downloadDocMatch = pathname.match(/^\/api\/documents\/(\d+)\/download$/);
     if (downloadDocMatch && method === "GET") {
+      // These are client records, and since the SignNow import copies signed
+      // enrollment packets in, some of them carry SSNs and insurance cards.
+      // Being logged in was the only requirement here before, which meant any
+      // staff account could pull any family's packet. Same gate as the client
+      // records themselves now, and every view is written down -- if PHI is
+      // going to live in two systems, the second one should at least be able
+      // to say who opened it.
+      if (!canAccessClients(user)) return json(res, 403, { error: "Not permitted to view client documents" });
       const doc = await dbGet("SELECT * FROM client_documents WHERE id = ?", [downloadDocMatch[1]]);
       if (!doc) return json(res, 404, { error: "Not found" });
+      await dbRun(
+        `INSERT INTO hr_audit_log (actor, action, entity_type, entity_id, detail, created_at)
+         VALUES (?, 'client_document_viewed', 'client', ?, ?, ?)`,
+        [user.email || user.name || "unknown", doc.client_id, `Opened "${doc.label || doc.filename}"`, nowISO()]
+      ).catch((e) => console.error("document view audit failed:", e.message));
       if (doc.doc_type === "link") {
         res.writeHead(302, { Location: doc.external_url });
         res.end();
@@ -5536,6 +5575,7 @@ const PUBLIC_FILES = new Set([
   "/geo-map-frontend.js",
   "/bip-frontend.js",
   "/people-frontend.js",
+  "/signnow-import-frontend.js",
   "/new-hire.html",
   "/scheduling-frontend.js",
 ]);
@@ -5649,6 +5689,22 @@ const supervision = require("./supervision")({
 // ===== COMPLETIONS: one recorder for every "X finished" event, a dashboard
 // feed, and a single daily digest email. Constructed early so every module
 // below can be handed completions.record. =====
+// ===== SIGNNOW IMPORT: file the back-catalogue of signed documents onto the
+// client and staff records they belong to. Preview first, nothing written
+// without a human ticking it. =====
+const signnowImport = require("./signnow-import")({
+  dbGet, dbAll, dbRun, nowISO, crypto, json, readBody,
+  signNowRequest, signNowConfigured, signNowFetchRaw,
+  DOCS_DIR,
+  // hr.js owns this directory; the path is rebuilt rather than exported so the
+  // two modules cannot drift apart silently if one of them moves.
+  RESUME_DIR: path.join(DATA_DIR, "hr-resumes"),
+  logAudit: (actor, action, entityType, entityId, detail) => dbRun(
+    `INSERT INTO hr_audit_log (actor, action, entity_type, entity_id, detail, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [actor || "system", action, entityType || null, entityId || null, detail || null, nowISO()]
+  ).catch((e) => console.error("signnow import audit failed:", e.message)),
+});
 const completions = require("./completions")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, json, readBody, getAppSetting, setAppSetting, APP_BASE_URL,
 });
@@ -5852,6 +5908,7 @@ async function start() {
   await scheduling.initTables().catch((e) => console.error("Scheduling initTables failed:", e));
   await onboarding.initTables().catch((e) => console.error("Onboarding initTables failed:", e));
   await completions.initTables().catch((e) => console.error("Completions initTables failed:", e));
+  await signnowImport.initTables().catch((e) => console.error("SignNow import initTables failed:", e));
   // Seed the credentialing links rather than defaulting them at read time.
   // Two places read them -- the settings screen and the onboarding portal --
   // and a default that only exists in one of them is a link that silently

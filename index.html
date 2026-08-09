@@ -539,6 +539,7 @@ async function route() {
   else if (hash.startsWith("#/policies")) { if (window.__renderPolicies) await window.__renderPolicies(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/map")) { if (window.__renderMap) await window.__renderMap(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/financial-center")) { if (window.__renderFinancialCenter) await window.__renderFinancialCenter(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/signnow-import")) { if (window.__renderSignNowImport) await window.__renderSignNowImport(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/email-templates")) { if (window.__renderEmailTemplates) await window.__renderEmailTemplates(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/failed-emails")) { if (window.__renderFailedEmails) await window.__renderFailedEmails(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/auth-alerts")) await renderAuthAlerts(mount, param);
@@ -574,6 +575,7 @@ const MODULE_CATALOG = {
   hr: { label: "HR & Recruiting", icon: "👥" },
   outbox: { label: "Message Outbox", icon: "✉" },
   "financial-center": { label: "Financial Center", icon: "💰" },
+  "signnow-import": { label: "SignNow Import", icon: "⇩" },
   "email-templates": { label: "Email Templates", icon: "✎" },
   "failed-emails": { label: "Failed Emails", icon: "⚠" },
   "auth-alerts": { label: "Authorization Alerts", icon: "⏰" },
@@ -627,6 +629,7 @@ function renderShell(active) {
   if (["owner", "super_admin"].includes(state.user.role))
     navItems.push({ key: "financial-center", label: "Financial Center", icon: "💰" });
   if (["owner", "admin", "super_admin"].includes(state.user.role)) {
+    navItems.push({ key: "signnow-import", label: "SignNow Import", icon: "⇩" });
     navItems.push({ key: "email-templates", label: "Email Templates", icon: "✎" });
     navItems.push({ key: "failed-emails", label: "Failed Emails", icon: "⚠" });
     navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
@@ -4097,6 +4100,7 @@ function openAccessModal(u, onDone) {
   <script src="geo-map-frontend.js"></script>
   <script src="bip-frontend.js"></script>
   <script src="people-frontend.js"></script>
+  <script src="signnow-import-frontend.js"></script>
 
 </body>
 </html>
