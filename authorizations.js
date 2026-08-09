@@ -137,6 +137,40 @@ module.exports = function initAuthorizations(ctx) {
     console.log("Authorizations schema ready.");
   }
 
+  // ======================= VALIDITY ==========================
+  // Spectrum Squad's rule, not an inference: an authorization only counts if it
+  // has a real authorization number AND today falls inside its own date range.
+  //
+  // This deliberately overrides the export's Status column. Rethink marks rows
+  // Active that carry "Place Holder" where the number should be, and a row can
+  // still read Active on the day after it expires. Anything excluded is
+  // reported with the reason rather than dropped, because an authorization
+  // that vanishes from a total without explanation is how a clinic ends up
+  // delivering unauthorised hours.
+  function authValidity(row, todayStr) {
+    const today = todayStr || nowISO().slice(0, 10);
+    const num = clean(row.auth_number);
+    if (!num || /^place\s*holder$/i.test(num)) {
+      return { valid: false, reason: "no_number", message: "No authorization number on file." };
+    }
+    const from = clean(row.effective_date).slice(0, 10);
+    const to = clean(row.expiration_date).slice(0, 10);
+    if (!from || !to) {
+      return { valid: false, reason: "no_dates", message: "No authorization date range on file." };
+    }
+    if (today < from) {
+      return { valid: false, reason: "not_started", message: `Doesn't start until ${from}.` };
+    }
+    if (today > to) {
+      return { valid: false, reason: "expired", message: `Ended ${to}.` };
+    }
+    // A repeat of a line already counted contributes no additional hours.
+    if ((row.occurrence || 1) > 1) {
+      return { valid: false, reason: "duplicate_line", message: `Copy ${row.occurrence} of ${row.duplicate_of_count} identical rows in the export.` };
+    }
+    return { valid: true, reason: "valid", message: "" };
+  }
+
   // ======================= XLSX ==============================
   // Namespace-agnostic: Rethink writes <x:row>, other tools write <row>.
   const NS = "(?:[A-Za-z0-9]+:)?";
@@ -624,14 +658,20 @@ module.exports = function initAuthorizations(ctx) {
           "SELECT * FROM client_authorizations WHERE client_id = ? ORDER BY expiration_date DESC, billing_code",
           [Number(clientAuthMatch[1])]
         );
-        const active = rows.filter((r) => clean(r.status).toLowerCase() === "active");
+        for (const r of rows) r.validity = authValidity(r);
+        const active = rows.filter((r) => r.validity.valid);
         json(res, 200, {
           authorizations: rows.map((r) => ({ ...r, row_warnings: JSON.parse(r.row_warnings || "[]") })),
+          validity_rule: "Counts only where a real authorization number is on file and today falls inside the authorization's own date range.",
           totals: {
-            authorized_hours: round2(active.filter((r) => (r.occurrence || 1) === 1).reduce((n, r) => n + (r.total_auth_hours || 0), 0)),
+            authorized_hours: round2(active.reduce((n, r) => n + (r.total_auth_hours || 0), 0)),
             scheduled_hours: round2(active.reduce((n, r) => n + (r.scheduled_hours || 0), 0)),
-            unscheduled_hours: round2(active.filter((r) => (r.occurrence || 1) === 1).reduce((n, r) => n + (r.unscheduled_hours || 0), 0)),
-            duplicate_lines_excluded: active.filter((r) => (r.occurrence || 1) > 1).length,
+            valid_authorizations: active.length,
+            excluded: rows.filter((r) => !r.validity.valid).map((r) => ({
+              service: r.service_name, billing_code: r.billing_code,
+              hours: r.total_auth_hours, why: r.validity.message,
+            })),
+            unscheduled_hours: round2(active.reduce((n, r) => n + (r.unscheduled_hours || 0), 0)),
           },
           soonest_expiration: active.length
             ? active.map((r) => r.expiration_date).filter(Boolean).sort()[0] : null,
@@ -643,15 +683,14 @@ module.exports = function initAuthorizations(ctx) {
       // and whose authorization is about to run out.
       if (pathname === "/api/auth-util/overview" && method === "GET") {
         if (!canAccessClients(user)) { json(res, 403, { error: "Not permitted" }); return true; }
-        const rows = await dbAll(
+        const all = await dbAll(
           `SELECT a.*, c.child_name FROM client_authorizations a
-             LEFT JOIN clients c ON c.id = a.client_id
-            WHERE LOWER(COALESCE(a.status,'')) = 'active'`
+             LEFT JOIN clients c ON c.id = a.client_id`
         );
-        // Only the first copy of a repeated authorization line contributes
-        // hours, so a duplicated line in the export cannot inflate what
-        // leadership sees as authorized capacity.
-        const dupExtra = rows.filter((r) => (r.occurrence || 1) > 1);
+        for (const r of all) r.validity = authValidity(r);
+        const rows = all.filter((r) => r.validity.valid);
+        const excluded = all.filter((r) => !r.validity.valid);
+        const dupExtra = excluded.filter((r) => r.validity.reason === "duplicate_line");
         const byClient = {};
         for (const r of rows) {
           const key = r.client_id || `raw:${r.client_name_raw}`;
@@ -661,9 +700,9 @@ module.exports = function initAuthorizations(ctx) {
             soonest_expiration: null, services: [],
           };
           const g = byClient[key];
-          if ((r.occurrence || 1) === 1) g.authorized += r.total_auth_hours || 0;
+          g.authorized += r.total_auth_hours || 0;
           g.scheduled += r.scheduled_hours || 0;
-          if ((r.occurrence || 1) === 1) g.unscheduled += r.unscheduled_hours || 0;
+          g.unscheduled += r.unscheduled_hours || 0;
           g.services.push({ code: r.billing_code, name: r.service_name, unscheduled: r.unscheduled_hours, days: r.days_until_expiration });
           if (r.expiration_date && (!g.soonest_expiration || r.expiration_date < g.soonest_expiration)) {
             g.soonest_expiration = r.expiration_date;
@@ -680,13 +719,22 @@ module.exports = function initAuthorizations(ctx) {
           unmatched_clients: clientsOut.filter((c) => !c.matched).length,
           duplicate_lines: dupExtra.length,
           duplicate_hours_excluded: round2(dupExtra.reduce((n, r) => n + (r.total_auth_hours || 0), 0)),
+          // Every row that did not count, and why. Nothing disappears silently.
+          excluded: ["no_number", "no_dates", "not_started", "expired", "duplicate_line"].map((reason) => {
+            const list = excluded.filter((r) => r.validity.reason === reason);
+            return {
+              reason, rows: list.length,
+              hours: round2(list.reduce((n, r) => n + (r.total_auth_hours || 0), 0)),
+              clients: [...new Set(list.map((r) => r.child_name || r.client_name_raw))].sort(),
+            };
+          }).filter((x) => x.rows > 0),
           totals: {
             authorized: round2(clientsOut.reduce((n, c) => n + c.authorized, 0)),
             scheduled: round2(clientsOut.reduce((n, c) => n + c.scheduled, 0)),
             unscheduled: round2(clientsOut.reduce((n, c) => n + c.unscheduled, 0)),
           },
           expiring_30: rows.filter((r) => r.days_until_expiration != null && r.days_until_expiration >= 0 && r.days_until_expiration <= 30).length,
-          expired: (await dbGet("SELECT COUNT(*) AS n FROM client_authorizations WHERE LOWER(COALESCE(status,'')) = 'expired'")).n,
+          expired: excluded.filter((r) => r.validity.reason === "expired").length,
         });
         return true;
       }
@@ -731,6 +779,7 @@ module.exports = function initAuthorizations(ctx) {
     initTables,
     handleApi,
     parseExport,
-    _lib: { parseUnits, parseGoal, parseDates, parseClientName, scoreClient, matchRow, UNITS_PER_HOUR },
+    authValidity,
+    _lib: { parseUnits, parseGoal, parseDates, parseClientName, scoreClient, matchRow, authValidity, UNITS_PER_HOUR },
   };
 };
