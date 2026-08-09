@@ -3433,6 +3433,16 @@ async function renderAdmin(mount) {
       </div>
       <div class="task-row">
         <div class="info">
+          <strong>Class Dojo invite link</strong>
+          <div class="due">Sent to a new hire once all their onboarding documents are in.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="dojo-link" type="text" placeholder="https://teach.classdojo.com/…" style="width:300px;" />
+          <button class="btn small secondary" id="save-dojo-link">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
           <strong>First day: what to wear</strong>
           <div class="due">Added to the first-day email. Shirts are issued during onboarding, so a new hire has no Spectrum Squad shirt on their first morning — this is what tells them what to turn up in. Leave blank and the paragraph is left out entirely rather than sending an empty heading.</div>
         </div>
@@ -3509,6 +3519,7 @@ async function renderAdmin(mount) {
     setVal("#cred-bcba", settings.credentialing_link_bcba);
     setVal("#cred-rbt", settings.credentialing_link_rbt);
     setVal("#dress-code", settings.first_day_dress_code);
+    setVal("#dojo-link", settings.class_dojo_link);
     setVal("#shirt-ft", settings.shirt_count_full_time);
     setVal("#shirt-pt", settings.shirt_count_part_time);
     const tplInput = mount.querySelector("#newhire-template");
@@ -3548,6 +3559,7 @@ async function renderAdmin(mount) {
   wireSetting("save-cred-bcba", "cred-bcba", "credentialing_link_bcba");
   wireSetting("save-cred-rbt", "cred-rbt", "credentialing_link_rbt");
   wireSetting("save-dress-code", "dress-code", "first_day_dress_code");
+  wireSetting("save-dojo-link", "dojo-link", "class_dojo_link");
   const shirtBtn = mount.querySelector("#save-shirts");
   if (shirtBtn) shirtBtn.addEventListener("click", async () => {
     shirtBtn.disabled = true;

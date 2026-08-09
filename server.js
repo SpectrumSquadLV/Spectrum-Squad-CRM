@@ -2128,8 +2128,15 @@ const SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV = process.env.SIGNNOW_NEWHIRE_TEMPLATE_ID 
 const DEFAULT_SETTINGS = {
   credentialing_link_bcba: "https://sparkz.clickup.com/forms/3501350/f/3av96-450954/AMW0KVAC3YL07DEEMM",
   credentialing_link_rbt: "https://sparkz.clickup.com/forms/3501350/f/3av96-450934/OFTQKDCKHXT758222Z",
+  class_dojo_link: "https://teach.classdojo.com/#/singleLinkSignup/TT6SYWAH3",
   shirt_count_full_time: "4",
   shirt_count_part_time: "3",
+  // A draft, not a policy. Shirts are issued on the first day, so a new hire
+  // arrives without one and the email has to tell them what to turn up in.
+  // Left editable in Admin Settings like everything else here.
+  first_day_dress_code:
+    "Come as you are comfortable moving in — closed-toe shoes, and clothes you don't mind getting messy. "
+    + "You'll get your Spectrum Squad shirts on the day, so no need to worry about wearing one.",
 };
 
 async function newHireTemplateId() {
@@ -4694,6 +4701,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         signnow_newhire_template_id: await getAppSetting("signnow_newhire_template_id", ""),
         credentialing_link_bcba: await getAppSetting("credentialing_link_bcba", DEFAULT_SETTINGS.credentialing_link_bcba),
         credentialing_link_rbt: await getAppSetting("credentialing_link_rbt", DEFAULT_SETTINGS.credentialing_link_rbt),
+        class_dojo_link: await getAppSetting("class_dojo_link", DEFAULT_SETTINGS.class_dojo_link),
         first_day_dress_code: await getAppSetting("first_day_dress_code", ""),
         shirt_count_full_time: await getAppSetting("shirt_count_full_time", DEFAULT_SETTINGS.shirt_count_full_time),
         shirt_count_part_time: await getAppSetting("shirt_count_part_time", DEFAULT_SETTINGS.shirt_count_part_time),
@@ -4739,6 +4747,11 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         }
       }
       if ("first_day_dress_code" in body) await setAppSetting("first_day_dress_code", (body.first_day_dress_code || "").trim());
+      if ("class_dojo_link" in body) {
+        const url = (body.class_dojo_link || "").trim();
+        if (url && !/^https:\/\/[^\s]+$/.test(url)) return json(res, 400, { error: "The Class Dojo link needs to be a full https:// URL." });
+        await setAppSetting("class_dojo_link", url);
+      }
       for (const key of ["shirt_count_full_time", "shirt_count_part_time"]) {
         if (key in body) {
           const n = String(body[key] || "").trim();
