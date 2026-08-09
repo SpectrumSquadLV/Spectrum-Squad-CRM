@@ -25,7 +25,7 @@ const { chromium } = require("playwright");
     else { fail++; console.log("  FAIL  " + name + (detail ? "  -> " + String(detail).slice(0, 250) : "")); }
   };
 
-  await page.goto("http://localhost:3009/", { waitUntil: "networkidle" });
+  await page.goto((process.env.BASE || "http://localhost:3009") + "/", { waitUntil: "networkidle" });
   await page.fill('#login-form input[name="email"]', "admin@spectrumsquadlv.com");
   await page.fill('#login-form input[name="password"]', "TestOwner123!");
   await page.click('#login-form button[type="submit"]');

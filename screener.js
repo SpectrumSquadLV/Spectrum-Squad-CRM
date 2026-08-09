@@ -142,12 +142,17 @@ module.exports = function initScreener(ctx) {
 
   async function tick() {
     // 1. Packet completed + screener not done + no invite yet -> send it.
+    // Waitlisted families are excluded here and in the reminder pass below.
+    // The waitlist email tells them there is nothing to do right now, so the
+    // screener invite waits with them; nothing is lost, because this query
+    // picks them up on the next sweep after they come off.
     const toSend = await dbAll(
       `SELECT c.* FROM clients c
        JOIN enrollment_packets p ON p.client_id = c.id
        WHERE p.status = 'completed'
          AND c.clinical_screener_completed = false
          AND c.parent_email IS NOT NULL
+         AND c.waitlisted = false
          AND NOT EXISTS (SELECT 1 FROM screener_invites si WHERE si.client_id = c.id)`
     );
     for (const client of toSend) {
@@ -166,6 +171,10 @@ module.exports = function initScreener(ctx) {
         continue;
       }
       if (!client.parent_email || inv.reminder_count >= MAX_REMINDERS) continue;
+      // Paused, not cancelled: the invite stays 'sent' and its reminder count
+      // is untouched, so a family who waits a month does not burn through
+      // their 30 reminders while nobody is asking them for anything.
+      if (client.waitlisted === true || client.waitlisted === "t") continue;
       const last = inv.last_reminder_at ? new Date(inv.last_reminder_at).getTime() : new Date(inv.sent_at).getTime();
       const hours = (now - last) / (1000 * 60 * 60);
       if (hours >= REMINDER_INTERVAL_HOURS) {

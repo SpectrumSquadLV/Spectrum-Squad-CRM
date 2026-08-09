@@ -354,6 +354,13 @@ ALTER TABLE enrollment_packets ALTER COLUMN signnow_document_id DROP NOT NULL;
 ALTER TABLE enrollment_packets ADD COLUMN IF NOT EXISTS error_detail TEXT;
 ALTER TABLE enrollment_packets ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE enrollment_packets ADD COLUMN IF NOT EXISTS last_attempt_at TEXT;
+-- The 7-day "not completed -> not moving forward" clock stops while a client
+-- sits on the waitlist. paused_since marks when the current pause started;
+-- paused_ms is the total time already excluded from previous pauses. Elapsed
+-- time is measured against sent_at minus paused_ms, so a family who waited
+-- three weeks resumes with the days they actually had left, not zero.
+ALTER TABLE enrollment_packets ADD COLUMN IF NOT EXISTS paused_since TEXT;
+ALTER TABLE enrollment_packets ADD COLUMN IF NOT EXISTS paused_ms BIGINT NOT NULL DEFAULT 0;
 
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_payer TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_start_date TEXT;
@@ -1562,12 +1569,24 @@ async function checkOverdueTasks() {
 // Remind parents to schedule the in-clinic / in-home assessment. Fires for any
 // active client that has reached the assessment stage but has no assessment
 // date on file, throttled to once every 3 days per client.
+// A client on the waitlist has been told, in the waitlist email itself, that
+// they don't need to do anything right now. Every automated "please finish X"
+// message to the parent is therefore held while that is true, and picks back up
+// when they come off. Postgres hands this back as a real boolean, but a couple
+// of older code paths compare against "t", so both are accepted here rather
+// than trusting one driver's shape.
+function isWaitlisted(client) {
+  if (!client) return false;
+  return client.waitlisted === true || client.waitlisted === "t" || client.waitlisted === 1;
+}
+
 async function processAssessmentReminders() {
   const clients = await dbAll(
     `SELECT * FROM clients
       WHERE stage = 'assessment_scheduling'
         AND (in_clinic_assessment_date IS NULL OR in_clinic_assessment_date = '')
-        AND parent_email IS NOT NULL AND parent_email <> ''`
+        AND parent_email IS NOT NULL AND parent_email <> ''
+        AND waitlisted = false`
   );
   const now = Date.now();
   const THROTTLE_MS = 3 * 24 * 60 * 60 * 1000;
@@ -2235,6 +2254,7 @@ async function retryFailedEnrollmentPackets() {
        LEFT JOIN enrollment_packets p ON p.client_id = c.id
       WHERE c.stage IN (${placeholders})
         AND c.parent_email IS NOT NULL
+        AND c.waitlisted = false
         AND (p.id IS NULL OR (p.status IN ('failed','blocked') AND p.attempts < 6))`,
     EARLY_STAGES
   );
@@ -2272,11 +2292,36 @@ async function checkEnrollmentPackets() {
       continue;
     }
 
+    // Waitlisted families are not chased and are not timed out. The clock is
+    // genuinely stopped, not just quiet: suppressing the reminder alone would
+    // still let the 7-day rule move them to "not moving forward" for failing
+    // to sign a packet we had asked them to ignore.
+    const packetClient = await dbGet("SELECT * FROM clients WHERE id = ?", [packet.client_id]);
+    if (isWaitlisted(packetClient)) {
+      if (!packet.paused_since) {
+        await dbRun("UPDATE enrollment_packets SET paused_since = ? WHERE id = ?", [nowISO(), packet.id]);
+      }
+      continue;
+    }
+    if (packet.paused_since) {
+      // Came off the waitlist since the last sweep: bank the paused time and
+      // carry on from where the clock stopped.
+      const pausedFor = Math.max(0, now - new Date(packet.paused_since).getTime());
+      await dbRun("UPDATE enrollment_packets SET paused_since = NULL, paused_ms = paused_ms + ? WHERE id = ?", [pausedFor, packet.id]);
+      packet.paused_ms = Number(packet.paused_ms || 0) + pausedFor;
+      packet.paused_since = null;
+    }
+
     const sentAt = new Date(packet.sent_at).getTime();
-    const daysSinceSent = (now - sentAt) / (1000 * 60 * 60 * 24);
+    const pausedMs = Number(packet.paused_ms || 0);
+    // Clamped: if paused_ms ever exceeded the real elapsed time -- a clock
+    // change, or a pause recorded against a re-sent packet -- the packet reads
+    // as brand new rather than as a negative age, which errs towards giving
+    // the family more time instead of less.
+    const daysSinceSent = Math.max(0, now - sentAt - pausedMs) / (1000 * 60 * 60 * 24);
 
     if (daysSinceSent >= 7) {
-      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [packet.client_id]);
+      const client = packetClient;
       if (client && client.stage !== "not_moving_forward" && client.stage !== "discharged") {
         await dbRun(
           "UPDATE clients SET stage = 'not_moving_forward', discharge_reason = ?, updated_at = ? WHERE id = ?",
@@ -2290,7 +2335,7 @@ async function checkEnrollmentPackets() {
     const lastReminder = packet.last_reminder_at ? new Date(packet.last_reminder_at).getTime() : sentAt;
     const hoursSinceReminder = (now - lastReminder) / (1000 * 60 * 60);
     if (hoursSinceReminder >= 24) {
-      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [packet.client_id]);
+      const client = packetClient;
       if (client && client.parent_email) {
         const template = await emailTemplates.getEmailTemplate("enrollment_packet_reminder");
         const fields = { parent_name: client.parent_name, child_name: client.child_name };
@@ -4058,7 +4103,11 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
     const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
     // When the clinical screener is first marked complete, invite the parent to
     // pick their child's schedule (Phase 4). Fire-and-forget; dedupes internally.
-    if (!wasScreenerDone && updated.clinical_screener_completed === true) {
+    // Held for waitlisted families -- asking a parent to pick therapy times we
+    // cannot yet offer is the most confusing message in the whole chain. The
+    // "Send schedule form" button on the client card still works if someone
+    // decides to send it deliberately.
+    if (!wasScreenerDone && updated.clinical_screener_completed === true && !isWaitlisted(updated)) {
       clientForms.sendScheduleRequest(updated).catch((e) => console.error("sendScheduleRequest failed:", e));
     }
     // When the in-clinic assessment is first marked complete, create a task for

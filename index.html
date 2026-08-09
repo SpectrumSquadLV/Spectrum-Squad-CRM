@@ -1613,6 +1613,13 @@ async function openClientModal(id) {
       <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">
         ${client.parent_email ? "An automated email is sent to the parent when a client is placed on or removed from the waitlist." : "No parent email on file — no automated email will be sent."}
       </div>
+      ${
+        client.waitlisted
+          ? `<div style="font-size:12px; color:#92400e; background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:8px 10px; margin-top:8px;">
+               Automated reminders to this family are paused — enrollment packet, clinical screener and assessment nudges. The 7-day packet deadline is stopped too, so they can't be closed out for not signing while they wait. Everything resumes, with the time they had left, when you remove them from the waitlist.
+             </div>`
+          : `<div style="font-size:12px; color:var(--text-muted); margin-top:6px;">While a client is on the waitlist, automated reminders to the family are paused and the 7-day enrollment packet deadline stops.</div>`
+      }
 
       <div class="section-title">Advance / Close Out</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -1909,7 +1916,7 @@ async function openClientModal(id) {
       const emailNote = client.parent_email
         ? `\n\nAn automated "you're on the waitlist" email will be sent to ${client.parent_email}.`
         : "\n\nNote: no parent email is on file, so no email will be sent.";
-      if (!confirm(`Place ${client.child_name} on the waitlist?${emailNote}`)) return;
+      if (!confirm(`Place ${client.child_name} on the waitlist?\n\nAutomated reminders to the family stop, and the 7-day enrollment packet deadline pauses until you take them off.${emailNote}`)) return;
       try {
         await api(`/api/clients/${id}/waitlist`, { method: "POST", body: { waitlisted: true, reason } });
         close();
