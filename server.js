@@ -3027,6 +3027,7 @@ async function handle(req, res, pathname, method, query = {}) {
         // whichever record is being asked for -- which is why every call sends
         // owner_type on the query string, not only in the body.
         pathname.startsWith("/api/sched/") ? "schedule" :
+        pathname.startsWith("/api/auth-util/") ? "auth-alerts" :
         pathname.startsWith("/api/people/certifications") ? "staff" :
         pathname.startsWith("/api/people/departments") ? "admin" :
         pathname.startsWith("/api/people/emergency-contacts")
@@ -3125,6 +3126,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/sched/")) {
     const handled = await scheduling.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/auth-util/")) {
+    const handled = await authorizations.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -5235,6 +5241,16 @@ const scheduling = require("./scheduling")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, canAccessClients, moduleGranted,
 });
 
+// ===== AUTHORIZATIONS add-on: real per-service authorization records imported
+// from the Rethink "Authorization Utilization" export, replacing the three
+// free-text columns on the client row. Every parse is reconciled against the
+// export's own Totals line before anything is offered for import. Owns
+// /api/auth-util/*. =====
+const authorizations = require("./authorizations")({
+  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, canAccessClients,
+  unzip: (buf) => financialAdvisor.unzip(buf),
+});
+
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
@@ -5338,6 +5354,7 @@ async function start() {
   await bip.initTables().catch((e) => console.error("BIP initTables failed:", e));
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
   await scheduling.initTables().catch((e) => console.error("Scheduling initTables failed:", e));
+  await authorizations.initTables().catch((e) => console.error("Authorizations initTables failed:", e));
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
