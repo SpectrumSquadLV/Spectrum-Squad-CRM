@@ -1001,6 +1001,18 @@ const EMAIL_TEMPLATE_DEFS = [
     fields: ["parent_name", "child_name", "today"],
   },
   // ---- HR / Onboarding emails (staff), used by the Offer-Accepted bundle + milestones ----
+  { key: "hr_welcome_docs_bcba", label: "New Hire — Welcome + Required Documents (BCBA)", category: "HR / Onboarding Emails",
+    description: "Sent to a BCBA the moment their offer is accepted, alongside the SignNow packet. Carries the 72-hour document deadline.",
+    fields: ["first_name", "credentialing_form_link", "upload_portal_link"] },
+  { key: "hr_welcome_docs_rbt", label: "New Hire — Welcome + Required Documents (RBT)", category: "HR / Onboarding Emails",
+    description: "Sent to an RBT the moment their offer is accepted. Points them at HomeBase for the background check and payroll.",
+    fields: ["first_name", "credentialing_form_link", "upload_portal_link"] },
+  { key: "hr_first_day", label: "New Hire — Your First Day", category: "HR / Onboarding Emails",
+    description: "Sent ahead of their first day, once a start date has been entered. The dress code and shirt count only appear if they are set.",
+    fields: ["first_name", "first_day_date", "dress_code", "shirt_count", "supervisor_name", "scheduling_lead_name"] },
+  { key: "hr_docs_complete_internal", label: "New Hire — All Documents Received (internal)", category: "HR / Onboarding Emails",
+    description: "Sent to the owner and Clinical Director when a new hire finishes uploading everything.",
+    fields: ["employee_name", "role_title", "documents_list", "employee_link"] },
   { key: "hr_welcome_dojo", label: "New Hire — Class Dojo Welcome", category: "HR / Onboarding Emails",
     description: "Sent to a new hire when their offer is accepted (Class Dojo invite).",
     fields: ["first_name", "hire_date", "class_dojo_link"] },
@@ -1091,6 +1103,90 @@ const EMAIL_TEMPLATE_DEFAULTS = {
     <p>We're excited to share that a spot has opened up and <strong>{{child_name}}</strong> has come off our waitlist! We're ready to continue moving forward with enrollment.</p>
     <p>Our team will be in touch shortly with the next steps. If you have any questions in the meantime, just reply to this email.</p>
     <p>Warmly,<br/>The Spectrum Squad Team</p>`,
+  },
+  hr_welcome_docs_bcba: {
+    subject: "Welcome to Spectrum Squad, {{first_name}}!",
+    body: `<p>Hi {{first_name}},</p>
+    <p>Welcome to the Spectrum Squad family! We are so excited to have you join us as our newest BCBA. Your energy and dedication are exactly what we look for in our team, and we can't wait for you to start making an impact with our kiddos.</p>
+    <p>As we get everything set up for your onboarding, please send the following documents at your earliest convenience so we can complete your HR file. These documents are required within 72 hours otherwise we will unfortunately have to rescind our offer. If you need time to get a certain document please let me know and we can work around that:</p>
+    <p><strong>Required Documents:</strong></p>
+    <ul>
+      <li>Copy of your BCBA certificate and Nevada State LBA Licensure</li>
+      <li>Copy of your driver's license or state ID</li>
+      <li>Copy of your Social Security card/Passport</li>
+      <li>Proof of CPR/First Aid certification</li>
+      <li>Please complete this link, it is for our credentialing company (please let me know once it is completed as well)<br/><a href="{{credentialing_form_link}}">{{credentialing_form_link}}</a></li>
+    </ul>
+    <p>You can upload everything in one place here: <a href="{{upload_portal_link}}">{{upload_portal_link}}</a></p>
+    <p>Please also be on the lookout for a document from Sign Now, it is your new hire packet.</p>`,
+  },
+  hr_welcome_docs_rbt: {
+    subject: "Welcome to Spectrum Squad, {{first_name}}!",
+    body: `<p>Hi {{first_name}},</p>
+    <p>Welcome to the Spectrum Squad family! We are so excited to have you join us as our newest Registered Behavior Technician. Your energy and dedication are exactly what we look for in our team, and we can't wait for you to start making an impact with our kiddos.</p>
+    <p>As we get everything set up for your onboarding, please send the following documents at your earliest convenience so we can complete your HR file:</p>
+    <p><strong>Required Documents:</strong></p>
+    <ul>
+      <li>Copy of your RBT certificate and Nevada State RBT Licensure</li>
+      <li>Copy of your driver's license or state ID</li>
+      <li>Copy of your Social Security card</li>
+      <li>Proof of CPR/First Aid certification</li>
+      <li>Updated copy of your resume showing Spectrum Squad as a present employer</li>
+      <li>Please also complete the link below &mdash; PLEASE LET ME KNOW ONCE YOU HAVE COMPLETED IT<br/><a href="{{credentialing_form_link}}">{{credentialing_form_link}}</a></li>
+    </ul>
+    <p>You can upload everything in one place here: <a href="{{upload_portal_link}}">{{upload_portal_link}}</a></p>
+    <p>Please also be on the lookout for an email from HomeBase our Payroll processor for your background check and to enroll in Payroll!</p>`,
+  },
+  hr_first_day: {
+    subject: "Welcome to your first day at Spectrum Squad, {{first_name}}!",
+    body: `<p>Hi {{first_name}},</p>
+    <p>We're so excited to officially welcome you to Spectrum Squad! Your first day{{first_day_date}} is designed to help you get comfortable with the team, understand how we operate, and make sure you leave feeling prepared and supported.</p>
+    <p>During your first day, we'll walk you through the clinic, introduce you to the team, review important expectations, and make sure you have everything you need to get started.</p>
+    <p><strong>What to Expect</strong><br/>
+    You'll start with a welcome and team introduction, followed by a tour of the clinic and a review of important spaces, safety procedures, staff expectations, communication systems, and daily routines.<br/>
+    We'll also review your role, schedule, chain of communication, who to go to when you need support, and how Spectrum Squad works together as a team.</p>
+    {{dress_code}}
+    <p><strong>Your Spectrum Squad Gear &amp; Equipment</strong><br/>
+    RBTs will receive their Spectrum Squad shirts{{shirt_count}} during onboarding.<br/>
+    Employees who require access will also be issued their company keys.<br/>
+    You will also be issued a Spectrum Squad company iPad for work-related use, including accessing approved systems, schedules, clinical documentation, communication, and other job-related responsibilities.<br/>
+    We'll review expectations for the care, security, and appropriate use of all company-issued equipment.</p>
+    <p><strong>Technology Setup</strong><br/>
+    We'll help you get logged into the systems you need for your position, which may include:</p>
+    <ul>
+      <li>Spectrum Squad CRM</li>
+      <li>Scheduling system</li>
+      <li>Clinical documentation/session notes</li>
+      <li>Company email and communication platforms</li>
+      <li>Rethink or other clinical systems applicable to your role</li>
+    </ul>
+    <p>We'll make sure you know where to find your schedule, client information, important forms, policies, and resources.</p>
+    <p><strong>Clinical &amp; Role-Specific Training</strong><br/>
+    For RBTs, your first day may also include reviewing session expectations, documentation procedures, data collection, client transitions, pairing expectations, and how to request support from your BCBA or RBT(1).<br/>
+    Depending on your role and schedule, you may shadow another team member before independently working with clients.</p>
+    <p><strong>Before You Leave</strong><br/>
+    Before the end of your first day, we want to make sure you can answer:<br/>
+    Where do I find my schedule?<br/>
+    Who is my direct supervisor?{{supervisor_name}}<br/>
+    Who is my RBT(1)/scheduling lead?{{scheduling_lead_name}}<br/>
+    How do I complete a session note?<br/>
+    How do I ask for help?<br/>
+    What do I do if I am going to be late or absent?<br/>
+    Where do I find Spectrum Squad policies and resources?</p>
+    <p>Most importantly, we want you to leave your first day knowing that you're part of a team and that you do not have to figure everything out alone.</p>
+    <p>Welcome to the Squad &mdash; we're happy you're here!</p>`,
+  },
+  hr_docs_complete_internal: {
+    subject: "{{employee_name}} has sent in all their onboarding documents",
+    body: `<p><strong>{{employee_name}}</strong>{{role_title}} has finished uploading their onboarding documents.</p>
+    {{documents_list}}
+    <p><strong>Next steps:</strong></p>
+    <ul>
+      <li>Submit the background check request</li>
+      <li>Add them to HomeBase</li>
+      <li>Enter their first day of work so their welcome email can go out</li>
+    </ul>
+    <p><a href="{{employee_link}}">Open their staff record</a></p>`,
   },
   hr_welcome_dojo: {
     subject: "Welcome to the team, {{first_name}}!",
@@ -4558,6 +4654,11 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         owner_notification_email: await getAppSetting("owner_notification_email", ""),
         clinical_director_email: await getAppSetting("clinical_director_email", ""),
         signnow_newhire_template_id: await getAppSetting("signnow_newhire_template_id", ""),
+        credentialing_link_bcba: await getAppSetting("credentialing_link_bcba", "https://sparkz.clickup.com/forms/3501350/f/3av96-450954/AMW0KVAC3YL07DEEMM"),
+        credentialing_link_rbt: await getAppSetting("credentialing_link_rbt", "https://sparkz.clickup.com/forms/3501350/f/3av96-450934/OFTQKDCKHXT758222Z"),
+        first_day_dress_code: await getAppSetting("first_day_dress_code", ""),
+        shirt_count_full_time: await getAppSetting("shirt_count_full_time", "4"),
+        shirt_count_part_time: await getAppSetting("shirt_count_part_time", "3"),
         signnow_newhire_env_default: SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV ? "set" : "",
         signnow_connected: !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY),
       });
@@ -4581,6 +4682,31 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         const email = (body.owner_notification_email || "").trim();
         if (!validEmail(email)) return json(res, 400, { error: "Please enter a valid owner email address." });
         await setAppSetting("owner_notification_email", email);
+      }
+      // The two credentialing forms are different per role, so they live here
+      // rather than being pasted into a template body where a change means
+      // editing prose.
+      for (const key of ["credentialing_link_bcba", "credentialing_link_rbt"]) {
+        if (key in body) {
+          const url = (body[key] || "").trim();
+          if (url && !/^https:\/\/[^\s]+$/.test(url)) {
+            return json(res, 400, { error: "That credentialing link needs to be a full https:// URL." });
+          }
+          if (/urldefense\.proofpoint\.com/i.test(url)) {
+            return json(res, 400, {
+              error: "That's a Proofpoint-wrapped link. It only opens for readers inside Spectrum Squad mail, and new hires are on personal addresses — paste the original ClickUp URL instead.",
+            });
+          }
+          await setAppSetting(key, url);
+        }
+      }
+      if ("first_day_dress_code" in body) await setAppSetting("first_day_dress_code", (body.first_day_dress_code || "").trim());
+      for (const key of ["shirt_count_full_time", "shirt_count_part_time"]) {
+        if (key in body) {
+          const n = String(body[key] || "").trim();
+          if (n && !/^\d{1,2}$/.test(n)) return json(res, 400, { error: "Shirt counts need to be a whole number." });
+          await setAppSetting(key, n);
+        }
       }
       if ("signnow_newhire_template_id" in body) {
         // Which SignNow template the new-hire employment packet is copied from.

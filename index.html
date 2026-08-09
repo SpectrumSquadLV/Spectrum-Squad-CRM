@@ -3423,6 +3423,37 @@ async function renderAdmin(mount) {
       </div>
       <div class="task-row">
         <div class="info">
+          <strong>Credentialing form links</strong>
+          <div class="due">The ClickUp credentialing form each new hire is sent. BCBAs and RBTs use different forms. Paste the original ClickUp URL — a Proofpoint-wrapped link only opens for readers inside Spectrum Squad mail, and new hires are on personal addresses until day one.</div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <div style="display:flex; gap:8px;"><input id="cred-bcba" type="text" placeholder="BCBA form URL" style="width:300px;" /><button class="btn small secondary" id="save-cred-bcba">Save</button></div>
+          <div style="display:flex; gap:8px;"><input id="cred-rbt" type="text" placeholder="RBT form URL" style="width:300px;" /><button class="btn small secondary" id="save-cred-rbt">Save</button></div>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
+          <strong>First day: what to wear</strong>
+          <div class="due">Added to the first-day email. Shirts are issued during onboarding, so a new hire has no Spectrum Squad shirt on their first morning — this is what tells them what to turn up in. Leave blank and the paragraph is left out entirely rather than sending an empty heading.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="dress-code" type="text" placeholder="e.g. Comfortable closed-toe shoes and casual clothes you can move in" style="width:300px;" />
+          <button class="btn small secondary" id="save-dress-code">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
+          <strong>Shirt allocation (RBTs)</strong>
+          <div class="due">How many Spectrum Squad shirts an RBT is issued. The count appears in the first-day email; BCBAs never see the shirt line.</div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <label style="font-size:12.5px;">Full-time <input id="shirt-ft" type="text" style="width:44px;" /></label>
+          <label style="font-size:12.5px;">Part-time <input id="shirt-pt" type="text" style="width:44px;" /></label>
+          <button class="btn small secondary" id="save-shirts">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
           <strong>New-hire employment packet (SignNow)</strong>
           <div class="due">The SignNow template the new hire packet is copied from. When an offer is accepted — whether the candidate clicks accept on their offer link or you set the stage to Offer Accepted — the packet is sent to them automatically. Copy the template ID from the template's URL in SignNow. <span id="signnow-state"></span></div>
         </div>
@@ -3474,6 +3505,12 @@ async function renderAdmin(mount) {
     if (ownerInput) ownerInput.value = settings.owner_notification_email || "";
     const cdInput = mount.querySelector("#cd-email");
     if (cdInput) cdInput.value = settings.clinical_director_email || "";
+    const setVal = (id, v) => { const el = mount.querySelector(id); if (el) el.value = v || ""; };
+    setVal("#cred-bcba", settings.credentialing_link_bcba);
+    setVal("#cred-rbt", settings.credentialing_link_rbt);
+    setVal("#dress-code", settings.first_day_dress_code);
+    setVal("#shirt-ft", settings.shirt_count_full_time);
+    setVal("#shirt-pt", settings.shirt_count_part_time);
     const tplInput = mount.querySelector("#newhire-template");
     if (tplInput) tplInput.value = settings.signnow_newhire_template_id || "";
     const sn = mount.querySelector("#signnow-state");
@@ -3508,6 +3545,22 @@ async function renderAdmin(mount) {
   wireSetting("save-owner-email", "owner-email", "owner_notification_email");
   wireSetting("save-cd-email", "cd-email", "clinical_director_email");
   wireSetting("save-newhire-template", "newhire-template", "signnow_newhire_template_id");
+  wireSetting("save-cred-bcba", "cred-bcba", "credentialing_link_bcba");
+  wireSetting("save-cred-rbt", "cred-rbt", "credentialing_link_rbt");
+  wireSetting("save-dress-code", "dress-code", "first_day_dress_code");
+  const shirtBtn = mount.querySelector("#save-shirts");
+  if (shirtBtn) shirtBtn.addEventListener("click", async () => {
+    shirtBtn.disabled = true;
+    try {
+      await api("/api/admin/settings", { method: "PATCH", body: {
+        shirt_count_full_time: mount.querySelector("#shirt-ft").value.trim(),
+        shirt_count_part_time: mount.querySelector("#shirt-pt").value.trim(),
+      }});
+      shirtBtn.textContent = "Saved ✓";
+      setTimeout(() => (shirtBtn.textContent = "Save"), 1500);
+    } catch (e) { alert(e.message || "Could not save."); }
+    finally { shirtBtn.disabled = false; }
+  });
   wireBipImport(mount);
 
   await renderTeamSection(mount);
