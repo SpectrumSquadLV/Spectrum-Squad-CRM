@@ -3466,13 +3466,19 @@ function openPayrollImportModal(pageMount) {
 
   function renderPreview(res) {
     statusEl.textContent = "";
+    const split = res.has_appt_type;
     const rows = (res.employees || []).map((emp) => {
       const badge = !emp.matched
         ? `<span class="tag" style="background:#fee2e2; color:#991b1b;">no staff match</span>`
         : (!emp.has_email ? `<span class="tag" style="background:#fef3c7; color:#92400e;">no email</span>` : `<span class="tag" style="background:#dcfce7; color:#166534;">ready</span>`);
+      const splitCells = split
+        ? `<td style="padding:6px 8px; border-top:1px solid var(--border,#eee); text-align:right; color:#1b2a6b;">${emp.billable_hours ?? 0}</td>
+           <td style="padding:6px 8px; border-top:1px solid var(--border,#eee); text-align:right; color:#92400e;">${emp.non_billable_hours ?? 0}</td>`
+        : "";
       return `<tr>
         <td style="padding:6px 8px; border-top:1px solid var(--border,#eee);">${staffEsc(emp.name)}</td>
-        <td style="padding:6px 8px; border-top:1px solid var(--border,#eee); text-align:right;">${emp.total_hours}</td>
+        ${splitCells}
+        <td style="padding:6px 8px; border-top:1px solid var(--border,#eee); text-align:right;"><strong>${emp.total_hours}</strong></td>
         <td style="padding:6px 8px; border-top:1px solid var(--border,#eee); text-align:right;">${emp.shifts}</td>
         <td style="padding:6px 8px; border-top:1px solid var(--border,#eee);">${badge}</td>
       </tr>`;
@@ -3480,32 +3486,371 @@ function openPayrollImportModal(pageMount) {
     const warn = [];
     if (res.unmatched && res.unmatched.length) warn.push(`<div style="color:#991b1b; font-size:12.5px; margin-top:6px;">⚠ ${res.unmatched.length} employee(s) had no matching staff record (import them first / set their Rethink ID): ${staffEsc(res.unmatched.join(", "))}</div>`);
     if (res.no_email && res.no_email.length) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ ${res.no_email.length} matched staff have no email on file and won't receive a link: ${staffEsc(res.no_email.join(", "))}</div>`);
+    if (!split) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ This export has no <strong>Appt Type</strong> column, so billable and non-billable hours can't be separated. Re-export from Rethink with that column included if you need the split.</div>`);
+    if (split && res.unclassified_hours) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ ${res.unclassified_hours} hour(s) have an appointment type that's neither Billable nor Non-Billable. They're shown separately as "not labeled" — you can relabel them on the review screen.</div>`);
+    const totalsStrip = split
+      ? `<div style="display:flex; gap:8px; margin-bottom:10px;">
+           ${miniStat("Billable", res.billable_hours, "#1b2a6b", "#eef1fb")}
+           ${miniStat("Non-billable", res.non_billable_hours, "#92400e", "#fdf4e6")}
+           ${res.unclassified_hours ? miniStat("Not labeled", res.unclassified_hours, "#6b6a86", "#f1f1f4") : ""}
+           ${miniStat("Total", res.total_hours ?? (res.employees || []).reduce((s, e) => s + (Number(e.total_hours) || 0), 0), "#166534", "#e9f9ee")}
+         </div>` : "";
     previewEl.innerHTML = `
-      <div style="font-size:13px; margin-bottom:8px;">Pay period <strong>${staffEsc(res.pay_period_start || "")} – ${staffEsc(res.pay_period_end || "")}</strong> · ${res.matched}/${res.total_employees} matched to staff. Timecards created.</div>
-      <div style="max-height:260px; overflow:auto; border:1px solid var(--border,#eee); border-radius:8px;">
+      <div style="font-size:13px; margin-bottom:8px;">Pay period <strong>${staffEsc(res.pay_period_start || "")} – ${staffEsc(res.pay_period_end || "")}</strong> · ${res.matched}/${res.total_employees} matched to staff. Timecards created — <strong>nothing has been emailed yet</strong>.</div>
+      ${totalsStrip}
+      <div style="max-height:240px; overflow:auto; border:1px solid var(--border,#eee); border-radius:8px;">
         <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
           <thead><tr style="text-align:left; color:var(--text-muted); text-transform:uppercase; font-size:11px;">
-            <th style="padding:6px 8px;">Staff</th><th style="padding:6px 8px; text-align:right;">Hours</th><th style="padding:6px 8px; text-align:right;">Shifts</th><th style="padding:6px 8px;">Status</th>
+            <th style="padding:6px 8px;">Staff</th>
+            ${split ? `<th style="padding:6px 8px; text-align:right;">Billable</th><th style="padding:6px 8px; text-align:right;">Non-bill.</th>` : ""}
+            <th style="padding:6px 8px; text-align:right;">Total</th><th style="padding:6px 8px; text-align:right;">Shifts</th><th style="padding:6px 8px;">Status</th>
           </tr></thead><tbody>${rows}</tbody>
         </table>
       </div>
       ${warn.join("")}
       <div style="margin-top:14px; display:flex; gap:8px; align-items:center;">
-        <button class="btn" id="payroll-send" ${res.matched ? "" : "disabled"}>Send ${res.matched} timecard(s) for signature</button>
+        <button class="btn" id="payroll-review" ${res.matched ? "" : "disabled"}>👀 Preview &amp; send ${res.matched} timecard(s) →</button>
         <button class="btn secondary" id="payroll-done">Close</button>
-        <span id="payroll-send-status" style="font-size:12.5px; color:var(--text-muted);"></span>
       </div>`;
     previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); renderStaff(pageMount); });
-    previewEl.querySelector("#payroll-send").addEventListener("click", async () => {
-      const btn = previewEl.querySelector("#payroll-send");
-      btn.disabled = true;
-      previewEl.querySelector("#payroll-send-status").textContent = "Sending…";
-      try {
-        const r = await api("/api/hr/timecards/send-all", { method: "POST", body: { pay_period_end: res.pay_period_end } });
-        previewEl.querySelector("#payroll-send-status").textContent = `Sent ${r.sent}${r.skipped && r.skipped.length ? ` · ${r.skipped.length} skipped (no email)` : ""} ✓`;
-      } catch (e) { btn.disabled = false; previewEl.querySelector("#payroll-send-status").textContent = e.message || "Send failed."; }
+    previewEl.querySelector("#payroll-review").addEventListener("click", () => {
+      close();
+      openTimecardReviewModal({
+        ids: res.timecard_ids || (res.employees || []).filter((e) => e.timecard_id).map((e) => e.timecard_id),
+        payPeriodEnd: res.pay_period_end,
+        pageMount,
+      });
     });
   }
+}
+
+function miniStat(label, value, color, bg) {
+  return `<div style="flex:1; background:${bg}; border-radius:10px; padding:8px 10px; text-align:center;">
+    <div style="font-size:18px; font-weight:700; color:${color}; line-height:1.15;">${Math.round((Number(value) || 0) * 100) / 100}</div>
+    <div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.4px;">${label}</div>
+  </div>`;
+}
+
+// Review every timecard before a single email goes out: expand anyone to see
+// their shifts split into billable / non-billable, fix hours or a mislabeled
+// appointment type in place, uncheck whoever isn't ready, then send only the
+// ones still checked. Nothing here sends until the Send button is pressed.
+async function openTimecardReviewModal({ ids, payPeriodEnd, pageMount }) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal" style="width:860px;">
+      <div class="modal-header">
+        <div>
+          <h2>Review timecards before sending</h2>
+          <p style="font-size:12.5px; color:var(--text-muted); margin:4px 0 0;">Nothing is emailed until you press Send. Uncheck anyone who isn't ready.</p>
+        </div>
+        <button class="close-btn">✕</button>
+      </div>
+      <div id="tcr-body" style="font-size:13px; color:var(--text-muted);">Loading timecards…</div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".close-btn").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+  const bodyEl = backdrop.querySelector("#tcr-body");
+
+  let data = null;
+  const picked = new Set();
+  const openRows = new Set();
+  const dirty = new Map(); // timecard id -> Map(entryIndex -> {hours?, appt_type?})
+
+  try {
+    data = await api("/api/hr/timecards/preview-batch", {
+      method: "POST",
+      body: ids && ids.length ? { ids } : { pay_period_end: payPeriodEnd },
+    });
+  } catch (e) {
+    bodyEl.innerHTML = `<div style="color:#991b1b;">${staffEsc(e.message || "Could not load the preview.")}</div>`;
+    return;
+  }
+  (data.timecards || []).forEach((tc) => { if (tc.has_email && tc.status !== "accepted") picked.add(tc.id); });
+  render();
+
+  function hoursOf(tc, entryIndex, fallback) {
+    const d = dirty.get(tc.id);
+    const patch = d && d.get(entryIndex);
+    return patch && patch.hours !== undefined ? patch.hours : fallback;
+  }
+  function typeOf(tc, entryIndex, fallback) {
+    const d = dirty.get(tc.id);
+    const patch = d && d.get(entryIndex);
+    return patch && patch.appt_type !== undefined ? patch.appt_type : fallback;
+  }
+  // Recompute a person's split from what's on screen, so subtotals move as you
+  // type instead of waiting for a save.
+  function liveTotals(tc) {
+    const t = { billable: 0, non_billable: 0, unclassified: 0, total: 0 };
+    (tc.entries || []).forEach((e, i) => {
+      const h = Number(hoursOf(tc, i, e.hours)) || 0;
+      const cls = classifyBillableClient(typeOf(tc, i, e.appt_type));
+      t.total += h;
+      if (cls === true) t.billable += h; else if (cls === false) t.non_billable += h; else t.unclassified += h;
+    });
+    Object.keys(t).forEach((k) => { t[k] = Math.round(t[k] * 100) / 100; });
+    return t;
+  }
+
+  function render() {
+    const list = data.timecards || [];
+    const grand = list.reduce((acc, tc) => {
+      const t = liveTotals(tc);
+      return { b: acc.b + t.billable, n: acc.n + t.non_billable, u: acc.u + t.unclassified, tot: acc.tot + t.total };
+    }, { b: 0, n: 0, u: 0, tot: 0 });
+    const anySplit = list.some((tc) => tc.has_split);
+
+    bodyEl.innerHTML = `
+      <div style="display:flex; gap:8px; margin-bottom:12px;">
+        ${anySplit ? miniStat("Billable", grand.b, "#1b2a6b", "#eef1fb") : ""}
+        ${anySplit ? miniStat("Non-billable", grand.n, "#92400e", "#fdf4e6") : ""}
+        ${grand.u ? miniStat("Not labeled", grand.u, "#6b6a86", "#f1f1f4") : ""}
+        ${miniStat("Total hours", grand.tot, "#166534", "#e9f9ee")}
+        ${miniStat("Staff", list.length, "#334155", "#f1f5f9")}
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px; font-size:12.5px;">
+        <label style="display:flex; gap:6px; align-items:center; cursor:pointer;">
+          <input type="checkbox" id="tcr-all" ${picked.size === sendableIds().length && picked.size ? "checked" : ""}/> Select all sendable
+        </label>
+        <span style="color:var(--text-muted);">${picked.size} of ${list.length} selected</span>
+      </div>
+      <div id="tcr-list" style="max-height:400px; overflow:auto; border:1px solid var(--border,#eee); border-radius:10px;">
+        ${list.map(rowHtml).join("") || `<div style="padding:16px; color:var(--text-muted);">No timecards found for this pay period.</div>`}
+      </div>
+      <div style="margin-top:14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button class="btn" id="tcr-send" ${picked.size ? "" : "disabled"}>📧 Send ${picked.size} timecard(s)</button>
+        <button class="btn secondary" id="tcr-close">Close without sending</button>
+        <span id="tcr-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+      </div>`;
+    wire();
+  }
+
+  function sendableIds() {
+    return (data.timecards || []).filter((tc) => tc.has_email && tc.status !== "accepted").map((tc) => tc.id);
+  }
+
+  function rowHtml(tc) {
+    const t = liveTotals(tc);
+    const sendable = tc.has_email && tc.status !== "accepted";
+    const badges = [];
+    if (!tc.has_email) badges.push(`<span class="tag" style="background:#fee2e2; color:#991b1b;">no email</span>`);
+    if (tc.status === "accepted") badges.push(`<span class="tag" style="background:#dcfce7; color:#166534;">already signed</span>`);
+    if (tc.already_sent_at && tc.status !== "accepted") badges.push(`<span class="tag" style="background:#e0e7ff; color:#3730a3;">already sent — this resends</span>`);
+    if (tc.open_flags) badges.push(`<span class="tag" style="background:#fef3c7; color:#92400e;">⚠ ${tc.open_flags} flag(s)</span>`);
+    if (t.unclassified) badges.push(`<span class="tag" style="background:#f1f1f4; color:#4b5563;">${t.unclassified}h not labeled</span>`);
+    if (dirty.get(tc.id) && dirty.get(tc.id).size) badges.push(`<span class="tag" style="background:#fef9c3; color:#854d0e;">unsaved edits</span>`);
+    const open = openRows.has(tc.id);
+    return `
+      <div data-tcrow="${tc.id}" style="border-bottom:1px solid var(--border,#eee);">
+        <div style="display:flex; align-items:center; gap:10px; padding:9px 12px;">
+          <input type="checkbox" class="tcr-pick" data-id="${tc.id}" ${picked.has(tc.id) ? "checked" : ""} ${sendable ? "" : "disabled"}/>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:13px; font-weight:600;">${staffEsc(tc.employee_name || "Unknown")}</div>
+            <div style="font-size:11.5px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${staffEsc(tc.employee_email || "no email on file")} · ${tc.shifts} shift(s)</div>
+          </div>
+          <div style="text-align:right; font-size:12px; white-space:nowrap;">
+            ${tc.has_split || t.unclassified ? `<span style="color:#1b2a6b; font-weight:600;">${t.billable}</span> <span style="color:var(--text-muted);">bill</span> · <span style="color:#92400e; font-weight:600;">${t.non_billable}</span> <span style="color:var(--text-muted);">non</span> · ` : ""}
+            <strong>${t.total}</strong> <span style="color:var(--text-muted);">hrs</span>
+          </div>
+          <button class="btn secondary" data-tctoggle="${tc.id}" style="padding:4px 10px; font-size:12px;">${open ? "Hide" : "Details"}</button>
+        </div>
+        <div style="padding:0 12px 8px 40px;">${badges.join(" ")}</div>
+        ${open ? detailHtml(tc) : ""}
+      </div>`;
+  }
+
+  function detailHtml(tc) {
+    const groups = { b: [], n: [], u: [] };
+    (tc.entries || []).forEach((e, i) => {
+      const cls = classifyBillableClient(typeOf(tc, i, e.appt_type));
+      groups[cls === true ? "b" : cls === false ? "n" : "u"].push({ e, i });
+    });
+    const t = liveTotals(tc);
+    const section = (title, rows, subtotal, color) => {
+      if (!rows.length) return "";
+      return `
+        <div style="margin:10px 0 0;">
+          <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:${color}; margin-bottom:4px;">${title}</div>
+          <table style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead><tr style="color:var(--text-muted); text-align:left; font-size:10.5px; text-transform:uppercase;">
+              <th style="padding:4px 6px;">Date</th><th style="padding:4px 6px;">Scheduled</th><th style="padding:4px 6px;">Clocked</th>
+              <th style="padding:4px 6px; width:80px;">Hours</th><th style="padding:4px 6px; width:130px;">Type</th>
+            </tr></thead>
+            <tbody>${rows.map(({ e, i }) => entryRow(tc, e, i)).join("")}</tbody>
+            <tfoot><tr><td colspan="3" style="padding:6px; text-align:right; color:var(--text-muted); font-size:11px; text-transform:uppercase;">Subtotal</td>
+              <td style="padding:6px; font-weight:700; color:${color};">${subtotal}</td><td></td></tr></tfoot>
+          </table>
+        </div>`;
+    };
+    const isDirty = dirty.get(tc.id) && dirty.get(tc.id).size;
+    return `
+      <div style="padding:2px 12px 14px 40px; background:#fbfbfd;">
+        ${section("💙 Billable", groups.b, t.billable, "#1b2a6b")}
+        ${section("🗂 Non-billable", groups.n, t.non_billable, "#92400e")}
+        ${section("❓ Not labeled", groups.u, t.unclassified, "#6b6a86")}
+        <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+          <button class="btn" data-tcsave="${tc.id}" style="padding:5px 12px; font-size:12px;" ${isDirty ? "" : "disabled"}>Save changes</button>
+          <button class="btn secondary" data-tcemail="${tc.id}" style="padding:5px 12px; font-size:12px;">✉ Preview their email</button>
+          <span data-tcsavestatus="${tc.id}" style="font-size:11.5px; color:var(--text-muted);"></span>
+        </div>
+        <div data-tcemailframe="${tc.id}"></div>
+      </div>`;
+  }
+
+  function entryRow(tc, e, i) {
+    const h = hoursOf(tc, i, e.hours);
+    const type = typeOf(tc, i, e.appt_type) || "";
+    const clocked = `${prettyTimeClient(e.clock_in)} – ${prettyTimeClient(e.clock_out)}`;
+    const alert = e.alert ? `<div style="font-size:10.5px; color:#92400e;">⚠ ${staffEsc(e.alert)}</div>` : "";
+    return `<tr>
+      <td style="padding:4px 6px; border-top:1px solid var(--border,#eee);"><strong>${staffEsc(e.date || "—")}</strong>${alert}</td>
+      <td style="padding:4px 6px; border-top:1px solid var(--border,#eee); color:var(--text-muted);">${staffEsc(e.scheduled || "—")}</td>
+      <td style="padding:4px 6px; border-top:1px solid var(--border,#eee); color:var(--text-muted);">${staffEsc(clocked)}</td>
+      <td style="padding:4px 6px; border-top:1px solid var(--border,#eee);">
+        <input type="number" step="0.01" min="0" max="24" value="${h}" data-tchours="${tc.id}" data-i="${i}" style="width:70px; padding:3px 5px; font-size:12px;"/>
+      </td>
+      <td style="padding:4px 6px; border-top:1px solid var(--border,#eee);">
+        <select data-tctype="${tc.id}" data-i="${i}" style="width:120px; padding:3px 5px; font-size:12px;">
+          <option value="Billable" ${classifyBillableClient(type) === true ? "selected" : ""}>Billable</option>
+          <option value="Non-Billable" ${classifyBillableClient(type) === false ? "selected" : ""}>Non-Billable</option>
+          <option value="${staffEsc(type)}" ${classifyBillableClient(type) === null ? "selected" : ""}>${type ? staffEsc(type) : "— not labeled —"}</option>
+        </select>
+      </td>
+    </tr>`;
+  }
+
+  function markDirty(id, i, patch) {
+    if (!dirty.has(id)) dirty.set(id, new Map());
+    const m = dirty.get(id);
+    m.set(i, Object.assign({}, m.get(i) || {}, patch));
+  }
+
+  function wire() {
+    const all = bodyEl.querySelector("#tcr-all");
+    if (all) all.addEventListener("change", () => {
+      picked.clear();
+      if (all.checked) sendableIds().forEach((id) => picked.add(id));
+      render();
+    });
+    bodyEl.querySelectorAll(".tcr-pick").forEach((cb) => cb.addEventListener("change", () => {
+      const id = Number(cb.getAttribute("data-id"));
+      if (cb.checked) picked.add(id); else picked.delete(id);
+      render();
+    }));
+    bodyEl.querySelectorAll("[data-tctoggle]").forEach((b) => b.addEventListener("click", () => {
+      const id = Number(b.getAttribute("data-tctoggle"));
+      if (openRows.has(id)) openRows.delete(id); else openRows.add(id);
+      render();
+    }));
+    bodyEl.querySelectorAll("[data-tchours]").forEach((inp) => inp.addEventListener("change", () => {
+      const id = Number(inp.getAttribute("data-tchours"));
+      markDirty(id, Number(inp.getAttribute("data-i")), { hours: Math.round((parseFloat(inp.value) || 0) * 100) / 100 });
+      render();
+    }));
+    bodyEl.querySelectorAll("[data-tctype]").forEach((sel) => sel.addEventListener("change", () => {
+      const id = Number(sel.getAttribute("data-tctype"));
+      markDirty(id, Number(sel.getAttribute("data-i")), { appt_type: sel.value });
+      render();
+    }));
+    bodyEl.querySelectorAll("[data-tcsave]").forEach((b) => b.addEventListener("click", () => saveEdits(Number(b.getAttribute("data-tcsave")))));
+    bodyEl.querySelectorAll("[data-tcemail]").forEach((b) => b.addEventListener("click", () => previewEmail(Number(b.getAttribute("data-tcemail")))));
+    const closeBtn = bodyEl.querySelector("#tcr-close");
+    if (closeBtn) closeBtn.addEventListener("click", () => { close(); if (pageMount) renderStaff(pageMount); });
+    const sendBtn = bodyEl.querySelector("#tcr-send");
+    if (sendBtn) sendBtn.addEventListener("click", doSend);
+  }
+
+  async function saveEdits(id) {
+    const m = dirty.get(id);
+    const statusEl2 = bodyEl.querySelector(`[data-tcsavestatus="${id}"]`);
+    if (!m || !m.size) return;
+    const updates = Array.from(m.entries()).map(([i, patch]) => Object.assign({ i }, patch));
+    if (statusEl2) statusEl2.textContent = "Saving…";
+    try {
+      const r = await api(`/api/hr/timecards/${id}/entries`, { method: "POST", body: { updates } });
+      const tc = (data.timecards || []).find((x) => x.id === id);
+      if (tc && r.entries) {
+        tc.entries = r.entries;
+        tc.has_split = r.has_split;
+        tc.open_flags = r.flag_count || 0;
+      }
+      dirty.delete(id);
+      render();
+      const after = bodyEl.querySelector(`[data-tcsavestatus="${id}"]`);
+      if (after) after.textContent = `Saved ${r.changed} change(s) ✓`;
+    } catch (e) {
+      if (statusEl2) statusEl2.textContent = e.message || "Save failed.";
+    }
+  }
+
+  async function previewEmail(id) {
+    const host = bodyEl.querySelector(`[data-tcemailframe="${id}"]`);
+    if (!host) return;
+    if (host.dataset.loaded === "1") { host.innerHTML = ""; host.dataset.loaded = ""; return; }
+    host.innerHTML = `<div style="font-size:12px; color:var(--text-muted); margin-top:8px;">Loading email preview…</div>`;
+    try {
+      const p = await api(`/api/hr/timecards/${id}/preview`);
+      host.innerHTML = `
+        <div style="margin-top:10px; border:1px solid var(--border,#eee); border-radius:8px; overflow:hidden;">
+          <div style="padding:6px 10px; background:#f8fafc; font-size:11.5px; color:var(--text-muted);">
+            To: <strong>${staffEsc(p.employee_email || "—")}</strong> · Subject: ${staffEsc(p.subject || "")}
+          </div>
+          <iframe style="width:100%; height:340px; border:none;"></iframe>
+        </div>`;
+      const frame = host.querySelector("iframe");
+      frame.contentDocument.open();
+      frame.contentDocument.write(p.email_html || "");
+      frame.contentDocument.close();
+      host.dataset.loaded = "1";
+    } catch (e) {
+      host.innerHTML = `<div style="font-size:12px; color:#991b1b; margin-top:8px;">${staffEsc(e.message || "Could not load the email preview.")}</div>`;
+    }
+  }
+
+  async function doSend() {
+    const unsaved = Array.from(dirty.entries()).filter(([id, m]) => m.size && picked.has(id));
+    if (unsaved.length && !confirm(`${unsaved.length} selected timecard(s) have unsaved edits. Those edits will NOT be included. Send anyway?`)) return;
+    const ids = Array.from(picked);
+    if (!ids.length) return;
+    if (!confirm(`Email ${ids.length} timecard(s) for signature? Each person gets their own private link.`)) return;
+    const btn = bodyEl.querySelector("#tcr-send");
+    const st = bodyEl.querySelector("#tcr-status");
+    btn.disabled = true;
+    st.textContent = "Sending…";
+    try {
+      const r = await api("/api/hr/timecards/send", { method: "POST", body: { ids } });
+      st.textContent = `Sent ${r.sent}${r.skipped && r.skipped.length ? ` · ${r.skipped.length} skipped (no email): ${r.skipped.join(", ")}` : ""} ✓`;
+      btn.textContent = "Sent ✓";
+    } catch (e) {
+      btn.disabled = false;
+      st.textContent = e.message || "Send failed.";
+    }
+  }
+}
+
+// Same rule as classifyBillable() on the server: "Non-Billable" is tested
+// before "Billable" so it can't be swallowed by the looser match.
+function classifyBillableClient(apptType) {
+  const s = String(apptType == null ? "" : apptType).trim();
+  if (!s) return null;
+  if (/non[-_\s]*billable/i.test(s)) return false;
+  if (/billable/i.test(s)) return true;
+  return null;
+}
+
+function prettyTimeClient(v) {
+  if (!v) return "—";
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return String(v);
+  let h = d.getHours();
+  const m = d.getMinutes();
+  const ap = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${h}:${String(m).padStart(2, "0")} ${ap}`;
 }
 
 // ---------------- Admin ----------------

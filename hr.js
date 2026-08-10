@@ -474,6 +474,9 @@ module.exports = function initHr(ctx) {
     await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS signed_name TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS employee_note TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS edited_entries TEXT`).catch(() => {});
+    // Office-side corrections made from the bulk review screen, before send.
+    await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS admin_edited_at TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS admin_edited_by TEXT`).catch(() => {});
     // Staff directory fields (populated from the Rethink payroll sheet -- no pay).
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS phone TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS address TEXT`).catch(() => {});
@@ -1335,14 +1338,18 @@ module.exports = function initHr(ctx) {
         const emp = tc.employee_id ? await dbGet("SELECT name, role_title FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
         const flags = await dbAll("SELECT id, flag_type, detail, status, employee_explanation FROM hr_timecard_flags WHERE timecard_id = ? ORDER BY id", [link.timecard_id]);
         const entries = parseJson(tc.entries, []);
-        const totalHours = Math.round(entries.reduce((s, e) => s + (Number(e.hours) || 0), 0) * 100) / 100;
+        const t = timecardTotals(entries);
         return json(res, 200, {
           employee_name: emp ? emp.name : "",
           role: emp ? emp.role_title || "" : "",
           pay_period: { start: tc.pay_period_start, end: tc.pay_period_end },
           entries,
           flags,
-          total_hours: totalHours,
+          total_hours: t.total_hours,
+          has_split: t.has_split,
+          billable_hours: t.billable_hours,
+          non_billable_hours: t.non_billable_hours,
+          unclassified_hours: t.unclassified_hours,
           status: tc.status,
           accepted_at: tc.accepted_at || null,
           signed_name: tc.signed_name || null,
@@ -2673,27 +2680,97 @@ module.exports = function initHr(ctx) {
         const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [tcPreviewMatch[1]]);
         if (!tc) return json(res, 404, { error: "Not found" });
         const emp = tc.employee_id ? await dbGet("SELECT name, email, role_title FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
-        const entries = parseJson(tc.entries, []);
         const flags = await dbAll("SELECT * FROM hr_timecard_flags WHERE timecard_id = ? ORDER BY id", [tc.id]);
-        const total = Math.round(entries.reduce((s, e) => s + (Number(e.hours) || 0), 0) * 100) / 100;
+        const shaped = shapeTimecardPreview(tc, emp, flags);
         const period = `${tc.pay_period_start || ""} – ${tc.pay_period_end || ""}`;
-        return json(res, 200, {
-          id: tc.id,
-          status: tc.status,
-          employee_name: emp ? emp.name : null,
-          employee_email: emp ? emp.email : null,
-          has_email: !!(emp && emp.email),
-          already_sent_at: tc.verification_requested_at || null,
-          pay_period_start: tc.pay_period_start,
-          pay_period_end: tc.pay_period_end,
-          entries,
-          flags,
-          total_hours: total,
-          subject: "✨ Your timecard is ready to review — Spectrum Squad",
+        return json(res, 200, Object.assign(shaped, {
           // The real email, with the button pointing nowhere (nothing is
           // generated until you actually send).
-          email_html: timecardEmailHtml(firstNameOf(emp ? emp.name : "there"), period, "#preview-only"),
+          email_html: timecardEmailHtml(firstNameOf(emp ? emp.name : "there"), period, "#preview-only", timecardTotals(parseJson(tc.entries, []))),
+        }));
+      }
+
+      // Preview a whole batch before anything goes out. Same read-only promise
+      // as the single preview -- no links minted, no status touched, no email.
+      // Takes { ids: [] } or { pay_period_end } (defaults to everything not yet
+      // accepted for that period, i.e. exactly what send-all would have hit).
+      if (pathname === "/api/hr/timecards/preview-batch" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const ids = (Array.isArray(b.ids) ? b.ids : []).map((n) => Number(n)).filter((n) => n > 0);
+        let cards;
+        if (ids.length) {
+          cards = await dbAll(`SELECT * FROM hr_timecards WHERE id IN (${ids.map(() => "?").join(",")}) ORDER BY id`, ids);
+        } else if (b.pay_period_end) {
+          cards = await dbAll("SELECT * FROM hr_timecards WHERE status != 'accepted' AND pay_period_end = ? ORDER BY id", [b.pay_period_end]);
+        } else {
+          return json(res, 400, { error: "Provide 'ids' or a 'pay_period_end'." });
+        }
+        const out = [];
+        for (const tc of cards) {
+          const emp = tc.employee_id ? await dbGet("SELECT name, email, role_title FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
+          const flags = await dbAll("SELECT * FROM hr_timecard_flags WHERE timecard_id = ? ORDER BY id", [tc.id]);
+          out.push(shapeTimecardPreview(tc, emp, flags));
+        }
+        const sum = (k) => round2(out.reduce((s, p) => s + (Number(p[k]) || 0), 0));
+        return json(res, 200, {
+          ok: true,
+          count: out.length,
+          sendable: out.filter((p) => p.has_email && p.status !== "accepted").length,
+          billable_hours: sum("billable_hours"),
+          non_billable_hours: sum("non_billable_hours"),
+          unclassified_hours: sum("unclassified_hours"),
+          total_hours: sum("total_hours"),
+          timecards: out,
         });
+      }
+
+      // Correct hours (or a mis-labelled Billable/Non-Billable) BEFORE the
+      // employee ever sees the timecard. Patch-by-index so the client can't
+      // drop fields it didn't render. Refuses once a timecard is signed --
+      // an accepted timecard is a record, not a draft. Never writes payroll.
+      const tcEntriesMatch = pathname.match(/^\/api\/hr\/timecards\/(\d+)\/entries$/);
+      if (tcEntriesMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [tcEntriesMatch[1]]);
+        if (!tc) return json(res, 404, { error: "Not found" });
+        if (tc.status === "accepted") return json(res, 409, { error: "This timecard is already signed and can't be edited." });
+        const updates = Array.isArray(b.updates) ? b.updates : [];
+        if (!updates.length) return json(res, 400, { error: "Nothing to change." });
+        const entries = parseJson(tc.entries, []);
+        const changes = [];
+        for (const u of updates) {
+          const i = Number(u.i);
+          if (!Number.isInteger(i) || i < 0 || i >= entries.length) continue;
+          const e = entries[i];
+          if (u.hours !== undefined && u.hours !== null && u.hours !== "") {
+            const h = round2(u.hours);
+            if (!(h >= 0) || h > 24) return json(res, 400, { error: `Hours must be between 0 and 24 (got "${u.hours}").` });
+            if (h !== round2(e.hours)) { changes.push(`${e.date || "entry " + i}: ${round2(e.hours)}h → ${h}h`); e.hours = h; }
+          }
+          if (u.appt_type !== undefined) {
+            const at = String(u.appt_type || "").trim();
+            const cls = classifyBillable(at);
+            if (at !== String(e.appt_type || "")) changes.push(`${e.date || "entry " + i}: ${e.appt_type || "unclassified"} → ${at || "unclassified"}`);
+            e.appt_type = at;
+            e.billable = cls;
+          }
+        }
+        if (!changes.length) return json(res, 200, { ok: true, changed: 0, ...timecardTotals(entries) });
+        await dbRun("UPDATE hr_timecards SET entries = ?, admin_edited_at = ?, admin_edited_by = ? WHERE id = ?",
+          [JSON.stringify(entries), nowISO(), actor || "", tc.id]);
+        // Re-run anomaly detection so a corrected shift stops nagging (and a
+        // newly-broken one starts). Old open flags are replaced, resolved ones kept.
+        await dbRun("DELETE FROM hr_timecard_flags WHERE timecard_id = ? AND status = 'open'", [tc.id]);
+        const flags = detectTimecardAnomalies(entries);
+        for (const f of flags) {
+          await dbRun(`INSERT INTO hr_timecard_flags (timecard_id, flag_type, detail, status, created_at) VALUES (?, ?, ?, 'open', ?)`,
+            [tc.id, f.flag_type, f.detail, nowISO()]);
+        }
+        await audit(actor, "timecard_entries_edited", "timecard", tc.id, changes.join("; ").slice(0, 400));
+        const t = timecardTotals(entries);
+        return json(res, 200, { ok: true, changed: changes.length, changes, entries, flag_count: flags.length, ...t });
       }
 
       // Bulk send to a chosen set, rather than all-or-nothing.
@@ -2786,6 +2863,9 @@ module.exports = function initHr(ctx) {
             name: emp.name || (emp.rethink_id ? `#${emp.rethink_id}` : "Unknown"),
             rethink_id: emp.rethink_id,
             total_hours: emp.total_hours,
+            billable_hours: emp.billable_hours,
+            non_billable_hours: emp.non_billable_hours,
+            unclassified_hours: emp.unclassified_hours,
             shifts: emp.entries.length,
             matched: !!staff,
             has_email: !!(staff && staff.email),
@@ -2801,6 +2881,13 @@ module.exports = function initHr(ctx) {
           matched: preview.filter((p) => p.matched).length,
           unmatched: preview.filter((p) => !p.matched).map((p) => p.name),
           no_email: preview.filter((p) => p.matched && !p.has_email).map((p) => p.name),
+          // False = the export had no "Appt Type" column, so nothing can be
+          // split. Say so loudly rather than showing everyone 0 billable hours.
+          has_appt_type: !!parsed.has_appt_type,
+          billable_hours: round2(preview.reduce((s, p) => s + (Number(p.billable_hours) || 0), 0)),
+          non_billable_hours: round2(preview.reduce((s, p) => s + (Number(p.non_billable_hours) || 0), 0)),
+          unclassified_hours: round2(preview.reduce((s, p) => s + (Number(p.unclassified_hours) || 0), 0)),
+          timecard_ids: preview.filter((p) => p.timecard_id).map((p) => p.timecard_id),
           employees: preview,
         });
       }
@@ -4022,6 +4109,81 @@ Write body as plain text with line breaks (no HTML).`;
     return `${days[d.getUTCDay()]}, ${mons[d.getUTCMonth()]} ${d.getUTCDate()}`;
   }
 
+  function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+
+  // "Billable" vs "Non-Billable" is the export's own word (see fin-ledger.js) --
+  // paid hours and billable hours are not the same thing and must not be
+  // silently merged. Returns true / false, or null when the export gave us
+  // nothing to go on (blank column, or an appt type we don't recognise). Null
+  // stays null: an unlabelled hour is never quietly counted as billable.
+  function classifyBillable(apptType) {
+    const s = String(apptType == null ? "" : apptType).trim();
+    if (!s) return null;
+    if (/non[-\s_]*billable/i.test(s)) return false;
+    if (/billable/i.test(s)) return true;
+    return null;
+  }
+
+  // The one place hours get bucketed. Everything that renders a timecard (PDF,
+  // employee page, admin preview) goes through this so the numbers can't drift
+  // between them. has_split is false for timecards imported before the Appt
+  // Type column existed -- those still render as a single undivided table.
+  function timecardTotals(entries) {
+    const list = Array.isArray(entries) ? entries : [];
+    const billable = [], nonBillable = [], unclassified = [];
+    list.forEach((e, i) => {
+      const row = Object.assign({}, e, { _i: i });
+      const cls = (e && (e.billable === true || e.billable === false)) ? e.billable : classifyBillable(e && e.appt_type);
+      row.billable = cls;
+      if (cls === true) billable.push(row);
+      else if (cls === false) nonBillable.push(row);
+      else unclassified.push(row);
+    });
+    const sum = (arr) => round2(arr.reduce((s, e) => s + (Number(e && e.hours) || 0), 0));
+    return {
+      billable, non_billable: nonBillable, unclassified,
+      has_split: (billable.length + nonBillable.length) > 0,
+      billable_hours: sum(billable),
+      non_billable_hours: sum(nonBillable),
+      unclassified_hours: sum(unclassified),
+      total_hours: sum(list),
+    };
+  }
+
+  // Everything an admin needs to eyeball one timecard before it's sent, with
+  // the hours already split. Read-only -- builds nothing and sends nothing.
+  function shapeTimecardPreview(tc, emp, flags) {
+    const entries = parseJson(tc.entries, []);
+    const t = timecardTotals(entries);
+    return {
+      id: tc.id,
+      status: tc.status,
+      employee_id: tc.employee_id,
+      employee_name: emp ? emp.name : null,
+      employee_email: emp ? emp.email : null,
+      role_title: emp ? emp.role_title || "" : "",
+      has_email: !!(emp && emp.email),
+      already_sent_at: tc.verification_requested_at || null,
+      admin_edited_at: tc.admin_edited_at || null,
+      admin_edited_by: tc.admin_edited_by || null,
+      pay_period_start: tc.pay_period_start,
+      pay_period_end: tc.pay_period_end,
+      entries,
+      flags: flags || [],
+      open_flags: (flags || []).filter((f) => f.status === "open" || f.status === "explained").length,
+      shifts: entries.length,
+      has_split: t.has_split,
+      billable: t.billable,
+      non_billable: t.non_billable,
+      unclassified: t.unclassified,
+      billable_hours: t.billable_hours,
+      non_billable_hours: t.non_billable_hours,
+      unclassified_hours: t.unclassified_hours,
+      total_hours: t.total_hours,
+      subject: "✨ Your timecard is ready to review — Spectrum Squad",
+    };
+  }
+
   // Turn a parsed workbook into per-employee timecard payloads. Reads the
   // "Summary" sheet for the employee roster + period, and "Time Sheet Entries"
   // for the per-shift detail. Pay/rate columns are intentionally ignored — the
@@ -4071,11 +4233,18 @@ Write body as plain text with line breaks (no HTML).`;
     const eId = tcol("Id"), eAlert = tcol("Alerts"), eStart = tcol("StartTime"), eEnd = tcol("EndTime"),
       eDate = tcol("DateOfService"), eActIn = tcol("ActualStartTime"), eActOut = tcol("ActualEndTime"),
       eDur = tcol("Duration"), eVer = tcol("StaffVerified"), eStatus = tcol("ApptStatus");
+    // "Appt Type" carries the export's own Billable / Non-Billable wording. The
+    // header is spelled with a space in the billing export and without one in
+    // some payroll exports, so accept either. Same vocabulary as fin-ledger.js.
+    let eType = tcol("Appt Type");
+    if (eType < 0) eType = tcol("ApptType");
+    if (eType < 0) eType = tcol("AppointmentType");
     for (let i = tHdr + 1; i < tse.length; i++) {
       const r = tse[i] || [];
       const id = String(r[eId] || "").trim();
       if (!id || !employees[id]) continue;
       const scheduled = (r[eStart] || r[eEnd]) ? `${r[eStart] || "?"} – ${r[eEnd] || "?"}` : "";
+      const apptType = eType >= 0 ? String(r[eType] == null ? "" : r[eType]).trim() : "";
       employees[id].entries.push({
         date: fmtServiceDate(r[eDate]),
         scheduled,
@@ -4085,9 +4254,20 @@ Write body as plain text with line breaks (no HTML).`;
         verified: r[eVer] || "",
         alert: eAlert >= 0 ? (r[eAlert] || "") : "",
         appt_status: eStatus >= 0 ? (r[eStatus] || "") : "",
+        appt_type: apptType,
+        billable: classifyBillable(apptType),
       });
     }
-    return { period_start: periodStart, period_end: periodEnd, employees: Object.values(employees) };
+    // Roll the billable split up to the employee so the import preview can show
+    // it without re-reading every entry.
+    for (const emp of Object.values(employees)) {
+      const t = timecardTotals(emp.entries);
+      emp.billable_hours = t.billable_hours;
+      emp.non_billable_hours = t.non_billable_hours;
+      emp.unclassified_hours = t.unclassified_hours;
+      emp.has_split = t.has_split;
+    }
+    return { period_start: periodStart, period_end: periodEnd, has_appt_type: eType >= 0, employees: Object.values(employees) };
   }
 
   async function importTimecard(input, actor) {
@@ -4133,8 +4313,25 @@ Write body as plain text with line breaks (no HTML).`;
     return e && e.name ? e.name : "An employee";
   }
 
+  // A small billable / non-billable summary strip for the email. Renders
+  // nothing when the timecard predates the Appt Type column, so old timecards
+  // are never shown a misleading "0 billable".
+  function timecardEmailTotals(t) {
+    if (!t || !t.has_split) return "";
+    const chip = (label, val, color, bg) =>
+      `<td style="padding:0 4px;"><div style="background:${bg};border-radius:14px;padding:10px 6px;">` +
+      `<div style="font-size:19px;font-weight:700;color:${color};line-height:1.1;">${val}</div>` +
+      `<div style="font-size:10.5px;color:#6b6a86;text-transform:uppercase;letter-spacing:.4px;">${label}</div></div></td>`;
+    return `<table role="presentation" style="width:100%;border-collapse:separate;margin:0 0 18px;"><tr>` +
+      chip("Billable", t.billable_hours, "#1b2a6b", "#eef1fb") +
+      chip("Non-billable", t.non_billable_hours, "#946213", "#fdf4e6") +
+      (t.unclassified_hours ? chip("Not labeled", t.unclassified_hours, "#6b6a86", "#f4f1ea") : "") +
+      chip("Total", t.total_hours, "#177a3c", "#e9f9ee") +
+      `</tr></table>`;
+  }
+
   // The cute timecard-review email (shared by single send + send-all).
-  function timecardEmailHtml(firstName, period, url) {
+  function timecardEmailHtml(firstName, period, url, totals) {
     return `
 <div style="background:#f4f1ea;padding:24px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:22px;overflow:hidden;border:1px solid #ece7db;box-shadow:0 10px 30px rgba(41,34,92,.12);">
@@ -4145,6 +4342,7 @@ Write body as plain text with line breaks (no HTML).`;
       <div style="display:inline-block;margin-top:12px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.25);padding:5px 12px;border-radius:999px;font-size:12.5px;font-weight:600;">Pay period · ${escapeHtml(period)}</div>
     </div>
     <div style="padding:26px;text-align:center;">
+      ${timecardEmailTotals(totals)}
       <p style="color:#2b2a35;font-size:15px;margin:0 0 20px;">It takes about 30 seconds. Your review helps us get payroll right.</p>
       <a href="${url}" style="display:inline-block;background:#22a565;color:#fff;text-decoration:none;border-radius:999px;padding:14px 28px;font-size:16px;font-weight:700;">Review my timecard →</a>
       <p style="color:#8a8797;font-size:12px;margin:22px 0 0;">Or paste this link into your browser:<br>${url}</p>
@@ -4166,7 +4364,7 @@ Write body as plain text with line breaks (no HTML).`;
     await sendEmail({
       to: emp.email,
       subject: "✨ Your timecard is ready to review — Spectrum Squad",
-      html: timecardEmailHtml(firstNameOf(emp.name), period, url),
+      html: timecardEmailHtml(firstNameOf(emp.name), period, url, timecardTotals(parseJson(tc.entries, []))),
       type: "hr_timecard",
     }).catch((e) => console.error("timecard verify email failed:", e.message));
     return { url, sent: true };
@@ -4191,7 +4389,8 @@ Write body as plain text with line breaks (no HTML).`;
     const entries = parseJson(tc.entries, []);
     const emp = tc.employee_id ? await dbGet("SELECT name, role_title FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
     const empName = emp ? emp.name : "Employee";
-    const total = Math.round(entries.reduce((s, e) => s + (Number(e.hours) || 0), 0) * 100) / 100;
+    const t = timecardTotals(entries);
+    const total = t.total_hours;
     const storedName = `${crypto.randomBytes(10).toString("hex")}.pdf`;
     const full = path.join(RESUME_DIR, storedName);
 
@@ -4210,26 +4409,55 @@ Write body as plain text with line breaks (no HTML).`;
         doc.moveDown(0.8);
 
         const x0 = 50, cols = [90, 150, 150, 60];
+        const width = cols.reduce((a, b) => a + b, 0);
         const headers = ["Date", "Scheduled", "Clocked", "Hours"];
         let y = doc.y;
-        doc.fontSize(10).fillColor("#6b6a86");
-        let cx = x0;
-        headers.forEach((h, i) => { doc.text(h, cx, y, { width: cols[i] }); cx += cols[i]; });
-        y += 16;
-        doc.moveTo(x0, y - 4).lineTo(x0 + cols.reduce((a, b) => a + b, 0), y - 4).strokeColor("#e5e7eb").stroke();
-        doc.fillColor("#201a4d").fontSize(10);
-        entries.forEach((e) => {
-          if (y > 700) { doc.addPage(); y = 50; }
-          const sched = e.scheduled || "—";
-          const clocked = `${prettyTime(e.clock_in)} – ${prettyTime(e.clock_out)}`;
-          const row = [String(e.date || "—"), sched, clocked, String(e.hours == null ? "—" : e.hours)];
-          cx = x0;
-          row.forEach((val, i) => { doc.text(val, cx, y, { width: cols[i] }); cx += cols[i]; });
+        const pageBreak = () => { if (y > 690) { doc.addPage(); y = 50; } };
+
+        // One block = an optional section heading, the column headers, the rows,
+        // and a subtotal. Billable and Non-Billable are never mixed in a block.
+        const drawBlock = (title, rows, subtotalLabel) => {
+          if (!rows.length) return;
+          pageBreak();
+          if (title) {
+            doc.fillColor("#1b2a6b").fontSize(11).text(title, x0, y, { width });
+            y += 16;
+          }
+          doc.fontSize(10).fillColor("#6b6a86");
+          let cx = x0;
+          headers.forEach((h, i) => { doc.text(h, cx, y, { width: cols[i] }); cx += cols[i]; });
           y += 16;
-        });
-        y += 6;
-        doc.moveTo(x0, y).lineTo(x0 + cols.reduce((a, b) => a + b, 0), y).strokeColor("#e5e7eb").stroke();
-        y += 10;
+          doc.moveTo(x0, y - 4).lineTo(x0 + width, y - 4).strokeColor("#e5e7eb").stroke();
+          doc.fillColor("#201a4d").fontSize(10);
+          rows.forEach((e) => {
+            pageBreak();
+            const sched = e.scheduled || "—";
+            const clocked = `${prettyTime(e.clock_in)} – ${prettyTime(e.clock_out)}`;
+            const row = [String(e.date || "—"), sched, clocked, String(e.hours == null ? "—" : e.hours)];
+            let rx = x0;
+            row.forEach((val, i) => { doc.text(val, rx, y, { width: cols[i] }); rx += cols[i]; });
+            y += 16;
+          });
+          if (subtotalLabel) {
+            y += 4;
+            doc.moveTo(x0, y).lineTo(x0 + width, y).strokeColor("#e5e7eb").stroke();
+            y += 8;
+            doc.fillColor("#3f56b5").fontSize(10.5).text(subtotalLabel, x0, y, { width });
+            y += 20;
+          }
+        };
+
+        if (t.has_split) {
+          drawBlock("Billable hours", t.billable, `Billable subtotal: ${t.billable_hours}`);
+          drawBlock("Non-billable hours", t.non_billable, `Non-billable subtotal: ${t.non_billable_hours}`);
+          drawBlock("Unclassified hours", t.unclassified, `Unclassified subtotal: ${t.unclassified_hours}`);
+        } else {
+          drawBlock("", entries, null);
+          y += 6;
+          doc.moveTo(x0, y).lineTo(x0 + width, y).strokeColor("#e5e7eb").stroke();
+          y += 10;
+        }
+        pageBreak();
         doc.fillColor("#1b2a6b").fontSize(12).text(`Total hours: ${total}`, x0, y);
         doc.moveDown(2);
         doc.fillColor("#201a4d").fontSize(11).text(`Accepted & electronically signed by: ${signedName}`);
@@ -4730,6 +4958,8 @@ Write body as plain text with line breaks (no HTML).`;
   table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px;}
   thead th{text-align:left;font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding:8px 22px;border-bottom:1px solid var(--line);}
   tbody td{padding:11px 22px;border-bottom:1px solid #f4f0e7;vertical-align:middle;}
+  tfoot td{padding:10px 22px;border-top:1px solid var(--line);background:#faf8f2;}
+  .sub{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:700;}
   .muted{color:var(--muted);font-size:11.5px;} .c-hrs{font-weight:700;color:var(--brand);white-space:nowrap;}
   .badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;margin-right:4px;}
   .badge.ok{background:#e9f9ee;color:#177a3c;} .badge.alert{background:#fef3e0;color:#946213;}
@@ -4752,29 +4982,53 @@ Write body as plain text with line breaks (no HTML).`;
   function ptime(v){ if(!v) return "—"; var d=new Date(v); if(isNaN(d.getTime())) return String(v); var h=d.getHours(),m=d.getMinutes(),ap=h>=12?"PM":"AM"; h=h%12||12; return h+":"+(m<10?"0"+m:m)+" "+ap; }
   function fmt(x){ return (Math.round((parseFloat(x)||0)*100)/100).toString(); }
   function firstName(n){ return (n||"there").split(" ")[0]; }
-  function shell(inner){ return "<div class=\"card\"><div class=\"hero\"><div style=\"font-size:22px\">✨</div><h1>Hi "+esc(firstName(D.employee_name))+" — here's your timecard!</h1><p>Please review your hours and tap Accept, or Edit if anything looks off.</p><div class=\"period\">Pay period · "+esc(D.pay_period.start||"")+" – "+esc(D.pay_period.end||"")+"</div></div>"+inner+"</div>"; }
-  function load(){ api("/api/hr/public/timecard?token="+encodeURIComponent(token)).then(function(d){D=d;render();}).catch(function(e){host.innerHTML="<div class=\"card\"><div style=\"padding:34px;text-align:center\" class=\"err\">"+esc(e.message)+"</div></div>";}); }
-  function doneView(icon,title,msg){ host.innerHTML=shell("<div class=\"done\"><div style=\"font-size:40px\">"+icon+"</div><h2 style=\"color:#22a565;margin:8px 0 4px\">"+esc(title)+"</h2><p class=\"muted\">"+esc(msg)+"</p></div>"); }
+  // Mirrors classifyBillable() on the server. "Non-Billable" must be tested
+  // before "Billable" or every non-billable shift lands in the billable pile.
+  function clsOf(e){ if(!e) return null; if(e.billable===true) return true; if(e.billable===false) return false;
+    var s=String(e.appt_type||"").trim(); if(!s) return null;
+    if(/non[-_ ]*billable/i.test(s)) return false; if(/billable/i.test(s)) return true; return null; }
+  function sumOf(list){ var t=0; list.forEach(function(x){ t+=parseFloat(x.e.hours)||0; }); return Math.round(t*100)/100; }
+  function shell(inner){ return "<div class=\\"card\\"><div class=\\"hero\\"><div style=\\"font-size:22px\\">✨</div><h1>Hi "+esc(firstName(D.employee_name))+" — here's your timecard!</h1><p>Please review your hours and tap Accept, or Edit if anything looks off.</p><div class=\\"period\\">Pay period · "+esc(D.pay_period.start||"")+" – "+esc(D.pay_period.end||"")+"</div></div>"+inner+"</div>"; }
+  function load(){ api("/api/hr/public/timecard?token="+encodeURIComponent(token)).then(function(d){D=d;render();}).catch(function(e){host.innerHTML="<div class=\\"card\\"><div style=\\"padding:34px;text-align:center\\" class=\\"err\\">"+esc(e.message)+"</div></div>";}); }
+  function doneView(icon,title,msg){ host.innerHTML=shell("<div class=\\"done\\"><div style=\\"font-size:40px\\">"+icon+"</div><h2 style=\\"color:#22a565;margin:8px 0 4px\\">"+esc(title)+"</h2><p class=\\"muted\\">"+esc(msg)+"</p></div>"); }
   function render(){
     if(D.status==="accepted"){ return doneView("🎉","Timecard accepted!","Thanks"+(D.signed_name?", "+esc(firstName(D.signed_name)):"")+" — your hours are confirmed and payroll's been notified."); }
     if(D.status==="edit_requested"){ return doneView("📨","Changes sent!","Your requested edits are with the office for review."); }
     var entries=D.entries||[];
-    var total=D.total_hours!=null?D.total_hours:entries.reduce(function(s,e){return s+(parseFloat(e.hours)||0);},0);
-    var rows=entries.map(function(e,i){
-      var ver=e.verified==="Yes"?"<span class=\"badge ok\">✓ verified</span>":"";
-      var al=e.alert?"<span class=\"badge alert\">⚠ "+esc(e.alert)+"</span>":"";
+    var groups={b:[],n:[],u:[]};
+    entries.forEach(function(e,i){ var c=clsOf(e); groups[c===true?"b":c===false?"n":"u"].push({e:e,i:i}); });
+    var hasSplit=(groups.b.length+groups.n.length)>0;
+    var total=D.total_hours!=null?D.total_hours:sumOf(groups.b.concat(groups.n,groups.u));
+    function rowsFor(list){ return list.map(function(x){
+      var e=x.e,i=x.i,c=clsOf(e);
+      var ver=e.verified==="Yes"?"<span class=\\"badge ok\\">✓ verified</span>":"";
+      var al=e.alert?"<span class=\\"badge alert\\">⚠ "+esc(e.alert)+"</span>":"";
       var clocked=ptime(e.clock_in)+" – "+ptime(e.clock_out);
       return "<tr><td><b>"+esc(e.date||"")+"</b></td><td>"+esc(e.scheduled||"—")+"</td><td>"+esc(clocked)+"</td>"+
-        "<td class=\"c-hrs\"><span class=\"hv\">"+fmt(e.hours)+"</span><input class=\"he\" data-i=\""+i+"\" type=\"number\" step=\"0.01\" value=\""+fmt(e.hours)+"\" style=\"display:none;width:64px;\"></td><td>"+ver+al+"</td></tr>";
-    }).join("");
-    var inner="<div class=\"stats\"><div class=\"stat\"><b id=\"tot\">"+fmt(total)+"</b><span>Total hrs</span></div><div class=\"stat\"><b>"+entries.length+"</b><span>Shifts</span></div><div class=\"stat\"><b>"+esc(D.role||"Staff")+"</b><span>Role</span></div></div>"+
-      "<div class=\"sec\">Your shifts</div><table><thead><tr><th>Date</th><th>Scheduled</th><th>Clocked</th><th>Hours</th><th></th></tr></thead><tbody>"+rows+"</tbody></table>"+
-      "<div class=\"actions\"><p id=\"prompt\">Everything look right?</p>"+
-      "<button class=\"btn accept\" id=\"b-accept\">✓ Looks good — Accept</button>"+
-      "<button class=\"btn edit\" id=\"b-edit\">✎ Something's off — Edit</button>"+
-      "<input class=\"sign\" id=\"sign\" placeholder=\"Type your full name to sign\"/>"+
-      "<textarea class=\"note\" id=\"note\" placeholder=\"Tell us what needs fixing (e.g. 'Aug 4 should be 4 hrs')...\"></textarea>"+
-      "<div id=\"confirm\" style=\"display:none;margin-top:6px\"></div></div>";
+        "<td class=\\"c-hrs\\"><span class=\\"hv\\">"+fmt(e.hours)+"</span><input class=\\"he\\" data-i=\\""+i+"\\" data-grp=\\""+(c===true?"b":c===false?"n":"u")+"\\" type=\\"number\\" step=\\"0.01\\" value=\\""+fmt(e.hours)+"\\" style=\\"display:none;width:64px;\\"></td><td>"+ver+al+"</td></tr>";
+    }).join(""); }
+    function section(title,list,key,subLabel){ if(!list.length) return "";
+      return "<div class=\\"sec\\">"+title+"</div><table><thead><tr><th>Date</th><th>Scheduled</th><th>Clocked</th><th>Hours</th><th></th></tr></thead><tbody>"+rowsFor(list)+
+        "</tbody><tfoot><tr><td colspan=\\"3\\" class=\\"sub\\">"+subLabel+"</td><td class=\\"c-hrs\\" id=\\"sub-"+key+"\\">"+fmt(sumOf(list))+"</td><td></td></tr></tfoot></table>"; }
+    var tiles=hasSplit
+      ? "<div class=\\"stat\\"><b id=\\"stat-b\\">"+fmt(sumOf(groups.b))+"</b><span>Billable hrs</span></div>"+
+        "<div class=\\"stat\\"><b id=\\"stat-n\\">"+fmt(sumOf(groups.n))+"</b><span>Non-billable</span></div>"+
+        "<div class=\\"stat\\"><b id=\\"tot\\">"+fmt(total)+"</b><span>Total hrs</span></div>"
+      : "<div class=\\"stat\\"><b id=\\"tot\\">"+fmt(total)+"</b><span>Total hrs</span></div>"+
+        "<div class=\\"stat\\"><b>"+entries.length+"</b><span>Shifts</span></div>"+
+        "<div class=\\"stat\\"><b>"+esc(D.role||"Staff")+"</b><span>Role</span></div>";
+    var tables=hasSplit
+      ? section("💙 Billable shifts",groups.b,"b","Billable subtotal")+
+        section("🗂 Non-billable shifts",groups.n,"n","Non-billable subtotal")+
+        section("❓ Not labeled",groups.u,"u","Unlabeled subtotal")
+      : section("Your shifts",groups.u,"u","Total");
+    var inner="<div class=\\"stats\\">"+tiles+"</div>"+tables+
+      "<div class=\\"actions\\"><p id=\\"prompt\\">Everything look right?</p>"+
+      "<button class=\\"btn accept\\" id=\\"b-accept\\">✓ Looks good — Accept</button>"+
+      "<button class=\\"btn edit\\" id=\\"b-edit\\">✎ Something's off — Edit</button>"+
+      "<input class=\\"sign\\" id=\\"sign\\" placeholder=\\"Type your full name to sign\\"/>"+
+      "<textarea class=\\"note\\" id=\\"note\\" placeholder=\\"Tell us what needs fixing (e.g. 'Aug 4 should be 4 hrs')...\\"></textarea>"+
+      "<div id=\\"confirm\\" style=\\"display:none;margin-top:6px\\"></div></div>";
     host.innerHTML=shell(inner);
     document.getElementById("b-accept").addEventListener("click",startAccept);
     document.getElementById("b-edit").addEventListener("click",startEdit);
@@ -4785,7 +5039,7 @@ Write body as plain text with line breaks (no HTML).`;
     document.getElementById("note").style.display="none";
     sign.style.display="block"; sign.focus();
     var c=document.getElementById("confirm"); c.style.display="block";
-    c.innerHTML="<button class=\"btn accept\" id=\"b-do-accept\">Sign & accept →</button>";
+    c.innerHTML="<button class=\\"btn accept\\" id=\\"b-do-accept\\">Sign & accept →</button>";
     document.getElementById("b-do-accept").addEventListener("click",function(){
       var name=sign.value.trim(); if(!name){sign.focus();return;}
       var btn=document.getElementById("b-do-accept"); btn.disabled=true; btn.textContent="Saving…";
@@ -4800,14 +5054,26 @@ Write body as plain text with line breaks (no HTML).`;
     Array.prototype.forEach.call(document.querySelectorAll(".hv"),function(e){e.style.display="none";});
     Array.prototype.forEach.call(document.querySelectorAll(".he"),function(e){e.style.display="inline-block";e.addEventListener("input",recalc);});
     var c=document.getElementById("confirm"); c.style.display="block";
-    c.innerHTML="<button class=\"btn send\" id=\"b-do-edit\">Send my changes →</button>";
+    c.innerHTML="<button class=\\"btn send\\" id=\\"b-do-edit\\">Send my changes →</button>";
     document.getElementById("b-do-edit").addEventListener("click",function(){
-      var edited=[]; Array.prototype.forEach.call(document.querySelectorAll(".he"),function(inp){ var i=Number(inp.getAttribute("data-i")); var e=(D.entries||[])[i]||{}; edited.push({date:e.date,hours:parseFloat(inp.value)||0}); });
+      var edited=[]; Array.prototype.forEach.call(document.querySelectorAll(".he"),function(inp){ var i=Number(inp.getAttribute("data-i")); var e=(D.entries||[])[i]||{}; edited.push({index:i,date:e.date,appt_type:e.appt_type||"",hours:parseFloat(inp.value)||0}); });
       var btn=document.getElementById("b-do-edit"); btn.disabled=true; btn.textContent="Sending…";
       api("/api/hr/public/timecard/edit",{method:"POST",body:{token:token,edited:edited,note:document.getElementById("note").value.trim()}}).then(function(){D.status="edit_requested";render();}).catch(function(e){alert(e.message);btn.disabled=false;btn.textContent="Send my changes →";});
     });
   }
-  function recalc(){ var t=0; Array.prototype.forEach.call(document.querySelectorAll(".he"),function(e){t+=parseFloat(e.value)||0;}); document.getElementById("tot").textContent=Math.round(t*100)/100; }
+  function recalc(){
+    var t=0,g={b:0,n:0,u:0};
+    Array.prototype.forEach.call(document.querySelectorAll(".he"),function(e){
+      var v=parseFloat(e.value)||0; t+=v;
+      var k=e.getAttribute("data-grp")||"u"; g[k]=(g[k]||0)+v;
+    });
+    var r=function(x){return Math.round(x*100)/100;};
+    document.getElementById("tot").textContent=r(t);
+    ["b","n","u"].forEach(function(k){
+      var sub=document.getElementById("sub-"+k); if(sub) sub.textContent=r(g[k]);
+      var st=document.getElementById("stat-"+k); if(st) st.textContent=r(g[k]);
+    });
+  }
   load();
 })();
 </script>
@@ -5051,6 +5317,7 @@ Write body as plain text with line breaks (no HTML).`;
       handleInbound, draftReply, parseCsv, extractEmail,
       detectTimecardAnomalies, importTimecard, buildDailySummary,
       parseXlsx, buildPayrollTimecards,
+      classifyBillable, timecardTotals, shapeTimecardPreview, timecardEmailHtml, timecardVerifyHtml, saveTimecardPdf,
       parsePlatformApplication, matchPosition, handlePlatformApplication,
     },
   };
