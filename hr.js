@@ -575,6 +575,49 @@ module.exports = function initHr(ctx) {
     "Experience working with children",
   ];
 
+  const BCABA_SCREENING_QUESTIONS = [
+    { id: "bcaba_certified", label: "Are you currently certified as a BCaBA?", type: "yesno" },
+    { id: "supervision_ok", label: "Do you have a supervising BCBA, or are you open to supervision from our clinical team?", type: "yesno" },
+    { id: "years_experience", label: "How many years of behavior-analytic experience do you have?", type: "text" },
+    { id: "settings_comfort", label: "Are you comfortable working across clinic, home and school settings?", type: "yesno" },
+    { id: "mentored_rbts", label: "Have you helped train or mentor RBTs?", type: "yesno" },
+    { id: "schedule_type", label: "What type of schedule are you seeking?", type: "text" },
+    { id: "earliest_start", label: "What is your earliest available start date?", type: "text" },
+    { id: "comp_range", label: "What compensation range are you seeking?", type: "text", sensitive: true },
+  ];
+  const BCABA_MIN_QUALS = [
+    "Active BCaBA certification",
+    "Ongoing BCBA supervision, as required to practice",
+  ];
+  const BCABA_PREFERRED_QUALS = [
+    "Experience mentoring RBTs",
+    "Experience assisting with treatment plans",
+    "Experience supporting assessments",
+    "Experience with Medicaid and insurance-funded ABA",
+    "Clinic, in-home, and school-based experience",
+  ];
+
+  const ADMIN_SCREENING_QUESTIONS = [
+    { id: "admin_experience", label: "Tell us about your admin or front-office experience.", type: "text" },
+    { id: "tools_comfort", label: "Are you comfortable learning new scheduling / CRM software?", type: "yesno" },
+    { id: "healthcare_office", label: "Have you worked in a healthcare, therapy or clinic office before?", type: "yesno" },
+    { id: "bilingual", label: "Do you speak any languages besides English? (A big plus, not required.)", type: "text" },
+    { id: "availability", label: "What days and hours are you available?", type: "text" },
+    { id: "earliest_start", label: "What is your earliest available start date?", type: "text" },
+    { id: "comp_range", label: "What compensation range are you seeking?", type: "text", sensitive: true },
+  ];
+  const ADMIN_MIN_QUALS = [
+    "High school diploma or equivalent",
+    "Strong communication and organization skills",
+  ];
+  const ADMIN_PREFERRED_QUALS = [
+    "Healthcare, therapy or ABA office experience",
+    "Familiarity with EHR / CRM or scheduling software",
+    "Insurance and authorization familiarity",
+    "Bilingual (English / Spanish)",
+    "A warm, welcoming phone and front-desk manner",
+  ];
+
   async function seed() {
     const now = nowISO();
 
@@ -630,6 +673,64 @@ module.exports = function initHr(ctx) {
         JSON.stringify(RBT_MIN_QUALS),
         JSON.stringify(RBT_PREFERRED_QUALS),
         JSON.stringify(RBT_SCREENING_QUESTIONS),
+        "system",
+        now,
+        now,
+      ]
+    );
+
+    await dbRun(
+      `INSERT INTO hr_positions
+        (slug, title, role_type, employment_types, location_type, locations, description,
+         highlights, openings_count, status, priority, comp_unit,
+         min_qualifications, preferred_qualifications, screening_questions, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (slug) DO NOTHING`,
+      [
+        "bcaba",
+        "Board Certified Assistant Behavior Analyst",
+        "other",
+        JSON.stringify(["full_time", "part_time"]),
+        "hybrid",
+        "Las Vegas & Henderson, NV",
+        "Spectrum Squad is growing our clinical team and hiring a Board Certified Assistant Behavior Analyst (BCaBA). You'll work hand-in-hand with our BCBAs to implement and fine-tune treatment programs, support assessments, and mentor RBTs across clinic, home, and school settings — with real supervision, real support, and a clear path toward your BCBA.",
+        "Direct BCBA mentorship • Clear path toward BCBA • Flexible hybrid schedule • Collaborative, kind team",
+        1,
+        "open",
+        "high",
+        "hour",
+        JSON.stringify(BCABA_MIN_QUALS),
+        JSON.stringify(BCABA_PREFERRED_QUALS),
+        JSON.stringify(BCABA_SCREENING_QUESTIONS),
+        "system",
+        now,
+        now,
+      ]
+    );
+
+    await dbRun(
+      `INSERT INTO hr_positions
+        (slug, title, role_type, employment_types, location_type, locations, description,
+         highlights, openings_count, status, priority, comp_unit,
+         min_qualifications, preferred_qualifications, screening_questions, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (slug) DO NOTHING`,
+      [
+        "administrative-assistant",
+        "Administrative Assistant",
+        "other",
+        JSON.stringify(["full_time", "part_time"]),
+        "onsite",
+        "Las Vegas, NV",
+        "Spectrum Squad is looking for an Administrative Assistant to be the friendly heartbeat of our clinic. You'll greet families, keep schedules humming, help with intake paperwork and authorizations, and keep our care team organized. If you love people, details, and making a place run smoothly, you'll fit right in.",
+        "Be the heartbeat of the clinic • Friendly, supportive team • Room to grow • Mostly Mon–Fri schedule",
+        1,
+        "open",
+        "normal",
+        "hour",
+        JSON.stringify(ADMIN_MIN_QUALS),
+        JSON.stringify(ADMIN_PREFERRED_QUALS),
+        JSON.stringify(ADMIN_SCREENING_QUESTIONS),
         "system",
         now,
         now,
@@ -5138,155 +5239,585 @@ Write body as plain text with line breaks (no HTML).`;
   }
 
   function careersHtml() {
-    // Single-page careers app: lists open roles, shows a role + application
-    // form, and posts to /api/hr/apply. Uses the Spectrum Squad brand palette.
+    // Public, single-page careers experience: a playful hero, colorful role
+    // cards, and a friendly multi-step application wizard (basics -> fit ->
+    // story -> review) that posts to the SAME public /api/hr/apply contract as
+    // before. Routed at /careers, /careers/:slug and /apply/:token. Everything
+    // is self-contained -- no backticks and no ${} interpolation inside the
+    // returned template literal, and the inner script prefers double-quoted
+    // strings so friendly copy with apostrophes needs no escaping.
     return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Careers — Spectrum Squad</title>
+<title>Careers — Join the Spectrum Squad</title>
 <style>
-  :root{--navy:#1b2a6b;--navy-dark:#101c4d;--navy-light:#edecf8;--gold:#e0a430;--teal:#5fa8a0;--bg:#f7f8fb;--surface:#fff;--border:#e5e7eb;--text:#201a4d;--muted:#6b6a86;--radius:14px;}
+  :root{
+    --navy:#1b2a6b;--navy-dark:#101c4d;--navy-light:#edecf8;--gold:#e0a430;--gold-soft:#fdecc8;
+    --teal:#5fa8a0;--mint:#3f8f89;--coral:#ef6f6c;--purple:#7b6cf6;--bg:#f4f5fb;--surface:#fff;
+    --border:#e7e4f5;--text:#201a4d;--muted:#6b6a86;--ok:#1f9d63;--radius:18px;
+  }
   *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
-  header{background:linear-gradient(135deg,var(--navy),var(--navy-dark));color:#fff;padding:40px 20px;text-align:center}
-  header .mark{font-size:34px}
-  header h1{margin:8px 0 4px;font-size:26px}
-  header p{margin:0;opacity:.85}
-  .wrap{max-width:760px;margin:0 auto;padding:20px}
-  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin:16px 0;box-shadow:0 1px 3px rgba(41,34,92,.08)}
-  .role-title{font-size:19px;font-weight:700;margin:0 0 4px;color:var(--navy)}
-  .badge{display:inline-block;background:var(--navy-light);color:var(--navy);border-radius:20px;padding:3px 12px;font-size:12.5px;font-weight:600;margin:0 6px 6px 0}
-  .badge.urgent{background:#fdecc8;color:var(--gold)}
-  .muted{color:var(--muted);font-size:14px}
-  button,.btn{background:var(--navy);color:#fff;border:none;border-radius:10px;padding:12px 20px;font-size:15px;font-weight:600;cursor:pointer}
-  button:hover{background:var(--navy-dark)}
-  .btn-ghost{background:#fff;color:var(--navy);border:1px solid var(--navy)}
-  label{display:block;font-size:13.5px;font-weight:600;margin:14px 0 5px}
-  input,textarea,select{width:100%;padding:11px 12px;border:1px solid var(--border);border-radius:10px;font-size:15px;font-family:inherit}
-  textarea{min-height:90px;resize:vertical}
-  .q{margin:10px 0}
-  .check{display:flex;gap:8px;align-items:flex-start;margin:12px 0;font-size:13.5px;font-weight:500}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--text);line-height:1.55;-webkit-font-smoothing:antialiased}
+  a{color:var(--navy)}
+  .wrap{max-width:860px;margin:0 auto;padding:0 18px}
+
+  /* ---- Hero ---- */
+  header.hero{position:relative;overflow:hidden;color:#fff;text-align:center;
+    background:linear-gradient(135deg,#1b2a6b 0%,#2a2f8f 45%,#3f8f89 100%);padding:52px 20px 60px}
+  header.hero .blob{position:absolute;border-radius:50%;filter:blur(2px);opacity:.28;animation:float 9s ease-in-out infinite}
+  .blob.b1{width:180px;height:180px;background:var(--gold);top:-40px;left:-30px}
+  .blob.b2{width:130px;height:130px;background:var(--teal);bottom:-30px;right:10%;animation-delay:1.5s}
+  .blob.b3{width:90px;height:90px;background:var(--coral);top:30px;right:16%;animation-delay:.8s}
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-18px)}}
+  header.hero .inner{position:relative;z-index:2}
+  header.hero img.logo{max-width:230px;width:64%;height:auto;background:#fff;padding:12px 18px;border-radius:16px;
+    box-shadow:0 10px 30px rgba(0,0,0,.18)}
+  header.hero h1{margin:20px 0 6px;font-size:31px;line-height:1.15;font-weight:800;letter-spacing:-.5px}
+  header.hero p.tag{margin:0 auto;max-width:560px;font-size:17px;opacity:.94}
+  .vibes{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:20px 0 0}
+  .vibe{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:999px;
+    padding:7px 14px;font-size:13.5px;font-weight:600;backdrop-filter:blur(4px)}
+
+  /* ---- Perks band ---- */
+  .perks{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:-30px auto 8px;position:relative;z-index:3}
+  .perk{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px 14px;
+    box-shadow:0 10px 30px rgba(41,34,92,.08);text-align:center}
+  .perk .ic{font-size:24px;display:block;margin-bottom:4px}
+  .perk .t{font-weight:700;font-size:13.5px;color:var(--navy)}
+  .perk .d{font-size:12px;color:var(--muted)}
+
+  .sec-title{text-align:center;font-size:22px;font-weight:800;color:var(--navy);margin:34px 0 4px}
+  .sec-sub{text-align:center;color:var(--muted);margin:0 0 18px}
+
+  /* ---- Role cards ---- */
+  .roles{display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:20px}
+  @media(min-width:620px){.roles{grid-template-columns:1fr 1fr}}
+  .role{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    padding:22px 20px 20px;box-shadow:0 6px 20px rgba(41,34,92,.07);cursor:pointer;overflow:hidden;
+    transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
+  .role:hover{transform:translateY(-4px);box-shadow:0 18px 40px rgba(41,34,92,.16);border-color:var(--navy)}
+  .role .stripe{position:absolute;top:0;left:0;right:0;height:6px}
+  .role .emoji{font-size:38px;line-height:1}
+  .role h3{margin:12px 0 2px;font-size:19px;color:var(--navy)}
+  .role .vibe-line{color:var(--muted);font-size:14.5px;margin:0 0 12px;min-height:40px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
+  .chip{border-radius:999px;padding:4px 11px;font-size:12px;font-weight:700;background:var(--navy-light);color:var(--navy)}
+  .chip.loc{background:#e6f4f1;color:var(--mint)}
+  .chip.type{background:#f1eefe;color:var(--purple)}
+  .chip.urgent{background:var(--gold-soft);color:#a9761a;animation:pulse 1.8s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+  .role .cta{display:inline-flex;align-items:center;gap:7px;font-weight:800;color:var(--navy);font-size:15px}
+  .role .cta .arr{transition:transform .16s ease}
+  .role:hover .cta .arr{transform:translateX(4px)}
+  .openings{position:absolute;top:16px;right:16px;font-size:12px;font-weight:700;color:var(--muted)}
+
+  /* ---- Wizard ---- */
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px;
+    margin:16px 0;box-shadow:0 6px 20px rgba(41,34,92,.07)}
+  .rolehead{display:flex;align-items:center;gap:14px;margin:0 0 6px}
+  .rolehead .em{font-size:34px}
+  .rolehead h2{margin:0;font-size:20px;color:var(--navy)}
+  .rolehead .sub{color:var(--muted);font-size:13.5px}
+  .progress{display:flex;gap:8px;margin:18px 0 6px}
+  .pstep{flex:1;text-align:center}
+  .pstep .bar{height:7px;border-radius:999px;background:var(--navy-light);overflow:hidden}
+  .pstep .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--gold),var(--teal));transition:width .3s ease}
+  .pstep.done .bar i,.pstep.active .bar i{width:100%}
+  .pstep.active .bar i{background:linear-gradient(90deg,var(--navy),var(--purple))}
+  .pstep .lbl{font-size:11.5px;font-weight:700;color:var(--muted);margin-top:5px}
+  .pstep.active .lbl,.pstep.done .lbl{color:var(--navy)}
+  .step-anim{animation:slidein .28s ease}
+  @keyframes slidein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .step h3{margin:4px 0 2px;font-size:20px;color:var(--navy)}
+  .step .lead{color:var(--muted);margin:0 0 14px}
+  label{display:block;font-size:13.5px;font-weight:700;margin:14px 0 6px;color:var(--navy)}
+  .req{color:var(--coral)}
+  input,textarea,select{width:100%;padding:12px 13px;border:1.5px solid var(--border);border-radius:12px;font-size:15px;
+    font-family:inherit;background:#fff;transition:border-color .15s ease,box-shadow .15s ease}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--navy);box-shadow:0 0 0 3px rgba(27,42,107,.12)}
+  textarea{min-height:96px;resize:vertical}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:520px){.row2{grid-template-columns:1fr}}
+  .q{margin:16px 0}
+  .q .ql{font-weight:700;font-size:14.5px;color:var(--navy);margin:0 0 8px}
+  .yesno{display:flex;gap:10px}
+  .yesno button{flex:1;background:#fff;color:var(--navy);border:1.5px solid var(--border);border-radius:12px;
+    padding:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all .14s ease}
+  .yesno button:hover{border-color:var(--navy)}
+  .yesno button.sel{background:var(--navy);color:#fff;border-color:var(--navy);box-shadow:0 6px 16px rgba(27,42,107,.25)}
+  .yesno button.sel.no{background:var(--muted);border-color:var(--muted);box-shadow:none}
+
+  /* resume dropzone */
+  .drop{border:2px dashed #cdd6ea;border-radius:14px;padding:22px;text-align:center;cursor:pointer;
+    transition:all .15s ease;background:#fbfbfe}
+  .drop:hover,.drop.over{border-color:var(--navy);background:#f4f4ff}
+  .drop .ic{font-size:30px}
+  .drop .hint{color:var(--muted);font-size:13px;margin-top:4px}
+  .drop.has{border-style:solid;border-color:var(--ok);background:#f0fbf5}
+  .drop .fname{font-weight:700;color:var(--ok)}
+
+  .check{display:flex;gap:10px;align-items:flex-start;margin:14px 0;font-size:13.5px;font-weight:500;color:var(--text)}
   .check input{width:auto;margin-top:3px}
-  .err{color:#b91c1c;font-size:13.5px;margin-top:8px}
-  .ok{text-align:center;padding:30px}
-  .ok .big{font-size:44px}
-  footer{text-align:center;color:var(--muted);font-size:12.5px;padding:30px 20px}
-  .hidden{display:none}
-  .req{color:#b91c1c}
+  .review-list{list-style:none;padding:0;margin:0}
+  .review-list li{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-bottom:1px solid var(--border);font-size:14px}
+  .review-list li .k{color:var(--muted);font-weight:600}
+  .review-list li .v{font-weight:700;color:var(--navy);text-align:right;max-width:60%}
+  .nav{display:flex;gap:10px;margin-top:22px}
+  .btn{flex:1;border:none;border-radius:14px;padding:15px;font-size:16px;font-weight:800;cursor:pointer;transition:transform .12s ease,box-shadow .12s ease}
+  .btn:active{transform:translateY(1px)}
+  .btn.primary{background:linear-gradient(135deg,var(--gold),#f0b64a);color:#3a2a00;box-shadow:0 8px 20px rgba(224,164,48,.4)}
+  .btn.primary:hover{box-shadow:0 12px 26px rgba(224,164,48,.5)}
+  .btn.primary[disabled]{opacity:.65;cursor:default;box-shadow:none}
+  .btn.ghost{flex:0 0 auto;background:#fff;color:var(--navy);border:1.5px solid var(--border);padding:15px 20px}
+  .btn.ghost:hover{border-color:var(--navy)}
+  .err{color:#b91c1c;font-size:13.5px;margin-top:12px;font-weight:600}
+
+  /* success */
+  .ok{text-align:center;padding:22px 6px}
+  .ok .big{font-size:60px;animation:pop .5s cubic-bezier(.2,1.4,.4,1)}
+  @keyframes pop{from{transform:scale(0)}to{transform:scale(1)}}
+  .ok h2{color:var(--navy);margin:10px 0 6px;font-size:24px}
+  .next{text-align:left;max-width:420px;margin:18px auto 0}
+  .next .n{display:flex;gap:12px;align-items:flex-start;margin:12px 0}
+  .next .n .num{flex:0 0 28px;height:28px;border-radius:50%;background:var(--navy);color:#fff;font-weight:800;
+    display:flex;align-items:center;justify-content:center;font-size:14px}
+  .next .n .txt{font-size:14px}
+  .next .n .txt b{color:var(--navy)}
+
+  footer{text-align:center;color:var(--muted);font-size:12.5px;padding:34px 20px 44px}
+  .spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.5);border-top-color:#3a2a00;
+    border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
+  @keyframes sp{to{transform:rotate(360deg)}}
 </style></head>
 <body>
-<header>
-  <div class="mark"><img src="/logo.png" alt="Spectrum Squad" style="max-width:240px;width:70%;height:auto;background:#fff;padding:12px 16px;border-radius:14px;"/></div>
-  <h1>Join the Spectrum Squad</h1>
-  <p>Help children thrive through compassionate, evidence-based ABA care.</p>
+<header class="hero">
+  <span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span>
+  <div class="inner">
+    <img class="logo" src="/logo.png" alt="Spectrum Squad"/>
+    <h1>Come do the best work of your life 💜</h1>
+    <p class="tag">We help children with autism thrive through compassionate, evidence-based ABA care — and we take just as good care of the people who make it happen.</p>
+    <div class="vibes">
+      <span class="vibe">🌎 Las Vegas &amp; Henderson, NV</span>
+      <span class="vibe">🚀 Fast-growing team</span>
+      <span class="vibe">❤️ Actually meaningful work</span>
+    </div>
+  </div>
 </header>
-<div class="wrap" id="app"><p class="muted">Loading open positions…</p></div>
+<div class="wrap">
+  <div class="perks" id="perks"></div>
+  <div id="app"><p class="sec-sub" style="margin-top:34px">Loading open roles…</p></div>
+</div>
 <footer>
-  Spectrum Squad · Las Vegas & Henderson, NV<br/>
-  We are an equal-opportunity employer. Your information is used only for recruiting and is never sold.
+  Spectrum Squad · Compassionate ABA Therapy · Las Vegas &amp; Henderson, NV<br/>
+  We are proud to be an equal-opportunity employer. Your information is used only to consider your application and is never sold.
 </footer>
 <script>
 (function(){
   var app=document.getElementById("app");
+  var perksEl=document.getElementById("perks");
   var path=location.pathname;
   var sourceToken=null, slug=null;
   if(path.indexOf("/apply/")===0){ sourceToken=path.split("/apply/")[1]; }
   else if(path.indexOf("/careers/")===0){ slug=decodeURIComponent(path.split("/careers/")[1]||""); }
 
+  // ---- state for the wizard ----
+  var STEPS=["You","Your fit","Your story","Review"];
+  var state={position:null,source:"website",sourceId:null,step:0,data:{},answers:{},resume:null};
+
   function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
-  function api(p,opts){opts=opts||{};return fetch(p,{method:opts.method||"GET",headers:opts.body?{"Content-Type":"application/json"}:undefined,body:opts.body?JSON.stringify(opts.body):undefined}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.error||"Request failed");return d;});});}
+  function api(p,opts){opts=opts||{};return fetch(p,{method:opts.method||"GET",
+    headers:opts.body?{"Content-Type":"application/json"}:undefined,
+    body:opts.body?JSON.stringify(opts.body):undefined}).then(function(r){
+      return r.json().then(function(d){if(!r.ok)throw new Error(d.error||"Something went wrong");return d;});});}
+
+  // ---- perks band ----
+  var PERKS=[
+    {ic:"🎓",t:"Grow on us",d:"CEU + credential support"},
+    {ic:"🤝",t:"Real mentorship",d:"BCBAs who actually teach"},
+    {ic:"🗓️",t:"Flexible schedules",d:"Life outside work, too"},
+    {ic:"📈",t:"A clear path up",d:"RBT → BCaBA → BCBA"},
+    {ic:"☕",t:"A team that shows up",d:"Supportive, kind, fun"},
+    {ic:"❤️",t:"Meaning every day",d:"Kids you change forever"}
+  ];
+  perksEl.innerHTML=PERKS.map(function(p){
+    return "<div class='perk'><span class='ic'>"+p.ic+"</span><div class='t'>"+esc(p.t)+"</div><div class='d'>"+esc(p.d)+"</div></div>";
+  }).join("");
+
+  // ---- per-role personality ----
+  function roleMeta(p){
+    var slugKey=(p.slug||"");
+    var map={
+      "rbt":{emoji:"🧩",accent:"#5fa8a0",tag:"Be the person a kid lights up to see. Deliver 1:1 therapy that changes a family's whole week."},
+      "bcba-hybrid":{emoji:"🧠",accent:"#7b6cf6",tag:"Lead the clinical vision. Design the programs, guide the team, and watch the breakthroughs happen."},
+      "bcaba":{emoji:"🌱",accent:"#3f8f89",tag:"Level up into the analyst you're becoming — with real supervision and a real path to BCBA."},
+      "administrative-assistant":{emoji:"✨",accent:"#e0a430",tag:"Be the friendly face and steady hand that keeps the whole clinic running like magic."}
+    };
+    if(map[slugKey])return map[slugKey];
+    if(p.role_type==="bcba")return {emoji:"🧠",accent:"#7b6cf6",tag:"Lead the clinical vision and change lives across our clinic, home, and school programs."};
+    if(p.role_type==="rbt")return {emoji:"🧩",accent:"#5fa8a0",tag:"Deliver the hands-on therapy that helps kids reach their next big milestone."};
+    return {emoji:"⭐",accent:"#1b2a6b",tag:"Join a team doing work that genuinely matters."};
+  }
+  function typeLabel(t){return {full_time:"Full-time",part_time:"Part-time",contract:"Contract"}[t]||t;}
+  function locLabel(t){return {hybrid:"Hybrid",onsite:"On-site",remote:"Remote"}[t]||t;}
 
   function start(){
     if(sourceToken){
-      api("/api/hr/apply-link/"+encodeURIComponent(sourceToken)).then(function(d){renderForm(d.position,d.source,d.source_id);}).catch(function(){listPositions();});
+      api("/api/hr/apply-link/"+encodeURIComponent(sourceToken))
+        .then(function(d){openRole(d.position,d.source,d.source_id);})
+        .catch(function(){ sourceToken=null; listPositions(); });
     } else if(slug){
-      api("/api/hr/public/positions/"+encodeURIComponent(slug)).then(function(p){renderForm(p,"website",null);}).catch(function(){listPositions();});
+      api("/api/hr/public/positions/"+encodeURIComponent(slug))
+        .then(function(p){openRole(p,"website",null);})
+        .catch(function(){ slug=null; history.replaceState({},"","/careers"); listPositions(); });
     } else { listPositions(); }
   }
 
+  // ---- list view ----
   function listPositions(){
+    perksEl.style.display="";
     api("/api/hr/public/positions").then(function(list){
-      if(!list.length){app.innerHTML='<div class="card"><p class="muted">There are no open positions right now. Check back soon!</p></div>';return;}
-      app.innerHTML=list.map(function(p){
-        return '<div class="card"><div class="role-title">'+esc(p.title)+'</div>'+
-          '<div>'+(p.priority==="urgent"?'<span class="badge urgent">Urgent hire</span>':'')+
-          '<span class="badge">'+esc(p.location_type)+'</span>'+
-          (p.locations?'<span class="badge">'+esc(p.locations)+'</span>':'')+'</div>'+
-          '<p class="muted">'+esc((p.description||"").slice(0,180))+'…</p>'+
-          '<button data-slug="'+esc(p.slug)+'">View & Apply</button></div>';
+      if(!list.length){
+        app.innerHTML="<div class='card' style='text-align:center'><div style='font-size:44px'>🌟</div>"+
+          "<h3 style='color:var(--navy)'>No open roles this very second…</h3>"+
+          "<p class='sec-sub'>But we're growing fast and always love meeting great people. Check back soon!</p></div>";
+        return;
+      }
+      var cards=list.map(function(p){
+        var m=roleMeta(p);
+        var chips="";
+        if(p.priority==="urgent")chips+="<span class='chip urgent'>🔥 Hiring now</span>";
+        chips+="<span class='chip loc'>"+esc(locLabel(p.location_type))+"</span>";
+        (p.employment_types||[]).forEach(function(t){chips+="<span class='chip type'>"+esc(typeLabel(t))+"</span>";});
+        var openings=(p.openings_count&&p.openings_count>1)?("<span class='openings'>"+p.openings_count+" openings</span>"):"";
+        return "<div class='role' data-slug='"+esc(p.slug)+"'>"+
+          "<span class='stripe' style='background:"+m.accent+"'></span>"+openings+
+          "<div class='emoji'>"+m.emoji+"</div>"+
+          "<h3>"+esc(p.title)+"</h3>"+
+          "<p class='vibe-line'>"+esc(m.tag)+"</p>"+
+          "<div class='chips'>"+chips+"</div>"+
+          "<span class='cta'>View role &amp; apply <span class='arr'>→</span></span>"+
+          "</div>";
       }).join("");
-      Array.prototype.forEach.call(app.querySelectorAll("button[data-slug]"),function(b){
-        b.addEventListener("click",function(){ history.pushState({},"","/careers/"+b.getAttribute("data-slug")); slug=b.getAttribute("data-slug"); sourceToken=null; start(); });
+      app.innerHTML="<h2 class='sec-title'>Find your seat on the Squad</h2>"+
+        "<p class='sec-sub'>Four ways to make a real difference. Pick the one that feels like you.</p>"+
+        "<div class='roles'>"+cards+"</div>";
+      Array.prototype.forEach.call(app.querySelectorAll(".role"),function(b){
+        b.addEventListener("click",function(){
+          var s=b.getAttribute("data-slug");
+          history.pushState({},"","/careers/"+encodeURIComponent(s));
+          slug=s; sourceToken=null;
+          api("/api/hr/public/positions/"+encodeURIComponent(s))
+            .then(function(p){openRole(p,"website",null);})
+            .catch(function(){listPositions();});
+        });
       });
-    }).catch(function(e){app.innerHTML='<div class="card err">Could not load positions: '+esc(e.message)+'</div>';});
+    }).catch(function(e){
+      app.innerHTML="<div class='card err'>Could not load roles: "+esc(e.message)+"</div>";
+    });
   }
 
-  function renderForm(p,source,sourceId){
-    var quals=(p.min_qualifications||[]).map(function(q){return "<li>"+esc(q)+"</li>";}).join("");
-    var pref=(p.preferred_qualifications||[]).map(function(q){return "<li>"+esc(q)+"</li>";}).join("");
-    var questions=(p.screening_questions||[]).map(function(q){
-      var input;
-      if(q.type==="yesno"){input='<select name="q_'+esc(q.id)+'"><option value="">Select…</option><option>Yes</option><option>No</option></select>';}
-      else{input='<input name="q_'+esc(q.id)+'" type="text"/>';}
-      return '<div class="q"><label>'+esc(q.label)+'</label>'+input+'</div>';
-    }).join("");
-    app.innerHTML=
-      '<div class="card"><div class="role-title">'+esc(p.title)+'</div>'+
-      '<div>'+(p.priority==="urgent"?'<span class="badge urgent">Urgent hire</span>':'')+'<span class="badge">'+esc(p.location_type)+'</span>'+(p.locations?'<span class="badge">'+esc(p.locations)+'</span>':'')+'</div>'+
-      '<p>'+esc(p.description||"")+'</p>'+
-      (p.highlights?'<p class="muted"><strong>Highlights:</strong> '+esc(p.highlights)+'</p>':'')+
-      (quals?'<p><strong>Minimum qualifications</strong></p><ul>'+quals+'</ul>':'')+
-      (pref?'<p><strong>Preferred</strong></p><ul>'+pref+'</ul>':'')+
-      '</div>'+
-      '<div class="card"><h3 style="margin-top:0">Apply now</h3><form id="f">'+
-      '<label>Full name <span class="req">*</span></label><input name="full_name" required/>'+
-      '<label>Email <span class="req">*</span></label><input name="email" type="email" required/>'+
-      '<label>Phone</label><input name="phone" type="tel"/>'+
-      '<label>City</label><input name="city"/>'+
-      '<label>State</label><input name="state" value="NV"/>'+
-      questions+
-      '<label>Earliest start date</label><input name="earliest_start"/>'+
-      '<label>Cover letter / anything you\\'d like us to know</label><textarea name="cover_letter"></textarea>'+
-      '<label>Resume (PDF or DOCX)</label><input type="file" id="resume" accept=".pdf,.docx,.doc"/>'+
-      '<div class="check"><input type="checkbox" id="consent_email" checked/><label for="consent_email" style="margin:0;font-weight:500">I consent to receive job-related email communication about my application.</label></div>'+
-      '<div class="check"><input type="checkbox" id="consent_sms"/><label for="consent_sms" style="margin:0;font-weight:500">Optional: I consent to receive text messages about my application.</label></div>'+
-      '<p class="muted" style="font-size:12px">Privacy: your information is used only to evaluate your application and is never sold. We consider all applicants without regard to any protected characteristic.</p>'+
-      '<div id="ferr" class="err"></div>'+
-      '<button type="submit" id="submit">Submit application</button> <button type="button" class="btn-ghost" id="back">Back</button>'+
-      '</form></div>';
+  // ---- open a role into the wizard ----
+  function openRole(p,source,sourceId){
+    state={position:p,source:source||"website",sourceId:sourceId||null,step:0,
+      data:{state:"NV"},answers:{},resume:null};
+    perksEl.style.display="none";
+    window.scrollTo(0,0);
+    renderWizard();
+  }
 
-    document.getElementById("back").addEventListener("click",function(){history.pushState({},"","/careers");slug=null;sourceToken=null;start();});
-    document.getElementById("f").addEventListener("submit",function(ev){
-      ev.preventDefault();
-      var f=ev.target, err=document.getElementById("ferr"); err.textContent="";
-      var btn=document.getElementById("submit"); btn.disabled=true; btn.textContent="Submitting…";
-      var answers={};
-      (p.screening_questions||[]).forEach(function(q){ var el=f["q_"+q.id]; if(el&&el.value) answers[q.id]=el.value; });
-      var payload={
-        full_name:f.full_name.value, email:f.email.value, phone:f.phone.value,
-        city:f.city.value, state:f.state.value, earliest_start:f.earliest_start.value,
-        cover_letter:f.cover_letter.value, screening_answers:answers,
-        consent_email:document.getElementById("consent_email").checked,
-        consent_sms:document.getElementById("consent_sms").checked,
-        slug:p.slug, source:source, source_token:sourceToken
-      };
-      var fileEl=document.getElementById("resume");
-      function send(){
-        api("/api/hr/apply",{method:"POST",body:payload}).then(function(){
-          app.innerHTML='<div class="card ok"><div class="big">✅</div><h2>Application received!</h2><p class="muted">Thank you for applying to Spectrum Squad. Our recruiting team will be in touch soon.</p></div>';
-          window.scrollTo(0,0);
-        }).catch(function(e){ err.textContent=e.message; btn.disabled=false; btn.textContent="Submit application"; });
+  function backToList(){
+    history.pushState({},"","/careers"); slug=null; sourceToken=null;
+    perksEl.style.display=""; window.scrollTo(0,0); listPositions();
+  }
+
+  function progressHtml(){
+    var out="<div class='progress'>";
+    for(var i=0;i<STEPS.length;i++){
+      var cls=i<state.step?"done":(i===state.step?"active":"");
+      out+="<div class='pstep "+cls+"'><div class='bar'><i></i></div><div class='lbl'>"+esc(STEPS[i])+"</div></div>";
+    }
+    return out+"</div>";
+  }
+
+  function renderWizard(){
+    var p=state.position, m=roleMeta(p);
+    var head="<div class='card'>"+
+      "<div class='rolehead'><span class='em'>"+m.emoji+"</span>"+
+      "<div><h2>"+esc(p.title)+"</h2><div class='sub'>"+esc(locLabel(p.location_type))+
+      (p.locations?(" · "+esc(p.locations)):"")+"</div></div></div>"+
+      progressHtml()+
+      "<div id='stepbody'></div>"+
+      "<div id='err' class='err'></div>"+
+      "<div class='nav' id='nav'></div>"+
+      "</div>";
+    app.innerHTML=head;
+    renderStep();
+  }
+
+  function setErr(msg){document.getElementById("err").textContent=msg||"";}
+
+  function renderStep(){
+    var body=document.getElementById("stepbody");
+    var nav=document.getElementById("nav");
+    setErr("");
+    if(state.step===0) body.innerHTML=stepBasics();
+    else if(state.step===1) body.innerHTML=stepFit();
+    else if(state.step===2) body.innerHTML=stepStory();
+    else body.innerHTML=stepReview();
+    body.className="step-anim";
+    wireStep();
+    // nav buttons
+    var backLbl=state.step===0?"← All roles":"← Back";
+    var nextLbl=state.step===STEPS.length-1?"🎉 Submit application":"Continue →";
+    nav.innerHTML="<button class='btn ghost' id='back'>"+backLbl+"</button>"+
+      "<button class='btn primary' id='next'>"+nextLbl+"</button>";
+    document.getElementById("back").addEventListener("click",goBack);
+    document.getElementById("next").addEventListener("click",goNext);
+    // refresh progress bar
+    var ps=app.querySelectorAll(".pstep");
+    for(var i=0;i<ps.length;i++){ps[i].className="pstep "+(i<state.step?"done":(i===state.step?"active":""));}
+  }
+
+  // step 1 — basics
+  function stepBasics(){
+    var d=state.data;
+    return "<div class='step'><h3>First, the basics 👋</h3>"+
+      "<p class='lead'>Tell us who you are — this takes about two minutes, promise.</p>"+
+      "<label>Full name <span class='req'>*</span></label>"+
+      "<input id='full_name' value='"+esc(d.full_name||"")+"' placeholder='Alex Rivera'/>"+
+      "<div class='row2'>"+
+        "<div><label>Email <span class='req'>*</span></label><input id='email' type='email' value='"+esc(d.email||"")+"' placeholder='you@email.com'/></div>"+
+        "<div><label>Phone</label><input id='phone' type='tel' value='"+esc(d.phone||"")+"' placeholder='(702) 555-0123'/></div>"+
+      "</div>"+
+      "<div class='row2'>"+
+        "<div><label>City</label><input id='city' value='"+esc(d.city||"")+"' placeholder='Las Vegas'/></div>"+
+        "<div><label>State</label><input id='state' value='"+esc(d.state||"NV")+"'/></div>"+
+      "</div></div>";
+  }
+
+  // step 2 — screening questions
+  function stepFit(){
+    var qs=state.position.screening_questions||[];
+    var inner="";
+    if(!qs.length){
+      inner="<p class='lead'>No extra questions for this role — you're all set. Hit continue!</p>";
+    }
+    qs.forEach(function(q){
+      var val=state.answers[q.id]||"";
+      inner+="<div class='q' data-qid='"+esc(q.id)+"'><div class='ql'>"+esc(q.label)+"</div>";
+      if(q.type==="yesno"){
+        inner+="<div class='yesno'>"+
+          "<button type='button' data-yn='Yes' class='"+(val==="Yes"?"sel":"")+"'>👍 Yes</button>"+
+          "<button type='button' data-yn='No' class='no "+(val==="No"?"sel":"")+"'>👋 No</button></div>";
+      } else {
+        inner+="<input class='qtext' value='"+esc(val)+"' placeholder='Type your answer…'/>";
       }
-      if(fileEl.files&&fileEl.files[0]){
-        var file=fileEl.files[0];
-        if(file.size>8*1024*1024){err.textContent="Resume must be under 8MB.";btn.disabled=false;btn.textContent="Submit application";return;}
-        var reader=new FileReader();
-        reader.onload=function(){ payload.resume={filename:file.name,mime_type:file.type,content_base64:String(reader.result).split(",")[1]}; send(); };
-        reader.onerror=function(){ err.textContent="Could not read resume file."; btn.disabled=false; btn.textContent="Submit application"; };
-        reader.readAsDataURL(file);
-      } else { send(); }
+      inner+="</div>";
     });
+    return "<div class='step'><h3>Let's see your fit 🧭</h3>"+
+      "<p class='lead'>Quick, honest answers help us match you to the right spot. There are no wrong ones.</p>"+inner+"</div>";
+  }
+
+  // step 3 — story + resume
+  function stepStory(){
+    var d=state.data;
+    var r=state.resume;
+    var drop=r?
+      ("<div class='drop has' id='drop'><div class='ic'>📄</div><div class='fname'>"+esc(r.filename)+"</div><div class='hint'>Looks great — tap to choose a different file</div></div>")
+      :("<div class='drop' id='drop'><div class='ic'>📎</div><div><b>Add your resume</b></div><div class='hint'>PDF or Word · drag &amp; drop or tap · optional but loved</div></div>");
+    return "<div class='step'><h3>Tell your story 💬</h3>"+
+      "<p class='lead'>This is where you get to be a human, not a bullet list.</p>"+
+      "<label>When could you start?</label>"+
+      "<input id='earliest_start' value='"+esc(d.earliest_start||"")+"' placeholder='e.g. Immediately, or in 2 weeks'/>"+
+      "<label>Why Spectrum Squad? Anything you'd love us to know 💜</label>"+
+      "<textarea id='cover_letter' placeholder='Tell us what drew you to ABA, a moment you're proud of, or just say hi!'>"+esc(d.cover_letter||"")+"</textarea>"+
+      "<label>Resume</label>"+drop+
+      "<input type='file' id='resume' accept='.pdf,.docx,.doc' style='display:none'/></div>";
+  }
+
+  // step 4 — review + consent
+  function stepReview(){
+    var d=state.data, p=state.position, m=roleMeta(p);
+    function row(k,v){return v?("<li><span class='k'>"+esc(k)+"</span><span class='v'>"+esc(v)+"</span></li>"):"";}
+    var qs=state.position.screening_questions||[];
+    var ans="";
+    qs.forEach(function(q){ if(state.answers[q.id]) ans+=row(q.label,state.answers[q.id]); });
+    return "<div class='step'><h3>Almost there! 🎉</h3>"+
+      "<p class='lead'>Give it a quick look, then send it our way.</p>"+
+      "<ul class='review-list'>"+
+        row("Role",m.emoji+" "+p.title)+
+        row("Name",d.full_name)+
+        row("Email",d.email)+
+        row("Phone",d.phone)+
+        row("Location",[d.city,d.state].filter(Boolean).join(", "))+
+        row("Start",d.earliest_start)+
+        row("Resume",state.resume?state.resume.filename:"")+
+        ans+
+      "</ul>"+
+      "<div class='check'><input type='checkbox' id='consent_email' checked/>"+
+        "<label for='consent_email' style='margin:0;font-weight:500'>Yes, email me about my application and next steps.</label></div>"+
+      "<div class='check'><input type='checkbox' id='consent_sms'/>"+
+        "<label for='consent_sms' style='margin:0;font-weight:500'>Optional: text me too — I don't mind.</label></div>"+
+      "<p class='sec-sub' style='font-size:12px;text-align:left;margin:6px 0 0'>Your info is used only to consider your application and is never sold. We welcome every applicant, without regard to any protected characteristic.</p>"+
+      "</div>";
+  }
+
+  // wire up listeners for the current step
+  function wireStep(){
+    if(state.step===1){
+      Array.prototype.forEach.call(app.querySelectorAll(".q"),function(qd){
+        var qid=qd.getAttribute("data-qid");
+        Array.prototype.forEach.call(qd.querySelectorAll("[data-yn]"),function(btn){
+          btn.addEventListener("click",function(){
+            var yn=btn.getAttribute("data-yn");
+            state.answers[qid]=yn;
+            Array.prototype.forEach.call(qd.querySelectorAll("[data-yn]"),function(b2){
+              var on=b2.getAttribute("data-yn")===yn;
+              b2.className=(b2.getAttribute("data-yn")==="No"?"no ":"")+(on?"sel":"");
+            });
+          });
+        });
+      });
+    }
+    if(state.step===2){
+      var drop=document.getElementById("drop");
+      var file=document.getElementById("resume");
+      if(drop&&file){
+        drop.addEventListener("click",function(){file.click();});
+        ["dragenter","dragover"].forEach(function(ev){drop.addEventListener(ev,function(e){e.preventDefault();drop.classList.add("over");});});
+        ["dragleave","drop"].forEach(function(ev){drop.addEventListener(ev,function(e){e.preventDefault();drop.classList.remove("over");});});
+        drop.addEventListener("drop",function(e){ if(e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0]) takeFile(e.dataTransfer.files[0]); });
+        file.addEventListener("change",function(){ if(file.files&&file.files[0]) takeFile(file.files[0]); });
+      }
+    }
+  }
+
+  function takeFile(f){
+    if(f.size>8*1024*1024){ setErr("That resume is over 8MB — please pick a smaller file."); return; }
+    var reader=new FileReader();
+    reader.onload=function(){
+      state.resume={filename:f.name,mime_type:f.type,content_base64:String(reader.result).split(",")[1]};
+      renderStep();
+    };
+    reader.onerror=function(){ setErr("Couldn't read that file — try another one."); };
+    reader.readAsDataURL(f);
+  }
+
+  // capture the current step's inputs into state
+  function captureStep(){
+    if(state.step===0){
+      state.data.full_name=(val("full_name")||"").trim();
+      state.data.email=(val("email")||"").trim();
+      state.data.phone=(val("phone")||"").trim();
+      state.data.city=(val("city")||"").trim();
+      state.data.state=(val("state")||"").trim();
+    } else if(state.step===1){
+      Array.prototype.forEach.call(app.querySelectorAll(".q"),function(qd){
+        var qid=qd.getAttribute("data-qid");
+        var txt=qd.querySelector(".qtext");
+        if(txt) state.answers[qid]=txt.value.trim();
+      });
+    } else if(state.step===2){
+      state.data.earliest_start=(val("earliest_start")||"").trim();
+      state.data.cover_letter=(val("cover_letter")||"").trim();
+    }
+  }
+  function val(id){var e=document.getElementById(id);return e?e.value:"";}
+
+  function validateStep(){
+    if(state.step===0){
+      if(!state.data.full_name) return "Please tell us your name.";
+      if(!state.data.email && !state.data.phone) return "We need an email or a phone number to reach you.";
+      if(state.data.email && state.data.email.indexOf("@")<0) return "That email doesn't look quite right.";
+    }
+    return null;
+  }
+
+  function goBack(){
+    if(state.step===0){ backToList(); return; }
+    captureStep();
+    state.step--; window.scrollTo(0,0); renderStep();
+  }
+
+  function goNext(){
+    captureStep();
+    var v=validateStep();
+    if(v){ setErr(v); return; }
+    if(state.step<STEPS.length-1){ state.step++; window.scrollTo(0,0); renderStep(); return; }
+    submitApplication();
+  }
+
+  function submitApplication(){
+    var btn=document.getElementById("next");
+    btn.disabled=true; btn.innerHTML="<span class='spin'></span>Sending…";
+    var d=state.data, p=state.position;
+    var payload={
+      full_name:d.full_name, email:d.email, phone:d.phone, city:d.city, state:d.state,
+      earliest_start:d.earliest_start, cover_letter:d.cover_letter,
+      screening_answers:state.answers,
+      consent_email:document.getElementById("consent_email").checked,
+      consent_sms:document.getElementById("consent_sms").checked,
+      slug:p.slug, source:state.source, source_token:sourceToken
+    };
+    if(state.resume) payload.resume=state.resume;
+    api("/api/hr/apply",{method:"POST",body:payload}).then(function(){
+      renderSuccess();
+    }).catch(function(e){
+      setErr(e.message||"Something went wrong — please try again.");
+      btn.disabled=false; btn.innerHTML="🎉 Submit application";
+    });
+  }
+
+  function renderSuccess(){
+    var p=state.position, m=roleMeta(p);
+    perksEl.style.display="none";
+    app.innerHTML="<div class='card ok'>"+
+      "<div class='big'>"+m.emoji+"</div>"+
+      "<h2>You're in the running! 🎉</h2>"+
+      "<p class='sec-sub'>Thanks for applying to be our <b>"+esc(p.title)+"</b>, "+esc(firstName(state.data.full_name))+". We're genuinely excited to read it.</p>"+
+      "<div class='next'>"+
+        "<div class='n'><div class='num'>1</div><div class='txt'><b>We review your application</b> — a real human on our team, usually within a few business days.</div></div>"+
+        "<div class='n'><div class='num'>2</div><div class='txt'><b>We reach out</b> to set up a friendly chat if it looks like a fit.</div></div>"+
+        "<div class='n'><div class='num'>3</div><div class='txt'><b>You meet the Squad</b> and we figure out your perfect role together.</div></div>"+
+      "</div>"+
+      "<div class='nav'><button class='btn ghost' id='again' style='flex:1'>← Back to all roles</button></div>"+
+      "</div>";
+    document.getElementById("again").addEventListener("click",backToList);
+    window.scrollTo(0,0);
+    confetti();
+  }
+  function firstName(n){return (String(n||"").trim().split(/\s+/)[0])||"there";}
+
+  // ---- lightweight canvas confetti (no libraries) ----
+  function confetti(){
+    var c=document.createElement("canvas");
+    c.style.cssText="position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:9999";
+    document.body.appendChild(c);
+    var ctx=c.getContext("2d");
+    function size(){c.width=window.innerWidth;c.height=window.innerHeight;} size();
+    window.addEventListener("resize",size);
+    var colors=["#1b2a6b","#e0a430","#5fa8a0","#ef6f6c","#7b6cf6","#3f8f89"];
+    var P=[];
+    for(var i=0;i<150;i++){
+      P.push({x:Math.random()*c.width,y:-20-Math.random()*c.height*0.5,
+        r:6+Math.random()*8,color:colors[i%colors.length],
+        vy:2+Math.random()*4,vx:-2.5+Math.random()*5,rot:Math.random()*6.28,vr:-0.25+Math.random()*0.5});
+    }
+    var start=null;
+    function frame(ts){
+      if(start===null)start=ts;
+      ctx.clearRect(0,0,c.width,c.height);
+      for(var i=0;i<P.length;i++){
+        var p=P[i]; p.x+=p.vx; p.y+=p.vy; p.vy+=0.03; p.rot+=p.vr;
+        ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot); ctx.fillStyle=p.color;
+        ctx.fillRect(-p.r/2,-p.r/2,p.r,p.r*0.62); ctx.restore();
+      }
+      if(ts-start<4200){ requestAnimationFrame(frame); } else { c.remove(); }
+    }
+    requestAnimationFrame(frame);
   }
 
   window.addEventListener("popstate",function(){ location.reload(); });
