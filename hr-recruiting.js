@@ -1116,6 +1116,26 @@ async function hrRenderCandidate(mount, id) {
     ? Object.entries(answers).map(([k, v]) => `<div style="margin:4px 0"><span class="hr-muted">${hrEsc(k)}:</span> ${hrEsc(v)}</div>`).join("")
     : `<p class="hr-muted">No screening answers yet.</p>`;
 
+  // Expanded application (Phase 6a): availability + certifications + education +
+  // employment history. Availability is stored as a small JSON object.
+  const av = a.availability && typeof a.availability === "object" ? a.availability : {};
+  const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const avDays = av.days ? DOW.filter((d) => av.days[d]) : [];
+  const avParts = [];
+  if (avDays.length) avParts.push(avDays.join(", "));
+  if (av.earliest || av.latest) avParts.push(`${av.earliest || "?"}–${av.latest || "?"}`);
+  if (av.weekly_hours) avParts.push(`${av.weekly_hours} hrs/wk`);
+  if (av.type) avParts.push({ full_time: "Full-time", part_time: "Part-time", either: "FT or PT" }[av.type] || av.type);
+  const detailRow = (label, val, pre) => val ? `<div style="margin:6px 0"><span class="hr-muted" style="font-weight:600">${label}:</span> <span style="white-space:${pre ? "pre-wrap" : "normal"}">${hrEsc(val)}</span></div>` : "";
+  const appDetailsHtml = (avParts.length || a.certifications || a.education || a.employment_history)
+    ? `<div class="hr-card"><h2>Application details</h2>
+        ${avParts.length ? `<div style="margin:6px 0"><span class="hr-muted" style="font-weight:600">Availability:</span> ${hrEsc(avParts.join(" · "))}${av.notes ? ` <span class="hr-muted">(${hrEsc(av.notes)})</span>` : ""}</div>` : ""}
+        ${detailRow("Certifications & licenses", a.certifications, true)}
+        ${detailRow("Education", a.education, true)}
+        ${detailRow("Employment history", a.employment_history, true)}
+      </div>`
+    : "";
+
   const docsHtml = (a.documents || []).length
     ? (a.documents || []).map((d) => `<a class="hr-btn sm ghost" href="/api/hr/documents/${d.id}" target="_blank" style="margin-right:6px">${hrEsc(d.filename || d.kind)}</a>`).join("")
     : `<span class="hr-muted">No resume uploaded.</span>`;
@@ -1130,7 +1150,7 @@ async function hrRenderCandidate(mount, id) {
 
   body.innerHTML = `
     <div class="hr-head">
-      <h1>${a.priority_flag ? "⭐ " : ""}${hrEsc(a.full_name)}</h1>
+      <h1>${a.priority_flag ? "⭐ " : ""}${hrEsc(a.full_name)}${a.preferred_name ? ` <span class="hr-muted" style="font-size:16px;font-weight:400">(goes by ${hrEsc(a.preferred_name)})</span>` : ""}</h1>
       <div class="hr-row">
         <span class="hr-badge ${a.match_category || ""}">${hrEsc(hrMatchLabel(a.match_category))}</span>
         <span class="hr-badge">${hrEsc(hrStageLabel(a.stage))}</span>
@@ -1141,10 +1161,11 @@ async function hrRenderCandidate(mount, id) {
         <div><strong>${hrEsc(a.position_title || "No position")}</strong></div>
         <div class="hr-muted">${hrEsc(a.email || "no email")} · ${hrEsc(a.phone || "no phone")}</div>
         <div class="hr-muted">${hrEsc(a.city || "")}${a.state ? ", " + hrEsc(a.state) : ""}</div>
+        ${a.address ? `<div class="hr-muted">${hrEsc(a.address)}</div>` : ""}
         <div class="hr-muted">Source: ${hrEsc(hrSourceLabel(a.source))} · Applied ${hrFmtDate(a.applied_at)}</div>
         <div class="hr-muted">Earliest start: ${hrEsc(a.earliest_start || "—")} · Setting: ${hrEsc(a.work_setting || "—")}</div>
-        ${canSens ? `<div class="hr-muted">Comp expectation: ${hrEsc(a.comp_expectation || "—")}</div>` : `<div class="hr-lock">Compensation expectation hidden (owner only)</div>`}
-        <div class="hr-muted">Consent: email ${a.consent_email ? "✓" : "✗"} · sms ${a.consent_sms ? "✓" : "✗"}${a.do_not_contact ? " · <strong>DO NOT CONTACT</strong>" : ""}</div>
+        ${canSens ? `<div class="hr-muted">Desired pay: ${hrEsc(a.desired_pay || a.comp_expectation || "—")}</div>` : `<div class="hr-lock">Desired pay hidden (owner only)</div>`}
+        <div class="hr-muted">Consent: email ${a.consent_email ? "✓" : "✗"} · text ${a.sms_consent || a.consent_sms ? "✓" : "✗"}${(a.sms_consent || a.consent_sms) && a.sms_consent_at ? ` <span title="Recorded ${hrEsc(a.sms_consent_at)}${a.sms_consent_version ? ", disclosure " + hrEsc(a.sms_consent_version) : ""}">(recorded ${hrFmtDate(a.sms_consent_at)}${a.sms_consent_version ? ", " + hrEsc(a.sms_consent_version) : ""})</span>` : ""}${a.do_not_contact ? " · <strong>DO NOT CONTACT</strong>" : ""}</div>
         <div style="margin-top:10px">${docsHtml}</div>
       </div>
       <div class="hr-card"><h2>Move stage</h2>
@@ -1155,6 +1176,7 @@ async function hrRenderCandidate(mount, id) {
         ${historyHtml ? `<div style="margin-top:14px"><div class="hr-muted" style="font-weight:600">Stage history</div>${historyHtml}</div>` : ""}
       </div>
     </div>
+    ${appDetailsHtml}
     <div class="hr-card"><h2>Screening answers</h2>${answersHtml}</div>
     ${a.cover_letter ? `<div class="hr-card"><h2>Cover letter</h2><div style="white-space:pre-wrap">${hrEsc(a.cover_letter)}</div></div>` : ""}
     ${hrScreeningHtml(a)}
