@@ -969,6 +969,23 @@ function hrCommsHtml(a) {
     <div class="hr-field" style="margin:6px 0"><input id="hr-msg-subject" placeholder="Subject"/></div>
     <div class="hr-field" style="margin:6px 0"><textarea id="hr-msg-body" placeholder="Write a personal note to the candidate…"></textarea></div>
     <div class="hr-row"><button class="hr-btn sm" id="hr-send-msg">Send email</button><button class="hr-btn sm ghost" id="hr-draft-reply">Draft AI reply</button><span class="hr-status" id="hr-msg-status"></span></div>
+    ${(() => {
+      const consented = a.sms_consent || a.consent_sms;
+      const textable = !!(consented && a.phone && !a.sms_opted_out);
+      const note = !a.phone
+        ? "No phone number on file."
+        : !consented
+        ? "This candidate has not consented to text messages."
+        : a.sms_opted_out
+        ? "This candidate replied STOP and is opted out of texts."
+        : !a.sms_configured
+        ? "Texting isn't connected yet — messages will be simulated until Twilio is configured."
+        : "";
+      return `<div class="hr-muted" style="font-weight:600;margin:16px 0 6px">Text message (SMS)</div>
+    ${note ? `<div class="hr-muted" style="margin-bottom:6px">${hrEsc(note)}</div>` : ""}
+    <div class="hr-field" style="margin:6px 0"><textarea id="hr-sms-body" maxlength="1000" placeholder="Write a short text to ${hrEsc(a.phone || "the candidate")}…"${textable ? "" : " disabled"}></textarea></div>
+    <div class="hr-row"><button class="hr-btn sm" id="hr-send-sms"${textable ? "" : " disabled"}>Send text</button><span class="hr-status" id="hr-sms-status"></span></div>`;
+    })()}
     <div class="hr-muted" style="font-weight:600;margin:16px 0 6px">Interview scheduling</div>
     <div class="hr-row"><button class="hr-btn sm ghost" id="hr-sched-email">Email scheduling link</button><button class="hr-btn sm ghost" id="hr-sched-copy">Copy scheduling link</button><span class="hr-status" id="hr-sched-status"></span></div>
   </div>`;
@@ -1340,6 +1357,23 @@ async function hrRenderCandidate(mount, id) {
           st.textContent = "Not sent: " + (r.skipped || r.delivered || "unknown"); st.className = "hr-status err"; sendMsgBtn.disabled = false;
         }
       } catch (e) { st.textContent = e.message; st.className = "hr-status err"; sendMsgBtn.disabled = false; }
+    });
+  }
+  const sendSmsBtn = body.querySelector("#hr-send-sms");
+  if (sendSmsBtn) {
+    sendSmsBtn.addEventListener("click", async () => {
+      const smsBody = (body.querySelector("#hr-sms-body").value || "").trim();
+      const st = body.querySelector("#hr-sms-status");
+      if (!smsBody) { st.textContent = "Type a message first."; st.className = "hr-status err"; return; }
+      st.textContent = "Sending…"; st.className = "hr-status"; sendSmsBtn.disabled = true;
+      try {
+        const r = await hrApi("/api/hr/applicants/" + id + "/send-sms", { method: "POST", body: { body: smsBody } });
+        if (r.ok) {
+          hrRenderCandidate(mount, id);
+        } else {
+          st.textContent = "Not sent: " + (r.error || r.delivered || "unknown"); st.className = "hr-status err"; sendSmsBtn.disabled = false;
+        }
+      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; sendSmsBtn.disabled = false; }
     });
   }
 }
