@@ -1768,7 +1768,9 @@ module.exports = function initHr(ctx) {
           stages: PIPELINE_STAGES,
           sources: APPLICATION_SOURCES,
           match_categories: MATCH_CATEGORIES,
-          caps: { canManage, canSensitive },
+          // canDelete is owner-only: destructive timecard removal is restricted
+          // to the owner account, even though managers can import/send them.
+          caps: { canManage, canSensitive, canDelete: user.role === "owner" },
           role: user.role,
         });
       }
@@ -2930,6 +2932,21 @@ module.exports = function initHr(ctx) {
         // employee signed.
         const pdf = await dbGet("SELECT id FROM hr_documents WHERE employee_id = ? AND kind = 'timecard' ORDER BY id DESC LIMIT 1", [tc.employee_id]).catch(() => null);
         return json(res, 200, { ...tc, entries: parseJson(tc.entries, []), edited_entries: parseJson(tc.edited_entries, []), employee: emp, flags, pdf_doc_id: pdf ? pdf.id : null });
+      }
+      // Delete a timecard -- OWNER ONLY. Managers can import/send timecards, but
+      // destructive removal is restricted to the owner account. Removes the
+      // timecard plus its anomaly flags and verification links; any signed PDF
+      // already filed on the employee (a legal record) is intentionally kept.
+      if (tcIdMatch && method === "DELETE") {
+        if (user.role !== "owner") return json(res, 403, { error: "Only the owner can delete timecards." });
+        const id = Number(tcIdMatch[1]);
+        const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [id]);
+        if (!tc) return json(res, 404, { error: "Not found" });
+        await dbRun("DELETE FROM hr_timecard_flags WHERE timecard_id = ?", [id]).catch(() => {});
+        await dbRun("DELETE FROM hr_timecard_links WHERE timecard_id = ?", [id]).catch(() => {});
+        await dbRun("DELETE FROM hr_timecards WHERE id = ?", [id]);
+        await audit(actor, "timecard_deleted", "timecard", id, `employee_id=${tc.employee_id || ""} period=${tc.pay_period_start || ""}->${tc.pay_period_end || ""} status=${tc.status || ""}`);
+        return json(res, 200, { ok: true, deleted: id });
       }
       // Preview exactly what the employee will get, WITHOUT sending anything,
       // creating a link, or touching the timecard's status. Read-only.

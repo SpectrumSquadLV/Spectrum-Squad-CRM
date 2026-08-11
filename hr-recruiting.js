@@ -29,6 +29,10 @@ function hrCanManage() {
 function hrCanSensitive() {
   return !!(HRState.meta && HRState.meta.caps && HRState.meta.caps.canSensitive);
 }
+// Owner-only: destructive timecard deletion.
+function hrCanDelete() {
+  return !!(HRState.meta && HRState.meta.caps && HRState.meta.caps.canDelete);
+}
 
 async function hrApi(path, opts = {}) {
   const res = await fetch(path, {
@@ -1412,6 +1416,7 @@ async function hrRenderTimecards(body) {
             const sendBtn = canManage ? `<button class="hr-btn sm" data-tcsend="${t.id}">${t.verification_requested_at ? "Resend" : "Send"}</button>` : "";
             const previewBtn = canManage ? `<button class="hr-btn sm ghost" data-tcpreview="${t.id}">👁 Preview</button>` : "";
             const pdfLink = t.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${t.pdf_doc_id}" target="_blank">📄 Signed PDF</a>` : "";
+            const delBtn = hrCanDelete() ? `<button class="hr-btn sm ghost" data-tcdel="${t.id}" data-tcwho="${hrEsc(t.employee_name || "this timecard")}" style="color:#b91c1c">Delete</button>` : "";
             const check = canManage ? `<td><input type="checkbox" class="tc-pick" value="${t.id}" ${t.status === "accepted" ? "disabled" : ""} /></td>` : "";
             const sentMark = t.verification_requested_at ? `<div class="hr-muted" style="font-size:11px">sent</div>` : "";
             // Legible response status: accepted (with signer), edits requested,
@@ -1423,7 +1428,7 @@ async function hrRenderTimecards(body) {
               : t.verification_requested_at
               ? `<span class="hr-badge">Awaiting response</span>`
               : `<span class="hr-badge ${Number(t.open_flags) ? "paused" : "qualified"}">${hrEsc(t.status)}</span>`;
-            return `<tr>${check}<td>${hrEsc(t.employee_name || "—")}${sentMark}</td><td>${hrEsc((t.pay_period_start || "?") + " → " + (t.pay_period_end || "?"))}</td><td>${hrEsc(tcHours(t))}</td><td>${hrEsc(t.source || "")}</td><td>${st}</td><td>${t.open_flags}/${t.flag_count} open</td><td style="white-space:nowrap">${previewBtn} <button class="hr-btn sm ghost" data-tc="${t.id}">View</button> ${sendBtn} ${pdfLink}</td></tr>`;
+            return `<tr>${check}<td>${hrEsc(t.employee_name || "—")}${sentMark}</td><td>${hrEsc((t.pay_period_start || "?") + " → " + (t.pay_period_end || "?"))}</td><td>${hrEsc(tcHours(t))}</td><td>${hrEsc(t.source || "")}</td><td>${st}</td><td>${t.open_flags}/${t.flag_count} open</td><td style="white-space:nowrap">${previewBtn} <button class="hr-btn sm ghost" data-tc="${t.id}">View</button> ${sendBtn} ${pdfLink} ${delBtn}</td></tr>`;
           }
         )
         .join("")}</tbody></table>`
@@ -1554,6 +1559,17 @@ async function hrRenderTimecards(body) {
     );
   }
   body.querySelectorAll("[data-tc]").forEach((b) => b.addEventListener("click", () => hrOpenTimecardModal(b.dataset.tc, body)));
+  // Owner-only delete. Confirm first (destructive), then refresh the list.
+  body.querySelectorAll("[data-tcdel]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm(`Delete the timecard for ${b.dataset.tcwho}? This removes the imported hours and cannot be undone. (Any signed PDF already filed is kept.)`)) return;
+      b.disabled = true; b.textContent = "Deleting…";
+      try {
+        await hrApi("/api/hr/timecards/" + b.dataset.tcdel, { method: "DELETE" });
+        hrRenderTimecards(body);
+      } catch (e) { alert(e.message || "Could not delete."); b.disabled = false; b.textContent = "Delete"; }
+    })
+  );
 }
 
 // Read-only look at exactly what the employee will receive, before anything
