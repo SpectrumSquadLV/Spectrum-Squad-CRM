@@ -1,5 +1,7 @@
-// Browser test: Scheduling is gone from the app, and the Financial Obligation
-// Form is gone from the client card -- without breaking anything around them.
+// Browser test: Scheduling is gone from the app, while the interactive
+// Financial Obligation / financial-responsibility form is present on the client
+// card (restored so staff can send it to parents) -- without breaking anything
+// around them.
 const { chromium } = require("playwright");
 
 (async () => {
@@ -60,7 +62,7 @@ const { chromium } = require("playwright");
   const adminText = await page.locator("#view-mount").innerText();
   check("admin page still renders", adminText.length > 200, adminText.slice(0, 120));
 
-  // ---- 5. Client card: no Financial Obligation Form ----
+  // ---- 5. Client card: the Financial Obligation Form is present ----
   await page.evaluate(() => { location.hash = "#/pipeline"; });
   await page.waitForTimeout(3000);
   let clientId = await page.evaluate(() => (window.state && state.clients && state.clients[0] ? state.clients[0].id : null));
@@ -80,10 +82,12 @@ const { chromium } = require("playwright");
     const modal = page.locator(".modal-backdrop").last();
     check("client card opened", await modal.isVisible().catch(() => false));
     const modalText = await modal.innerText().catch(() => "");
-    check("no 'Financial Obligation' heading on the card", !/financial obligation/i.test(modalText));
-    check("no co-pay fields on the card", !/co-pay|out-of-pocket/i.test(modalText));
+    check("'Financial Obligation Form' heading is on the card", /financial obligation/i.test(modalText));
+    check("the send-form (co-pay / out-of-pocket) fields are present", /co-pay|out-of-pocket/i.test(modalText), modalText.slice(0, 200));
     const ffSection = await page.evaluate(() => !!document.querySelector("#financial-form-section"));
-    check("#financial-form-section not in the DOM", !ffSection);
+    check("#financial-form-section is in the DOM", !!ffSection);
+    const ffSend = await page.evaluate(() => !!document.querySelector("#ff-send"));
+    check("the 'Send Financial Obligation Form' button is wired up", !!ffSend);
 
     // Sessions and the notes hanging off them went with scheduling.
     check("no Weekly Schedule section on the card", !/Weekly Schedule/i.test(modalText), modalText.slice(0, 200));
