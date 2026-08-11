@@ -1378,8 +1378,9 @@ module.exports = function initHr(ctx) {
         await notify({
           type: "timecard_accepted",
           title: "✅ Timecard accepted",
-          body: `${await employeeName(tc.employee_id)} accepted their timecard for ${tc.pay_period_start} → ${tc.pay_period_end}.`,
+          body: `${await employeeName(tc.employee_id)} accepted and signed their timecard for ${tc.pay_period_start} → ${tc.pay_period_end} (signed: ${signed}).`,
           severity: "info",
+          emailOwner: true,
         });
         await audit("employee", "timecard_accepted", "timecard", tc.id, `signed=${signed}${pdfDocId ? " pdf=" + pdfDocId : ""}`);
         return json(res, 200, { ok: true, pdf_saved: !!pdfDocId });
@@ -1399,9 +1400,10 @@ module.exports = function initHr(ctx) {
         );
         await notify({
           type: "timecard_edit_requested",
-          title: "✏️ Timecard edit requested",
-          body: `${await employeeName(tc.employee_id)} requested changes to their timecard for ${tc.pay_period_start} → ${tc.pay_period_end}. Review in HR › Timecards.`,
+          title: "✏️ Timecard rejected — changes requested",
+          body: `${await employeeName(tc.employee_id)} did NOT accept their timecard for ${tc.pay_period_start} → ${tc.pay_period_end} and requested changes${(b.note || "").trim() ? ` — "${(b.note || "").trim().slice(0, 200)}"` : ""}. Review in HR › Timecards.`,
           severity: "warning",
+          emailOwner: true,
         });
         await audit("employee", "timecard_edit_requested", "timecard", tc.id, (b.note || "").slice(0, 120));
         return json(res, 200, { ok: true });
@@ -1415,7 +1417,9 @@ module.exports = function initHr(ctx) {
         await dbRun("UPDATE hr_timecard_flags SET employee_explanation = ?, status = 'explained' WHERE id = ?", [b.explanation || "", flag.id]);
         await audit("employee", "timecard_explained", "timecard", link.timecard_id, `flag=${flag.id}`);
         // Notify a supervisor/owner that a correction needs review.
-        await notify({ type: "timecard_correction", title: "Timecard correction submitted", body: `An employee explained a ${flag.flag_type.replace(/_/g, " ")} flag and it needs supervisor review.`, severity: "info" });
+        const explTc = await dbGet("SELECT employee_id FROM hr_timecards WHERE id = ?", [link.timecard_id]).catch(() => null);
+        const explWho = explTc ? await employeeName(explTc.employee_id) : "An employee";
+        await notify({ type: "timecard_correction", title: "Timecard correction submitted", body: `${explWho} explained a ${flag.flag_type.replace(/_/g, " ")} flag on their timecard and it needs supervisor review.`, severity: "info", emailOwner: true });
         return json(res, 200, { ok: true });
       }
 
