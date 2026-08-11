@@ -2806,7 +2806,10 @@ module.exports = function initHr(ctx) {
         if (!tc) return json(res, 404, { error: "Not found" });
         const emp = tc.employee_id ? await dbGet("SELECT * FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
         const flags = await dbAll("SELECT * FROM hr_timecard_flags WHERE timecard_id = ? ORDER BY id", [tc.id]);
-        return json(res, 200, { ...tc, entries: parseJson(tc.entries, []), employee: emp, flags });
+        // The signed PDF (saved on accept) so the office can open exactly what the
+        // employee signed.
+        const pdf = await dbGet("SELECT id FROM hr_documents WHERE employee_id = ? AND kind = 'timecard' ORDER BY id DESC LIMIT 1", [tc.employee_id]).catch(() => null);
+        return json(res, 200, { ...tc, entries: parseJson(tc.entries, []), edited_entries: parseJson(tc.edited_entries, []), employee: emp, flags, pdf_doc_id: pdf ? pdf.id : null });
       }
       // Preview exactly what the employee will get, WITHOUT sending anything,
       // creating a link, or touching the timecard's status. Read-only.

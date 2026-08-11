@@ -3443,7 +3443,7 @@ async function renderStaff(mount) {
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.role_title || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.phone || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.certifications || (e.credentials || []).map((c) => c.credential_type).join(", ") || "—")}</td>
-              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${tenureFrom(e.hire_date)}</td>
+              <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${tenureFrom(e.hr_hire_date || e.hire_date)}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><span class="tag">${staffEsc(e.status || "active")}</span></td>
             </tr>`; }).join("") : `<tr><td colspan="7"><div class="empty-state">No staff yet. Add one or import your Rethink sheet.</div></td></tr>`}
           </tbody>

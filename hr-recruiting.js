@@ -175,6 +175,7 @@ const HR_TABS = [
   { key: "inbox", label: "Recruiting Inbox" },
   { key: "scheduling", label: "Scheduling" },
   { key: "positions", label: "Positions" },
+  { key: "timecards", label: "Timecards" },
   { key: "audit", label: "Audit Log" },
 ];
 
@@ -1379,7 +1380,16 @@ async function hrRenderTimecards(body) {
             const pdfLink = t.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${t.pdf_doc_id}" target="_blank">📄 Signed PDF</a>` : "";
             const check = canManage ? `<td><input type="checkbox" class="tc-pick" value="${t.id}" ${t.status === "accepted" ? "disabled" : ""} /></td>` : "";
             const sentMark = t.verification_requested_at ? `<div class="hr-muted" style="font-size:11px">sent</div>` : "";
-            return `<tr>${check}<td>${hrEsc(t.employee_name || "—")}${sentMark}</td><td>${hrEsc((t.pay_period_start || "?") + " → " + (t.pay_period_end || "?"))}</td><td>${hrEsc(tcHours(t))}</td><td>${hrEsc(t.source || "")}</td><td><span class="hr-badge ${Number(t.open_flags) ? "paused" : "qualified"}">${hrEsc(t.status)}</span></td><td>${t.open_flags}/${t.flag_count} open</td><td style="white-space:nowrap">${previewBtn} <button class="hr-btn sm ghost" data-tc="${t.id}">View</button> ${sendBtn} ${pdfLink}</td></tr>`;
+            // Legible response status: accepted (with signer), edits requested,
+            // awaiting the employee, or the raw workflow status.
+            const st = t.status === "accepted"
+              ? `<span class="hr-badge qualified">Accepted ✓</span>${t.signed_name ? `<div class="hr-muted" style="font-size:11px">by ${hrEsc(t.signed_name)}</div>` : ""}`
+              : t.status === "edit_requested"
+              ? `<span class="hr-badge paused">✏️ Edits requested</span>`
+              : t.verification_requested_at
+              ? `<span class="hr-badge">Awaiting response</span>`
+              : `<span class="hr-badge ${Number(t.open_flags) ? "paused" : "qualified"}">${hrEsc(t.status)}</span>`;
+            return `<tr>${check}<td>${hrEsc(t.employee_name || "—")}${sentMark}</td><td>${hrEsc((t.pay_period_start || "?") + " → " + (t.pay_period_end || "?"))}</td><td>${hrEsc(tcHours(t))}</td><td>${hrEsc(t.source || "")}</td><td>${st}</td><td>${t.open_flags}/${t.flag_count} open</td><td style="white-space:nowrap">${previewBtn} <button class="hr-btn sm ghost" data-tc="${t.id}">View</button> ${sendBtn} ${pdfLink}</td></tr>`;
           }
         )
         .join("")}</tbody></table>`
@@ -1602,12 +1612,41 @@ function hrOpenTimecardModal(id, tcBody) {
           .map((e) => `<tr><td>${hrEsc(e.date || "")}</td><td>${hrEsc(e.clock_in || "—")}</td><td>${hrEsc(e.clock_out || "—")}</td><td>${hrEsc(e.hours != null ? e.hours : "")}</td></tr>`)
           .join("")}</tbody></table>`
       : "";
+    // The employee's response to the emailed timecard: accepted-and-signed, or
+    // edits requested (with their proposed hours + note), or still awaiting.
+    const fmtWhen = (s) => { if (!s) return ""; try { return new Date(s).toLocaleString(); } catch (e) { return s; } };
+    const editedRows = Array.isArray(tc.edited_entries) ? tc.edited_entries : [];
+    const editedTable = editedRows.length
+      ? `<table class="hr-table"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th></tr></thead><tbody>${editedRows
+          .map((e) => `<tr><td>${hrEsc(e.date || "")}</td><td>${hrEsc(e.clock_in || "—")}</td><td>${hrEsc(e.clock_out || "—")}</td><td>${hrEsc(e.hours != null ? e.hours : "")}</td></tr>`)
+          .join("")}</tbody></table>`
+      : "";
+    const pdfLink = tc.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${tc.pdf_doc_id}" target="_blank">📄 Open signed PDF</a>` : "";
+    let respHtml = "";
+    if (tc.status === "accepted") {
+      respHtml = `<div class="hr-note" style="border-left:3px solid #22c55e;background:#f0fbf5">
+        <div><strong>✅ Accepted &amp; signed</strong> by ${hrEsc(tc.signed_name || "the employee")}${tc.accepted_at ? " on " + hrEsc(fmtWhen(tc.accepted_at)) : ""}.</div>
+        <div class="hr-muted">They accepted these hours as-is — the <strong>Entries</strong> below are exactly what to enter into payroll.</div>
+        ${pdfLink ? `<div style="margin-top:6px">${pdfLink}</div>` : ""}
+      </div>`;
+    } else if (tc.status === "edit_requested") {
+      respHtml = `<div class="hr-note" style="border-left:3px solid #e0a430;background:#fdf6e6">
+        <div><strong>✏️ Employee requested changes</strong> — they did not accept as-is.</div>
+        ${tc.employee_note ? `<div style="margin-top:4px"><em>Their note:</em> ${hrEsc(tc.employee_note)}</div>` : ""}
+        ${editedTable ? `<div class="hr-muted" style="font-weight:600;margin:8px 0 4px">Hours the employee is proposing</div>${editedTable}` : `<div class="hr-muted" style="margin-top:4px">No line-item edits were provided — see their note above.</div>`}
+      </div>`;
+    } else if (tc.verification_requested_at) {
+      respHtml = `<div class="hr-note" style="border-left:3px solid #93a5cf"><div>📧 Sent to the employee ${hrEsc(fmtWhen(tc.verification_requested_at))} — awaiting their response.</div></div>`;
+    } else {
+      respHtml = `<div class="hr-muted">Not sent to the employee yet.</div>`;
+    }
     const back = document.createElement("div");
     back.className = "hr-modal-back";
     back.innerHTML = `<div class="hr-modal">
       <button class="hr-close" id="hr-mclose">×</button>
       <h2>Timecard — ${hrEsc(tc.employee ? tc.employee.name : "Unassigned")}</h2>
       <p class="hr-muted">${hrEsc((tc.pay_period_start || "?") + " → " + (tc.pay_period_end || "?"))} · ${hrEsc(tc.source || "")} · <strong>${hrEsc(tc.status)}</strong></p>
+      <div style="margin:10px 0">${respHtml}</div>
       ${canManage ? `<div class="hr-row" style="margin-bottom:10px"><button class="hr-btn sm ghost" id="tc-verify">Request employee verification</button><span class="hr-status" id="tc-verify-status"></span></div>` : ""}
       <div class="hr-muted" style="font-weight:600;margin:8px 0 6px">Flags</div>${flagsHtml}
       ${entriesHtml ? `<div class="hr-muted" style="font-weight:600;margin:14px 0 6px">Entries</div>${entriesHtml}` : ""}
@@ -1676,6 +1715,7 @@ async function hrDoRender(mount) {
     inbox: hrRenderInbox,
     scheduling: hrRenderScheduling,
     positions: hrRenderPositions,
+    timecards: hrRenderTimecards,
     audit: hrRenderAudit,
   };
   await hrRenderShell(mount, tab, renderers[tab] || hrRenderDashboard);
