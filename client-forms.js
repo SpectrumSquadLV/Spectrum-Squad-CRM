@@ -323,6 +323,22 @@ module.exports = function initClientForms(ctx) {
         clientId: client.id,
         type: "schedule_request",
       }).catch(() => {});
+      // Notify the staff recipients an admin chose to receive schedule requests.
+      // Configured under Admin Settings; blank means nobody is emailed (the
+      // request is still attached to the client profile for tracking either way).
+      const recipRow = await dbGet("SELECT value FROM app_settings WHERE key = 'schedule_request_recipients'").catch(() => null);
+      const recipients = ((recipRow && recipRow.value) || "").split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+      for (const to of recipients) {
+        await sendEmail({
+          to,
+          subject: `📅 ${client.child_name}'s family submitted their schedule (${v.total} hrs/week)`,
+          html: `<p>${esc(client.parent_name || "A parent")} submitted a preferred schedule for <strong>${esc(client.child_name)}</strong>.</p>
+            <p><strong>Requested:</strong> ${v.total} hours/week</p>
+            <p>Open the client in the CRM to review the selected time blocks and finalize therapist assignments.</p>`,
+          clientId: client.id,
+          type: "schedule_request_staff",
+        }).catch((e) => console.error("schedule request staff notify failed:", e.message));
+      }
     }
     return { ok: true, total: v.total };
   }

@@ -420,6 +420,12 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS psi_completed BOOLEAN NOT NULL DEFA
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS psi_date TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_tricare_completed BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_tricare_date TEXT;
+-- Treatment plan is due 14 calendar days after the in-person assessment. The
+-- due date is computed when the assessment date is entered; tp_reminders_sent
+-- records which escalation steps (assigned / 7 / 3 / 1 / overdue) have already
+-- fired so the sweep never emails the same step twice.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS treatment_plan_due_date TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS tp_reminders_sent TEXT NOT NULL DEFAULT '[]';
 -- Transportation services provided by Spectrum Squad (surfaced to schedulers).
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_services BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_notes TEXT;
@@ -1077,11 +1083,28 @@ const EMAIL_TEMPLATE_DEFS = [
     description: "Auto-sent 60 days after a staff member's hire date.", fields: ["first_name"] },
   { key: "hr_milestone_90", label: "Staff Milestone — 90 Days", category: "HR / Onboarding Emails",
     description: "Auto-sent 90 days after a staff member's hire date.", fields: ["first_name"] },
+  { key: "post_assessment_next_steps", label: "Post-Assessment / Next Steps (Parent)", category: "Parent Milestone Emails",
+    description: "Sent to the family after they complete their in-clinic assessment. Congratulates them, thanks them for coming in, and sets clear, realistic expectations for the next steps in intake. Sent manually from the client profile, with a preview first.",
+    fields: ["parent_name", "child_name", "today", "assigned_bcba_name"] },
 ];
 
 // The CRM's original built-in copy -- used both as the seed data and as a
 // last-resort fallback if a template row is somehow missing.
 const EMAIL_TEMPLATE_DEFAULTS = {
+  post_assessment_next_steps: {
+    subject: "Thank you for completing {{child_name}}'s assessment — here's what happens next",
+    body:
+      "<p>Hi {{parent_name}},</p>" +
+      "<p>Congratulations on completing {{child_name}}'s in-clinic assessment — and thank you so much for coming in! It was a genuine pleasure to spend that time with your family.</p>" +
+      "<p><strong>Here's what happens next:</strong></p>" +
+      "<ul>" +
+      "<li>Our clinical team is now reviewing everything from the assessment and building {{child_name}}'s individualized treatment plan.</li>" +
+      "<li>Once the plan is ready, we submit it to your insurance for authorization. Insurance review usually takes a couple of weeks.</li>" +
+      "<li>As soon as the authorization comes back approved, we'll reach out to schedule {{child_name}}'s very first day of ABA therapy.</li>" +
+      "</ul>" +
+      "<p>You don't need to do anything right now — we'll keep you updated at every step. If a question comes up in the meantime, just reply to this email and our team will be glad to help.</p>" +
+      "<p>Warmly,<br/>The Spectrum Squad Team</p>",
+  },
   milestone_new_submission: {
     subject: "We received your enrollment form — Spectrum Squad",
     body: "<p>Hi {{parent_name}},</p><p>Thanks for submitting your enrollment form for {{child_name}}. Our intake team will reach out within 24-48 hours.</p>",
@@ -1865,6 +1888,101 @@ async function processStaffTaskReminders() {
       }).catch((e) => console.error("staff task reminder failed:", e));
     }
     await dbRun("UPDATE staff_tasks SET reminder_sent_at = ? WHERE id = ?", [nowISO(), t.id]);
+    sent++;
+  }
+  return sent;
+}
+
+// ===================== TREATMENT PLAN DUE DATE + ESCALATION =====================
+// The treatment plan is due 14 calendar days after the in-person assessment.
+// recomputeTreatmentPlanDueDate() sets/updates that deadline; the sweep emails
+// the assigned BCBA an escalating ladder (assigned -> 7 -> 3 -> 1 day -> overdue),
+// each step at most once, and everything stops the moment the plan is submitted.
+function addCalendarDays(dateStr, n) {
+  const base = String(dateStr || "").slice(0, 10);
+  const d = new Date(base + "T12:00:00");
+  if (isNaN(d.getTime())) return null;
+  d.setDate(d.getDate() + Number(n));
+  return d.toISOString().slice(0, 10);
+}
+async function markTpReminderSent(clientId, level) {
+  const c = await dbGet("SELECT tp_reminders_sent FROM clients WHERE id = ?", [clientId]);
+  let arr = [];
+  try { arr = JSON.parse((c && c.tp_reminders_sent) || "[]"); } catch (e) { arr = []; }
+  if (!arr.includes(level)) arr.push(level);
+  await dbRun("UPDATE clients SET tp_reminders_sent = ? WHERE id = ?", [JSON.stringify(arr), clientId]);
+}
+async function sendTreatmentPlanReminder(client, level, dueDate) {
+  const to = client.assigned_bcba_email;
+  const bcbaName = client.assigned_bcba_name || "there";
+  const child = client.child_name;
+  const dueLong = fmtDateLong(dueDate);
+  const LABELS = {
+    assigned: { subj: `Treatment plan assigned: ${child} — due ${dueLong}`, lead: `A treatment plan is now due for ${child}. The clock started at their in-person assessment.` },
+    "7":      { subj: `7 days left — ${child}'s treatment plan (due ${dueLong})`, lead: `Heads up: ${child}'s treatment plan is due in about 7 days.` },
+    "3":      { subj: `3 days left — ${child}'s treatment plan (due ${dueLong})`, lead: `${child}'s treatment plan is due in about 3 days.` },
+    "1":      { subj: `Due tomorrow — ${child}'s treatment plan (${dueLong})`, lead: `${child}'s treatment plan is due tomorrow.` },
+    overdue:  { subj: `OVERDUE — ${child}'s treatment plan was due ${dueLong}`, lead: `${child}'s treatment plan is now overdue (it was due ${dueLong}).` },
+  };
+  const m = LABELS[level] || LABELS.assigned;
+  if (!to) { console.warn(`[client ${client.id}] TP reminder "${level}" skipped: no assigned BCBA email`); return { sent: false }; }
+  await sendEmail({
+    to,
+    subject: m.subj,
+    html: `<p>Hi ${bcbaName},</p><p>${m.lead}</p>
+      <p><strong>Client:</strong> ${child}<br/>
+      <strong>Assessment date:</strong> ${fmtDateLong(client.in_clinic_assessment_date)}<br/>
+      <strong>Treatment plan due:</strong> ${dueLong}</p>
+      <p>Please complete and submit the treatment plan in the CRM. These reminders stop automatically once it's submitted.</p>`,
+    clientId: client.id,
+    type: "treatment_plan_reminder",
+  }).catch((e) => console.error("TP reminder email failed:", e.message));
+  return { sent: true };
+}
+async function recomputeTreatmentPlanDueDate(clientId) {
+  const c = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+  if (!c) return;
+  const asmt = c.in_clinic_assessment_date ? String(c.in_clinic_assessment_date).slice(0, 10) : null;
+  if (!asmt) {
+    // Assessment date cleared -> clear the deadline and the reminder ladder.
+    if (c.treatment_plan_due_date) await dbRun("UPDATE clients SET treatment_plan_due_date = NULL, tp_reminders_sent = '[]' WHERE id = ?", [clientId]);
+    return;
+  }
+  const due = addCalendarDays(asmt, 14);
+  if (!due) return;
+  const changed = String(c.treatment_plan_due_date || "").slice(0, 10) !== due;
+  if (!changed) return;
+  // A new or moved deadline resets the ladder so reminders re-evaluate.
+  await dbRun("UPDATE clients SET treatment_plan_due_date = ?, tp_reminders_sent = '[]' WHERE id = ?", [due, clientId]);
+  // Assignment notification to the BCBA, once, unless the plan is already in.
+  if (!c.treatment_plan_submitted_date) {
+    await sendTreatmentPlanReminder({ ...c, treatment_plan_due_date: due }, "assigned", due);
+    await markTpReminderSent(clientId, "assigned");
+  }
+}
+async function processTreatmentPlanReminders() {
+  const today = todayISODate();
+  const rows = await dbAll(
+    `SELECT * FROM clients
+      WHERE treatment_plan_due_date IS NOT NULL
+        AND (treatment_plan_submitted_date IS NULL OR treatment_plan_submitted_date = '')
+        AND (waitlisted IS NOT TRUE)
+        AND stage NOT IN ('discharged','not_moving_forward','active')`
+  );
+  let sent = 0;
+  for (const c of rows) {
+    const due = String(c.treatment_plan_due_date).slice(0, 10);
+    let done = [];
+    try { done = JSON.parse(c.tp_reminders_sent || "[]"); } catch (e) { done = []; }
+    const daysLeft = Math.round((new Date(due + "T12:00:00") - new Date(today + "T12:00:00")) / 86400000);
+    let level = null;
+    if (daysLeft < 0) level = "overdue";
+    else if (daysLeft <= 1) level = "1";
+    else if (daysLeft <= 3) level = "3";
+    else if (daysLeft <= 7) level = "7";
+    if (!level || done.includes(level)) continue;
+    await sendTreatmentPlanReminder(c, level, due);
+    await markTpReminderSent(c.id, level);
     sent++;
   }
   return sent;
@@ -4206,6 +4324,12 @@ async function handle(req, res, pathname, method, query = {}) {
           id,
         ]);
       }
+      // Treatment plan is due 14 calendar days after the in-person assessment.
+      // When that date is entered (or changed), (re)compute the deadline and,
+      // the first time, notify the assigned BCBA that the clock has started.
+      if (Object.prototype.hasOwnProperty.call(updates, "in_clinic_assessment_date")) {
+        await recomputeTreatmentPlanDueDate(id).catch((e) => console.error("TP due date recompute failed:", e.message));
+      }
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
       return json(res, 200, authAlerts.sanitizeClientForRole(user, client));
     }
@@ -4219,6 +4343,64 @@ async function handle(req, res, pathname, method, query = {}) {
       const target = stage || pipeline.nextStageKey(client.stage);
       if (!target) return json(res, 400, { error: "No next stage" });
       await pipeline.enterStage(id, target);
+      return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
+    }
+
+    // Templates a staffer may render/send by hand from a client profile. Only
+    // these keys are reachable through the per-client preview/send routes.
+    const MANUAL_CLIENT_TEMPLATES = new Set(["post_assessment_next_steps"]);
+
+    // Render a manual template with THIS client's real merge fields, for the
+    // "preview before sending" step. Read-only; sends nothing.
+    const previewTplMatch = pathname.match(/^\/api\/clients\/(\d+)\/preview-template$/);
+    if (previewTplMatch && method === "POST") {
+      const { key } = await readBody(req);
+      if (!MANUAL_CLIENT_TEMPLATES.has(key)) return json(res, 400, { error: "That template can't be sent from here." });
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [previewTplMatch[1]]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      const template = await emailTemplates.getEmailTemplate(key);
+      if (!template) return json(res, 404, { error: "Template not found" });
+      const fields = parentMilestoneFields(client);
+      return json(res, 200, {
+        to: client.parent_email || null,
+        subject: emailTemplates.renderMergeFields(template.subject_template, fields),
+        html: emailTemplates.renderMergeFields(template.body_template, fields),
+      });
+    }
+
+    // Send a manual template to the client's parent. Logs to notifications_log
+    // (the client's communication history) with who triggered it and when.
+    const sendTplMatch = pathname.match(/^\/api\/clients\/(\d+)\/send-template$/);
+    if (sendTplMatch && method === "POST") {
+      const { key } = await readBody(req);
+      if (!MANUAL_CLIENT_TEMPLATES.has(key)) return json(res, 400, { error: "That template can't be sent from here." });
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [sendTplMatch[1]]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      if (!client.parent_email) return json(res, 400, { error: "This client has no parent email on file." });
+      const result = await sendParentTemplate(client, key);
+      if (!result.sent) return json(res, 400, { error: "Could not send (" + (result.reason || "unknown") + ")." });
+      console.log(`[client ${client.id}] ${key} sent by ${user.email} at ${nowISO()}`);
+      return json(res, 200, { ok: true, sent_at: nowISO(), sent_by: user.email });
+    }
+
+    // Item 4: Authorization -> Scheduling. Moves a client whose authorization
+    // is in hand into the First Day Scheduling stage. enterStage() creates the
+    // "Schedule First Day of ABA" task, alerts the scheduling department, and
+    // sends the parent milestone -- the authorization fields are untouched.
+    // The confirmation happens client-side; this records who triggered it.
+    const moveSchedMatch = pathname.match(/^\/api\/clients\/(\d+)\/move-to-scheduling$/);
+    if (moveSchedMatch && method === "POST") {
+      const id = moveSchedMatch[1];
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      if (!client.auth_start_date) {
+        return json(res, 400, { error: "Enter the authorization (including its start date) before moving to scheduling." });
+      }
+      if (client.stage === "first_day_scheduled" || client.stage === "active") {
+        return json(res, 409, { error: "This client is already in scheduling or active therapy." });
+      }
+      await pipeline.enterStage(id, "first_day_scheduled");
+      console.log(`[client ${client.id}] moved to First Day Scheduling by ${user.email} at ${nowISO()} (auth_start=${client.auth_start_date})`);
       return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
     }
 
@@ -4433,9 +4615,17 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
     if (!wasScreenerDone && updated.clinical_screener_completed === true && !isWaitlisted(updated)) {
       clientForms.sendScheduleRequest(updated).catch((e) => console.error("sendScheduleRequest failed:", e));
     }
-    // When the in-clinic assessment is first marked complete, create a task for
-    // the assigned BCBA to write the treatment plan (due in 5 business days).
+    // When the in-clinic assessment is first marked complete, make sure the
+    // treatment-plan deadline (14 calendar days after the assessment) is set and
+    // the BCBA has been notified, then create the "write the treatment plan"
+    // task due on that same deadline -- so the Task Center and the escalation
+    // reminders agree on one date.
     if (!wasAssessmentDone && updated.intake_assessment_completed === true) {
+      await recomputeTreatmentPlanDueDate(id).catch((e) => console.error("TP due date recompute failed:", e.message));
+      const fresh = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      const tpDue = (fresh && fresh.treatment_plan_due_date)
+        ? String(fresh.treatment_plan_due_date).slice(0, 10)
+        : addCalendarDays(todayISODate(), 14);
       const existingTp = await dbGet(
         "SELECT id FROM staff_tasks WHERE client_id = ? AND title LIKE 'Write treatment plan%' LIMIT 1",
         [id]
@@ -4443,10 +4633,10 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
       if (!existingTp) {
         createStaffTask({
           title: `Write treatment plan for ${updated.child_name}`,
-          description: "The in-clinic assessment is complete. Please write the treatment plan.",
+          description: "The in-clinic assessment is complete. Please write and submit the treatment plan.",
           assigned_name: updated.assigned_bcba_name || null,
           client_id: Number(id),
-          due_date: addBusinessDays(new Date(), 5).toISOString().slice(0, 10),
+          due_date: tpDue,
           created_by: "system",
         }).catch((e) => console.error("treatment-plan task failed:", e));
       }
@@ -5161,6 +5351,14 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       return json(res, 200, { flagged: n });
     }
 
+    // Manually run the treatment-plan escalation sweep (also runs daily on its
+    // own). Admin-only; each step still fires at most once per client.
+    if (pathname === "/api/admin/run-tp-reminders" && method === "POST") {
+      if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted" });
+      const n = await processTreatmentPlanReminders();
+      return json(res, 200, { sent: n });
+    }
+
     if (pathname === "/api/admin/departments" && method === "PATCH") {
       // Department alert emails carry child names, parent names and stage
       // details. Without this check any logged-in account could redirect them
@@ -5182,6 +5380,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         clinical_director_email: await getAppSetting("clinical_director_email", ""),
         completion_digest_recipients: await getAppSetting("completion_digest_recipients", ""),
         completion_digest_hour: await getAppSetting("completion_digest_hour", "18"),
+        schedule_request_recipients: await getAppSetting("schedule_request_recipients", ""),
         signnow_newhire_template_id: await getAppSetting("signnow_newhire_template_id", ""),
         credentialing_link_bcba: await getAppSetting("credentialing_link_bcba", DEFAULT_SETTINGS.credentialing_link_bcba),
         credentialing_link_rbt: await getAppSetting("credentialing_link_rbt", DEFAULT_SETTINGS.credentialing_link_rbt),
@@ -5230,6 +5429,16 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
           return json(res, 400, { error: "Digest hour must be a whole number from 0 to 23." });
         }
         await setAppSetting("completion_digest_hour", String(h));
+      }
+      // Who gets emailed when a parent submits their schedule request. A blank
+      // value means "no staff notification" (the request still lands on the
+      // client profile either way). Comma/semicolon separated.
+      if ("schedule_request_recipients" in body) {
+        const raw = String(body.schedule_request_recipients || "").trim();
+        const list = raw ? raw.split(/[,;]/).map((s) => s.trim()).filter(Boolean) : [];
+        const bad = list.filter((e) => !validEmail(e));
+        if (bad.length) return json(res, 400, { error: `Not a valid email address: ${bad.join(", ")}` });
+        await setAppSetting("schedule_request_recipients", list.join(", "));
       }
       // The two credentialing forms are different per role, so they live here
       // rather than being pasted into a template body where a change means
@@ -6150,6 +6359,14 @@ async function start() {
   setInterval(() => {
     processStaffTaskReminders().catch((e) => console.error("Staff task reminder sweep failed:", e));
   }, 6 * 60 * 60 * 1000);
+
+  // Treatment-plan escalating reminders to the assigned BCBA (7 / 3 / 1 day /
+  // overdue). Runs on boot and then daily; each step fires at most once and the
+  // whole ladder stops as soon as the plan is submitted.
+  processTreatmentPlanReminders().catch((e) => console.error("Treatment plan reminder sweep failed:", e));
+  setInterval(() => {
+    processTreatmentPlanReminders().catch((e) => console.error("Treatment plan reminder sweep failed:", e));
+  }, 24 * 60 * 60 * 1000);
 
   // Staff certification expiry -- staged notices to the staff member and the
   // Clinical Director. Runs on boot and then daily. Each stage sends at most

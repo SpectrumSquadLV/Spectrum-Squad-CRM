@@ -1282,6 +1282,25 @@ function daysUntilClient(dateStr) {
   return Math.round((exp - today) / 86400000);
 }
 
+// Treatment-plan deadline banner: due 14 calendar days after the in-person
+// assessment. Green once submitted (reminders have stopped), amber inside 3
+// days, red once overdue.
+function treatmentPlanDeadlineHtml(client) {
+  if (!client.treatment_plan_due_date) return "";
+  if (client.treatment_plan_submitted_date) {
+    return `<div style="margin-top:10px; padding:8px 12px; border-radius:10px; background:#e9f7ef; color:#166534; font-size:12.5px; font-weight:700;">✓ Treatment plan submitted ${fmtDate(client.treatment_plan_submitted_date)} — reminders stopped.</div>`;
+  }
+  const due = String(client.treatment_plan_due_date).slice(0, 10);
+  const days = daysUntilClient(due);
+  let bg = "#eff6ff", fg = "#1e40af", label = `${days} day(s) remaining`;
+  if (days < 0) { bg = "#fdecec"; fg = "#a3282e"; label = `${Math.abs(days)} day(s) OVERDUE`; }
+  else if (days <= 3) { bg = "#fef3e0"; fg = "#946213"; }
+  return `<div style="margin-top:10px; padding:10px 12px; border-radius:10px; background:${bg}; color:${fg}; font-size:13px; font-weight:700;">
+    🗓️ Treatment plan due ${fmtDate(due)} — ${label}
+    <div style="font-weight:500; font-size:12px; margin-top:2px; opacity:.9;">14 days after the in-person assessment. The assigned BCBA${client.assigned_bcba_name ? " (" + staffEsc(client.assigned_bcba_name) + ")" : ""} gets escalating reminders until it's submitted.</div>
+  </div>`;
+}
+
 function authSectionHtml(client) {
   if (!canViewAuth()) return "";
   const days = daysUntilClient(client.auth_expiration_date);
@@ -1314,11 +1333,19 @@ function authSectionHtml(client) {
         <div class="field full"><label>Notes</label><textarea id="auth-auth_notes" rows="2">${client.auth_notes || ""}</textarea></div>
       </div>
       <div style="font-size:12px; color:var(--text-muted); margin:-4px 0 0;">Setting the status to <strong>Approved</strong> emails ${client.parent_name ? staffEsc(client.parent_name) : "the parent"} to say ${staffEsc(client.child_name || "their child")} is approved and it's time to schedule a first day. It only sends the first time.</div>
-      <div style="display:flex; align-items:center; gap:10px; margin-top:10px;">
+      ${treatmentPlanDeadlineHtml(client)}
+      <div style="display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap;">
         <span class="tag" style="background:#eef0f5;">Days remaining: ${daysLabel}</span>
         <button class="btn small secondary" id="auth-save-btn">Save Authorization</button>
         <span id="auth-save-result" style="font-size:12px; color:var(--text-muted);"></span>
       </div>
+      ${(client.auth_start_date && !["first_day_scheduled", "active", "discharged", "not_moving_forward"].includes(client.stage)) ? `
+      <div style="margin-top:12px; padding:12px 14px; border:1px solid #d7e9e6; background:#f0fbf8; border-radius:12px;">
+        <div style="font-weight:700; color:#1b2a6b; margin-bottom:2px;">Authorization is in hand ✓</div>
+        <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:8px;">Move ${staffEsc(client.child_name || "this client")} into First Day Scheduling. This notifies the scheduling team and creates their scheduling task. The authorization stays exactly as entered.</div>
+        <button class="btn small" id="move-to-scheduling-btn">➡ Move to Scheduling First Day</button>
+        <span id="move-sched-result" style="font-size:12px; margin-left:8px; color:var(--text-muted);"></span>
+      </div>` : ""}
     `;
   }
 
@@ -1382,6 +1409,62 @@ function wireAuthSection(backdrop, clientId) {
     } catch (err) {
       resultEl.textContent = err.message || "Save failed";
     }
+  });
+
+  // Item 4: Authorization -> Scheduling. Confirms, then moves the client into
+  // First Day Scheduling (notifies the scheduling team + creates their task).
+  const moveBtn = backdrop.querySelector("#move-to-scheduling-btn");
+  if (moveBtn) {
+    moveBtn.addEventListener("click", async () => {
+      if (!confirm("Move this client into First Day Scheduling?\n\nThis notifies the scheduling team and creates their scheduling task. The authorization you entered is preserved. You can't undo this from here.")) return;
+      const resEl = backdrop.querySelector("#move-sched-result");
+      moveBtn.disabled = true;
+      resEl.textContent = "Moving…";
+      try {
+        await api(`/api/clients/${clientId}/move-to-scheduling`, { method: "POST" });
+        resEl.textContent = "Moved to First Day Scheduling ✓";
+        await loadClients();
+        if (backdrop && backdrop.remove) backdrop.remove();
+      } catch (err) {
+        resEl.textContent = err.message || "Could not move to scheduling.";
+        moveBtn.disabled = false;
+      }
+    });
+  }
+}
+
+// A generic "preview this email, then send it" modal. Shows To / Subject and
+// the rendered body in a sandboxed iframe, with Send / Cancel. onSend is an
+// async callback that performs the actual send.
+function openEmailPreviewModal({ title, to, subject, html, onSend }) {
+  const bd = document.createElement("div");
+  bd.className = "modal-backdrop";
+  bd.innerHTML = `<div class="modal" style="max-width:640px;">
+    <div class="modal-header">
+      <div><h2 style="font-size:18px; margin:0;">${staffEsc(title)}</h2>
+      <div style="font-size:12.5px; color:var(--text-muted);">To: ${staffEsc(to)}</div></div>
+      <button class="close-btn">✕</button>
+    </div>
+    <div style="padding:2px 4px;">
+      <div style="font-size:13px; margin:6px 0;"><strong>Subject:</strong> ${staffEsc(subject)}</div>
+      <iframe sandbox="" style="width:100%; height:340px; border:1px solid var(--border,#e5e7eb); border-radius:10px; background:#fff;"></iframe>
+      <div id="ep-err" style="color:#b91c1c; font-size:12.5px; margin-top:6px;"></div>
+      <div style="display:flex; gap:10px; margin:12px 0;">
+        <button class="btn" id="ep-send">Send email</button>
+        <button class="btn secondary" id="ep-cancel">Cancel</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(bd);
+  bd.querySelector("iframe").srcdoc = html;
+  const close = () => bd.remove();
+  bd.querySelector(".close-btn").addEventListener("click", close);
+  bd.querySelector("#ep-cancel").addEventListener("click", close);
+  bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+  bd.querySelector("#ep-send").addEventListener("click", async () => {
+    const btn = bd.querySelector("#ep-send");
+    btn.disabled = true; btn.textContent = "Sending…";
+    try { await onSend(); close(); }
+    catch (e) { bd.querySelector("#ep-err").textContent = e.message || "Send failed."; btn.disabled = false; btn.textContent = "Send email"; }
   });
 }
 
@@ -1836,9 +1919,10 @@ async function openClientModal(id) {
           )
           .join("")}
       </div>
-      <div style="margin-top:10px;">
+      <div style="margin-top:10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <button class="btn small" id="save-assessment-btn">Save assessment</button>
-        <span id="assessment-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
+        <button class="btn small secondary" id="post-assessment-email-btn">✉️ Send Post-Assessment / Next Steps Email</button>
+        <span id="assessment-status" style="font-size:12.5px; color:var(--text-muted);"></span>
       </div>
 
       <div class="section-title">Case Notes</div>
@@ -2173,6 +2257,33 @@ async function openClientModal(id) {
       } finally {
         saveAsmtBtn.disabled = false;
       }
+    });
+  }
+
+  // Item 1: preview + send the post-assessment "next steps" email to the parent.
+  const postAsmtBtn = backdrop.querySelector("#post-assessment-email-btn");
+  if (postAsmtBtn) {
+    postAsmtBtn.addEventListener("click", async () => {
+      const statusEl = backdrop.querySelector("#assessment-status");
+      statusEl.textContent = "Loading preview…";
+      let preview;
+      try {
+        preview = await api(`/api/clients/${id}/preview-template`, { method: "POST", body: { key: "post_assessment_next_steps" } });
+      } catch (e) { statusEl.textContent = e.message || "Could not build preview."; return; }
+      statusEl.textContent = "";
+      if (!preview.to) { alert("This client has no parent email on file, so this email can't be sent."); return; }
+      openEmailPreviewModal({
+        title: "Post-Assessment / Next Steps Email",
+        to: preview.to,
+        subject: preview.subject,
+        html: preview.html,
+        onSend: async () => {
+          const r = await api(`/api/clients/${id}/send-template`, { method: "POST", body: { key: "post_assessment_next_steps" } });
+          statusEl.textContent = `Sent to ${preview.to} ✓`;
+          await loadClients();
+          return r;
+        },
+      });
     });
   }
 
@@ -4206,6 +4317,16 @@ async function renderAdmin(mount) {
       </div>
       <div class="task-row">
         <div class="info">
+          <strong>Schedule request recipients</strong>
+          <div class="due">When a parent submits their preferred schedule, notify these staff members. The request is always saved on the client's profile for tracking regardless. Comma-separate for more than one; leave blank for no staff email.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="sched-req-to" type="text" placeholder="scheduling@spectrumsquadlv.com" style="width:260px;" />
+          <button class="btn small secondary" id="save-sched-req-to">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
           <strong>Owner notification email</strong>
           <div class="due">Where owner/system alerts (daily summaries, authorization alerts, etc.) are sent. Leave blank to use your owner account's email.</div>
         </div>
@@ -4340,6 +4461,8 @@ async function renderAdmin(mount) {
     if (cdInput) cdInput.value = settings.clinical_director_email || "";
     const digestTo = mount.querySelector("#digest-to");
     if (digestTo) digestTo.value = settings.completion_digest_recipients || "";
+    const schedReqTo = mount.querySelector("#sched-req-to");
+    if (schedReqTo) schedReqTo.value = settings.schedule_request_recipients || "";
     const digestHour = mount.querySelector("#digest-hour");
     if (digestHour) digestHour.value = settings.completion_digest_hour || "18";
     const setVal = (id, v) => { const el = mount.querySelector(id); if (el) el.value = v || ""; };
@@ -4383,6 +4506,7 @@ async function renderAdmin(mount) {
   wireSetting("save-owner-email", "owner-email", "owner_notification_email");
   wireSetting("save-cd-email", "cd-email", "clinical_director_email");
   wireSetting("save-digest-to", "digest-to", "completion_digest_recipients");
+  wireSetting("save-sched-req-to", "sched-req-to", "schedule_request_recipients");
   wireSetting("save-digest-hour", "digest-hour", "completion_digest_hour");
   wireSetting("save-newhire-template", "newhire-template", "signnow_newhire_template_id");
   wireSetting("save-cred-bcba", "cred-bcba", "credentialing_link_bcba");
