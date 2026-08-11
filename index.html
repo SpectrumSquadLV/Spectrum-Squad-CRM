@@ -1609,6 +1609,7 @@ async function openClientModal(id) {
           <h2>${client.child_name}</h2>
           <span class="badge" style="background:${stage.color}">${stage.label}</span>
           ${client.waitlisted ? `<span class="badge" style="background:#c98a1b;">⏳ Waitlist</span>` : ""}
+          ${client.transportation_services ? `<span class="badge" title="Spectrum Squad provides transportation for this client" style="background:#3f8f89;">🚐 Transportation</span>` : ""}
         </div>
         <button class="close-btn">✕</button>
       </div>
@@ -1622,6 +1623,22 @@ async function openClientModal(id) {
 
       <div class="section-title">Behavior Intervention Plan</div>
       <div id="bip-mount"></div>
+
+      <div class="section-title">Services</div>
+      <div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:12px 14px; margin-bottom:12px;">
+        <label style="display:flex; align-items:center; gap:10px; font-size:13.5px; font-weight:600; cursor:pointer;">
+          <input type="checkbox" id="cd-transportation" ${client.transportation_services ? "checked" : ""} />
+          🚐 Spectrum Squad provides transportation for this client
+        </label>
+        <div id="transport-notes-wrap" style="margin-top:10px; ${client.transportation_services ? "" : "display:none;"}">
+          <label style="font-size:12px; color:var(--text-muted);">Transportation notes (pickup details, times, constraints)</label>
+          <input type="text" id="cd-transportation_notes" value="${ea(client.transportation_notes)}" placeholder="e.g. Curbside pickup 8:15am, wheelchair van needed" style="width:100%; margin-top:4px;" />
+        </div>
+        <div style="margin-top:10px;">
+          <button class="btn small" id="save-transport-btn">Save transportation</button>
+          <span id="transport-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
+        </div>
+      </div>
 
       <div class="section-title">Assessment</div>
       <div class="form-grid" style="gap:10px;">
@@ -1637,15 +1654,16 @@ async function openClientModal(id) {
       <div style="font-size:12px; color:var(--text-muted); margin:2px 0 10px;">Used to observe ${client.child_name} and build the treatment plan. If no date is set, a reminder is emailed to the parent automatically.</div>
       <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:8px;">
         ${[
-          ["pddbi", "PDDBI"],
-          ["srs2", "SRS-2"],
-          ["psi", "Parent Stress Index"],
-          ["vineland_tricare", "Vineland (for TRICARE)"],
+          ["pddbi", "PDDBI", true],
+          ["srs2", "SRS-2", true],
+          ["psi", "Parent Stress Index", false],
+          ["vineland_tricare", "Vineland", false],
         ]
           .map(
-            ([key, label]) => `<div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:10px 12px;">
+            ([key, label, tricare]) => `<div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:10px 12px;">
               <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600;">
                 <input type="checkbox" data-asmt-done="${key}" ${client[key + "_completed"] ? "checked" : ""} /> ${label}
+                ${tricare ? `<span title="Required for TRICARE" style="font-size:10px; font-weight:700; letter-spacing:.3px; color:#1b2a6b; background:#edecf8; border-radius:999px; padding:2px 7px;">TRICARE</span>` : ""}
               </label>
               <input type="date" data-asmt-date="${key}" value="${(client[key + "_date"] || "").slice(0, 10)}" style="margin-top:8px; width:100%;" />
             </div>`
@@ -1988,6 +2006,37 @@ async function openClientModal(id) {
         statusEl.textContent = e.message || "Could not save.";
       } finally {
         saveAsmtBtn.disabled = false;
+      }
+    });
+  }
+
+  const transportToggle = backdrop.querySelector("#cd-transportation");
+  if (transportToggle) {
+    transportToggle.addEventListener("change", () => {
+      const wrap = backdrop.querySelector("#transport-notes-wrap");
+      if (wrap) wrap.style.display = transportToggle.checked ? "" : "none";
+    });
+  }
+  const saveTransportBtn = backdrop.querySelector("#save-transport-btn");
+  if (saveTransportBtn) {
+    saveTransportBtn.addEventListener("click", async () => {
+      const statusEl = backdrop.querySelector("#transport-status");
+      const notesEl = backdrop.querySelector("#cd-transportation_notes");
+      const on = !!(transportToggle && transportToggle.checked);
+      const body = {
+        transportation_services: on,
+        transportation_notes: on && notesEl ? (notesEl.value || null) : null,
+      };
+      saveTransportBtn.disabled = true;
+      statusEl.textContent = "Saving…";
+      try {
+        await api(`/api/clients/${id}`, { method: "PATCH", body });
+        statusEl.textContent = "Saved ✓";
+        setTimeout(() => (statusEl.textContent = ""), 1500);
+      } catch (e) {
+        statusEl.textContent = e.message || "Could not save.";
+      } finally {
+        saveTransportBtn.disabled = false;
       }
     });
   }
