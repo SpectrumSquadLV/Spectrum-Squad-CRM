@@ -498,6 +498,7 @@ module.exports = function initScheduling(ctx) {
   const SESSION_SELECT = `
     SELECT ss.*,
            c.child_name,
+           c.transportation_services,
            e.name AS staff_name,
            sup.name AS supervisor_name,
            l.name AS location_name, l.kind AS location_kind, l.color AS location_color
@@ -744,7 +745,7 @@ module.exports = function initScheduling(ctx) {
           ? await dbAll("SELECT id, name, email, role_title, (hr_photo IS NOT NULL) AS has_photo FROM hr_employees WHERE status IN ('active','onboarding') ORDER BY name")
           : await dbAll("SELECT id, name, email, role_title, (hr_photo IS NOT NULL) AS has_photo FROM hr_employees WHERE id = ?", [myEmployeeId]);
         const clients = canAccessClients(user)
-          ? await dbAll("SELECT id, child_name, auth_start_date, auth_expiration_date, authorization_status FROM clients ORDER BY child_name")
+          ? await dbAll("SELECT id, child_name, auth_start_date, auth_expiration_date, authorization_status, transportation_services FROM clients ORDER BY child_name")
           : [];
         json(res, 200, {
           locations, staff,

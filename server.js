@@ -418,6 +418,9 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS psi_completed BOOLEAN NOT NULL DEFA
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS psi_date TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_tricare_completed BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_tricare_date TEXT;
+-- Transportation services provided by Spectrum Squad (surfaced to schedulers).
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_services BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_notes TEXT;
 -- Rename the old Vineland stage task to the In-Clinic Assessment.
 UPDATE stage_tasks SET label = 'Schedule In-Clinic Assessment' WHERE stage_key = 'assessment_scheduling' AND label = 'Schedule Vineland / Intake Assessment';
 -- "Intake Packet" was retired as a phase. Anyone parked in it moves to the
@@ -1522,8 +1525,14 @@ async function enterStage(clientId, stageKey) {
       [clientId, task.id, dueDate, nowISO()]
     );
 
+    // The Clinical Prescreen is a system-managed, parent-driven step: the
+    // screener module invites and reminds the PARENT automatically, and marks
+    // the client complete on submission. Staff should not be pinged to "do" it,
+    // so we skip the department alert for this stage. The task row still exists
+    // and is visible for tracking; it simply never nags staff. (Overdue alerts
+    // for it are likewise suppressed in checkOverdueTasks.)
     const dept = await dbGet("SELECT * FROM departments WHERE id = ?", [task.department_id]);
-    if (dept && dept.notify_email) {
+    if (dept && dept.notify_email && stageKey !== "clinical_screener") {
       const template = await emailTemplates.getEmailTemplate("department_alert");
       const fields = {
         dept_name: dept.name,
@@ -1686,11 +1695,15 @@ function addBusinessDays(date, days) {
 async function checkOverdueTasks() {
   const now = new Date().toISOString();
   const overdue = await dbAll(
+    // The Clinical Prescreen is system-managed and parent-driven, so its stage
+    // task is deliberately excluded here: it is never marked overdue and never
+    // nags staff. The parent gets reminded by the screener module instead.
     `SELECT ct.*, st.label, st.department_id, c.child_name, c.parent_name
      FROM client_tasks ct
      JOIN stage_tasks st ON st.id = ct.stage_task_id
      JOIN clients c ON c.id = ct.client_id
-     WHERE ct.status = 'pending' AND ct.due_date < ? AND ct.overdue_notified_at IS NULL`,
+     WHERE ct.status = 'pending' AND ct.due_date < ? AND ct.overdue_notified_at IS NULL
+       AND st.stage_key <> 'clinical_screener'`,
     [now]
   );
 
@@ -4174,6 +4187,8 @@ async function handle(req, res, pathname, method, query = {}) {
         "in_clinic_assessment_date", "assessment_location",
         "pddbi_completed", "pddbi_date", "srs2_completed", "srs2_date",
         "psi_completed", "psi_date", "vineland_tricare_completed", "vineland_tricare_date",
+        // Transportation services provided by Spectrum Squad
+        "transportation_services", "transportation_notes",
       ];
       const fields = Object.keys(updates).filter((k) => allowed.includes(k));
       if (fields.length) {
@@ -4373,6 +4388,9 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
         waitlisted: c.waitlisted === true || c.waitlisted === "t",
         waitlisted_at: c.waitlisted_at || null,
         waitlist_reason: c.waitlist_reason || null,
+        // Transportation travels with the card so schedulers see at a glance
+        // that a ride must be coordinated, without opening the client.
+        transportation_services: c.transportation_services === true || c.transportation_services === "t",
         ...pipelineV2.computeMilestoneView(c),
       }));
       return json(res, 200, shaped);
