@@ -950,6 +950,41 @@ function canAccessClients(user) {
   return !!user && CLIENT_ACCESS_ROLES.includes(user.role);
 }
 
+// ---- Communication privacy (Phase 4, items 6 / 16 / 17) ----
+// Owner, super_admin and admin see all communications org-wide. Everyone else
+// is scoped to the clients they are assigned to.
+function canSeeAllMessages(user) {
+  return !!user && ["owner", "super_admin", "admin"].includes(user.role);
+}
+// A staffer is "assigned" to a client when their login email matches one of the
+// client's assigned-email fields, or their name matches an assigned-name field.
+// (Assignments are stored as free-text name/email on the client, not user ids.)
+function userAssignedToClient(user, client) {
+  if (!user || !client) return false;
+  if (canSeeAllMessages(user)) return true;
+  const email = (user.email || "").trim().toLowerCase();
+  const name = (user.name || "").trim().toLowerCase();
+  const emails = [client.assigned_bcba_email, client.assigned_billing_email]
+    .map((e) => (e || "").trim().toLowerCase()).filter(Boolean);
+  const names = [client.assigned_bcba_name, client.assigned_rbt_name, client.assigned_billing_name, client.assigned_intake_coordinator_name]
+    .map((n) => (n || "").trim().toLowerCase()).filter(Boolean);
+  return (!!email && emails.includes(email)) || (!!name && names.includes(name));
+}
+// The set of client ids a scoped (non-admin) user is assigned to. Used to filter
+// the Message Outbox at the query layer.
+async function assignedClientIds(user) {
+  const email = (user.email || "").trim().toLowerCase();
+  const name = (user.name || "").trim().toLowerCase();
+  const rows = await dbAll(
+    `SELECT id FROM clients
+       WHERE (? <> '' AND (lower(assigned_bcba_email) = ? OR lower(assigned_billing_email) = ?))
+          OR (? <> '' AND (lower(assigned_bcba_name) = ? OR lower(assigned_rbt_name) = ?
+                           OR lower(assigned_billing_name) = ? OR lower(assigned_intake_coordinator_name) = ?))`,
+    [email, email, email, name, name, name, name, name]
+  );
+  return rows.map((r) => r.id);
+}
+
 // Metadata shown in the admin UI: human-readable label/category/description,
 // plus the exact list of merge fields available for that template so the
 // editor can offer an "insert field" picker instead of making the admin guess.
@@ -4265,10 +4300,12 @@ async function handle(req, res, pathname, method, query = {}) {
          WHERE ss.client_id = ?`,
         [id]
       );
-      const notifications = await dbAll(
-        "SELECT * FROM notifications_log WHERE client_id = ? ORDER BY sent_at DESC",
-        [id]
-      );
+      // Communication history is scoped: owner/admin see it for every client,
+      // but a staffer only sees the emails for clients they're assigned to.
+      const canSeeComms = userAssignedToClient(user, client);
+      const notifications = canSeeComms
+        ? await dbAll("SELECT * FROM notifications_log WHERE client_id = ? ORDER BY sent_at DESC", [id])
+        : [];
       const documents = await dbAll(
         "SELECT id, label, filename, mime_type, doc_type, external_url, uploaded_at FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
         [id]
@@ -4282,6 +4319,7 @@ async function handle(req, res, pathname, method, query = {}) {
         tasks,
         sessions,
         notifications,
+        communications_restricted: !canSeeComms,
         documents,
         enrollmentPacket: enrollmentPacket || null,
         signnowConfigured: signNowConfigured(),
@@ -5092,15 +5130,26 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     // ---------- NOTIFICATIONS / OUTBOX ----------
     if (pathname === "/api/notifications" && method === "GET") {
-      // The Message Outbox is private to the owner (and a co-owner super admin).
-      if (!user || !["owner", "super_admin"].includes(user.role)) {
+      // Message Outbox privacy (items 6 / 16), enforced here at the API layer:
+      //  - owner / super_admin / admin see the whole organization's outbox.
+      //  - any other client-access staffer sees ONLY messages tied to a client
+      //    they are assigned to (org-wide and unassigned-client messages are
+      //    never returned to them).
+      //  - anyone without client access is refused outright.
+      if (canSeeAllMessages(user)) {
+        return json(res, 200, await dbAll("SELECT * FROM notifications_log ORDER BY sent_at DESC LIMIT 100"));
+      }
+      if (!canAccessClients(user)) {
         return json(res, 403, { error: "Not permitted to view the message outbox" });
       }
-      return json(
-        res,
-        200,
-        await dbAll("SELECT * FROM notifications_log ORDER BY sent_at DESC LIMIT 100")
+      const ids = await assignedClientIds(user);
+      if (!ids.length) return json(res, 200, []);
+      const placeholders = ids.map(() => "?").join(",");
+      const rows = await dbAll(
+        `SELECT * FROM notifications_log WHERE client_id IN (${placeholders}) ORDER BY sent_at DESC LIMIT 100`,
+        ids
       );
+      return json(res, 200, rows);
     }
 
     // Manually (re)send the Benefits & Eligibility Check for a client -- used
@@ -5116,8 +5165,9 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     const notifResendMatch = pathname.match(/^\/api\/notifications\/(\d+)\/resend$/);
     if (notifResendMatch && method === "POST") {
-      // Outbox is owner-only; resending from it is too.
-      if (!user || !["owner", "super_admin"].includes(user.role)) {
+      // Resending a message is a full-outbox action: owner / super_admin / admin
+      // only. Scoped staff can view their clients' messages but not resend.
+      if (!canSeeAllMessages(user)) {
         return json(res, 403, { error: "Not permitted" });
       }
       const result = await resendNotificationEmail(Number(notifResendMatch[1]), user.email);

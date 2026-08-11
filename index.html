@@ -664,8 +664,10 @@ function renderShell(active) {
   if (!OT_ONLY) {
     navItems.push({ key: "tasks", label: "Tasks & Alerts", icon: "✓" });
   }
-  // The Message Outbox is private to the owner (and a co-owner super admin).
-  if (!OT_ONLY && ["owner", "super_admin"].includes(state.user.role))
+  // Message Outbox: owner/super_admin/admin see everything; other client-access
+  // staff see only messages for the clients they're assigned to (scoped by the
+  // server). Roles with no client access don't see it at all.
+  if (!OT_ONLY && canAccessClients())
     navItems.push({ key: "outbox", label: "Message Outbox", icon: "✉" });
   if (canViewAuth()) navItems.push({ key: "auth-alerts", label: "Authorization Alerts", icon: "⏰" });
   if (["owner", "admin", "super_admin", "hr_admin", "hiring_manager", "interviewer"].includes(state.user.role))
@@ -1844,6 +1846,7 @@ async function openClientModal(id) {
   // nothing on this card renders them any more, and pulling it out would leave
   // an unused binding that reads like an oversight rather than a decision.
   const { client, tasks, notifications, documents } = data;
+  const commsRestricted = !!data.communications_restricted;
   const enrollmentPacket = data.enrollmentPacket || null;
   const signnowConfigured = data.signnowConfigured;
   const sMap = stageMap();
@@ -2069,7 +2072,9 @@ async function openClientModal(id) {
            template back. -->
 
       <div class="section-title">Communications &amp; Forms Sent to Parents</div>
-      <p style="font-size:12px; color:var(--text-muted); margin:-4px 0 8px;">Every email, form, and file sent to this family. Click <strong>View</strong> to read the full message. Forms are also linked in their sections above.</p>
+      ${commsRestricted
+        ? `<div class="empty-state" style="text-align:left;">🔒 You can only see communications for clients assigned to you. This family isn't assigned to you, so their message history is hidden. An owner or administrator can see it.</div>`
+        : `<p style="font-size:12px; color:var(--text-muted); margin:-4px 0 8px;">Every email, form, and file sent to this family. Click <strong>View</strong> to read the full message. Forms are also linked in their sections above.</p>
       ${
         notifications.length
           ? notifications
@@ -2079,7 +2084,7 @@ async function openClientModal(id) {
               )
               .join("")
           : `<div class="empty-state">No communications sent yet.</div>`
-      }
+      }`}
     </div>
   `;
   document.body.appendChild(backdrop);
@@ -3261,15 +3266,24 @@ function openAddSessionModal(activeClients) {
 
 // ---------------- Outbox ----------------
 async function renderOutbox(mount) {
-  if (!state.user || !["owner", "super_admin"].includes(state.user.role)) {
+  if (!state.user || !canAccessClients()) {
     mount.innerHTML =
       '<div class="page-header"><div><h1>Message Outbox</h1></div></div>' +
       '<div class="empty-state">You don\'t have permission to view this page.</div>';
     return;
   }
-  const notifications = await api("/api/notifications");
+  const fullAccess = ["owner", "super_admin", "admin"].includes(state.user.role);
+  let notifications = [];
+  try { notifications = await api("/api/notifications"); }
+  catch (e) {
+    mount.innerHTML = '<div class="page-header"><div><h1>Message Outbox</h1></div></div><div class="empty-state">' + adminEsc(e.message || "You don\'t have permission to view this page.") + '</div>';
+    return;
+  }
+  const intro = fullAccess
+    ? "Every automated email the system has sent (or simulated) to staff and parents. Use <strong>Resend</strong> to push any single message again — only that one recipient gets it."
+    : "Messages for the clients assigned to you. You're seeing only your clients' communications — the full organization-wide outbox is owner-only.";
   mount.innerHTML = `
-    <div class="page-header"><div><h1>Message Outbox</h1><p>Every automated email the system has sent (or simulated) to staff and parents. Use <strong>Resend</strong> to push any single message again — only that one recipient gets it.</p></div></div>
+    <div class="page-header"><div><h1>Message Outbox</h1><p>${intro}</p></div></div>
     <div class="card">
       ${
         notifications.length
@@ -3285,7 +3299,7 @@ async function renderOutbox(mount) {
                   </div>
                   <div style="display:flex; gap:6px; flex:0 0 auto;">
                     <button class="btn small secondary" data-view-notif="${n.id}">View</button>
-                    ${n.recipient ? `<button class="btn small secondary" data-resend-notif="${n.id}">Resend</button>` : ""}
+                    ${(fullAccess && n.recipient) ? `<button class="btn small secondary" data-resend-notif="${n.id}">Resend</button>` : ""}
                   </div>
                 </div>
                 <div class="body" data-body-preview="${n.id}">${n.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)}</div>
