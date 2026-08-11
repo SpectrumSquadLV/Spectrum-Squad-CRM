@@ -7,6 +7,15 @@
   function money(n) { if (n == null || n === "") return "—"; return "$" + (Math.round(Number(n) * 100) / 100).toLocaleString(); }
 
   // ============================ LEADS ============================
+  function contractCell(l) {
+    const c = l.contract || {};
+    if (c.type === "month_to_month") return '<span class="tag" style="background:#e0f2fe;">Month-to-month</span>';
+    if (c.type === "fixed_term" && c.expiresOn) {
+      const bg = c.expired ? "#fee2e2" : (c.expiringSoon ? "#fef3c7" : "#dcfce7");
+      return `<span class="tag" style="background:${bg};">${c.expired ? "Expired" : c.daysRemaining + "d left"}</span>`;
+    }
+    return '<span style="color:var(--text-muted);">—</span>';
+  }
   async function renderLeads(mount) {
     let d;
     try { d = await api("/api/leads"); }
@@ -14,44 +23,110 @@
     const stageColor = (s) => ({ New: "#e0e7ff", Contacted: "#fef3c7", "Meeting Set": "#dbeafe", "Proposal Sent": "#fde68a", Won: "#dcfce7", Lost: "#fee2e2" }[s] || "#eee");
     const rows = d.leads.map((l) => `<tr data-lead="${l.id}" style="cursor:pointer;">
       <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><strong>${esc(l.name)}</strong>${l.contact_name ? `<div style="color:var(--text-muted); font-size:12px;">${esc(l.contact_name)}</div>` : ""}</td>
-      <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${esc(l.lead_type || "—")}</td>
+      <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${esc(l.relationship_status || l.lead_type || "—")}</td>
       <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><span class="tag" style="background:${stageColor(l.stage)};">${esc(l.stage)}</span></td>
-      <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${money(l.est_value)}</td>
+      <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${contractCell(l)}</td>
+      <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${l.assigned_to ? esc(l.assigned_to) : "—"}</td>
       <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${l.next_follow_up ? esc(l.next_follow_up) : "—"}</td>
     </tr>`).join("");
     mount.innerHTML = `
       <div class="page-header">
-        <div><h1>Lead Management</h1><p>School, private-pay, and community contracts &amp; leads. Track stage, value, and follow-ups.</p></div>
+        <div><h1>Lead &amp; Contract Management</h1><p>Nurture relationships and manage contracts — schools, private-pay, and community partners. Track stage, contract timing, and follow-ups.</p></div>
         <button class="btn" id="lead-add">+ Add lead</button>
       </div>
-      <div class="card"><div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px; min-width:640px;">
+      <div class="card"><div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px; min-width:720px;">
         <thead><tr style="text-align:left; color:var(--text-muted); font-size:11px; text-transform:uppercase;">
-          <th style="padding:8px 10px;">Name</th><th style="padding:8px 10px;">Type</th><th style="padding:8px 10px;">Stage</th><th style="padding:8px 10px;">Est. value</th><th style="padding:8px 10px;">Next follow-up</th>
-        </tr></thead><tbody>${rows || `<tr><td colspan="5"><div class="empty-state">No leads yet.</div></td></tr>`}</tbody>
+          <th style="padding:8px 10px;">Organization</th><th style="padding:8px 10px;">Relationship</th><th style="padding:8px 10px;">Stage</th><th style="padding:8px 10px;">Contract</th><th style="padding:8px 10px;">Assigned</th><th style="padding:8px 10px;">Next follow-up</th>
+        </tr></thead><tbody>${rows || `<tr><td colspan="6"><div class="empty-state">No leads yet.</div></td></tr>`}</tbody>
       </table></div></div>`;
     mount.querySelector("#lead-add").addEventListener("click", () => leadModal(null, d, mount));
-    mount.querySelectorAll("[data-lead]").forEach((tr) => tr.addEventListener("click", () => leadModal(d.leads.find((x) => String(x.id) === tr.dataset.lead), d, mount)));
+    mount.querySelectorAll("[data-lead]").forEach((tr) => tr.addEventListener("click", () => openLead(tr.dataset.lead, d, mount)));
   }
 
-  function leadModal(lead, d, mount) {
+  // Fetch the full lead (with timeline) then open the profile.
+  async function openLead(id, d, mount) {
+    try { const detail = await api("/api/leads/" + id); leadModal(detail.lead, d, mount, detail.events); }
+    catch (e) { alert(e.message || "Could not open lead."); }
+  }
+
+  function contractBanner(lead) {
+    const c = lead.contract || {};
+    if (c.type === "month_to_month") return `<div style="padding:10px 12px; border-radius:10px; background:#e0f2fe; color:#075985; font-weight:700; font-size:13px;">🔄 Month-to-month — no fixed expiration. Renews automatically until either side gives ${lead.notice_period_days || "the agreed"} days' notice.</div>`;
+    if (c.type === "fixed_term" && c.expiresOn) {
+      const bg = c.expired ? "#fee2e2" : (c.expiringSoon ? "#fef3c7" : "#dcfce7");
+      const fg = c.expired ? "#a3282e" : (c.expiringSoon ? "#946213" : "#166534");
+      const label = c.expired ? `Expired ${Math.abs(c.daysRemaining)} day(s) ago` : `${c.daysRemaining} day(s) remaining`;
+      return `<div style="padding:10px 12px; border-radius:10px; background:${bg}; color:${fg}; font-weight:700; font-size:13px;">📄 Fixed-term contract ends ${esc(c.expiresOn)} — ${label}.${lead.renewal_date ? " Renewal date: " + esc(lead.renewal_date) + "." : ""}</div>`;
+    }
+    return "";
+  }
+  function eventIcon(t) { return { note: "📝", checkin: "🤝", contract: "📄", alert: "⚠️", task: "✅", stage: "➡️" }[t] || "•"; }
+
+  function leadModal(lead, d, mount, events) {
     lead = lead || {};
+    events = events || [];
     const bd = document.createElement("div"); bd.className = "modal-backdrop";
     const f = (k, label, type) => `<div class="field"><label>${label}</label><input data-f="${k}" ${type ? `type="${type}"` : ""} value="${esc(lead[k] == null ? "" : lead[k])}" /></div>`;
-    bd.innerHTML = `<div class="modal" style="width:560px;">
-      <div class="modal-header"><h2>${lead.id ? "Edit lead" : "Add lead"}</h2><button class="close-btn">✕</button></div>
+    const sel = (k, label, opts, cur) => `<div class="field"><label>${label}</label><select data-f="${k}">${opts.map((o) => `<option value="${esc(o)}" ${String(cur) === String(o) ? "selected" : ""}>${esc(o === "none" ? "—" : o.replace(/_/g, " "))}</option>`).join("")}</select></div>`;
+    const timeline = events.length
+      ? events.map((ev) => `<div style="display:flex; gap:8px; padding:7px 0; border-bottom:1px solid var(--border,#eee); font-size:12.5px;"><span>${eventIcon(ev.event_type)}</span><div><div>${esc(ev.body)}</div><div style="color:var(--text-muted); font-size:11px;">${esc((ev.actor || "system"))} · ${esc((ev.created_at || "").slice(0, 16).replace("T", " "))}</div></div></div>`).join("")
+      : `<div class="empty-state" style="text-align:left;">No activity logged yet.</div>`;
+    bd.innerHTML = `<div class="modal" style="width:680px; max-width:96vw;">
+      <div class="modal-header"><h2>${lead.id ? esc(lead.name) : "Add lead"}</h2><button class="close-btn">✕</button></div>
+
+      <div class="section-title" style="margin-top:0;">Organization</div>
       <div class="form-grid" style="gap:10px;">
         ${f("name", "Organization / lead name")}
-        <div class="field"><label>Type</label><select data-f="lead_type">${d.types.map((t) => `<option ${lead.lead_type === t ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></div>
-        <div class="field"><label>Stage</label><select data-f="stage">${d.stages.map((s) => `<option ${lead.stage === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select></div>
-        ${f("contact_name", "Contact name")}
+        ${sel("lead_type", "Type", d.types, lead.lead_type)}
+        ${sel("lead_source", "Lead source", ["", ...d.sources], lead.lead_source)}
+        ${sel("relationship_status", "Relationship status", ["", ...d.relationship_statuses], lead.relationship_status)}
+        ${sel("stage", "Pipeline stage", d.stages, lead.stage)}
+        ${f("assigned_to", "Assigned team member")}
+        ${f("contact_name", "Primary contact")}
         ${f("contact_email", "Contact email", "email")}
         ${f("contact_phone", "Contact phone")}
-        ${f("est_value", "Estimated value ($)", "number")}
-        ${f("next_follow_up", "Next follow-up", "date")}
-        <div class="field full"><label>Notes</label><textarea data-f="notes" rows="3">${esc(lead.notes || "")}</textarea></div>
+        ${f("address", "Address")}
+        <div class="field full"><label>Notes</label><textarea data-f="notes" rows="2">${esc(lead.notes || "")}</textarea></div>
       </div>
-      <div style="margin-top:14px; display:flex; gap:8px;">
-        <button class="btn" id="lead-save">${lead.id ? "Save" : "Add"}</button>
+
+      <div class="section-title">Contract</div>
+      ${lead.id ? `<div style="margin-bottom:10px;">${contractBanner(lead)}</div>` : ""}
+      <div class="form-grid" style="gap:10px;">
+        ${sel("contract_type", "Contract type", d.contract_types, lead.contract_type || "none")}
+        ${sel("contract_status", "Contract status", d.contract_statuses, lead.contract_status || "none")}
+        ${f("contract_start_date", "Start date", "date")}
+        ${f("contract_end_date", "End date (fixed-term only)", "date")}
+        ${f("renewal_date", "Renewal date", "date")}
+        ${f("notice_period_days", "Notice period (days)", "number")}
+        ${f("weekly_committed_hours", "Weekly committed hours", "number")}
+        ${f("payment_arrangement", "Payment arrangement")}
+        ${f("assigned_bcbas", "Assigned BCBA(s)")}
+        ${f("other_staff", "Other assigned staff")}
+        <div class="field full"><label>Special requirements</label><textarea data-f="special_requirements" rows="2">${esc(lead.special_requirements || "")}</textarea></div>
+      </div>
+      <div style="font-size:11.5px; color:var(--text-muted); margin-top:6px;">Month-to-month contracts have no fixed expiration. Fixed-term contracts show remaining time and raise expiry alerts automatically.</div>
+
+      ${lead.id ? `
+      <div class="section-title">Relationship nurturing</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <span style="font-size:12.5px; color:var(--text-muted);">Send a check-in email:</span>
+        <button class="btn small secondary" data-checkin="30">30-day</button>
+        <button class="btn small secondary" data-checkin="60">60-day</button>
+        <button class="btn small secondary" data-checkin="90">90-day</button>
+        <span id="checkin-status" style="font-size:12px; color:var(--text-muted);"></span>
+      </div>
+      <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">The 30/60/90 automation also drops a reminder task on the assigned team member. Templates are editable under Email Templates.</div>
+
+      <div class="section-title">Timeline</div>
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <input id="ev-input" placeholder="Log a call, meeting, or note…" style="flex:1;" />
+        <button class="btn small" id="ev-add">Log</button>
+      </div>
+      <div id="ev-list" style="max-height:220px; overflow:auto;">${timeline}</div>
+      ` : ""}
+
+      <div style="margin-top:16px; display:flex; gap:8px;">
+        <button class="btn" id="lead-save">${lead.id ? "Save changes" : "Add lead"}</button>
         ${lead.id ? `<button class="btn secondary" id="lead-del" style="color:#b91c1c;">Delete</button>` : ""}
         <span id="lead-status" style="font-size:12.5px; color:var(--text-muted); align-self:center;"></span>
       </div>
@@ -62,7 +137,7 @@
     bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
     bd.querySelector("#lead-save").addEventListener("click", async () => {
       const body = {};
-      bd.querySelectorAll("[data-f]").forEach((el) => { body[el.dataset.f] = el.value || null; });
+      bd.querySelectorAll("[data-f]").forEach((el) => { body[el.dataset.f] = el.value === "" ? null : el.value; });
       if (!body.name) { bd.querySelector("#lead-status").textContent = "Name is required."; return; }
       try {
         if (lead.id) await api("/api/leads/" + lead.id, { method: "PATCH", body });
@@ -71,7 +146,51 @@
       } catch (e) { bd.querySelector("#lead-status").textContent = e.message || "Failed."; }
     });
     const del = bd.querySelector("#lead-del");
-    if (del) del.addEventListener("click", async () => { if (!confirm("Delete this lead?")) return; try { await api("/api/leads/" + lead.id, { method: "DELETE" }); close(); renderLeads(mount); } catch (e) { alert(e.message); } });
+    if (del) del.addEventListener("click", async () => { if (!confirm("Delete this lead and its history?")) return; try { await api("/api/leads/" + lead.id, { method: "DELETE" }); close(); renderLeads(mount); } catch (e) { alert(e.message); } });
+    // Timeline add
+    const evAdd = bd.querySelector("#ev-add");
+    if (evAdd) evAdd.addEventListener("click", async () => {
+      const input = bd.querySelector("#ev-input"); const v = (input.value || "").trim();
+      if (!v) return;
+      try { await api("/api/leads/" + lead.id + "/events", { method: "POST", body: { body: v } }); close(); openLead(lead.id, d, mount); }
+      catch (e) { alert(e.message); }
+    });
+    // Check-in preview + send
+    bd.querySelectorAll("[data-checkin]").forEach((btn) => btn.addEventListener("click", async () => {
+      const days = btn.dataset.checkin; const st = bd.querySelector("#checkin-status");
+      st.textContent = "Loading preview…";
+      let prev;
+      try { prev = await api("/api/leads/" + lead.id + "/checkin/" + days + "/preview", { method: "POST" }); }
+      catch (e) { st.textContent = e.message || "Preview failed."; return; }
+      st.textContent = "";
+      checkinPreviewModal(lead, days, prev, () => { close(); openLead(lead.id, d, mount); });
+    }));
+  }
+
+  // Minimal preview-and-send modal for relationship check-ins.
+  function checkinPreviewModal(lead, days, prev, onSent) {
+    const bd = document.createElement("div"); bd.className = "modal-backdrop";
+    bd.innerHTML = `<div class="modal" style="width:600px; max-width:94vw;">
+      <div class="modal-header"><div><h2 style="font-size:17px; margin:0;">${days}-day check-in</h2><div style="font-size:12px; color:var(--text-muted);">To: ${esc(lead.contact_email || "— no contact email —")}</div></div><button class="close-btn">✕</button></div>
+      <div style="font-size:13px; margin:6px 0;"><strong>Subject:</strong> ${esc(prev.subject)}</div>
+      <iframe sandbox="" style="width:100%; height:300px; border:1px solid var(--border,#eee); border-radius:10px; background:#fff;"></iframe>
+      <div id="cp-err" style="color:#b91c1c; font-size:12.5px; margin-top:6px;"></div>
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <button class="btn" id="cp-send" ${lead.contact_email ? "" : "disabled"}>Send email</button>
+        <button class="btn secondary" id="cp-cancel">Cancel</button>
+      </div>
+    </div>`;
+    document.body.appendChild(bd);
+    bd.querySelector("iframe").srcdoc = prev.html;
+    const close = () => bd.remove();
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.querySelector("#cp-cancel").addEventListener("click", close);
+    bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+    bd.querySelector("#cp-send").addEventListener("click", async () => {
+      const b = bd.querySelector("#cp-send"); b.disabled = true; b.textContent = "Sending…";
+      try { await api("/api/leads/" + lead.id + "/checkin/" + days + "/send", { method: "POST" }); close(); if (onSent) onSent(); }
+      catch (e) { bd.querySelector("#cp-err").textContent = e.message || "Send failed."; b.disabled = false; b.textContent = "Send email"; }
+    });
   }
 
   // ============================ POLICIES ============================
