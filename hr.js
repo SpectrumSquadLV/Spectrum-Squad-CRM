@@ -441,6 +441,14 @@ module.exports = function initHr(ctx) {
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_hr_applicants_position ON hr_applicants(position_id)`);
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_hr_applicants_email ON hr_applicants(email)`);
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_hr_applicants_phone ON hr_applicants(phone)`);
+    // Expanded employment application (Phase 6a). All additive.
+    for (const col of [
+      "preferred_name TEXT", "address TEXT", "desired_pay TEXT",
+      "certifications TEXT", "education TEXT", "employment_history TEXT",
+      "sms_consent_at TEXT", "sms_consent_version TEXT",
+    ]) {
+      await dbRun(`ALTER TABLE hr_applicants ADD COLUMN IF NOT EXISTS ${col}`).catch((e) => console.error("hr_applicants alter:", e.message));
+    }
 
     // ---- interview scheduling ----
     await dbRun(`CREATE TABLE IF NOT EXISTS hr_interview_slots (
@@ -975,13 +983,15 @@ module.exports = function initHr(ctx) {
     };
     const match = evaluateMatch(position, applicantForMatch);
 
+    const smsConsent = input.consent_sms === true || input.consent_sms === "true";
     const row = await dbRun(
       `INSERT INTO hr_applicants
         (position_id, full_name, email, phone, city, state, source, source_id, applied_at,
          stage, match_category, priority_flag, cover_letter, screening_answers, credentials,
          availability, preferred_schedule, comp_expectation, earliest_start, work_setting,
-         consent_email, consent_sms, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         consent_email, consent_sms, preferred_name, address, desired_pay, certifications,
+         education, employment_history, sms_consent_at, sms_consent_version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`,
       [
         input.position_id || null,
@@ -1001,11 +1011,21 @@ module.exports = function initHr(ctx) {
         JSON.stringify(input.credentials || {}),
         JSON.stringify(input.availability || {}),
         input.preferred_schedule || null,
-        input.comp_expectation || null,
+        input.comp_expectation || input.desired_pay || null,
         input.earliest_start || null,
         input.work_setting || null,
         input.consent_email === true || input.consent_email === "true",
-        input.consent_sms === true || input.consent_sms === "true",
+        smsConsent,
+        input.preferred_name || null,
+        input.address || null,
+        input.desired_pay || null,
+        input.certifications || null,
+        input.education || null,
+        input.employment_history || null,
+        // Record WHEN consent was given and WHICH disclosure the applicant saw,
+        // only when they actually opted in.
+        smsConsent ? (input.sms_consent_at || now) : null,
+        smsConsent ? (input.sms_consent_version || null) : null,
         now,
         now,
       ]
@@ -5354,6 +5374,18 @@ Write body as plain text with line breaks (no HTML).`;
   .yesno button.sel{background:var(--navy);color:#fff;border-color:var(--navy);box-shadow:0 6px 16px rgba(27,42,107,.25)}
   .yesno button.sel.no{background:var(--muted);border-color:var(--muted);box-shadow:none}
 
+  /* availability selector */
+  .day-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+  .day-btn{flex:1;min-width:56px;background:#fff;color:var(--navy);border:1.5px solid var(--border);border-radius:12px;
+    padding:12px 6px;font-size:14px;font-weight:700;cursor:pointer;transition:all .14s ease}
+  .day-btn:hover{border-color:var(--navy)}
+  .day-btn.sel{background:var(--teal);color:#fff;border-color:var(--teal);box-shadow:0 6px 16px rgba(95,168,160,.3)}
+  .type-row{display:flex;gap:10px}
+  .type-btn{flex:1;background:#fff;color:var(--navy);border:1.5px solid var(--border);border-radius:12px;
+    padding:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all .14s ease}
+  .type-btn:hover{border-color:var(--navy)}
+  .type-btn.sel{background:var(--navy);color:#fff;border-color:var(--navy);box-shadow:0 6px 16px rgba(27,42,107,.25)}
+
   /* resume dropzone */
   .drop{border:2px dashed #cdd6ea;border-radius:14px;padding:22px;text-align:center;cursor:pointer;
     transition:all .15s ease;background:#fbfbfe}
@@ -5428,8 +5460,11 @@ Write body as plain text with line breaks (no HTML).`;
   else if(path.indexOf("/careers/")===0){ slug=decodeURIComponent(path.split("/careers/")[1]||""); }
 
   // ---- state for the wizard ----
-  var STEPS=["You","Your fit","Your story","Review"];
-  var state={position:null,source:"website",sourceId:null,step:0,data:{},answers:{},resume:null};
+  var STEPS=["You","Experience","Availability","Your fit","Review"];
+  var SMS_DISCLOSURE_VERSION="sms-v1-2026-08";
+  var SMS_DISCLOSURE="By checking this box you agree to receive recruiting-related text messages from Spectrum Squad at the number you provided. Message and data rates may apply; message frequency varies. Reply STOP to opt out or HELP for help. Consent is not a condition of employment.";
+  var DAYS_OF_WEEK=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  var state={position:null,source:"website",sourceId:null,step:0,data:{avail:{days:{},earliest:"",latest:"",type:""}},answers:{},resume:null};
 
   function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
   function api(p,opts){opts=opts||{};return fetch(p,{method:opts.method||"GET",
@@ -5526,7 +5561,7 @@ Write body as plain text with line breaks (no HTML).`;
   // ---- open a role into the wizard ----
   function openRole(p,source,sourceId){
     state={position:p,source:source||"website",sourceId:sourceId||null,step:0,
-      data:{state:"NV"},answers:{},resume:null};
+      data:{state:"NV",avail:{days:{},earliest:"",latest:"",type:""}},answers:{},resume:null};
     perksEl.style.display="none";
     window.scrollTo(0,0);
     renderWizard();
@@ -5568,8 +5603,9 @@ Write body as plain text with line breaks (no HTML).`;
     var nav=document.getElementById("nav");
     setErr("");
     if(state.step===0) body.innerHTML=stepBasics();
-    else if(state.step===1) body.innerHTML=stepFit();
-    else if(state.step===2) body.innerHTML=stepStory();
+    else if(state.step===1) body.innerHTML=stepExperience();
+    else if(state.step===2) body.innerHTML=stepAvailability();
+    else if(state.step===3) body.innerHTML=stepFit();
     else body.innerHTML=stepReview();
     body.className="step-anim";
     wireStep();
@@ -5585,21 +5621,71 @@ Write body as plain text with line breaks (no HTML).`;
     for(var i=0;i<ps.length;i++){ps[i].className="pstep "+(i<state.step?"done":(i===state.step?"active":""));}
   }
 
-  // step 1 — basics
+  // step 0 — basics
   function stepBasics(){
     var d=state.data;
     return "<div class='step'><h3>First, the basics 👋</h3>"+
-      "<p class='lead'>Tell us who you are — this takes about two minutes, promise.</p>"+
-      "<label>Full name <span class='req'>*</span></label>"+
-      "<input id='full_name' value='"+esc(d.full_name||"")+"' placeholder='Alex Rivera'/>"+
+      "<p class='lead'>Tell us who you are — this only takes a couple of minutes, promise.</p>"+
+      "<div class='row2'>"+
+        "<div><label>Full legal name <span class='req'>*</span></label><input id='full_name' value='"+esc(d.full_name||"")+"' placeholder='Alex Rivera'/></div>"+
+        "<div><label>Preferred name</label><input id='preferred_name' value='"+esc(d.preferred_name||"")+"' placeholder='What should we call you?'/></div>"+
+      "</div>"+
       "<div class='row2'>"+
         "<div><label>Email <span class='req'>*</span></label><input id='email' type='email' value='"+esc(d.email||"")+"' placeholder='you@email.com'/></div>"+
         "<div><label>Phone</label><input id='phone' type='tel' value='"+esc(d.phone||"")+"' placeholder='(702) 555-0123'/></div>"+
       "</div>"+
+      "<label>Address</label>"+
+      "<input id='address' value='"+esc(d.address||"")+"' placeholder='Street, city, state, ZIP'/>"+
       "<div class='row2'>"+
         "<div><label>City</label><input id='city' value='"+esc(d.city||"")+"' placeholder='Las Vegas'/></div>"+
         "<div><label>State</label><input id='state' value='"+esc(d.state||"NV")+"'/></div>"+
       "</div></div>";
+  }
+
+  // step 1 — experience, pay, credentials, education, resume
+  function stepExperience(){
+    var d=state.data, r=state.resume;
+    var drop=r?
+      ("<div class='drop has' id='drop'><div class='ic'>📄</div><div class='fname'>"+esc(r.filename)+"</div><div class='hint'>Looks great — tap to choose a different file</div></div>")
+      :("<div class='drop' id='drop'><div class='ic'>📎</div><div><b>Add your resume</b></div><div class='hint'>PDF or Word · drag &amp; drop or tap · optional but loved</div></div>");
+    return "<div class='step'><h3>Your experience 💼</h3>"+
+      "<p class='lead'>Give us the highlights — you can be brief.</p>"+
+      "<div class='row2'>"+
+        "<div><label>Desired pay rate</label><input id='desired_pay' value='"+esc(d.desired_pay||"")+"' placeholder='e.g. $25/hr or negotiable'/></div>"+
+        "<div><label>Earliest start date</label><input id='earliest_start' value='"+esc(d.earliest_start||"")+"' placeholder='e.g. Immediately, or in 2 weeks'/></div>"+
+      "</div>"+
+      "<label>Certifications &amp; licenses</label>"+
+      "<textarea id='certifications' placeholder='RBT, BCBA, BCaBA, CPR/BLS, driver&#39;s license…'>"+esc(d.certifications||"")+"</textarea>"+
+      "<label>Education</label>"+
+      "<textarea id='education' placeholder='Degrees, schools, years — most recent first'>"+esc(d.education||"")+"</textarea>"+
+      "<label>Relevant experience &amp; employment history</label>"+
+      "<textarea id='employment_history' placeholder='Roles, employers, and dates — most recent first. Tell us what you did!'>"+esc(d.employment_history||"")+"</textarea>"+
+      "<label>Resume</label>"+drop+
+      "<input type='file' id='resume' accept='.pdf,.docx,.doc' style='display:none'/></div>";
+  }
+
+  // step 2 — interactive availability selector
+  function stepAvailability(){
+    var a=state.data.avail||{days:{},earliest:"",latest:"",type:""};
+    var dayBtns=DAYS_OF_WEEK.map(function(day){
+      return "<button type='button' class='day-btn"+(a.days[day]?" sel":"")+"' data-day='"+day+"'>"+day+"</button>";
+    }).join("");
+    var typeBtn=function(v,label){return "<button type='button' class='type-btn"+(a.type===v?" sel":"")+"' data-type='"+v+"'>"+label+"</button>";};
+    return "<div class='step'><h3>Your availability 🗓️</h3>"+
+      "<p class='lead'>Tap the days you can work, then set your typical hours. This helps us build a schedule that fits your life.</p>"+
+      "<label>Days you're available</label>"+
+      "<div class='day-row'>"+dayBtns+"</div>"+
+      "<div class='row2'>"+
+        "<div><label>Earliest start time</label><input id='av_earliest' type='time' value='"+esc(a.earliest||"")+"'/></div>"+
+        "<div><label>Latest end time</label><input id='av_latest' type='time' value='"+esc(a.latest||"")+"'/></div>"+
+      "</div>"+
+      "<label>Preferred weekly hours</label>"+
+      "<input id='av_hours' type='number' min='0' max='60' value='"+esc(a.weekly_hours||"")+"' placeholder='e.g. 25'/>"+
+      "<label>Are you looking for…</label>"+
+      "<div class='type-row'>"+typeBtn("full_time","Full-time")+typeBtn("part_time","Part-time")+typeBtn("either","Either works")+"</div>"+
+      "<label>Any scheduling limitations?</label>"+
+      "<textarea id='av_notes' placeholder='e.g. No Sundays, classes on Tue/Thu mornings, need afternoons…'>"+esc(a.notes||"")+"</textarea>"+
+      "</div>";
   }
 
   // step 2 — screening questions
@@ -5622,27 +5708,23 @@ Write body as plain text with line breaks (no HTML).`;
       inner+="</div>";
     });
     return "<div class='step'><h3>Let's see your fit 🧭</h3>"+
-      "<p class='lead'>Quick, honest answers help us match you to the right spot. There are no wrong ones.</p>"+inner+"</div>";
-  }
-
-  // step 3 — story + resume
-  function stepStory(){
-    var d=state.data;
-    var r=state.resume;
-    var drop=r?
-      ("<div class='drop has' id='drop'><div class='ic'>📄</div><div class='fname'>"+esc(r.filename)+"</div><div class='hint'>Looks great — tap to choose a different file</div></div>")
-      :("<div class='drop' id='drop'><div class='ic'>📎</div><div><b>Add your resume</b></div><div class='hint'>PDF or Word · drag &amp; drop or tap · optional but loved</div></div>");
-    return "<div class='step'><h3>Tell your story 💬</h3>"+
-      "<p class='lead'>This is where you get to be a human, not a bullet list.</p>"+
-      "<label>When could you start?</label>"+
-      "<input id='earliest_start' value='"+esc(d.earliest_start||"")+"' placeholder='e.g. Immediately, or in 2 weeks'/>"+
+      "<p class='lead'>Quick, honest answers help us match you to the right spot. There are no wrong ones.</p>"+inner+
       "<label>Why Spectrum Squad? Anything you'd love us to know 💜</label>"+
-      "<textarea id='cover_letter' placeholder='Tell us what drew you to ABA, a moment you're proud of, or just say hi!'>"+esc(d.cover_letter||"")+"</textarea>"+
-      "<label>Resume</label>"+drop+
-      "<input type='file' id='resume' accept='.pdf,.docx,.doc' style='display:none'/></div>";
+      "<textarea id='cover_letter' placeholder='Tell us what drew you to ABA, a moment you're proud of, or just say hi!'>"+esc(state.data.cover_letter||"")+"</textarea>"+
+      "</div>";
   }
 
   // step 4 — review + consent
+  function availabilitySummary(){
+    var a=state.data.avail||{days:{}};
+    var days=DAYS_OF_WEEK.filter(function(x){return a.days[x];}).join(", ");
+    var parts=[];
+    if(days) parts.push(days);
+    if(a.earliest||a.latest) parts.push((a.earliest||"?")+"–"+(a.latest||"?"));
+    if(a.weekly_hours) parts.push(a.weekly_hours+" hrs/wk");
+    if(a.type) parts.push({full_time:"Full-time",part_time:"Part-time",either:"FT or PT"}[a.type]||a.type);
+    return parts.join(" · ");
+  }
   function stepReview(){
     var d=state.data, p=state.position, m=roleMeta(p);
     function row(k,v){return v?("<li><span class='k'>"+esc(k)+"</span><span class='v'>"+esc(v)+"</span></li>"):"";}
@@ -5654,24 +5736,29 @@ Write body as plain text with line breaks (no HTML).`;
       "<ul class='review-list'>"+
         row("Role",m.emoji+" "+p.title)+
         row("Name",d.full_name)+
+        row("Preferred name",d.preferred_name)+
         row("Email",d.email)+
         row("Phone",d.phone)+
-        row("Location",[d.city,d.state].filter(Boolean).join(", "))+
-        row("Start",d.earliest_start)+
+        row("Address",d.address)+
+        row("Desired pay",d.desired_pay)+
+        row("Availability",availabilitySummary())+
+        row("Earliest start",d.earliest_start)+
         row("Resume",state.resume?state.resume.filename:"")+
         ans+
       "</ul>"+
       "<div class='check'><input type='checkbox' id='consent_email' checked/>"+
         "<label for='consent_email' style='margin:0;font-weight:500'>Yes, email me about my application and next steps.</label></div>"+
       "<div class='check'><input type='checkbox' id='consent_sms'/>"+
-        "<label for='consent_sms' style='margin:0;font-weight:500'>Optional: text me too — I don't mind.</label></div>"+
+        "<label for='consent_sms' style='margin:0;font-weight:500'>Yes, I agree to receive recruiting-related text messages from Spectrum Squad.</label></div>"+
+      "<p class='sec-sub' style='font-size:11.5px;text-align:left;margin:2px 0 8px'>"+esc(SMS_DISCLOSURE)+"</p>"+
       "<p class='sec-sub' style='font-size:12px;text-align:left;margin:6px 0 0'>Your info is used only to consider your application and is never sold. We welcome every applicant, without regard to any protected characteristic.</p>"+
       "</div>";
   }
 
   // wire up listeners for the current step
   function wireStep(){
-    if(state.step===1){
+    // Step 3 (Your fit): yes/no toggle buttons on screening questions.
+    if(state.step===3){
       Array.prototype.forEach.call(app.querySelectorAll(".q"),function(qd){
         var qid=qd.getAttribute("data-qid");
         Array.prototype.forEach.call(qd.querySelectorAll("[data-yn]"),function(btn){
@@ -5686,7 +5773,8 @@ Write body as plain text with line breaks (no HTML).`;
         });
       });
     }
-    if(state.step===2){
+    // Step 1 (Experience): resume drag-and-drop.
+    if(state.step===1){
       var drop=document.getElementById("drop");
       var file=document.getElementById("resume");
       if(drop&&file){
@@ -5696,6 +5784,24 @@ Write body as plain text with line breaks (no HTML).`;
         drop.addEventListener("drop",function(e){ if(e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0]) takeFile(e.dataTransfer.files[0]); });
         file.addEventListener("change",function(){ if(file.files&&file.files[0]) takeFile(file.files[0]); });
       }
+    }
+    // Step 2 (Availability): day and full/part-time toggle buttons.
+    if(state.step===2){
+      Array.prototype.forEach.call(app.querySelectorAll(".day-btn"),function(btn){
+        btn.addEventListener("click",function(){
+          var day=btn.getAttribute("data-day");
+          state.data.avail.days[day]=!state.data.avail.days[day];
+          btn.className="day-btn"+(state.data.avail.days[day]?" sel":"");
+        });
+      });
+      Array.prototype.forEach.call(app.querySelectorAll(".type-btn"),function(btn){
+        btn.addEventListener("click",function(){
+          state.data.avail.type=btn.getAttribute("data-type");
+          Array.prototype.forEach.call(app.querySelectorAll(".type-btn"),function(b2){
+            b2.className="type-btn"+(b2.getAttribute("data-type")===state.data.avail.type?" sel":"");
+          });
+        });
+      });
     }
   }
 
@@ -5714,18 +5820,30 @@ Write body as plain text with line breaks (no HTML).`;
   function captureStep(){
     if(state.step===0){
       state.data.full_name=(val("full_name")||"").trim();
+      state.data.preferred_name=(val("preferred_name")||"").trim();
       state.data.email=(val("email")||"").trim();
       state.data.phone=(val("phone")||"").trim();
+      state.data.address=(val("address")||"").trim();
       state.data.city=(val("city")||"").trim();
       state.data.state=(val("state")||"").trim();
     } else if(state.step===1){
+      state.data.desired_pay=(val("desired_pay")||"").trim();
+      state.data.earliest_start=(val("earliest_start")||"").trim();
+      state.data.certifications=(val("certifications")||"").trim();
+      state.data.education=(val("education")||"").trim();
+      state.data.employment_history=(val("employment_history")||"").trim();
+    } else if(state.step===2){
+      if(!state.data.avail) state.data.avail={days:{},earliest:"",latest:"",type:""};
+      state.data.avail.earliest=val("av_earliest")||"";
+      state.data.avail.latest=val("av_latest")||"";
+      state.data.avail.weekly_hours=(val("av_hours")||"").trim();
+      state.data.avail.notes=(val("av_notes")||"").trim();
+    } else if(state.step===3){
       Array.prototype.forEach.call(app.querySelectorAll(".q"),function(qd){
         var qid=qd.getAttribute("data-qid");
         var txt=qd.querySelector(".qtext");
         if(txt) state.answers[qid]=txt.value.trim();
       });
-    } else if(state.step===2){
-      state.data.earliest_start=(val("earliest_start")||"").trim();
       state.data.cover_letter=(val("cover_letter")||"").trim();
     }
   }
@@ -5758,12 +5876,19 @@ Write body as plain text with line breaks (no HTML).`;
     var btn=document.getElementById("next");
     btn.disabled=true; btn.innerHTML="<span class='spin'></span>Sending…";
     var d=state.data, p=state.position;
+    var smsConsent=document.getElementById("consent_sms").checked;
     var payload={
-      full_name:d.full_name, email:d.email, phone:d.phone, city:d.city, state:d.state,
+      full_name:d.full_name, preferred_name:d.preferred_name, email:d.email, phone:d.phone,
+      address:d.address, city:d.city, state:d.state,
+      desired_pay:d.desired_pay, comp_expectation:d.desired_pay,
+      certifications:d.certifications, education:d.education, employment_history:d.employment_history,
       earliest_start:d.earliest_start, cover_letter:d.cover_letter,
+      availability:d.avail,
       screening_answers:state.answers,
       consent_email:document.getElementById("consent_email").checked,
-      consent_sms:document.getElementById("consent_sms").checked,
+      consent_sms:smsConsent,
+      sms_consent_at:smsConsent?new Date().toISOString():null,
+      sms_consent_version:smsConsent?SMS_DISCLOSURE_VERSION:null,
       slug:p.slug, source:state.source, source_token:sourceToken
     };
     if(state.resume) payload.resume=state.resume;
