@@ -402,6 +402,8 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_intake_coordinator_name TE
 -- A task can be assigned to someone who works here but has no CRM login, so
 -- their address is stored on the task rather than resolved through users.
 ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS assigned_email TEXT;
+-- Task priority for the personal Task Center: low | normal | high | urgent.
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal';
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlist_reason TEXT;
@@ -1763,7 +1765,12 @@ async function processAssessmentReminders() {
 const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone, processAssessmentReminders };
 
 // ---- Staff to-do tasks (assignable, with due dates + email reminders) ----
-async function createStaffTask({ title, description, assigned_user_id, assigned_name, assigned_email, client_id, due_date, created_by }) {
+const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
+function normalizePriority(p) {
+  const v = String(p || "").trim().toLowerCase();
+  return TASK_PRIORITIES.includes(v) ? v : "normal";
+}
+async function createStaffTask({ title, description, assigned_user_id, assigned_name, assigned_email, client_id, due_date, created_by, priority }) {
   // If assigned by name only, try to resolve to a user for reminders.
   let uid = assigned_user_id || null;
   let uname = assigned_name || null;
@@ -1787,9 +1794,9 @@ async function createStaffTask({ title, description, assigned_user_id, assigned_
     if (e) uemail = e.email;
   }
   const row = await dbGet(
-    `INSERT INTO staff_tasks (title, description, assigned_user_id, assigned_name, assigned_email, client_id, due_date, status, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING *`,
-    [title, description || null, uid, uname, uemail, client_id || null, due_date || null, created_by || "system", nowISO()]
+    `INSERT INTO staff_tasks (title, description, assigned_user_id, assigned_name, assigned_email, client_id, due_date, priority, status, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING *`,
+    [title, description || null, uid, uname, uemail, client_id || null, due_date || null, normalizePriority(priority), created_by || "system", nowISO()]
   );
   // Notify the assignee immediately that a task was assigned to them.
   {
@@ -4638,12 +4645,45 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     }
 
     // ---------- Staff to-do tasks (assignable, due dates, reminders) ----------
+    // Supervisory roles (owner / super_admin / admin) may see the whole
+    // organization's task list. Everyone else is scoped to their OWN tasks at
+    // the query level -- enforced here on the server, not merely hidden in the
+    // UI -- so a normal staffer can never browse another employee's task list.
+    // "Mine" = tasks whose assigned_user_id is me, or whose assigned_email
+    // matches my login (covers tasks assigned to staff who have no CRM user id).
+    const canSeeAllTasks = (u) => !!u && ["owner", "super_admin", "admin"].includes(u.role);
+    const mineClause = "(st.assigned_user_id = ? OR (st.assigned_email IS NOT NULL AND lower(st.assigned_email) = lower(?)))";
+
+    if (pathname === "/api/staff-tasks/summary" && method === "GET") {
+      // Counts for the logged-in user's OWN incomplete tasks -- powers the
+      // "Tasks & Alerts (N)" nav badge and the Task Center header. Always
+      // personal, regardless of role.
+      const now = nowISO();
+      const today = todayISODate();
+      const rows = await dbAll(
+        `SELECT due_date FROM staff_tasks st WHERE st.status = 'open' AND ${mineClause}`,
+        [user.id, user.email || ""]
+      );
+      let open = rows.length, overdue = 0, dueToday = 0, upcoming = 0;
+      for (const r of rows) {
+        const d = r.due_date ? String(r.due_date).slice(0, 10) : null;
+        if (d && d < today) overdue++;
+        else if (d && d === today) dueToday++;
+        else upcoming++;
+      }
+      return json(res, 200, { open, overdue, today: dueToday, upcoming });
+    }
+
     if (pathname === "/api/staff-tasks" && method === "GET") {
-      const scope = query.scope || "all";
-      let where = "";
+      // Non-supervisory users are forced to their own tasks no matter what
+      // scope they ask for. Supervisors default to everything but can still
+      // request scope=mine for their personal view.
+      const wantMine = query.scope === "mine" || !canSeeAllTasks(user);
+      const clauses = [];
       const params = [];
-      if (scope === "mine") { where = "WHERE st.assigned_user_id = ?"; params.push(user.id); }
-      else if (query.status === "open") { where = "WHERE st.status = 'open'"; }
+      if (wantMine) { clauses.push(mineClause); params.push(user.id, user.email || ""); }
+      if (query.status === "open" || query.status === "done") { clauses.push("st.status = ?"); params.push(query.status); }
+      const where = clauses.length ? "WHERE " + clauses.join(" AND ") : "";
       const rows = await dbAll(
         `SELECT st.*, c.child_name FROM staff_tasks st
          LEFT JOIN clients c ON c.id = st.client_id
@@ -4665,6 +4705,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         assigned_email: body.assigned_email,
         client_id: body.client_id ? Number(body.client_id) : null,
         due_date: body.due_date || null,
+        priority: body.priority,
         created_by: user.email,
       });
       return json(res, 201, row);
@@ -4677,6 +4718,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const params = [];
       if (typeof body.title === "string" && body.title.trim()) { sets.push("title = ?"); params.push(body.title.trim()); }
       if ("description" in body) { sets.push("description = ?"); params.push(body.description || null); }
+      if ("priority" in body) { sets.push("priority = ?"); params.push(normalizePriority(body.priority)); }
       if ("due_date" in body) { sets.push("due_date = ?", "reminder_sent_at = NULL"); params.push(body.due_date || null); }
       if ("assigned_user_id" in body) {
         const uid = body.assigned_user_id ? Number(body.assigned_user_id) : null;
