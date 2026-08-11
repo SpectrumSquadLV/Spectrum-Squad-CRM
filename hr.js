@@ -5277,9 +5277,11 @@ Write body as plain text with line breaks (no HTML).`;
 <title>Careers — Join the Spectrum Squad</title>
 <style>
   :root{
-    --navy:#1b2a6b;--navy-dark:#101c4d;--navy-light:#edecf8;--gold:#e0a430;--gold-soft:#fdecc8;
-    --teal:#5fa8a0;--mint:#3f8f89;--coral:#ef6f6c;--purple:#7b6cf6;--bg:#f4f5fb;--surface:#fff;
-    --border:#e7e4f5;--text:#201a4d;--muted:#6b6a86;--ok:#1f9d63;--radius:18px;
+    /* Mustard-yellow theme drawn from the logo (#e0a430). The former accent
+       names now all hold warm gold/bronze shades so the whole page reads gold. */
+    --navy:#6b4f16;--navy-dark:#4a370f;--navy-light:#fbeecb;--gold:#e0a430;--gold-soft:#fdeecb;
+    --teal:#c98f22;--mint:#a9761a;--coral:#c96f2c;--purple:#cf9422;--bg:#fbf7ec;--surface:#fff;
+    --border:#eee1c2;--text:#3a2f14;--muted:#8a7c58;--ok:#1f9d63;--radius:18px;
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
@@ -5288,31 +5290,33 @@ Write body as plain text with line breaks (no HTML).`;
   a{color:var(--navy)}
   .wrap{max-width:860px;margin:0 auto;padding:0 18px}
 
-  /* ---- Hero ---- */
-  header.hero{position:relative;overflow:hidden;color:#fff;text-align:center;
-    background:linear-gradient(135deg,#1b2a6b 0%,#2a2f8f 45%,#3f8f89 100%);padding:52px 20px 60px}
-  header.hero .blob{position:absolute;border-radius:50%;filter:blur(2px);opacity:.28;animation:float 9s ease-in-out infinite}
-  .blob.b1{width:180px;height:180px;background:var(--gold);top:-40px;left:-30px}
-  .blob.b2{width:130px;height:130px;background:var(--teal);bottom:-30px;right:10%;animation-delay:1.5s}
-  .blob.b3{width:90px;height:90px;background:var(--coral);top:30px;right:16%;animation-delay:.8s}
+  /* ---- Hero (mustard, like our social posts) ---- */
+  header.hero{position:relative;overflow:hidden;color:#3a2a00;text-align:center;
+    background:linear-gradient(135deg,#e7b24a 0%,#e0a430 45%,#cf9422 100%);padding:52px 20px 60px}
+  header.hero .blob{position:absolute;border-radius:50%;filter:blur(2px);opacity:.3;animation:float 9s ease-in-out infinite}
+  .blob.b1{width:180px;height:180px;background:#c98f22;top:-40px;left:-30px}
+  .blob.b2{width:130px;height:130px;background:#f2cf76;bottom:-30px;right:10%;animation-delay:1.5s}
+  .blob.b3{width:90px;height:90px;background:#b9781a;top:30px;right:16%;animation-delay:.8s}
   @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-18px)}}
   header.hero .inner{position:relative;z-index:2}
   header.hero img.logo{max-width:230px;width:64%;height:auto;background:#fff;padding:12px 18px;border-radius:16px;
     box-shadow:0 10px 30px rgba(0,0,0,.18)}
   header.hero h1{margin:20px 0 6px;font-size:31px;line-height:1.15;font-weight:800;letter-spacing:-.5px}
-  header.hero p.tag{margin:0 auto;max-width:560px;font-size:17px;opacity:.94}
+  header.hero p.tag{margin:0 auto;max-width:560px;font-size:17px;opacity:.92}
   .vibes{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:20px 0 0}
-  .vibe{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:999px;
+  .vibe{background:rgba(255,255,255,.4);border:1px solid rgba(58,42,0,.16);color:#3a2a00;border-radius:999px;
     padding:7px 14px;font-size:13.5px;font-weight:600;backdrop-filter:blur(4px)}
 
   /* ---- Perks band ---- */
   .perks{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:-30px auto 8px;position:relative;z-index:3}
   .perk{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px 14px;
     box-shadow:0 10px 30px rgba(41,34,92,.08);text-align:center}
-  .perk .ic{font-size:24px;display:block;margin-bottom:4px}
+  .perk .ic{color:var(--gold);display:flex;justify-content:center;height:26px;margin-bottom:6px}
+  .perk .ic svg{width:26px;height:26px}
   .perk .t{font-weight:700;font-size:13.5px;color:var(--navy)}
   .perk .d{font-size:12px;color:var(--muted)}
 
+  .emptyic svg{width:44px;height:44px}
   .sec-title{text-align:center;font-size:22px;font-weight:800;color:var(--navy);margin:34px 0 4px}
   .sec-sub{text-align:center;color:var(--muted);margin:0 0 18px}
 
@@ -5324,13 +5328,14 @@ Write body as plain text with line breaks (no HTML).`;
     transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
   .role:hover{transform:translateY(-4px);box-shadow:0 18px 40px rgba(41,34,92,.16);border-color:var(--navy)}
   .role .stripe{position:absolute;top:0;left:0;right:0;height:6px}
-  .role .emoji{font-size:38px;line-height:1}
+  .role .badge{display:inline-block;font-weight:800;font-size:15px;letter-spacing:.4px;color:#fff;
+    background:var(--gold);padding:7px 14px;border-radius:12px;box-shadow:0 5px 14px rgba(224,164,48,.32)}
   .role h3{margin:12px 0 2px;font-size:19px;color:var(--navy)}
   .role .vibe-line{color:var(--muted);font-size:14.5px;margin:0 0 12px;min-height:40px}
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
   .chip{border-radius:999px;padding:4px 11px;font-size:12px;font-weight:700;background:var(--navy-light);color:var(--navy)}
-  .chip.loc{background:#e6f4f1;color:var(--mint)}
-  .chip.type{background:#f1eefe;color:var(--purple)}
+  .chip.loc{background:#f6ecd4;color:var(--mint)}
+  .chip.type{background:#fbeecb;color:var(--purple)}
   .chip.urgent{background:var(--gold-soft);color:#a9761a;animation:pulse 1.8s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
   .role .cta{display:inline-flex;align-items:center;gap:7px;font-weight:800;color:var(--navy);font-size:15px}
@@ -5342,15 +5347,16 @@ Write body as plain text with line breaks (no HTML).`;
   .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px;
     margin:16px 0;box-shadow:0 6px 20px rgba(41,34,92,.07)}
   .rolehead{display:flex;align-items:center;gap:14px;margin:0 0 6px}
-  .rolehead .em{font-size:34px}
+  .rolehead .badge{display:inline-block;font-weight:800;font-size:14px;letter-spacing:.4px;color:#fff;
+    background:var(--gold);padding:6px 12px;border-radius:11px;white-space:nowrap}
   .rolehead h2{margin:0;font-size:20px;color:var(--navy)}
   .rolehead .sub{color:var(--muted);font-size:13.5px}
   .progress{display:flex;gap:8px;margin:18px 0 6px}
   .pstep{flex:1;text-align:center}
   .pstep .bar{height:7px;border-radius:999px;background:var(--navy-light);overflow:hidden}
-  .pstep .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--gold),var(--teal));transition:width .3s ease}
+  .pstep .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--gold),#c98f22);transition:width .3s ease}
   .pstep.done .bar i,.pstep.active .bar i{width:100%}
-  .pstep.active .bar i{background:linear-gradient(90deg,var(--navy),var(--purple))}
+  .pstep.active .bar i{background:linear-gradient(90deg,#e0a430,#b9781a)}
   .pstep .lbl{font-size:11.5px;font-weight:700;color:var(--muted);margin-top:5px}
   .pstep.active .lbl,.pstep.done .lbl{color:var(--navy)}
   .step-anim{animation:slidein .28s ease}
@@ -5361,7 +5367,7 @@ Write body as plain text with line breaks (no HTML).`;
   .req{color:var(--coral)}
   input,textarea,select{width:100%;padding:12px 13px;border:1.5px solid var(--border);border-radius:12px;font-size:15px;
     font-family:inherit;background:#fff;transition:border-color .15s ease,box-shadow .15s ease}
-  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--navy);box-shadow:0 0 0 3px rgba(27,42,107,.12)}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(224,164,48,.22)}
   textarea{min-height:96px;resize:vertical}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   @media(max-width:520px){.row2{grid-template-columns:1fr}}
@@ -5371,7 +5377,7 @@ Write body as plain text with line breaks (no HTML).`;
   .yesno button{flex:1;background:#fff;color:var(--navy);border:1.5px solid var(--border);border-radius:12px;
     padding:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all .14s ease}
   .yesno button:hover{border-color:var(--navy)}
-  .yesno button.sel{background:var(--navy);color:#fff;border-color:var(--navy);box-shadow:0 6px 16px rgba(27,42,107,.25)}
+  .yesno button.sel{background:var(--gold);color:#3a2a00;border-color:var(--gold);box-shadow:0 6px 16px rgba(224,164,48,.3)}
   .yesno button.sel.no{background:var(--muted);border-color:var(--muted);box-shadow:none}
 
   /* availability selector */
@@ -5379,18 +5385,20 @@ Write body as plain text with line breaks (no HTML).`;
   .day-btn{flex:1;min-width:56px;background:#fff;color:var(--navy);border:1.5px solid var(--border);border-radius:12px;
     padding:12px 6px;font-size:14px;font-weight:700;cursor:pointer;transition:all .14s ease}
   .day-btn:hover{border-color:var(--navy)}
-  .day-btn.sel{background:var(--teal);color:#fff;border-color:var(--teal);box-shadow:0 6px 16px rgba(95,168,160,.3)}
+  .day-btn.sel{background:var(--gold);color:#3a2a00;border-color:var(--gold);box-shadow:0 6px 16px rgba(224,164,48,.3)}
   .type-row{display:flex;gap:10px}
   .type-btn{flex:1;background:#fff;color:var(--navy);border:1.5px solid var(--border);border-radius:12px;
     padding:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all .14s ease}
   .type-btn:hover{border-color:var(--navy)}
-  .type-btn.sel{background:var(--navy);color:#fff;border-color:var(--navy);box-shadow:0 6px 16px rgba(27,42,107,.25)}
+  .type-btn.sel{background:var(--gold);color:#3a2a00;border-color:var(--gold);box-shadow:0 6px 16px rgba(224,164,48,.3)}
 
   /* resume dropzone */
-  .drop{border:2px dashed #cdd6ea;border-radius:14px;padding:22px;text-align:center;cursor:pointer;
-    transition:all .15s ease;background:#fbfbfe}
-  .drop:hover,.drop.over{border-color:var(--navy);background:#f4f4ff}
-  .drop .ic{font-size:30px}
+  .drop{border:2px dashed #e0d3b0;border-radius:14px;padding:22px;text-align:center;cursor:pointer;
+    transition:all .15s ease;background:#fdfbf4}
+  .drop:hover,.drop.over{border-color:var(--gold);background:#fdf7e8}
+  .drop .ic{color:var(--gold);display:flex;justify-content:center;margin-bottom:4px}
+  .drop .ic svg{width:30px;height:30px}
+  .drop.has .ic{color:var(--ok)}
   .drop .hint{color:var(--muted);font-size:13px;margin-top:4px}
   .drop.has{border-style:solid;border-color:var(--ok);background:#f0fbf5}
   .drop .fname{font-weight:700;color:var(--ok)}
@@ -5413,7 +5421,8 @@ Write body as plain text with line breaks (no HTML).`;
 
   /* success */
   .ok{text-align:center;padding:22px 6px}
-  .ok .big{font-size:60px;animation:pop .5s cubic-bezier(.2,1.4,.4,1)}
+  .ok .big{display:flex;justify-content:center;animation:pop .5s cubic-bezier(.2,1.4,.4,1)}
+  .ok .big svg{width:76px;height:76px}
   @keyframes pop{from{transform:scale(0)}to{transform:scale(1)}}
   .ok h2{color:var(--navy);margin:10px 0 6px;font-size:24px}
   .next{text-align:left;max-width:420px;margin:18px auto 0}
@@ -5433,12 +5442,12 @@ Write body as plain text with line breaks (no HTML).`;
   <span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span>
   <div class="inner">
     <img class="logo" src="/logo.png" alt="Spectrum Squad"/>
-    <h1>Come do the best work of your life 💜</h1>
+    <h1>Come do the best work of your life</h1>
     <p class="tag">We help children with autism thrive through compassionate, evidence-based ABA care — and we take just as good care of the people who make it happen.</p>
     <div class="vibes">
-      <span class="vibe">🌎 Las Vegas &amp; Henderson, NV</span>
-      <span class="vibe">🚀 Fast-growing team</span>
-      <span class="vibe">❤️ Actually meaningful work</span>
+      <span class="vibe">Las Vegas &amp; Henderson, NV</span>
+      <span class="vibe">Fast-growing team</span>
+      <span class="vibe">Actually meaningful work</span>
     </div>
   </div>
 </header>
@@ -5473,13 +5482,27 @@ Write body as plain text with line breaks (no HTML).`;
       return r.json().then(function(d){if(!r.ok)throw new Error(d.error||"Something went wrong");return d;});});}
 
   // ---- perks band ----
+  // Simple line icons (no emoji) drawn with currentColor so they take the theme.
+  var SVG_OPEN="<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>";
+  var ICON={
+    grow:SVG_OPEN+"<path d='M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z'/><path d='M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z'/></svg>",
+    mentor:SVG_OPEN+"<path d='M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2'/><circle cx='9' cy='7' r='4'/><path d='M23 21v-2a4 4 0 0 0-3-3.87'/><path d='M16 3.13a4 4 0 0 1 0 7.75'/></svg>",
+    calendar:SVG_OPEN+"<rect x='3' y='4' width='18' height='18' rx='2'/><path d='M16 2v4M8 2v4M3 10h18'/></svg>",
+    trend:SVG_OPEN+"<path d='M23 6l-9.5 9.5-5-5L1 18'/><path d='M17 6h6v6'/></svg>",
+    coffee:SVG_OPEN+"<path d='M18 8h1a4 4 0 0 1 0 8h-1'/><path d='M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4z'/><path d='M6 1v3M10 1v3M14 1v3'/></svg>",
+    heart:SVG_OPEN+"<path d='M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z'/></svg>",
+    paperclip:SVG_OPEN+"<path d='M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48'/></svg>",
+    filecheck:SVG_OPEN+"<path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/><path d='M14 2v6h6'/><path d='M9 15l2 2 4-4'/></svg>",
+    briefcase:SVG_OPEN+"<rect x='2' y='7' width='20' height='14' rx='2'/><path d='M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16'/></svg>",
+    success:"<svg viewBox='0 0 52 52' fill='none' xmlns='http://www.w3.org/2000/svg'><circle cx='26' cy='26' r='24' fill='#fbeecb' stroke='#e0a430' stroke-width='3'/><path d='M16 27l7 7 13-14' stroke='#c98f22' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/></svg>"
+  };
   var PERKS=[
-    {ic:"🎓",t:"Grow on us",d:"CEU + credential support"},
-    {ic:"🤝",t:"Real mentorship",d:"BCBAs who actually teach"},
-    {ic:"🗓️",t:"Flexible schedules",d:"Life outside work, too"},
-    {ic:"📈",t:"A clear path up",d:"RBT → BCaBA → BCBA"},
-    {ic:"☕",t:"A team that shows up",d:"Supportive, kind, fun"},
-    {ic:"❤️",t:"Meaning every day",d:"Kids you change forever"}
+    {ic:ICON.grow,t:"Grow on us",d:"CEU + credential support"},
+    {ic:ICON.mentor,t:"Real mentorship",d:"BCBAs who actually teach"},
+    {ic:ICON.calendar,t:"Flexible schedules",d:"Life outside work, too"},
+    {ic:ICON.trend,t:"A clear path up",d:"RBT to BCaBA to BCBA"},
+    {ic:ICON.coffee,t:"A team that shows up",d:"Supportive, kind, fun"},
+    {ic:ICON.heart,t:"Meaning every day",d:"Kids you change forever"}
   ];
   perksEl.innerHTML=PERKS.map(function(p){
     return "<div class='perk'><span class='ic'>"+p.ic+"</span><div class='t'>"+esc(p.t)+"</div><div class='d'>"+esc(p.d)+"</div></div>";
@@ -5489,15 +5512,15 @@ Write body as plain text with line breaks (no HTML).`;
   function roleMeta(p){
     var slugKey=(p.slug||"");
     var map={
-      "rbt":{emoji:"🧩",accent:"#5fa8a0",tag:"Be the person a kid lights up to see. Deliver 1:1 therapy that changes a family's whole week."},
-      "bcba-hybrid":{emoji:"🧠",accent:"#7b6cf6",tag:"Lead the clinical vision. Design the programs, guide the team, and watch the breakthroughs happen."},
-      "bcaba":{emoji:"🌱",accent:"#3f8f89",tag:"Level up into the analyst you're becoming — with real supervision and a real path to BCBA."},
-      "administrative-assistant":{emoji:"✨",accent:"#e0a430",tag:"Be the friendly face and steady hand that keeps the whole clinic running like magic."}
+      "rbt":{label:"RBT",accent:"#e0a430",tag:"Be the person a kid lights up to see. Deliver 1:1 therapy that changes a family's whole week."},
+      "bcba-hybrid":{label:"BCBA",accent:"#c98f22",tag:"Lead the clinical vision. Design the programs, guide the team, and watch the breakthroughs happen."},
+      "bcaba":{label:"BCaBA",accent:"#b9821f",tag:"Level up into the analyst you're becoming — with real supervision and a real path to BCBA."},
+      "administrative-assistant":{label:"Admin",accent:"#d99a2b",tag:"Be the friendly face and steady hand that keeps the whole clinic running like magic."}
     };
     if(map[slugKey])return map[slugKey];
-    if(p.role_type==="bcba")return {emoji:"🧠",accent:"#7b6cf6",tag:"Lead the clinical vision and change lives across our clinic, home, and school programs."};
-    if(p.role_type==="rbt")return {emoji:"🧩",accent:"#5fa8a0",tag:"Deliver the hands-on therapy that helps kids reach their next big milestone."};
-    return {emoji:"⭐",accent:"#1b2a6b",tag:"Join a team doing work that genuinely matters."};
+    if(p.role_type==="bcba")return {label:"BCBA",accent:"#c98f22",tag:"Lead the clinical vision and change lives across our clinic, home, and school programs."};
+    if(p.role_type==="rbt")return {label:"RBT",accent:"#e0a430",tag:"Deliver the hands-on therapy that helps kids reach their next big milestone."};
+    return {label:"Squad",accent:"#e0a430",tag:"Join a team doing work that genuinely matters."};
   }
   function typeLabel(t){return {full_time:"Full-time",part_time:"Part-time",contract:"Contract"}[t]||t;}
   function locLabel(t){return {hybrid:"Hybrid",onsite:"On-site",remote:"Remote"}[t]||t;}
@@ -5519,7 +5542,7 @@ Write body as plain text with line breaks (no HTML).`;
     perksEl.style.display="";
     api("/api/hr/public/positions").then(function(list){
       if(!list.length){
-        app.innerHTML="<div class='card' style='text-align:center'><div style='font-size:44px'>🌟</div>"+
+        app.innerHTML="<div class='card' style='text-align:center'><div class='emptyic' style='color:var(--gold);display:flex;justify-content:center'>"+ICON.briefcase+"</div>"+
           "<h3 style='color:var(--navy)'>No open roles this very second…</h3>"+
           "<p class='sec-sub'>But we're growing fast and always love meeting great people. Check back soon!</p></div>";
         return;
@@ -5527,13 +5550,13 @@ Write body as plain text with line breaks (no HTML).`;
       var cards=list.map(function(p){
         var m=roleMeta(p);
         var chips="";
-        if(p.priority==="urgent")chips+="<span class='chip urgent'>🔥 Hiring now</span>";
+        if(p.priority==="urgent")chips+="<span class='chip urgent'>Hiring now</span>";
         chips+="<span class='chip loc'>"+esc(locLabel(p.location_type))+"</span>";
         (p.employment_types||[]).forEach(function(t){chips+="<span class='chip type'>"+esc(typeLabel(t))+"</span>";});
         var openings=(p.openings_count&&p.openings_count>1)?("<span class='openings'>"+p.openings_count+" openings</span>"):"";
         return "<div class='role' data-slug='"+esc(p.slug)+"'>"+
           "<span class='stripe' style='background:"+m.accent+"'></span>"+openings+
-          "<div class='emoji'>"+m.emoji+"</div>"+
+          "<div class='badge' style='background:"+m.accent+"'>"+esc(m.label)+"</div>"+
           "<h3>"+esc(p.title)+"</h3>"+
           "<p class='vibe-line'>"+esc(m.tag)+"</p>"+
           "<div class='chips'>"+chips+"</div>"+
@@ -5584,7 +5607,7 @@ Write body as plain text with line breaks (no HTML).`;
   function renderWizard(){
     var p=state.position, m=roleMeta(p);
     var head="<div class='card'>"+
-      "<div class='rolehead'><span class='em'>"+m.emoji+"</span>"+
+      "<div class='rolehead'><span class='badge' style='background:"+m.accent+"'>"+esc(m.label)+"</span>"+
       "<div><h2>"+esc(p.title)+"</h2><div class='sub'>"+esc(locLabel(p.location_type))+
       (p.locations?(" · "+esc(p.locations)):"")+"</div></div></div>"+
       progressHtml()+
@@ -5611,7 +5634,7 @@ Write body as plain text with line breaks (no HTML).`;
     wireStep();
     // nav buttons
     var backLbl=state.step===0?"← All roles":"← Back";
-    var nextLbl=state.step===STEPS.length-1?"🎉 Submit application":"Continue →";
+    var nextLbl=state.step===STEPS.length-1?"Submit application":"Continue →";
     nav.innerHTML="<button class='btn ghost' id='back'>"+backLbl+"</button>"+
       "<button class='btn primary' id='next'>"+nextLbl+"</button>";
     document.getElementById("back").addEventListener("click",goBack);
@@ -5624,7 +5647,7 @@ Write body as plain text with line breaks (no HTML).`;
   // step 0 — basics
   function stepBasics(){
     var d=state.data;
-    return "<div class='step'><h3>First, the basics 👋</h3>"+
+    return "<div class='step'><h3>First, the basics</h3>"+
       "<p class='lead'>Tell us who you are — this only takes a couple of minutes, promise.</p>"+
       "<div class='row2'>"+
         "<div><label>Full legal name <span class='req'>*</span></label><input id='full_name' value='"+esc(d.full_name||"")+"' placeholder='Alex Rivera'/></div>"+
@@ -5646,9 +5669,9 @@ Write body as plain text with line breaks (no HTML).`;
   function stepExperience(){
     var d=state.data, r=state.resume;
     var drop=r?
-      ("<div class='drop has' id='drop'><div class='ic'>📄</div><div class='fname'>"+esc(r.filename)+"</div><div class='hint'>Looks great — tap to choose a different file</div></div>")
-      :("<div class='drop' id='drop'><div class='ic'>📎</div><div><b>Add your resume</b></div><div class='hint'>PDF or Word · drag &amp; drop or tap · optional but loved</div></div>");
-    return "<div class='step'><h3>Your experience 💼</h3>"+
+      ("<div class='drop has' id='drop'><div class='ic'>"+ICON.filecheck+"</div><div class='fname'>"+esc(r.filename)+"</div><div class='hint'>Looks great — tap to choose a different file</div></div>")
+      :("<div class='drop' id='drop'><div class='ic'>"+ICON.paperclip+"</div><div><b>Add your resume</b></div><div class='hint'>PDF or Word · drag &amp; drop or tap · optional but loved</div></div>");
+    return "<div class='step'><h3>Your experience</h3>"+
       "<p class='lead'>Give us the highlights — you can be brief.</p>"+
       "<div class='row2'>"+
         "<div><label>Desired pay rate</label><input id='desired_pay' value='"+esc(d.desired_pay||"")+"' placeholder='e.g. $25/hr or negotiable'/></div>"+
@@ -5671,7 +5694,7 @@ Write body as plain text with line breaks (no HTML).`;
       return "<button type='button' class='day-btn"+(a.days[day]?" sel":"")+"' data-day='"+day+"'>"+day+"</button>";
     }).join("");
     var typeBtn=function(v,label){return "<button type='button' class='type-btn"+(a.type===v?" sel":"")+"' data-type='"+v+"'>"+label+"</button>";};
-    return "<div class='step'><h3>Your availability 🗓️</h3>"+
+    return "<div class='step'><h3>Your availability</h3>"+
       "<p class='lead'>Tap the days you can work, then set your typical hours. This helps us build a schedule that fits your life.</p>"+
       "<label>Days you're available</label>"+
       "<div class='day-row'>"+dayBtns+"</div>"+
@@ -5700,16 +5723,16 @@ Write body as plain text with line breaks (no HTML).`;
       inner+="<div class='q' data-qid='"+esc(q.id)+"'><div class='ql'>"+esc(q.label)+"</div>";
       if(q.type==="yesno"){
         inner+="<div class='yesno'>"+
-          "<button type='button' data-yn='Yes' class='"+(val==="Yes"?"sel":"")+"'>👍 Yes</button>"+
-          "<button type='button' data-yn='No' class='no "+(val==="No"?"sel":"")+"'>👋 No</button></div>";
+          "<button type='button' data-yn='Yes' class='"+(val==="Yes"?"sel":"")+"'>Yes</button>"+
+          "<button type='button' data-yn='No' class='no "+(val==="No"?"sel":"")+"'>No</button></div>";
       } else {
         inner+="<input class='qtext' value='"+esc(val)+"' placeholder='Type your answer…'/>";
       }
       inner+="</div>";
     });
-    return "<div class='step'><h3>Let's see your fit 🧭</h3>"+
+    return "<div class='step'><h3>Let's see your fit</h3>"+
       "<p class='lead'>Quick, honest answers help us match you to the right spot. There are no wrong ones.</p>"+inner+
-      "<label>Why Spectrum Squad? Anything you'd love us to know 💜</label>"+
+      "<label>Why Spectrum Squad? Anything you'd love us to know</label>"+
       "<textarea id='cover_letter' placeholder='Tell us what drew you to ABA, a moment you're proud of, or just say hi!'>"+esc(state.data.cover_letter||"")+"</textarea>"+
       "</div>";
   }
@@ -5731,10 +5754,10 @@ Write body as plain text with line breaks (no HTML).`;
     var qs=state.position.screening_questions||[];
     var ans="";
     qs.forEach(function(q){ if(state.answers[q.id]) ans+=row(q.label,state.answers[q.id]); });
-    return "<div class='step'><h3>Almost there! 🎉</h3>"+
+    return "<div class='step'><h3>Almost there!</h3>"+
       "<p class='lead'>Give it a quick look, then send it our way.</p>"+
       "<ul class='review-list'>"+
-        row("Role",m.emoji+" "+p.title)+
+        row("Role",p.title)+
         row("Name",d.full_name)+
         row("Preferred name",d.preferred_name)+
         row("Email",d.email)+
@@ -5896,7 +5919,7 @@ Write body as plain text with line breaks (no HTML).`;
       renderSuccess();
     }).catch(function(e){
       setErr(e.message||"Something went wrong — please try again.");
-      btn.disabled=false; btn.innerHTML="🎉 Submit application";
+      btn.disabled=false; btn.innerHTML="Submit application";
     });
   }
 
@@ -5904,8 +5927,8 @@ Write body as plain text with line breaks (no HTML).`;
     var p=state.position, m=roleMeta(p);
     perksEl.style.display="none";
     app.innerHTML="<div class='card ok'>"+
-      "<div class='big'>"+m.emoji+"</div>"+
-      "<h2>You're in the running! 🎉</h2>"+
+      "<div class='big'>"+ICON.success+"</div>"+
+      "<h2>You're in the running!</h2>"+
       "<p class='sec-sub'>Thanks for applying to be our <b>"+esc(p.title)+"</b>, "+esc(firstName(state.data.full_name))+". We're genuinely excited to read it.</p>"+
       "<div class='next'>"+
         "<div class='n'><div class='num'>1</div><div class='txt'><b>We review your application</b> — a real human on our team, usually within a few business days.</div></div>"+
@@ -5928,7 +5951,7 @@ Write body as plain text with line breaks (no HTML).`;
     var ctx=c.getContext("2d");
     function size(){c.width=window.innerWidth;c.height=window.innerHeight;} size();
     window.addEventListener("resize",size);
-    var colors=["#1b2a6b","#e0a430","#5fa8a0","#ef6f6c","#7b6cf6","#3f8f89"];
+    var colors=["#e0a430","#c98f22","#f2cf76","#b9781a","#8a5f14","#e7b24a"];
     var P=[];
     for(var i=0;i<150;i++){
       P.push({x:Math.random()*c.width,y:-20-Math.random()*c.height*0.5,
