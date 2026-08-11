@@ -3404,7 +3404,20 @@ function readBody(req) {
   });
 }
 
+// Raw request body (unparsed) -- needed for webhook signature verification,
+// where the exact bytes must match what the sender signed.
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    let chunks = "";
+    req.on("data", (c) => (chunks += c));
+    req.on("end", () => resolve(chunks));
+    req.on("error", reject);
+  });
+}
+const stripeClient = require("./stripe-client");
+
 const PUBLIC_ROUTES = new Set([
+  "/api/stripe/webhook",
   "/api/auth/login",
   "/api/webhook/enrollment",
   "/api/admin/backfill-import",
@@ -3918,6 +3931,19 @@ async function handle(req, res, pathname, method, query = {}) {
       const c = await readBody(req);
       const client = await createClientFromPayload(c);
       return json(res, 201, client);
+    }
+
+    // Stripe webhook (public, signature-verified). Point your Stripe dashboard
+    // webhook here and set STRIPE_WEBHOOK_SECRET. Reads the RAW body so the
+    // signature can be verified, then updates only the contract's safe payment
+    // fields (status, brand + last4, amounts) -- never any sensitive data.
+    if (pathname === "/api/stripe/webhook" && method === "POST") {
+      const raw = await readRawBody(req);
+      let event;
+      try { event = stripeClient.verifyWebhook(raw, req.headers["stripe-signature"]); }
+      catch (e) { return json(res, 400, { error: e.message }); }
+      const r = await growth.applyStripeEvent(event).catch((e) => ({ ok: false, error: e.message }));
+      return json(res, 200, r);
     }
 
     // Public webhook: point a Google Apps Script "on form submit" trigger (or
@@ -6184,6 +6210,8 @@ const growth = require("./growth")({
   sendEmail, getAppSetting, APP_BASE_URL,
   emailTemplates,
   createStaffTask: (t) => createStaffTask(t),
+  // Stripe payments (Phase 6b): the module stores only safe identifiers.
+  stripe: stripeClient,
 });
 // ===== BEHAVIOR INTERVENTION PLAN workspace: lives inside the client card.
 // Owns /api/bip/*. Reuses the clients table, auth, permissions and email. =====

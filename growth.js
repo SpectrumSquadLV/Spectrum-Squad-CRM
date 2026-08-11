@@ -15,6 +15,26 @@ module.exports = function initGrowth(ctx) {
   const APP_BASE_URL = ctx.APP_BASE_URL || "";
   const emailTemplates = ctx.emailTemplates || null;
   const createStaffTask = ctx.createStaffTask || null;
+  const stripe = ctx.stripe || null;
+  // Payment + financial info is owner-only, like the rest of the money features.
+  const canPayments = (u) => !!u && ["owner", "super_admin"].includes(role(u));
+  // The safe, display-only fields we ever return about a contract's payments.
+  function shapePayment(lead) {
+    return {
+      configured: !!(stripe && stripe.configured()),
+      payment_method_on_file: lead.payment_method_on_file === true || lead.payment_method_on_file === "t",
+      payment_method_type: lead.payment_method_type || null,
+      payment_method_brand: lead.payment_method_brand || null,
+      payment_method_last4: lead.payment_method_last4 || null,
+      payment_status: lead.payment_status || null,
+      last_payment_at: lead.last_payment_at || null,
+      last_payment_amount: lead.last_payment_amount != null ? Number(lead.last_payment_amount) : null,
+      next_payment_at: lead.next_payment_at || null,
+      failed_payment: lead.failed_payment === true || lead.failed_payment === "t",
+      stripe_customer_ref: lead.stripe_customer_id || null,
+      stripe_updated_at: lead.stripe_updated_at || null,
+    };
+  }
 
   const LEAD_TYPES = ["School", "Private Pay", "Insurance", "Community Partner", "Other"];
   const LEAD_STAGES = ["New", "Contacted", "Meeting Set", "Proposal Sent", "Won", "Lost"];
@@ -241,6 +261,12 @@ module.exports = function initGrowth(ctx) {
       "special_requirements TEXT",
       "nurture_sent TEXT DEFAULT '[]'",     // which 30/60/90 check-ins have fired
       "contract_alerts_sent TEXT DEFAULT '[]'", // which expiry milestones have fired
+      // Stripe payment identifiers ONLY -- never raw card/bank/CVV data.
+      "stripe_customer_id TEXT",
+      "payment_method_on_file BOOLEAN DEFAULT FALSE",
+      "payment_method_type TEXT", "payment_method_brand TEXT", "payment_method_last4 TEXT",
+      "payment_status TEXT", "last_payment_at TEXT", "last_payment_amount NUMERIC",
+      "next_payment_at TEXT", "failed_payment BOOLEAN DEFAULT FALSE", "stripe_updated_at TEXT",
     ]) {
       await dbRun(`ALTER TABLE crm_leads ADD COLUMN IF NOT EXISTS ${col}`).catch((e) => console.error("crm_leads alter:", e.message));
     }
@@ -418,6 +444,43 @@ module.exports = function initGrowth(ctx) {
           await sendEmail({ to: lead.contact_email, subject: r.subject, html: r.html, type: "lead_checkin" });
           await logEvent(lead.id, "checkin", `${checkinSend[2]}-day check-in email sent to ${lead.contact_email} by ${user.name || user.email}`, user.name || user.email);
           return json(res, 200, { ok: true, sent_to: lead.contact_email });
+        }
+
+        // ---- Stripe payments (safe identifiers only; owner-gated) ----
+        const payGet = pathname.match(/^\/api\/leads\/(\d+)\/payment$/);
+        if (payGet && method === "GET") {
+          if (!canPayments(user)) return json(res, 403, { error: "Not permitted to view payment information." });
+          const lead = await dbGet("SELECT * FROM crm_leads WHERE id = ?", [Number(payGet[1])]);
+          if (!lead) return json(res, 404, { error: "Not found" });
+          return json(res, 200, shapePayment(lead));
+        }
+        // Start (or update) the payment method via Stripe's hosted Checkout in
+        // SETUP mode. We create/reuse a Customer, then hand back the hosted URL.
+        // No card/bank data ever touches this server.
+        const paySetup = pathname.match(/^\/api\/leads\/(\d+)\/payment\/setup$/);
+        if (paySetup && method === "POST") {
+          if (!canPayments(user)) return json(res, 403, { error: "Not permitted." });
+          if (!stripe || !stripe.configured()) return json(res, 400, { error: "Stripe is not connected yet. Add STRIPE_SECRET_KEY in the server environment to enable payments." });
+          const lead = await dbGet("SELECT * FROM crm_leads WHERE id = ?", [Number(paySetup[1])]);
+          if (!lead) return json(res, 404, { error: "Not found" });
+          try {
+            let customerId = lead.stripe_customer_id;
+            if (!customerId) {
+              const cust = await stripe.createCustomer({ name: lead.name, email: lead.contact_email || undefined, metadata: { crm_lead_id: String(lead.id) } });
+              customerId = cust.id;
+              await dbRun("UPDATE crm_leads SET stripe_customer_id = ?, stripe_updated_at = ? WHERE id = ?", [customerId, nowISO(), lead.id]);
+            }
+            const base = APP_BASE_URL || "";
+            const session = await stripe.createSetupCheckoutSession({
+              customerId,
+              successUrl: `${base}/#/leads?payment=success&lead=${lead.id}`,
+              cancelUrl: `${base}/#/leads?payment=cancelled&lead=${lead.id}`,
+            });
+            await logEvent(lead.id, "note", `Payment setup started by ${user.name || user.email}.`, user.name || user.email);
+            return json(res, 200, { url: session.url, customer_ref: customerId });
+          } catch (e) {
+            return json(res, 400, { error: e.message || "Could not start Stripe setup." });
+          }
         }
         return false;
       }
@@ -605,5 +668,41 @@ module.exports = function initGrowth(ctx) {
 </body></html>`;
   }
 
-  return { initTables, handleApi, servePage, nurtureSweep, contractAlertSweep };
+  // Apply a verified Stripe webhook event to the matching contract's SAFE
+  // fields. Never stores anything sensitive -- only status, brand + last4, and
+  // amounts. Matches the lead by its stored stripe_customer_id.
+  async function applyStripeEvent(event) {
+    const obj = (event && event.data && event.data.object) || {};
+    const customerId = obj.customer || obj.customer_id || null;
+    if (!customerId) return { ok: false, reason: "no_customer" };
+    const lead = await dbGet("SELECT * FROM crm_leads WHERE stripe_customer_id = ?", [customerId]);
+    if (!lead) return { ok: false, reason: "no_lead" };
+    const type = event.type;
+    const set = {};
+    if (type === "checkout.session.completed" || type === "setup_intent.succeeded" || type === "payment_method.attached") {
+      set.payment_method_on_file = true;
+      set.payment_status = "active";
+      set.failed_payment = false;
+      let summary = null;
+      if (obj.card || obj.us_bank_account || obj.type) summary = stripe ? stripe.safePaymentMethodSummary(obj) : null;
+      else if (stripe && stripe.configured() && obj.payment_method) { try { summary = stripe.safePaymentMethodSummary(await stripe.retrievePaymentMethod(obj.payment_method)); } catch (e) {} }
+      if (summary) { set.payment_method_type = summary.type; set.payment_method_brand = summary.brand; set.payment_method_last4 = summary.last4; }
+    } else if (type === "payment_intent.succeeded" || type === "invoice.paid" || type === "invoice.payment_succeeded") {
+      set.payment_status = "paid"; set.failed_payment = false; set.last_payment_at = nowISO();
+      if (obj.amount_received != null) set.last_payment_amount = obj.amount_received / 100;
+      else if (obj.amount_paid != null) set.last_payment_amount = obj.amount_paid / 100;
+      if (obj.next_payment_attempt) set.next_payment_at = new Date(obj.next_payment_attempt * 1000).toISOString();
+    } else if (type === "payment_intent.payment_failed" || type === "invoice.payment_failed") {
+      set.payment_status = "failed"; set.failed_payment = true;
+    } else {
+      return { ok: true, ignored: type };
+    }
+    set.stripe_updated_at = nowISO();
+    const keys = Object.keys(set);
+    await dbRun(`UPDATE crm_leads SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`, [...keys.map((k) => set[k]), lead.id]);
+    await logEvent(lead.id, "contract", `Payment update from Stripe: ${type}.`, "stripe");
+    return { ok: true, lead_id: lead.id, applied: type };
+  }
+
+  return { initTables, handleApi, servePage, nurtureSweep, contractAlertSweep, applyStripeEvent };
 };

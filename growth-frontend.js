@@ -106,6 +106,8 @@
       </div>
       <div style="font-size:11.5px; color:var(--text-muted); margin-top:6px;">Month-to-month contracts have no fixed expiration. Fixed-term contracts show remaining time and raise expiry alerts automatically.</div>
 
+      ${lead.id ? `<div id="pay-mount"></div>` : ""}
+
       ${lead.id ? `
       <div class="section-title">Relationship nurturing</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
@@ -135,6 +137,7 @@
     const close = () => bd.remove();
     bd.querySelector(".close-btn").addEventListener("click", close);
     bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+    if (lead.id) renderPaymentPanel(bd, lead);
     bd.querySelector("#lead-save").addEventListener("click", async () => {
       const body = {};
       bd.querySelectorAll("[data-f]").forEach((el) => { body[el.dataset.f] = el.value === "" ? null : el.value; });
@@ -165,6 +168,53 @@
       st.textContent = "";
       checkinPreviewModal(lead, days, prev, () => { close(); openLead(lead.id, d, mount); });
     }));
+  }
+
+  // Payment (Stripe) panel — owner-only. The GET is owner-gated server-side, so
+  // if it 403s we simply hide the section. Shows only safe identifiers.
+  async function renderPaymentPanel(bd, lead) {
+    const mnt = bd.querySelector("#pay-mount");
+    if (!mnt) return;
+    let p;
+    try { p = await api("/api/leads/" + lead.id + "/payment"); }
+    catch (e) { mnt.innerHTML = ""; return; } // 403 (not owner) -> hide entirely
+    function row(k, v) { return v ? `<li class="review-list" style="list-style:none;padding:0;margin:0;"><span style="color:var(--text-muted);">${esc(k)}:</span> <strong>${esc(v)}</strong></li>` : ""; }
+    var pm = p.payment_method_on_file
+      ? `${esc(p.payment_method_brand || p.payment_method_type || "Method")}${p.payment_method_last4 ? " ····" + esc(p.payment_method_last4) : ""}`
+      : "None on file";
+    var statusBadge = p.failed_payment
+      ? `<span class="tag" style="background:#fee2e2;color:#a3282e;">⚠️ Payment failed</span>`
+      : (p.payment_method_on_file ? `<span class="tag" style="background:#dcfce7;color:#166534;">Active</span>` : `<span class="tag" style="background:#eef0f5;">Not set up</span>`);
+    var notConfigured = !p.configured
+      ? `<div style="font-size:12px;color:#946213;background:#fef3e0;border-radius:8px;padding:8px 10px;margin-top:8px;">Stripe isn't connected on the server yet. Add <code>STRIPE_SECRET_KEY</code> (and <code>STRIPE_WEBHOOK_SECRET</code>) in your environment to enable live payments. The setup button will work as soon as it's connected.</div>`
+      : "";
+    mnt.innerHTML = `<div class="section-title">Payment (Stripe)</div>
+      <div style="border:1px solid var(--border,#e5e7eb);border-radius:12px;padding:12px 14px;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">${statusBadge}
+          <span style="font-size:13px;">Method on file: <strong>${p.payment_method_on_file ? "Yes" : "No"}</strong></span></div>
+        <ul style="list-style:none;padding:0;margin:0;font-size:13px;line-height:1.9;">
+          ${row("Payment method", pm)}
+          ${row("Status", p.payment_status)}
+          ${row("Last payment", p.last_payment_at ? (p.last_payment_at.slice(0,10) + (p.last_payment_amount!=null?` · $${p.last_payment_amount}`:"")) : "")}
+          ${row("Next payment", p.next_payment_at ? p.next_payment_at.slice(0,10) : "")}
+          ${row("Stripe customer", p.stripe_customer_ref)}
+        </ul>
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+          <button class="btn small" id="pay-setup">${p.payment_method_on_file ? "Update payment method" : "Set up payment method"}</button>
+          <span id="pay-status" style="font-size:12px;color:var(--text-muted);"></span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">🔒 Card and bank details are entered on Stripe's secure pages — this CRM only ever stores safe identifiers (brand, last 4, status), never full card or account numbers.</div>
+        ${notConfigured}
+      </div>`;
+    var btn = mnt.querySelector("#pay-setup");
+    if (btn) btn.addEventListener("click", async () => {
+      var st = mnt.querySelector("#pay-status"); btn.disabled = true; st.textContent = "Starting secure setup…";
+      try {
+        var r = await api("/api/leads/" + lead.id + "/payment/setup", { method: "POST" });
+        if (r.url) { window.location.href = r.url; }
+        else { st.textContent = "Setup started."; btn.disabled = false; }
+      } catch (e) { st.textContent = e.message || "Could not start setup."; btn.disabled = false; }
+    });
   }
 
   // Minimal preview-and-send modal for relationship check-ins.
