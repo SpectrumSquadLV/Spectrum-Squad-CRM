@@ -96,6 +96,38 @@ button { font-family: inherit; cursor: pointer; }
 }
 .nav-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
 .nav-item.active { background: rgba(255,255,255,0.18); color: #fff; }
+.nav-count { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
+  background: #5fa8a0; color: #fff; font-size: 11.5px; font-weight: 800; line-height: 20px; text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.nav-count.overdue { background: #ef4444; }
+/* Personal Task Center */
+.tc-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.tc-tab { border: 1px solid var(--border,#e5e7eb); background: #fff; color: var(--text-muted,#6b7280);
+  border-radius: 999px; padding: 6px 13px; font-size: 12.5px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.tc-tab:hover { border-color: #1b2a6b; color: #1b2a6b; }
+.tc-tab.active { background: #1b2a6b; color: #fff; border-color: #1b2a6b; }
+.tc-n { background: rgba(0,0,0,.12); border-radius: 999px; padding: 0 6px; font-size: 11px; min-width: 16px; text-align: center; }
+.tc-tab.active .tc-n { background: rgba(255,255,255,.25); }
+.tc-n.hot { background: #ef4444; color: #fff; }
+.tc-row { display: flex; gap: 12px; align-items: flex-start; padding: 11px 12px; border: 1px solid var(--border,#e5e7eb);
+  border-radius: 12px; margin-bottom: 8px; background: #fff; transition: box-shadow .12s ease; }
+.tc-row:hover { box-shadow: 0 4px 14px rgba(30,35,60,.08); }
+.tc-row.overdue { border-left: 4px solid #ef4444; }
+.tc-check { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; border: 2px solid #cbd5e1; background: #fff;
+  cursor: pointer; font-size: 14px; font-weight: 800; color: #fff; line-height: 1; transition: all .12s ease; }
+.tc-check:hover { border-color: #22a565; background: #e9f7ef; }
+.tc-check.done { background: #22a565; border-color: #22a565; cursor: default; }
+.tc-main { flex: 1; min-width: 0; }
+.tc-title { font-weight: 700; font-size: 14px; color: #201a4d; }
+.tc-title.done { text-decoration: line-through; color: #9ca3af; }
+.tc-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 5px; font-size: 12px; }
+.tc-pill { border-radius: 999px; padding: 2px 9px; font-weight: 800; font-size: 11px; }
+.tc-due { color: var(--text-muted,#6b7280); font-weight: 600; }
+.tc-due.overdue { color: #b91c1c; font-weight: 800; }
+.tc-client { color: #1b2a6b; text-decoration: none; font-weight: 700; }
+.tc-client:hover { text-decoration: underline; }
+.tc-reminded { color: #92400e; }
+.tc-desc { margin-top: 5px; font-size: 12.5px; color: var(--text-muted,#6b7280); }
 
 .sidebar-footer {
   margin-top: auto;
@@ -595,6 +627,27 @@ function getModuleAccess(user) {
 }
 
 // ---------------- Shell (sidebar + layout) ----------------
+// Live "Tasks & Alerts (N)" nav badge. Counts the logged-in user's own open
+// tasks, and turns red when any are overdue. Exposed globally so any task
+// mutation (create / complete / reassign / delete) can refresh it immediately.
+async function refreshTaskBadge() {
+  const el = document.getElementById("nav-task-count");
+  if (!el) return;
+  try {
+    const s = await api("/api/staff-tasks/summary");
+    const n = Number(s.open || 0);
+    if (n > 0) {
+      el.textContent = n > 99 ? "99+" : String(n);
+      el.title = `${n} open task${n === 1 ? "" : "s"}${s.overdue ? ` · ${s.overdue} overdue` : ""}`;
+      el.classList.toggle("overdue", Number(s.overdue || 0) > 0);
+      el.style.display = "";
+    } else {
+      el.style.display = "none";
+    }
+  } catch (e) { /* badge is best-effort; never break the shell */ }
+}
+window.refreshTaskBadge = refreshTaskBadge;
+
 function renderShell(active) {
   // OT-only users see no ABA navigation at all (their OT button is injected by
   // ot-frontend.js). Everyone else gets the normal ABA navigation.
@@ -653,7 +706,7 @@ function renderShell(active) {
           ${navItems
             .map(
               (n) => `<button class="nav-item ${active === n.key ? "active" : ""}" data-nav="${n.key}"${n.hash ? ` data-nav-hash="${n.hash}"` : ""}>
-              <span>${n.icon}</span> ${n.label}</button>`
+              <span>${n.icon}</span> ${n.label}${n.key === "tasks" ? `<span class="nav-count" id="nav-task-count" style="display:none;"></span>` : ""}</button>`
             )
             .join("")}
         </nav>
@@ -671,6 +724,7 @@ function renderShell(active) {
   root.querySelectorAll("[data-nav]").forEach((btn) => {
     btn.addEventListener("click", () => (location.hash = btn.dataset.navHash || "#/" + btn.dataset.nav));
   });
+  refreshTaskBadge();
   document.getElementById("logout-btn").addEventListener("click", async () => {
     await api("/api/auth/logout", { method: "POST" });
     state.user = null;
@@ -734,6 +788,18 @@ async function renderDashboard(mount) {
       <div class="stat-card warn"><div class="label">Open Tasks</div><div class="value">${dash.pending}</div></div>
       <div class="stat-card danger"><div class="label">Overdue Tasks</div><div class="value">${dash.overdue}</div></div>
       <div class="stat-card"><div class="label">Active Therapy</div><div class="value">${byStage.active || 0}</div></div>
+    </div>
+    <div class="card" id="task-center" style="margin-top:20px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div class="section-title" style="margin:0; display:flex; align-items:center; gap:8px;">🗂️ My Task Center</div>
+        <div class="tc-tabs" id="tc-tabs">
+          <button class="tc-tab active" data-tc="today">Today <span class="tc-n" data-tc-n="today"></span></button>
+          <button class="tc-tab" data-tc="upcoming">Upcoming <span class="tc-n" data-tc-n="upcoming"></span></button>
+          <button class="tc-tab" data-tc="overdue">Overdue <span class="tc-n" data-tc-n="overdue"></span></button>
+          <button class="tc-tab" data-tc="completed">Completed</button>
+        </div>
+      </div>
+      <div id="task-center-body" style="margin-top:12px;"><div class="empty-state">Loading your tasks…</div></div>
     </div>
     ${dash.authCounts ? renderAuthDashboardCard(dash.authCounts) : ""}
     <div style="display:grid; grid-template-columns: 1.4fr 1fr; gap: 20px;">
@@ -804,11 +870,111 @@ async function renderDashboard(mount) {
   // handlers) was silently skipped.
   const newClientBtn = mount.querySelector("#new-client-btn") || document.getElementById("new-client-btn");
   if (newClientBtn) newClientBtn.addEventListener("click", openNewClientModal);
+  fillTaskCenter(mount);
   fillCompletionsFeed(mount);
   mount.querySelectorAll("[data-auth-bucket]").forEach((el) => {
     el.addEventListener("click", () => (location.hash = "#/auth-alerts/" + el.dataset.authBucket));
   });
   fillDashStaffing(mount);
+}
+
+// ---------------- Personal Task Center (item 9) ----------------
+// Shows ONLY the logged-in user's own tasks (the server scopes /scope=mine to
+// the current user and refuses to hand a normal staffer anyone else's list).
+// Tabs: Today / Upcoming / Overdue / Completed. Each row has a priority pill,
+// an overdue flag, a quick-complete button, and a link into the client record.
+const TC_PRIORITY = {
+  urgent: { label: "Urgent", bg: "#fdeaea", fg: "#991b1b" },
+  high:   { label: "High",   bg: "#fef3e0", fg: "#946213" },
+  normal: { label: "Normal", bg: "#eef2f7", fg: "#475569" },
+  low:    { label: "Low",    bg: "#e9f9ee", fg: "#177a3c" },
+};
+let _tcTasks = [];
+let _tcFilter = "today";
+function _tcBucket(t) {
+  const today = new Date().toLocaleDateString("en-CA");
+  if (t.status === "done") return "completed";
+  const d = t.due_date ? String(t.due_date).slice(0, 10) : null;
+  if (d && d < today) return "overdue";
+  if (d && d === today) return "today";
+  return "upcoming"; // includes no-due-date tasks
+}
+async function fillTaskCenter(mount) {
+  const body = (mount || document).querySelector("#task-center-body");
+  if (!body) return;
+  try {
+    _tcTasks = await api("/api/staff-tasks?scope=mine");
+  } catch (e) {
+    body.innerHTML = `<div class="empty-state">Couldn't load your tasks.</div>`;
+    return;
+  }
+  const root = document.getElementById("task-center");
+  if (root) {
+    root.querySelectorAll("[data-tc]").forEach((tab) => {
+      tab.onclick = () => {
+        _tcFilter = tab.dataset.tc;
+        root.querySelectorAll(".tc-tab").forEach((t) => t.classList.toggle("active", t === tab));
+        _tcRenderList(body);
+      };
+    });
+  }
+  _tcUpdateCounts();
+  _tcRenderList(body);
+}
+function _tcUpdateCounts() {
+  const counts = { today: 0, upcoming: 0, overdue: 0 };
+  _tcTasks.forEach((t) => { const b = _tcBucket(t); if (b in counts) counts[b]++; });
+  document.querySelectorAll("[data-tc-n]").forEach((el) => {
+    const k = el.dataset.tcN, n = counts[k] || 0;
+    el.textContent = n ? String(n) : "";
+    el.style.display = n ? "" : "none";
+    el.classList.toggle("hot", k === "overdue" && n > 0);
+  });
+}
+function _tcRenderList(body) {
+  const rows = _tcTasks.filter((t) => _tcBucket(t) === _tcFilter);
+  if (!rows.length) {
+    const msg = _tcFilter === "completed" ? "No completed tasks yet." :
+      _tcFilter === "overdue" ? "Nothing overdue — nice. 🎉" :
+      _tcFilter === "today" ? "Nothing due today. You're clear. ✨" : "Nothing coming up.";
+    body.innerHTML = `<div class="empty-state">${msg}</div>`;
+    return;
+  }
+  body.innerHTML = rows.map((t) => {
+    const pr = TC_PRIORITY[(t.priority || "normal")] || TC_PRIORITY.normal;
+    const overdue = _tcBucket(t) === "overdue";
+    const due = t.due_date ? fmtDate(t.due_date) : "No due date";
+    const done = t.status === "done";
+    return `<div class="tc-row${overdue ? " overdue" : ""}">
+      <button class="tc-check${done ? " done" : ""}" data-tc-complete="${t.id}" title="${done ? "Completed" : "Mark complete"}" ${done ? "disabled" : ""}>${done ? "✓" : ""}</button>
+      <div class="tc-main">
+        <div class="tc-title${done ? " done" : ""}">${staffEsc(t.title)}</div>
+        <div class="tc-meta">
+          <span class="tc-pill" style="background:${pr.bg}; color:${pr.fg};">${pr.label}</span>
+          <span class="tc-due${overdue ? " overdue" : ""}">${overdue ? "⚠ " : "📅 "}${staffEsc(due)}</span>
+          ${t.child_name ? `<a href="#" class="tc-client" data-tc-client="${t.client_id}">👤 ${staffEsc(t.child_name)}</a>` : ""}
+          ${t.reminder_sent_at ? `<span class="tc-reminded" title="A reminder was emailed to you">🔔 reminded</span>` : ""}
+        </div>
+        ${t.description ? `<div class="tc-desc">${staffEsc(t.description)}</div>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+  body.querySelectorAll("[data-tc-complete]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await api(`/api/staff-tasks/${btn.dataset.tcComplete}`, { method: "PATCH", body: { status: "done" } });
+        const t = _tcTasks.find((x) => String(x.id) === String(btn.dataset.tcComplete));
+        if (t) { t.status = "done"; t.completed_at = new Date().toISOString(); }
+        _tcUpdateCounts();
+        _tcRenderList(body);
+        refreshTaskBadge();
+      } catch (e) { btn.disabled = false; alert(e.message || "Could not complete the task."); }
+    });
+  });
+  body.querySelectorAll("[data-tc-client]").forEach((a) => {
+    a.addEventListener("click", (ev) => { ev.preventDefault(); openClientModal(a.dataset.tcClient); });
+  });
 }
 
 function renderSupervisionWidget(s) {
@@ -1692,6 +1858,7 @@ async function openClientModal(id) {
           <h2>${client.child_name}</h2>
           <span class="badge" style="background:${stage.color}">${stage.label}</span>
           ${client.waitlisted ? `<span class="badge" style="background:#c98a1b;">⏳ Waitlist</span>` : ""}
+          ${client.transportation_services ? `<span class="badge" title="Spectrum Squad provides transportation for this client" style="background:#3f8f89;">🚐 Transportation</span>` : ""}
         </div>
         <button class="close-btn">✕</button>
       </div>
@@ -1705,6 +1872,22 @@ async function openClientModal(id) {
 
       <div class="section-title">Behavior Intervention Plan</div>
       <div id="bip-mount"></div>
+
+      <div class="section-title">Services</div>
+      <div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:12px 14px; margin-bottom:12px;">
+        <label style="display:flex; align-items:center; gap:10px; font-size:13.5px; font-weight:600; cursor:pointer;">
+          <input type="checkbox" id="cd-transportation" ${client.transportation_services ? "checked" : ""} />
+          🚐 Spectrum Squad provides transportation for this client
+        </label>
+        <div id="transport-notes-wrap" style="margin-top:10px; ${client.transportation_services ? "" : "display:none;"}">
+          <label style="font-size:12px; color:var(--text-muted);">Transportation notes (pickup details, times, constraints)</label>
+          <input type="text" id="cd-transportation_notes" value="${ea(client.transportation_notes)}" placeholder="e.g. Curbside pickup 8:15am, wheelchair van needed" style="width:100%; margin-top:4px;" />
+        </div>
+        <div style="margin-top:10px;">
+          <button class="btn small" id="save-transport-btn">Save transportation</button>
+          <span id="transport-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
+        </div>
+      </div>
 
       <div class="section-title">Assessment</div>
       <div class="form-grid" style="gap:10px;">
@@ -1720,15 +1903,16 @@ async function openClientModal(id) {
       <div style="font-size:12px; color:var(--text-muted); margin:2px 0 10px;">Used to observe ${client.child_name} and build the treatment plan. If no date is set, a reminder is emailed to the parent automatically.</div>
       <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:8px;">
         ${[
-          ["pddbi", "PDDBI"],
-          ["srs2", "SRS-2"],
-          ["psi", "Parent Stress Index"],
-          ["vineland_tricare", "Vineland (for TRICARE)"],
+          ["pddbi", "PDDBI", true],
+          ["srs2", "SRS-2", true],
+          ["psi", "Parent Stress Index", false],
+          ["vineland_tricare", "Vineland", false],
         ]
           .map(
-            ([key, label]) => `<div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:10px 12px;">
+            ([key, label, tricare]) => `<div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:10px 12px;">
               <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600;">
                 <input type="checkbox" data-asmt-done="${key}" ${client[key + "_completed"] ? "checked" : ""} /> ${label}
+                ${tricare ? `<span title="Required for TRICARE" style="font-size:10px; font-weight:700; letter-spacing:.3px; color:#1b2a6b; background:#edecf8; border-radius:999px; padding:2px 7px;">TRICARE</span>` : ""}
               </label>
               <input type="date" data-asmt-date="${key}" value="${(client[key + "_date"] || "").slice(0, 10)}" style="margin-top:8px; width:100%;" />
             </div>`
@@ -2103,6 +2287,37 @@ async function openClientModal(id) {
     });
   }
 
+  const transportToggle = backdrop.querySelector("#cd-transportation");
+  if (transportToggle) {
+    transportToggle.addEventListener("change", () => {
+      const wrap = backdrop.querySelector("#transport-notes-wrap");
+      if (wrap) wrap.style.display = transportToggle.checked ? "" : "none";
+    });
+  }
+  const saveTransportBtn = backdrop.querySelector("#save-transport-btn");
+  if (saveTransportBtn) {
+    saveTransportBtn.addEventListener("click", async () => {
+      const statusEl = backdrop.querySelector("#transport-status");
+      const notesEl = backdrop.querySelector("#cd-transportation_notes");
+      const on = !!(transportToggle && transportToggle.checked);
+      const body = {
+        transportation_services: on,
+        transportation_notes: on && notesEl ? (notesEl.value || null) : null,
+      };
+      saveTransportBtn.disabled = true;
+      statusEl.textContent = "Saving…";
+      try {
+        await api(`/api/clients/${id}`, { method: "PATCH", body });
+        statusEl.textContent = "Saved ✓";
+        setTimeout(() => (statusEl.textContent = ""), 1500);
+      } catch (e) {
+        statusEl.textContent = e.message || "Could not save.";
+      } finally {
+        saveTransportBtn.disabled = false;
+      }
+    });
+  }
+
   const uploadBtn = backdrop.querySelector("#upload-doc-btn");
   if (uploadBtn) {
     uploadBtn.addEventListener("click", async () => {
@@ -2375,27 +2590,35 @@ async function renderStaffTasks(mount) {
     : optionsFor(withLogin);
   const clientOpts = (state.clients || []).map((c) => `<option value="${c.id}">${esc(c.child_name)}</option>`).join("");
   const overdue = (t) => t.status !== "done" && t.due_date && new Date(t.due_date) < new Date(new Date().toDateString());
+  // Only supervisory roles may assign tasks to other people. Everyone else sees
+  // just their own tasks (the server scopes the list to them regardless), so
+  // the assign-to-anyone form is hidden for them.
+  const canAssign = ["owner", "super_admin", "admin"].includes(state.user.role);
+  const prioOpts = `<option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option><option value="low">Low</option>`;
 
   body.innerHTML = `
-    <div class="form-grid" style="gap:10px;">
+    ${canAssign ? `<div class="form-grid" style="gap:10px;">
       <div class="field"><label>Task</label><input id="stask-title" placeholder="e.g. Call insurance about auth" /></div>
       <div class="field"><label>Assign to</label><select id="stask-assignee"><option value="">— Choose staff —</option>${staffOpts}</select></div>
+      <div class="field"><label>Priority</label><select id="stask-priority">${prioOpts}</select></div>
       <div class="field"><label>Due date</label><input id="stask-due" type="date" /></div>
       <div class="field"><label>Related client (optional)</label><select id="stask-client"><option value="">— None —</option>${clientOpts}</select></div>
     </div>
     <div class="field full" style="margin-top:8px;"><label>Details (optional)</label><textarea id="stask-desc" rows="2" placeholder="Any details or context..."></textarea></div>
-    <div style="margin-top:8px;"><button class="btn small" id="stask-add">+ Assign task</button> <span id="stask-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span></div>
+    <div style="margin-top:8px;"><button class="btn small" id="stask-add">+ Assign task</button> <span id="stask-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span></div>`
+    : `<div style="font-size:13px; color:var(--text-muted); margin-bottom:6px;">These are the tasks assigned to you. Your personal <strong>Task Center</strong> on the Dashboard has quick filters and one-tap complete.</div>`}
 
     <div style="margin-top:16px; overflow-x:auto;">
       <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:620px;">
         <thead><tr style="text-align:left; color:var(--text-muted); font-size:11.5px; text-transform:uppercase;">
-          <th style="padding:6px 8px;">Task</th><th style="padding:6px 8px;">Assigned to</th><th style="padding:6px 8px;">Client</th><th style="padding:6px 8px;">Due</th><th style="padding:6px 8px;"></th>
+          <th style="padding:6px 8px;">Task</th><th style="padding:6px 8px;">Priority</th><th style="padding:6px 8px;">Assigned to</th><th style="padding:6px 8px;">Client</th><th style="padding:6px 8px;">Due</th><th style="padding:6px 8px;"></th>
         </tr></thead>
         <tbody>
           ${
             tasks.length
-              ? tasks.map((t) => `<tr style="${t.status === "done" ? "opacity:.55;" : ""}">
+              ? tasks.map((t) => { const pr = TC_PRIORITY[(t.priority || "normal")] || TC_PRIORITY.normal; return `<tr style="${t.status === "done" ? "opacity:.55;" : ""}">
                   <td style="padding:7px 8px;"><strong>${esc(t.title)}</strong>${t.description ? `<div style="color:var(--text-muted); font-size:12px;">${esc(t.description)}</div>` : ""}</td>
+                  <td style="padding:7px 8px;"><span class="tc-pill" style="background:${pr.bg}; color:${pr.fg};">${pr.label}</span></td>
                   <td style="padding:7px 8px;">${esc(t.assigned_name || "—")}</td>
                   <td style="padding:7px 8px;">${esc(t.child_name || "—")}</td>
                   <td style="padding:7px 8px; ${overdue(t) ? "color:#b91c1c; font-weight:700;" : ""}">${t.due_date ? fmtDate(t.due_date) : "—"}${overdue(t) ? " ⚠" : ""}</td>
@@ -2405,19 +2628,19 @@ async function renderStaffTasks(mount) {
                       : `<button class="btn small" data-stask-done="${t.id}">Done</button>`}
                     <button class="btn small secondary" data-stask-del="${t.id}" style="color:#b91c1c;">Delete</button>
                   </td>
-                </tr>`).join("")
-              : `<tr><td colspan="5"><div class="empty-state">No staff tasks yet.</div></td></tr>`
+                </tr>`; }).join("")
+              : `<tr><td colspan="6"><div class="empty-state">No staff tasks yet.</div></td></tr>`
           }
         </tbody>
       </table>
     </div>`;
 
   const statusEl = body.querySelector("#stask-status");
-  body.querySelector("#stask-add").addEventListener("click", async () => {
+  const addBtn = body.querySelector("#stask-add");
+  if (addBtn) addBtn.addEventListener("click", async () => {
     const title = body.querySelector("#stask-title").value.trim();
     if (!title) { statusEl.textContent = "Enter a task title."; return; }
-    const btn = body.querySelector("#stask-add");
-    btn.disabled = true;
+    addBtn.disabled = true;
     statusEl.textContent = "Saving…";
     try {
       await api("/api/staff-tasks", { method: "POST", body: {
@@ -2434,25 +2657,27 @@ async function renderStaffTasks(mount) {
             return { assigned_user_id: raw };
           }
         })(),
+        priority: (body.querySelector("#stask-priority") || {}).value || "normal",
         due_date: body.querySelector("#stask-due").value || null,
         client_id: body.querySelector("#stask-client").value || null,
         description: body.querySelector("#stask-desc").value || null,
       } });
+      refreshTaskBadge();
       await renderStaffTasks(mount);
     } catch (e) {
       statusEl.textContent = e.message || "Could not save.";
-      btn.disabled = false;
+      addBtn.disabled = false;
     }
   });
   body.querySelectorAll("[data-stask-done]").forEach((b) => b.addEventListener("click", async () => {
-    await api(`/api/staff-tasks/${b.dataset.staskDone}`, { method: "PATCH", body: { status: "done" } }); renderStaffTasks(mount);
+    await api(`/api/staff-tasks/${b.dataset.staskDone}`, { method: "PATCH", body: { status: "done" } }); refreshTaskBadge(); renderStaffTasks(mount);
   }));
   body.querySelectorAll("[data-stask-reopen]").forEach((b) => b.addEventListener("click", async () => {
-    await api(`/api/staff-tasks/${b.dataset.staskReopen}`, { method: "PATCH", body: { status: "open" } }); renderStaffTasks(mount);
+    await api(`/api/staff-tasks/${b.dataset.staskReopen}`, { method: "PATCH", body: { status: "open" } }); refreshTaskBadge(); renderStaffTasks(mount);
   }));
   body.querySelectorAll("[data-stask-del]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("Delete this task?")) return;
-    await api(`/api/staff-tasks/${b.dataset.staskDel}`, { method: "DELETE" }); renderStaffTasks(mount);
+    await api(`/api/staff-tasks/${b.dataset.staskDel}`, { method: "DELETE" }); refreshTaskBadge(); renderStaffTasks(mount);
   }));
 }
 
