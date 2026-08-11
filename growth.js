@@ -8,9 +8,180 @@
 
 module.exports = function initGrowth(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, extractPdfLines, unzip } = ctx;
+  // Optional deps for contract management (item 10/11). Fall back gracefully so
+  // the module still loads if a host wires it the old way.
+  const sendEmail = ctx.sendEmail || (async () => {});
+  const getAppSetting = ctx.getAppSetting || (async (_k, d) => d);
+  const APP_BASE_URL = ctx.APP_BASE_URL || "";
+  const emailTemplates = ctx.emailTemplates || null;
+  const createStaffTask = ctx.createStaffTask || null;
 
   const LEAD_TYPES = ["School", "Private Pay", "Insurance", "Community Partner", "Other"];
   const LEAD_STAGES = ["New", "Contacted", "Meeting Set", "Proposal Sent", "Won", "Lost"];
+  const LEAD_SOURCES = ["Referral", "Website", "Event/Conference", "Cold Outreach", "Existing Relationship", "Community Partner", "Other"];
+  const RELATIONSHIP_STATUSES = ["Prospect", "In Discussion", "Active Partner", "At Risk", "Dormant", "Former"];
+  const CONTRACT_TYPES = ["none", "fixed_term", "month_to_month"];
+  const CONTRACT_STATUSES = ["none", "pending", "active", "renewing", "expired", "ended"];
+
+  // ---- contract math ----------------------------------------------------
+  function daysBetween(fromISO, toISO) {
+    const a = new Date(String(fromISO).slice(0, 10) + "T12:00:00");
+    const b = new Date(String(toISO).slice(0, 10) + "T12:00:00");
+    if (isNaN(a.getTime()) || isNaN(b.getTime())) return null;
+    return Math.round((b - a) / 86400000);
+  }
+  // Everything the UI needs to describe a contract's timing, computed rather
+  // than stored so it can never go stale.
+  function computeContractView(lead, todayISO) {
+    const today = (todayISO || new Date().toISOString()).slice(0, 10);
+    const type = lead.contract_type || "none";
+    const isMonthToMonth = type === "month_to_month";
+    const end = lead.contract_end_date ? String(lead.contract_end_date).slice(0, 10) : null;
+    let daysRemaining = null, expiresOn = null, expired = false, expiringSoon = false;
+    if (type === "fixed_term" && end) {
+      daysRemaining = daysBetween(today, end);
+      expiresOn = end;
+      expired = daysRemaining < 0;
+      expiringSoon = daysRemaining >= 0 && daysRemaining <= (lead.notice_period_days || 30);
+    }
+    return { type, isMonthToMonth, hasExpiration: type === "fixed_term" && !!end, daysRemaining, expiresOn, expired, expiringSoon };
+  }
+  async function logEvent(leadId, eventType, body, actor) {
+    await dbRun(
+      "INSERT INTO crm_lead_events (lead_id, event_type, body, actor, created_at) VALUES (?, ?, ?, ?, ?)",
+      [leadId, eventType, body, actor || "system", nowISO()]
+    ).catch((e) => console.error("crm_lead_events insert:", e.message));
+  }
+  function fill(s, f) { return String(s || "").replace(/\{\{(\w+)\}\}/g, (_, k) => (f[k] != null ? String(f[k]) : "")); }
+  function checkinFields(lead) {
+    return {
+      org_name: lead.name || "your organization",
+      contact_name: lead.contact_name || "there",
+      assigned_to: lead.assigned_to || "your Spectrum Squad contact",
+      weekly_hours: lead.weekly_committed_hours != null ? String(lead.weekly_committed_hours) : "",
+    };
+  }
+  // Fallback copy (used if the editable email templates aren't wired). These are
+  // relationship check-ins, deliberately warm and specific -- not sales blasts.
+  const DEFAULT_CHECKIN = {
+    "30": { subject: "Checking in on our first month together — {{org_name}}", body: "<p>Hi {{contact_name}},</p><p>We're about a month into working together and I wanted to check in personally. How are things going from your side? Is the current level of support meeting {{org_name}}'s needs, and is there anything we could be doing better?</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
+    "60": { subject: "Two months in — how are we doing, {{contact_name}}?", body: "<p>Hi {{contact_name}},</p><p>As we pass the two-month mark, I'd love your honest read on how the partnership is working. Are there upcoming needs, staffing changes, or additional services we should be planning for together?</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
+    "90": { subject: "Our first quarter together — a quick check-in", body: "<p>Hi {{contact_name}},</p><p>We've reached our first quarter with {{org_name}} and I'd love to hear how you feel it's going. This is a great moment to talk through satisfaction, any changes on the horizon, and whether it makes sense to revisit the scope of our work together.</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
+  };
+  async function renderCheckin(lead, days) {
+    const f = checkinFields(lead);
+    let subject, html;
+    if (emailTemplates && emailTemplates.getEmailTemplate) {
+      const t = await emailTemplates.getEmailTemplate("lead_checkin_" + days).catch(() => null);
+      if (t && t.subject_template) { subject = emailTemplates.renderMergeFields(t.subject_template, f); html = emailTemplates.renderMergeFields(t.body_template, f); }
+    }
+    if (!subject) { const d = DEFAULT_CHECKIN[days]; subject = fill(d.subject, f); html = fill(d.body, f); }
+    return { ok: true, to: lead.contact_email || null, subject, html };
+  }
+
+  function markJson(current, value) {
+    let arr = []; try { arr = JSON.parse(current || "[]"); } catch (e) { arr = []; }
+    if (!arr.includes(value)) arr.push(value);
+    return JSON.stringify(arr);
+  }
+  async function makeFollowupTask({ title, description, assignedName, dueDays }) {
+    if (!createStaffTask) return;
+    const due = new Date(); due.setDate(due.getDate() + (dueDays || 3));
+    await createStaffTask({
+      title, description,
+      assigned_name: assignedName || null,
+      due_date: due.toISOString().slice(0, 10),
+      priority: "normal",
+      created_by: "system",
+    }).catch((e) => console.error("lead follow-up task failed:", e.message));
+  }
+
+  // 30 / 60 / 90-day relationship nurturing. For active partners/contracts, at
+  // each milestone (once) it drops a follow-up task on the assigned team member
+  // and notes it on the timeline, so no check-in is ever forgotten.
+  async function nurtureSweep() {
+    const today = new Date().toISOString().slice(0, 10);
+    const rows = await dbAll(
+      `SELECT * FROM crm_leads
+        WHERE (contract_status = 'active' OR relationship_status = 'Active Partner')
+          AND stage NOT IN ('Lost')`
+    ).catch(() => []);
+    let n = 0;
+    for (const lead of rows) {
+      const anchor = (lead.contract_start_date || lead.created_at || "").slice(0, 10);
+      if (!anchor) continue;
+      const days = daysBetween(anchor, today);
+      if (days == null || days < 0) continue;
+      let sent; try { sent = JSON.parse(lead.nurture_sent || "[]"); } catch (e) { sent = []; }
+      for (const m of [30, 60, 90]) {
+        if (days >= m && !sent.includes(String(m))) {
+          await makeFollowupTask({
+            title: `${m}-day check-in: ${lead.name}`,
+            description: `Meaningful relationship check-in with ${lead.name}. Talk through satisfaction, current and upcoming needs, staffing, additional service opportunities, and any feedback. (Tip: the "Send check-in email" button on this lead has an editable template.)`,
+            assignedName: lead.assigned_to,
+            dueDays: 3,
+          });
+          await logEvent(lead.id, "task", `${m}-day check-in follow-up created for ${lead.assigned_to || "the team"}.`, "system");
+          await dbRun("UPDATE crm_leads SET nurture_sent = ? WHERE id = ?", [markJson(lead.nurture_sent, String(m)), lead.id]);
+          lead.nurture_sent = markJson(lead.nurture_sent, String(m));
+          n++;
+        }
+      }
+    }
+    return n;
+  }
+
+  // Contract-expiry alerts for fixed-term contracts. As the end date approaches
+  // (standard milestones plus the contract's own notice period), it creates one
+  // alert task + timeline note per milestone and emails the assigned member.
+  async function contractAlertSweep() {
+    const today = new Date().toISOString().slice(0, 10);
+    const rows = await dbAll(
+      `SELECT * FROM crm_leads
+        WHERE contract_type = 'fixed_term' AND contract_end_date IS NOT NULL
+          AND contract_status NOT IN ('ended','expired')`
+    ).catch(() => []);
+    let n = 0;
+    for (const lead of rows) {
+      const daysRemaining = daysBetween(today, String(lead.contract_end_date).slice(0, 10));
+      if (daysRemaining == null) continue;
+      const milestones = Array.from(new Set([60, 30, 14, 0, lead.notice_period_days].filter((x) => x != null))).sort((a, b) => b - a);
+      let sent; try { sent = JSON.parse(lead.contract_alerts_sent || "[]"); } catch (e) { sent = []; }
+      for (const mDay of milestones) {
+        const key = "d" + mDay;
+        if (daysRemaining <= mDay && !sent.includes(key)) {
+          const label = daysRemaining < 0 ? `expired ${Math.abs(daysRemaining)} day(s) ago` : `expires in ${daysRemaining} day(s)`;
+          await makeFollowupTask({
+            title: `Contract ${daysRemaining < 0 ? "EXPIRED" : "expiring"}: ${lead.name}`,
+            description: `${lead.name}'s fixed-term contract ${label} (ends ${String(lead.contract_end_date).slice(0, 10)}). Notice period: ${lead.notice_period_days || "—"} days. Renewal date: ${lead.renewal_date || "—"}. Reach out to renew, renegotiate, or wind down.`,
+            assignedName: lead.assigned_to,
+            dueDays: 1,
+          });
+          await logEvent(lead.id, "alert", `Contract ${label} — alert raised.`, "system");
+          const to = await resolveAssignedEmail(lead.assigned_to);
+          if (to) {
+            await sendEmail({
+              to,
+              subject: `Contract ${daysRemaining < 0 ? "expired" : "expiring soon"}: ${lead.name}`,
+              html: `<p>${lead.name}'s contract ${label} (ends ${String(lead.contract_end_date).slice(0, 10)}).</p><p>Notice period: ${lead.notice_period_days || "—"} days. Open the lead in the CRM to renew or renegotiate.</p>`,
+              type: "contract_alert",
+            }).catch(() => {});
+          }
+          await dbRun("UPDATE crm_leads SET contract_alerts_sent = ? WHERE id = ?", [markJson(lead.contract_alerts_sent, key), lead.id]);
+          lead.contract_alerts_sent = markJson(lead.contract_alerts_sent, key);
+          n++;
+        }
+      }
+    }
+    return n;
+  }
+  async function resolveAssignedEmail(name) {
+    if (!name) return null;
+    const u = await dbGet("SELECT email FROM users WHERE lower(name) = lower(?) AND email IS NOT NULL LIMIT 1", [name]).catch(() => null);
+    if (u && u.email) return u.email;
+    const e = await dbGet("SELECT email FROM hr_employees WHERE lower(name) = lower(?) AND email IS NOT NULL AND email <> '' LIMIT 1", [name]).catch(() => null);
+    return e ? e.email : null;
+  }
   const POLICY_CATEGORIES = ["HR", "Clinical", "Safety", "Billing", "Operations", "Compliance", "Other"];
   // One colour per category, so the cards read at a glance and stay consistent
   // between the staff view and the public QR page.
@@ -59,6 +230,30 @@ module.exports = function initGrowth(ctx) {
       created_at TEXT,
       updated_at TEXT
     )`).catch((e) => console.error("crm_leads:", e.message));
+    // Relationship + contract management (Phase 5). All additive.
+    for (const col of [
+      "address TEXT", "lead_source TEXT", "relationship_status TEXT", "assigned_to TEXT",
+      "contract_type TEXT",                 // fixed_term | month_to_month | none
+      "contract_status TEXT",               // none | active | pending | renewing | expired | ended
+      "contract_start_date TEXT", "contract_end_date TEXT", "renewal_date TEXT",
+      "notice_period_days INTEGER", "payment_arrangement TEXT",
+      "weekly_committed_hours NUMERIC", "assigned_bcbas TEXT", "other_staff TEXT",
+      "special_requirements TEXT",
+      "nurture_sent TEXT DEFAULT '[]'",     // which 30/60/90 check-ins have fired
+      "contract_alerts_sent TEXT DEFAULT '[]'", // which expiry milestones have fired
+    ]) {
+      await dbRun(`ALTER TABLE crm_leads ADD COLUMN IF NOT EXISTS ${col}`).catch((e) => console.error("crm_leads alter:", e.message));
+    }
+    // A lightweight interaction timeline for each lead/contract.
+    await dbRun(`CREATE TABLE IF NOT EXISTS crm_lead_events (
+      id SERIAL PRIMARY KEY,
+      lead_id INTEGER NOT NULL,
+      event_type TEXT DEFAULT 'note',       -- note | checkin | contract | alert | task | stage
+      body TEXT,
+      actor TEXT,
+      created_at TEXT
+    )`).catch((e) => console.error("crm_lead_events:", e.message));
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_crm_lead_events_lead ON crm_lead_events(lead_id)`).catch(() => {});
     await dbRun(`CREATE TABLE IF NOT EXISTS crm_policies (
       id SERIAL PRIMARY KEY,
       title TEXT NOT NULL,
@@ -138,9 +333,18 @@ module.exports = function initGrowth(ctx) {
       // ================= LEADS =================
       if (pathname.startsWith("/api/leads")) {
         if (!canLeads(user)) return json(res, 403, { error: "Not permitted" });
+        // All editable fields, and which ones are numeric.
+        const TEXT_FIELDS = ["name", "lead_type", "stage", "contact_name", "contact_email", "contact_phone", "next_follow_up", "notes",
+          "address", "lead_source", "relationship_status", "assigned_to", "contract_type", "contract_status",
+          "contract_start_date", "contract_end_date", "renewal_date", "payment_arrangement", "assigned_bcbas", "other_staff", "special_requirements"];
+        const NUM_FIELDS = ["est_value", "weekly_committed_hours", "notice_period_days"];
+        const ALL_FIELDS = TEXT_FIELDS.concat(NUM_FIELDS);
+        const meta = { types: LEAD_TYPES, stages: LEAD_STAGES, sources: LEAD_SOURCES, relationship_statuses: RELATIONSHIP_STATUSES, contract_types: CONTRACT_TYPES, contract_statuses: CONTRACT_STATUSES };
+
         if (pathname === "/api/leads" && method === "GET") {
           const rows = await dbAll("SELECT * FROM crm_leads ORDER BY (stage IN ('Won','Lost')), COALESCE(next_follow_up,'9999'), id DESC");
-          return json(res, 200, { leads: rows, types: LEAD_TYPES, stages: LEAD_STAGES });
+          const shaped = rows.map((r) => ({ ...r, contract: computeContractView(r) }));
+          return json(res, 200, { leads: shaped, ...meta });
         }
         if (pathname === "/api/leads" && method === "POST") {
           const b = await readBody(req);
@@ -150,19 +354,71 @@ module.exports = function initGrowth(ctx) {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
             [b.name, b.lead_type || "Other", b.stage || "New", b.contact_name || null, b.contact_email || null, b.contact_phone || null, num(b.est_value), b.next_follow_up || null, b.notes || null, user.name || null, nowISO(), nowISO()]
           );
+          await logEvent(row.rows[0].id, "note", `Lead created by ${user.name || user.email}`, user.name || user.email);
           return json(res, 201, { ok: true, id: row.rows[0].id });
         }
+
+        // Lead detail + interaction timeline.
+        const leadDetail = pathname.match(/^\/api\/leads\/(\d+)$/);
+        if (leadDetail && method === "GET") {
+          const lead = await dbGet("SELECT * FROM crm_leads WHERE id = ?", [Number(leadDetail[1])]);
+          if (!lead) return json(res, 404, { error: "Not found" });
+          const events = await dbAll("SELECT * FROM crm_lead_events WHERE lead_id = ? ORDER BY id DESC LIMIT 200", [lead.id]);
+          return json(res, 200, { lead: { ...lead, contract: computeContractView(lead) }, events, ...meta });
+        }
+
         const leadMatch = pathname.match(/^\/api\/leads\/(\d+)$/);
         if (leadMatch && method === "PATCH") {
+          const id = Number(leadMatch[1]);
+          const before = await dbGet("SELECT * FROM crm_leads WHERE id = ?", [id]);
+          if (!before) return json(res, 404, { error: "Not found" });
           const b = await readBody(req);
-          const allowed = ["name", "lead_type", "stage", "contact_name", "contact_email", "contact_phone", "est_value", "next_follow_up", "notes"];
-          const fields = Object.keys(b).filter((k) => allowed.includes(k));
+          const fields = Object.keys(b).filter((k) => ALL_FIELDS.includes(k));
           if (!fields.length) return json(res, 400, { error: "Nothing to update." });
-          const vals = fields.map((f) => (f === "est_value" ? num(b[f]) : b[f]));
-          await dbRun(`UPDATE crm_leads SET ${fields.map((f) => `${f} = ?`).join(", ")}, updated_at = ? WHERE id = ?`, [...vals, nowISO(), Number(leadMatch[1])]);
+          const vals = fields.map((f) => (NUM_FIELDS.includes(f) ? num(b[f]) : (b[f] === "" ? null : b[f])));
+          await dbRun(`UPDATE crm_leads SET ${fields.map((f) => `${f} = ?`).join(", ")}, updated_at = ? WHERE id = ?`, [...vals, nowISO(), id]);
+          // Never silently change an important contract status: record it.
+          const watch = ["contract_status", "contract_type", "contract_start_date", "contract_end_date", "renewal_date", "relationship_status", "stage"];
+          for (const f of watch) {
+            if (fields.includes(f) && String(before[f] ?? "") !== String(b[f] ?? "")) {
+              await logEvent(id, f.startsWith("contract") ? "contract" : "stage",
+                `${f.replace(/_/g, " ")} changed from "${before[f] || "—"}" to "${b[f] || "—"}" by ${user.name || user.email}`, user.name || user.email);
+            }
+          }
           return json(res, 200, { ok: true });
         }
-        if (leadMatch && method === "DELETE") { await dbRun("DELETE FROM crm_leads WHERE id = ?", [Number(leadMatch[1])]); return json(res, 200, { ok: true }); }
+        if (leadMatch && method === "DELETE") { await dbRun("DELETE FROM crm_leads WHERE id = ?", [Number(leadMatch[1])]); await dbRun("DELETE FROM crm_lead_events WHERE lead_id = ?", [Number(leadMatch[1])]).catch(() => {}); return json(res, 200, { ok: true }); }
+
+        // Add a free-text interaction to the timeline.
+        const eventMatch = pathname.match(/^\/api\/leads\/(\d+)\/events$/);
+        if (eventMatch && method === "POST") {
+          const b = await readBody(req);
+          const body = (b.body || "").trim();
+          if (!body) return json(res, 400, { error: "Write something to log." });
+          await logEvent(Number(eventMatch[1]), b.event_type || "note", body, user.name || user.email);
+          return json(res, 201, { ok: true });
+        }
+
+        // Preview / send a relationship check-in email to the contact, using an
+        // editable template. Logs the send to the timeline.
+        const checkinPrev = pathname.match(/^\/api\/leads\/(\d+)\/checkin\/(30|60|90)\/preview$/);
+        if (checkinPrev && method === "POST") {
+          const lead = await dbGet("SELECT * FROM crm_leads WHERE id = ?", [Number(checkinPrev[1])]);
+          if (!lead) return json(res, 404, { error: "Not found" });
+          const r = await renderCheckin(lead, checkinPrev[2]);
+          return json(res, r.ok ? 200 : 400, r);
+        }
+        const checkinSend = pathname.match(/^\/api\/leads\/(\d+)\/checkin\/(30|60|90)\/send$/);
+        if (checkinSend && method === "POST") {
+          const lead = await dbGet("SELECT * FROM crm_leads WHERE id = ?", [Number(checkinSend[1])]);
+          if (!lead) return json(res, 404, { error: "Not found" });
+          if (!lead.contact_email) return json(res, 400, { error: "This lead has no contact email on file." });
+          const r = await renderCheckin(lead, checkinSend[2]);
+          if (!r.ok) return json(res, 400, r);
+          await sendEmail({ to: lead.contact_email, subject: r.subject, html: r.html, type: "lead_checkin" });
+          await logEvent(lead.id, "checkin", `${checkinSend[2]}-day check-in email sent to ${lead.contact_email} by ${user.name || user.email}`, user.name || user.email);
+          return json(res, 200, { ok: true, sent_to: lead.contact_email });
+        }
         return false;
       }
 
@@ -349,5 +605,5 @@ module.exports = function initGrowth(ctx) {
 </body></html>`;
   }
 
-  return { initTables, handleApi, servePage };
+  return { initTables, handleApi, servePage, nurtureSweep, contractAlertSweep };
 };

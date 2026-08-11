@@ -1086,11 +1086,32 @@ const EMAIL_TEMPLATE_DEFS = [
   { key: "post_assessment_next_steps", label: "Post-Assessment / Next Steps (Parent)", category: "Parent Milestone Emails",
     description: "Sent to the family after they complete their in-clinic assessment. Congratulates them, thanks them for coming in, and sets clear, realistic expectations for the next steps in intake. Sent manually from the client profile, with a preview first.",
     fields: ["parent_name", "child_name", "today", "assigned_bcba_name"] },
+  { key: "lead_checkin_30", label: "Relationship Check-in — 30 Days", category: "Lead / Contract Emails",
+    description: "A warm 30-day relationship check-in you can send to a contracted organization's contact from the Lead profile (preview first). The 30/60/90 automation creates a follow-up task reminding the assigned team member to reach out; this is the email they can send.",
+    fields: ["org_name", "contact_name", "assigned_to", "weekly_hours"] },
+  { key: "lead_checkin_60", label: "Relationship Check-in — 60 Days", category: "Lead / Contract Emails",
+    description: "A 60-day relationship check-in for a contracted organization's contact, sent from the Lead profile.",
+    fields: ["org_name", "contact_name", "assigned_to", "weekly_hours"] },
+  { key: "lead_checkin_90", label: "Relationship Check-in — 90 Days", category: "Lead / Contract Emails",
+    description: "A 90-day relationship check-in for a contracted organization's contact, sent from the Lead profile.",
+    fields: ["org_name", "contact_name", "assigned_to", "weekly_hours"] },
 ];
 
 // The CRM's original built-in copy -- used both as the seed data and as a
 // last-resort fallback if a template row is somehow missing.
 const EMAIL_TEMPLATE_DEFAULTS = {
+  lead_checkin_30: {
+    subject: "Checking in on our first month together — {{org_name}}",
+    body: "<p>Hi {{contact_name}},</p><p>We're about a month into working together and I wanted to check in personally. How are things going from your side? Is the current level of support meeting {{org_name}}'s needs, and is there anything we could be doing better?</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>",
+  },
+  lead_checkin_60: {
+    subject: "Two months in — how are we doing, {{contact_name}}?",
+    body: "<p>Hi {{contact_name}},</p><p>As we pass the two-month mark, I'd love your honest read on how the partnership is working. Are there upcoming needs, staffing changes, or additional services we should be planning for together?</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>",
+  },
+  lead_checkin_90: {
+    subject: "Our first quarter together — a quick check-in",
+    body: "<p>Hi {{contact_name}},</p><p>We've reached our first quarter with {{org_name}} and I'd love to hear how you feel it's going. This is a great moment to talk through satisfaction, any changes on the horizon, and whether it makes sense to revisit the scope of our work together.</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>",
+  },
   post_assessment_next_steps: {
     subject: "Thank you for completing {{child_name}}'s assessment — here's what happens next",
     body:
@@ -1422,6 +1443,10 @@ function sampleFieldsFor() {
     assigned_bcba_name: "Allie R.",
     authorization_status: "Approved",
     client_link: `${APP_BASE_URL}/#/pipeline/123`,
+    org_name: "Sunrise Elementary School",
+    contact_name: "Jordan Lee",
+    assigned_to: "Quiana Blake",
+    weekly_hours: "20",
   };
 }
 
@@ -5359,6 +5384,15 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       return json(res, 200, { sent: n });
     }
 
+    // Manually run the lead nurturing + contract-expiry sweeps. Admin-only;
+    // each milestone still fires at most once per lead.
+    if (pathname === "/api/admin/run-lead-sweeps" && method === "POST") {
+      if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted" });
+      const nurtured = growth.nurtureSweep ? await growth.nurtureSweep() : 0;
+      const alerts = growth.contractAlertSweep ? await growth.contractAlertSweep() : 0;
+      return json(res, 200, { nurture_tasks: nurtured, contract_alerts: alerts });
+    }
+
     if (pathname === "/api/admin/departments" && method === "PATCH") {
       // Department alert emails carry child names, parent names and stage
       // details. Without this check any logged-in account could redirect them
@@ -6145,6 +6179,11 @@ const growth = require("./growth")({
   dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, moduleGranted,
   extractPdfLines: (buf) => financialAdvisor.extractPdfLines(buf),
   unzip: (buf) => financialAdvisor.unzip(buf),
+  // Contract management (Phase 5): email, editable check-in templates, and
+  // follow-up tasks that land in the assignee's Task Center.
+  sendEmail, getAppSetting, APP_BASE_URL,
+  emailTemplates,
+  createStaffTask: (t) => createStaffTask(t),
 });
 // ===== BEHAVIOR INTERVENTION PLAN workspace: lives inside the client card.
 // Owns /api/bip/*. Reuses the clients table, auth, permissions and email. =====
@@ -6367,6 +6406,15 @@ async function start() {
   setInterval(() => {
     processTreatmentPlanReminders().catch((e) => console.error("Treatment plan reminder sweep failed:", e));
   }, 24 * 60 * 60 * 1000);
+
+  // Lead/contract nurturing (30/60/90-day check-in tasks) and contract-expiry
+  // alerts. Runs on boot and then daily; each milestone fires at most once.
+  const growthSweeps = () => {
+    if (growth.nurtureSweep) growth.nurtureSweep().catch((e) => console.error("Lead nurture sweep failed:", e));
+    if (growth.contractAlertSweep) growth.contractAlertSweep().catch((e) => console.error("Contract alert sweep failed:", e));
+  };
+  growthSweeps();
+  setInterval(growthSweeps, 24 * 60 * 60 * 1000);
 
   // Staff certification expiry -- staged notices to the staff member and the
   // Clinical Director. Runs on boot and then daily. Each stage sends at most
