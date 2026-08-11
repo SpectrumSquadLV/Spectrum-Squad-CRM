@@ -31,6 +31,15 @@ module.exports = function initHr(ctx) {
     sendFile,
   } = ctx;
 
+  // SMS (Twilio) helpers from server.js. Degrade to safe no-ops so an older
+  // server build without SMS wiring can't crash recruiting. sendSms enforces
+  // consent + opt-out centrally, so callers only need to pass the consent flag.
+  const sendSms = ctx.sendSms || (async () => ({ delivered: "skipped_unavailable", errorMsg: "SMS is not available on this server build." }));
+  const smsOptedOut = ctx.smsOptedOut || (async () => false);
+  const recordSmsOptOut = ctx.recordSmsOptOut || (async () => null);
+  const clearSmsOptOut = ctx.clearSmsOptOut || (async () => null);
+  const smsConfigured = ctx.smsConfigured || (() => false);
+
   // The new-hire employment packet is sent through SignNow, which lives in
   // server.js. If an older server.js is running without it, degrade to a
   // recorded no-op rather than crashing offer acceptance.
@@ -1098,7 +1107,79 @@ module.exports = function initHr(ctx) {
       position
     ).catch((e) => console.error("enrollFollowupSequence failed:", e.message));
 
+    // Consent-gated confirmation text. sendSms enforces consent + opt-out again
+    // centrally, so this is belt-and-suspenders; we still check here to avoid
+    // logging a pointless "skipped_no_consent" row for every non-consenting
+    // applicant. Best-effort: a texting hiccup must never fail an application.
+    if (smsConsent && phone) {
+      const firstName = String(input.full_name || "").trim().split(/\s+/)[0] || "there";
+      const roleName = (position && position.title) || "the role";
+      const smsBody = `Hi ${firstName}, thanks for applying to Spectrum Squad for ${roleName}! We received your application and will be in touch. Reply STOP to opt out.`;
+      sendSms({ to: phone, body: smsBody, type: "recruiting_apply_confirm", consented: true })
+        .then((r) => logApplicantSms(applicantId, phone, smsBody, r, "assistant"))
+        .catch((e) => console.error("apply-confirmation SMS failed:", e.message));
+    }
+
     return { id: applicantId, match, duplicateOf };
+  }
+
+  // Record an outbound SMS on the candidate's message timeline, mirroring how
+  // sendApplicantEmail logs email. Keeps texts and emails in one thread.
+  async function logApplicantSms(applicantId, toPhone, body, result, sentBy) {
+    await dbRun(
+      `INSERT INTO hr_applicant_messages
+        (applicant_id, direction, channel, from_addr, to_addr, subject, body, status, error, ai_generated, sent_by, created_at)
+       VALUES (?, 'outbound', 'sms', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        applicantId,
+        process.env.TWILIO_FROM_NUMBER || "Spectrum Squad",
+        (result && result.to) || toPhone,
+        "SMS",
+        body,
+        (result && result.delivered) || "unknown",
+        (result && result.errorMsg) || null,
+        false,
+        sentBy || "assistant",
+        nowISO(),
+      ]
+    ).catch((e) => console.error("applicant SMS log failed:", e.message));
+  }
+
+  // Handle an inbound text (called by the Twilio webhook in server.js). Matches
+  // the sender to a candidate by phone (last 10 digits) and logs it on their
+  // timeline; a genuine reply also pauses automation and pings staff. The STOP
+  // opt-out itself is recorded server-side before this runs.
+  async function processInboundSms({ from, body, kind }) {
+    const last10 = String(from || "").replace(/\D/g, "").slice(-10);
+    if (!last10) return { matched: false };
+    const a = await dbGet(
+      `SELECT * FROM hr_applicants
+        WHERE regexp_replace(COALESCE(phone,''), '[^0-9]', '', 'g') LIKE ?
+        ORDER BY id DESC LIMIT 1`,
+      ["%" + last10]
+    );
+    if (!a) return { matched: false };
+    const now = nowISO();
+    await dbRun(
+      `INSERT INTO hr_applicant_messages (applicant_id, direction, channel, from_addr, to_addr, subject, body, status, created_at)
+       VALUES (?, 'inbound', 'sms', ?, ?, ?, ?, 'received', ?)`,
+      [a.id, from, process.env.TWILIO_FROM_NUMBER || "Spectrum Squad", kind === "reply" ? "SMS reply" : "SMS: " + kind, body || "", now]
+    );
+    if (kind === "reply") {
+      await dbRun("UPDATE hr_applicants SET last_response_at = ?, automation_paused = TRUE, updated_at = ? WHERE id = ?", [now, now, a.id]);
+      await cancelPendingFollowups(a.id);
+      if (["new_applicant", "ai_screening", "needs_human_review", "contacted"].includes(a.stage)) {
+        await moveStageInternal(a, "responded", "candidate", "Candidate replied by text");
+      }
+      await notify({
+        type: "candidate_sms_reply",
+        applicantId: a.id,
+        title: "New text from a candidate",
+        body: `${a.full_name || "A candidate"} replied by text: "${String(body || "").slice(0, 140)}"`,
+        severity: "info",
+      }).catch(() => {});
+    }
+    return { matched: true, applicantId: a.id };
   }
 
   function escapeHtml(str) {
@@ -1884,6 +1965,10 @@ module.exports = function initHr(ctx) {
         );
         if (!a) return json(res, 404, { error: "Applicant not found" });
 
+        // Whether this candidate can currently be texted: consent on file, a
+        // phone number, not opted out, and SMS actually configured on the server.
+        const smsOpted = a.phone ? await smsOptedOut(a.phone) : false;
+
         const profile = {
           id: a.id,
           position_id: a.position_id,
@@ -1909,6 +1994,8 @@ module.exports = function initHr(ctx) {
           sms_consent: a.consent_sms,
           sms_consent_at: a.sms_consent_at,
           sms_consent_version: a.sms_consent_version,
+          sms_opted_out: smsOpted,
+          sms_configured: smsConfigured(),
           cover_letter: a.cover_letter,
           screening_answers: parseJson(a.screening_answers, {}),
           credentials: parseJson(a.credentials, {}),
@@ -2125,6 +2212,39 @@ module.exports = function initHr(ctx) {
           ok: result.delivered !== "failed" && !result.skipped,
           delivered: result.delivered,
           skipped: result.skipped,
+        });
+      }
+
+      // ---- manual SMS to a candidate ----
+      // Consent + opt-out are enforced centrally in sendSms; we still refuse up
+      // front when there's no phone or no consent on file so staff get a clear
+      // reason instead of a silent skip.
+      const appSmsMatch = pathname.match(/^\/api\/hr\/applicants\/(\d+)\/send-sms$/);
+      if (appSmsMatch && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const a = await dbGet("SELECT * FROM hr_applicants WHERE id = ?", [appSmsMatch[1]]);
+        if (!a) return json(res, 404, { error: "Applicant not found" });
+        if (!a.phone) return json(res, 400, { error: "Applicant has no phone number" });
+        if (!(a.consent_sms === true || a.consent_sms === "t" || a.consent_sms === "true")) {
+          return json(res, 400, { error: "This applicant has not consented to text messages." });
+        }
+        if (await smsOptedOut(a.phone)) {
+          return json(res, 400, { error: "This applicant has opted out of texts (replied STOP)." });
+        }
+        const b = await readBody(req);
+        const text = String(b.body || "").trim();
+        if (!text) return json(res, 400, { error: "Message body is required" });
+        if (text.length > 1000) return json(res, 400, { error: "Message is too long (max 1000 characters)." });
+        // A human taking over pauses automation so sequences don't collide.
+        await dbRun("UPDATE hr_applicants SET automation_paused = TRUE, last_contacted_at = ?, updated_at = ? WHERE id = ?", [nowISO(), nowISO(), a.id]);
+        const result = await sendSms({ to: a.phone, body: text, type: "recruiting_manual", consented: true });
+        await logApplicantSms(a.id, a.phone, text, result, actor);
+        const failed = result.delivered === "failed" || String(result.delivered || "").startsWith("skipped");
+        await audit(actor, "manual_sms_sent", "applicant", a.id, `delivered=${result.delivered}`);
+        return json(res, failed ? 502 : 200, {
+          ok: !failed,
+          delivered: result.delivered,
+          error: failed ? result.errorMsg : undefined,
         });
       }
 
@@ -6003,6 +6123,7 @@ Write body as plain text with line breaks (no HTML).`;
     processHrDocFollowups,
     processHrMilestones,
     milestonesThisWeek,
+    processInboundSms,
     // exposed for tests / future phases
     _internal: {
       evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,

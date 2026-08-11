@@ -376,6 +376,16 @@ ALTER TABLE clickup_config ADD COLUMN IF NOT EXISTS last_connection_status TEXT;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged_at TEXT;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS ack_token TEXT;
+-- Which channel a notification went out on. Defaults to 'email' so every
+-- existing row keeps its meaning; SMS sends write 'sms'.
+ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'email';
+-- SMS opt-out suppression list (TCPA). One row per phone that has texted STOP
+-- (or been suppressed by staff); honored on every outbound send.
+CREATE TABLE IF NOT EXISTS sms_opt_outs (
+  phone TEXT PRIMARY KEY,
+  opted_out_at TEXT,
+  reason TEXT
+);
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS diagnosis_uploaded BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_card_uploaded BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS clinical_screener_completed BOOLEAN NOT NULL DEFAULT false;
@@ -618,6 +628,13 @@ const auth = { createUser, findUserByEmail, login, logout, getUserFromToken, par
 const PROVIDER = (process.env.EMAIL_PROVIDER || "none").toLowerCase(); // resend | sendgrid | none
 const FROM_EMAIL = process.env.EMAIL_FROM || "no-reply@spectrumsquadlv.com";
 
+// Zero-dependency SMS (Twilio) sending, mirroring the email design above. With
+// no Twilio credentials configured, sends are "simulated" (logged) so the app
+// stays fully demoable. Consent + opt-out are enforced here in sendSms so every
+// path -- automated confirmations and manual staff messages alike -- shares one
+// compliance gate.
+const smsClient = require("./sms-client");
+
 // Low-level provider delivery. Returns { delivered, errorMsg } WITHOUT writing
 // to notifications_log, so both first-time sends (sendEmail) and manual retries
 // of previously-failed emails (resendFailedEmail) share the exact same provider
@@ -716,6 +733,70 @@ async function sendEmail({ to, subject, html, clientId = null, type = "parent_mi
   );
 
   return { delivered, errorMsg };
+}
+
+// ============================ SMS (Twilio) ==================================
+// Low-level delivery. Returns { delivered, errorMsg, sid } WITHOUT touching the
+// log, so sendSms owns logging just like sendEmail/deliverEmail.
+async function deliverSms({ to, body }) {
+  try {
+    if (smsClient.configured()) {
+      const r = await smsClient.sendMessage({ to, body });
+      return { delivered: r.ok ? "sent" : "failed", errorMsg: r.ok ? null : r.error, sid: r.sid || null };
+    }
+    console.log(`\n[SMS:SIMULATED] To: ${to}\n${body}\n`);
+    return { delivered: "simulated", errorMsg: null, sid: null };
+  } catch (err) {
+    return { delivered: "failed", errorMsg: err.message, sid: null };
+  }
+}
+
+// Opt-out suppression list (per phone number, E.164). Honored on EVERY send.
+async function smsOptedOut(rawPhone) {
+  const e164 = smsClient.toE164(rawPhone);
+  if (!e164) return false;
+  const row = await dbGet("SELECT phone FROM sms_opt_outs WHERE phone = ?", [e164]);
+  return !!row;
+}
+async function recordSmsOptOut(rawPhone, reason) {
+  const e164 = smsClient.toE164(rawPhone);
+  if (!e164) return null;
+  await dbRun(
+    `INSERT INTO sms_opt_outs (phone, opted_out_at, reason) VALUES (?, ?, ?)
+     ON CONFLICT (phone) DO UPDATE SET opted_out_at = EXCLUDED.opted_out_at, reason = EXCLUDED.reason`,
+    [e164, nowISO(), reason || null]
+  );
+  return e164;
+}
+async function clearSmsOptOut(rawPhone) {
+  const e164 = smsClient.toE164(rawPhone);
+  if (!e164) return null;
+  await dbRun("DELETE FROM sms_opt_outs WHERE phone = ?", [e164]);
+  return e164;
+}
+
+// The single outbound-SMS gate. Enforces, in order: a valid number, consent
+// (recruiting/marketing texts require prior express consent), and the opt-out
+// list. Skips are returned (not thrown) with a machine-readable delivered code,
+// then everything is logged to notifications_log (channel='sms') for the audit
+// trail -- successes, failures, and skips alike.
+async function sendSms({ to, body, clientId = null, type = "sms", consented = false, allowWithoutConsent = false }) {
+  const e164 = smsClient.toE164(to);
+  const logRow = async (delivered, errorMsg) => {
+    await dbRun(
+      `INSERT INTO notifications_log (client_id, type, channel, recipient, subject, body, sent_at, delivered)
+       VALUES (?, ?, 'sms', ?, ?, ?, ?, ?)`,
+      [clientId, type, e164 || String(to || ""), "SMS", body, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : "")]
+    ).catch((e) => console.error("sms log insert failed:", e.message));
+  };
+
+  if (!e164) { await logRow("skipped_invalid_number", "Unparseable phone number"); return { delivered: "skipped_invalid_number", errorMsg: "Invalid phone number" }; }
+  if (!consented && !allowWithoutConsent) { await logRow("skipped_no_consent", null); return { delivered: "skipped_no_consent", errorMsg: "No SMS consent on file" }; }
+  if (await smsOptedOut(e164)) { await logRow("skipped_opted_out", null); return { delivered: "skipped_opted_out", errorMsg: "Recipient has opted out of texts" }; }
+
+  const { delivered, errorMsg, sid } = await deliverSms({ to: e164, body });
+  await logRow(delivered, errorMsg);
+  return { delivered, errorMsg, sid, to: e164 };
 }
 
 // ---- Benefits & Eligibility Check -----------------------------------------
@@ -3453,6 +3534,7 @@ const stripeClient = require("./stripe-client");
 
 const PUBLIC_ROUTES = new Set([
   "/api/stripe/webhook",
+  "/api/sms/inbound",
   "/api/auth/login",
   "/api/webhook/enrollment",
   "/api/admin/backfill-import",
@@ -3979,6 +4061,52 @@ async function handle(req, res, pathname, method, query = {}) {
       catch (e) { return json(res, 400, { error: e.message }); }
       const r = await growth.applyStripeEvent(event).catch((e) => ({ ok: false, error: e.message }));
       return json(res, 200, r);
+    }
+
+    // Inbound SMS webhook (public, Twilio-signature-verified). Point your Twilio
+    // number's "A message comes in" webhook here. Handles carrier keywords
+    // (STOP/START/HELP) for opt-out compliance and hands real replies to the HR
+    // module so they land on the candidate's timeline. Always answers 200 with
+    // empty TwiML so Twilio doesn't retry or auto-send a second message.
+    if (pathname === "/api/sms/inbound" && method === "POST") {
+      const raw = await readRawBody(req);
+      const params = {};
+      for (const [k, v] of new URLSearchParams(raw)) params[k] = v;
+      // Verify the request really came from Twilio. When an auth token is set we
+      // require a valid signature; without one (dev/simulated) we accept it.
+      if (process.env.TWILIO_AUTH_TOKEN) {
+        const fullUrl = `${APP_BASE_URL}/api/sms/inbound`;
+        const sig = req.headers["x-twilio-signature"];
+        const v = smsClient.verifyInboundSignature(fullUrl, params, sig);
+        if (!v.ok) { res.writeHead(403, { "Content-Type": "text/plain" }); return res.end("Invalid signature"); }
+      }
+      const from = params.From || "";
+      const body = params.Body || "";
+      const kind = smsClient.classifyInbound(body);
+      let reply = "";
+      try {
+        if (kind === "stop") {
+          await recordSmsOptOut(from, "inbound_stop");
+          reply = "You have been unsubscribed from Spectrum Squad texts. Reply START to resubscribe.";
+        } else if (kind === "start") {
+          await clearSmsOptOut(from);
+          reply = "You are resubscribed to Spectrum Squad texts. Reply STOP to opt out at any time.";
+        } else if (kind === "help") {
+          reply = "Spectrum Squad recruiting. Reply STOP to unsubscribe. Msg&data rates may apply.";
+        }
+        // A genuine reply (and keyword messages too) get logged to the sender's
+        // candidate timeline when we can match them by phone.
+        if (hr && typeof hr.processInboundSms === "function") {
+          await hr.processInboundSms({ from, body, kind }).catch((e) => console.error("processInboundSms failed:", e.message));
+        }
+      } catch (e) {
+        console.error("inbound SMS handling failed:", e.message);
+      }
+      const twiml = reply
+        ? `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${reply.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</Message></Response>`
+        : `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`;
+      res.writeHead(200, { "Content-Type": "text/xml" });
+      return res.end(twiml);
     }
 
     // Public webhook: point a Google Apps Script "on form submit" trigger (or
@@ -6163,6 +6291,9 @@ const screener = require("./screener")({
 // ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
 const hr = require("./hr")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR, moduleGranted,
+  // SMS (Twilio). sendSms enforces consent + opt-out centrally; the helpers let
+  // HR surface opt-out state and toggle suppression from the candidate page.
+  sendSms, smsOptedOut, recordSmsOptOut, clearSmsOptOut, smsConfigured: () => smsClient.configured(),
   onCompletion: (...a) => completions.record(...a),
   // New-hire employment packet (SignNow). Passed in rather than reimplemented so
   // there is one SignNow client, one token cache, and one place that knows how
