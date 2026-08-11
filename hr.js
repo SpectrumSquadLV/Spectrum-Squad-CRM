@@ -1890,8 +1890,10 @@ module.exports = function initHr(ctx) {
           position_title: a.position_title,
           position_role_type: a.position_role_type,
           full_name: a.full_name,
+          preferred_name: a.preferred_name,
           email: a.email,
           phone: a.phone,
+          address: a.address,
           city: a.city,
           state: a.state,
           source: a.source,
@@ -1899,6 +1901,14 @@ module.exports = function initHr(ctx) {
           stage: a.stage,
           match_category: a.match_category,
           priority_flag: a.priority_flag,
+          // Expanded application fields (Phase 6a). desired_pay is compensation,
+          // so it rides with the sensitive tier below alongside comp_expectation.
+          certifications: a.certifications,
+          education: a.education,
+          employment_history: a.employment_history,
+          sms_consent: a.consent_sms,
+          sms_consent_at: a.sms_consent_at,
+          sms_consent_version: a.sms_consent_version,
           cover_letter: a.cover_letter,
           screening_answers: parseJson(a.screening_answers, {}),
           credentials: parseJson(a.credentials, {}),
@@ -1943,9 +1953,10 @@ module.exports = function initHr(ctx) {
           [a.id]
         );
 
-        // Sensitive fields: comp expectation, private notes, ratings, offers.
+        // Sensitive fields: comp expectation, desired pay, private notes, ratings, offers.
         if (canSensitive) {
           profile.comp_expectation = a.comp_expectation;
+          profile.desired_pay = a.desired_pay;
           profile.offer_status = a.offer_status;
           profile.notes = await dbAll(
             "SELECT id, author, note_type, body, rating, is_private, created_at FROM hr_applicant_notes WHERE applicant_id = ? ORDER BY id DESC",
