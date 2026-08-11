@@ -1100,7 +1100,11 @@ function docLinkHtml(d) {
 }
 
 // ---------------- Authorization helpers (client-side) ----------------
-const AUTH_STATUS_OPTIONS = ["Active", "Renewal in Progress", "Pending", "Expired", "Not Required"];
+// "Approved" is what the milestone checklist has always tested for
+// (server.js: __authorization_approved) but it was missing from this list, so
+// the box could never be ticked. Selecting it now also emails the parent that
+// they're approved and it's time to schedule a first day.
+const AUTH_STATUS_OPTIONS = ["Active", "Renewal in Progress", "Pending", "Approved", "Expired", "Not Required"];
 
 function daysUntilClient(dateStr) {
   if (!dateStr) return null;
@@ -1133,6 +1137,8 @@ function authSectionHtml(client) {
             ${AUTH_STATUS_OPTIONS.map((s) => `<option ${s === client.authorization_status ? "selected" : ""}>${s}</option>`).join("")}
           </select>
         </div>
+        <div class="field"><label>Treatment Plan Submitted Date</label><input id="auth-treatment_plan_submitted_date" type="date" value="${client.treatment_plan_submitted_date || ""}" /></div>
+        <div class="field"><label>Authorization Approved Date</label><input id="auth-authorization_approved_date" type="date" value="${client.authorization_approved_date || ""}" /></div>
         <div class="field"><label>Authorization Start Date</label><input id="auth-auth_start_date" type="date" value="${client.auth_start_date || ""}" /></div>
         <div class="field"><label>Authorization Expiration Date</label><input id="auth-auth_expiration_date" type="date" value="${client.auth_expiration_date || ""}" /></div>
         <div class="field"><label>Assigned BCBA (name)</label><input id="auth-assigned_bcba_name" value="${client.assigned_bcba_name || ""}" /></div>
@@ -1141,6 +1147,7 @@ function authSectionHtml(client) {
         <div class="field"><label>Assigned Billing Staff (email)</label><input id="auth-assigned_billing_email" type="email" value="${client.assigned_billing_email || ""}" /></div>
         <div class="field full"><label>Notes</label><textarea id="auth-auth_notes" rows="2">${client.auth_notes || ""}</textarea></div>
       </div>
+      <div style="font-size:12px; color:var(--text-muted); margin:-4px 0 0;">Setting the status to <strong>Approved</strong> emails ${client.parent_name ? staffEsc(client.parent_name) : "the parent"} to say ${staffEsc(client.child_name || "their child")} is approved and it's time to schedule a first day. It only sends the first time.</div>
       <div style="display:flex; align-items:center; gap:10px; margin-top:10px;">
         <span class="tag" style="background:#eef0f5;">Days remaining: ${daysLabel}</span>
         <button class="btn small secondary" id="auth-save-btn">Save Authorization</button>
@@ -1155,6 +1162,8 @@ function authSectionHtml(client) {
     <div class="form-grid">
       <div class="field"><label>Insurance Payer</label><div>${client.insurance_payer || "—"}</div></div>
       <div class="field"><label>Authorization Status</label><div>${client.authorization_status || "—"}</div></div>
+      <div class="field"><label>Treatment Plan Submitted</label><div>${client.treatment_plan_submitted_date || "—"}</div></div>
+      <div class="field"><label>Authorization Approved</label><div>${client.authorization_approved_date || "—"}</div></div>
       <div class="field"><label>Expiration Date</label><div>${client.auth_expiration_date || "—"}</div></div>
       <div class="field"><label>Days Remaining</label><div>${daysLabel}</div></div>
       <div class="field"><label>Assigned BCBA</label><div>${client.assigned_bcba_name || "—"}</div></div>
@@ -1179,6 +1188,8 @@ function wireAuthSection(backdrop, clientId) {
         "authorization_status",
         "auth_start_date",
         "auth_expiration_date",
+        "treatment_plan_submitted_date",
+        "authorization_approved_date",
         "assigned_bcba_name",
         "assigned_bcba_email",
         "assigned_billing_name",
@@ -1194,12 +1205,74 @@ function wireAuthSection(backdrop, clientId) {
     }
     const resultEl = backdrop.querySelector("#auth-save-result");
     try {
-      await api(`/api/clients/${clientId}/authorization`, { method: "PATCH", body });
-      resultEl.textContent = "Saved ✓";
+      const saved = await api(`/api/clients/${clientId}/authorization`, { method: "PATCH", body });
+      // Say out loud when a save emailed a family, so it is never a surprise.
+      resultEl.textContent = saved && saved.approval_email
+        ? (saved.approval_email.sent
+            ? `Saved ✓ — approval email sent to ${saved.approval_email.to}`
+            : "Saved ✓ — approved, but no parent email on file so nothing was sent")
+        : "Saved ✓";
       await loadClients();
     } catch (err) {
       resultEl.textContent = err.message || "Save failed";
     }
+  });
+}
+
+// Asks what date the treatment plan actually went out for authorization.
+// Resolves to "YYYY-MM-DD", or "" if the user chose to record no date, or
+// null if they backed out entirely (in which case the task is left alone).
+function askTreatmentPlanDate(client) {
+  return new Promise((resolve) => {
+    const today = new Date();
+    const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    const childName = (client && client.child_name) || "this client";
+    const parentName = (client && client.parent_name) || "the parent";
+    // null = we're on a screen that doesn't load the parent's contact details,
+    // so don't claim either way whether an email will go out.
+    const hasEmail = client && "parent_email" in client ? !!client.parent_email : null;
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `
+      <div class="modal" style="width:470px;">
+        <div class="modal-header"><h2>Treatment plan submitted</h2><button class="close-btn">✕</button></div>
+        <p style="font-size:13px; color:var(--text-muted); margin-top:0;">
+          What date did ${staffEsc(childName)}'s treatment plan go out for authorization?
+        </p>
+        <div class="field">
+          <label>Date submitted</label>
+          <input type="date" id="tp-date" value="${iso}" max="${iso}" />
+        </div>
+        <div id="tp-warn" style="font-size:12px; color:#92400e; margin-top:6px; display:none;"></div>
+        <div style="font-size:12.5px; color:var(--text-muted); margin-top:12px; background:#f8fafc; border-radius:8px; padding:10px 12px;">
+          ${hasEmail === false
+            ? `No parent email is on file, so nothing will be emailed. The date is still recorded.`
+            : `${hasEmail ? staffEsc(parentName) : "The parent"} will be emailed to say the plan is with their insurance and that the clinical director will be in touch to schedule a first day. <strong>They are not told they're approved</strong> — that email goes out separately when you set the status to Approved.`}
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; margin-top:16px;">
+          <button class="btn" id="tp-confirm">Mark done</button>
+          <button class="btn secondary" id="tp-cancel">Cancel</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    const finish = (value) => { backdrop.remove(); resolve(value); };
+    backdrop.querySelector(".close-btn").addEventListener("click", () => finish(null));
+    backdrop.querySelector("#tp-cancel").addEventListener("click", () => finish(null));
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) finish(null); });
+    const input = backdrop.querySelector("#tp-date");
+    const warn = backdrop.querySelector("#tp-warn");
+    const check = () => {
+      const v = input.value;
+      if (v && v > iso) { warn.style.display = "block"; warn.textContent = "That date is in the future — did you mean an earlier day?"; }
+      else warn.style.display = "none";
+    };
+    input.addEventListener("change", check);
+    backdrop.querySelector("#tp-confirm").addEventListener("click", () => {
+      const v = input.value;
+      if (!v) { input.focus(); return; }
+      finish(v);
+    });
+    input.focus();
   });
 }
 
@@ -1675,7 +1748,7 @@ async function openClientModal(id) {
                   </div>
                   ${
                     t.status !== "completed"
-                      ? `<button class="btn small" data-complete-task="${t.id}">Mark done</button>`
+                      ? `<button class="btn small" data-complete-task="${t.id}" data-task-stage="${t.stage_key || ""}" data-task-label="${t.label || ""}">Mark done</button>`
                       : `<span style="display:flex; align-items:center; gap:8px;">
                            <span class="tag" style="background:#dcfce7; color:#166534;">Completed</span>
                            <button class="btn small secondary" data-reopen-task="${t.id}" data-task-stage="${t.stage_key || ""}" title="Put this task back to not done">Undo</button>
@@ -1987,7 +2060,16 @@ async function openClientModal(id) {
 
   backdrop.querySelectorAll("[data-complete-task]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await api(`/api/tasks/${btn.dataset.completeTask}/complete`, { method: "POST" });
+      // Ticking the authorization task is the moment the treatment plan goes
+      // to the payer, and the parent email quotes that date back to them --
+      // so ask for it here rather than hoping someone fills it in later.
+      const body = {};
+      if (btn.dataset.taskStage === "authorization") {
+        const date = await askTreatmentPlanDate(client);
+        if (date === null) return; // cancelled -- leave the task untouched
+        if (date) body.treatment_plan_submitted_date = date;
+      }
+      await api(`/api/tasks/${btn.dataset.completeTask}/complete`, { method: "POST", body });
       close();
       await loadClients();
       openClientModal(id);
@@ -2300,7 +2382,7 @@ async function renderTasks(mount) {
                     <td>${
                       t.status === "completed"
                         ? `<button class="btn small secondary" data-reopen="${t.id}">Mark undone</button>`
-                        : `<button class="btn small secondary" data-complete="${t.id}">Mark done</button>`
+                        : `<button class="btn small secondary" data-complete="${t.id}" data-task-stage="${t.stage_key || ""}" data-child-name="${t.child_name || ""}">Mark done</button>`
                     }</td>
                   </tr>`
                   )
@@ -2336,7 +2418,15 @@ async function renderTasks(mount) {
 
   mount.querySelectorAll("[data-complete]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await api(`/api/tasks/${btn.dataset.complete}/complete`, { method: "POST" });
+      // Same prompt as the client modal -- the authorization task must not be
+      // a quieter, date-less action just because it was ticked from this list.
+      const body = {};
+      if (btn.dataset.taskStage === "authorization") {
+        const date = await askTreatmentPlanDate({ child_name: btn.dataset.childName });
+        if (date === null) return;
+        if (date) body.treatment_plan_submitted_date = date;
+      }
+      await api(`/api/tasks/${btn.dataset.complete}/complete`, { method: "POST", body });
       await loadClients();
       route();
     });

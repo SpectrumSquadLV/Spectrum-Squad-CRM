@@ -386,6 +386,11 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS vineland_completed BOOLEAN NOT NULL
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_assessment_scheduled_date TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_assessment_completed BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS authorization_submitted BOOLEAN NOT NULL DEFAULT false;
+-- When the treatment plan actually went out for authorization, and when the
+-- payer came back with a yes. Kept as separate dates because they are weeks
+-- apart and parents are told different things at each point.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS treatment_plan_submitted_date TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS authorization_approved_date TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS previous_provider_discharge_letter_received BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS physician_referral_received BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS additional_insurance_docs_received BOOLEAN NOT NULL DEFAULT false;
@@ -476,6 +481,12 @@ async function initSchema() {
 
 function nowISO() {
   return new Date().toISOString();
+}
+
+// Today as YYYY-MM-DD in Pacific, which is the office's day -- UTC would roll
+// over mid-afternoon and stamp tomorrow's date on this afternoon's work.
+function todayISODate() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 }
 
 // ---- App settings (owner-configurable key/value store) ----
@@ -954,10 +965,24 @@ const EMAIL_TEMPLATE_DEFS = [
     fields: ["parent_name", "child_name", "today"],
   },
   {
-    key: "milestone_first_day_scheduled",
-    label: "Ready to Schedule First Day",
+    key: "milestone_treatment_plan_submitted",
+    label: "Treatment Plan Submitted for Authorization",
     category: "Parent Milestone Emails",
-    description: "Sent to the parent once authorization is in and scheduling can begin.",
+    description: "Sent to the parent the moment the 'Submit Authorization Request' task is marked done. Tells them the plan is with their insurance and that the clinical director will be in touch. Does NOT promise a start date — nothing is approved yet.",
+    fields: ["parent_name", "child_name", "today", "treatment_plan_submitted_date", "insurance_payer"],
+  },
+  {
+    key: "milestone_authorization_approved",
+    label: "Authorization Approved — Let's Schedule",
+    category: "Parent Milestone Emails",
+    description: "Sent to the parent when the Authorization Status is set to 'Approved'. This is the email that asks them to schedule the first day of ABA.",
+    fields: ["parent_name", "child_name", "today", "treatment_plan_submitted_date", "authorization_approved_date", "insurance_payer", "assigned_bcba_name"],
+  },
+  {
+    key: "milestone_first_day_scheduled",
+    label: "Ready to Schedule First Day (retired)",
+    category: "Parent Milestone Emails",
+    description: "No longer sent automatically. This used to fire when the authorization request was SUBMITTED, which told parents the authorization was already in. It has been replaced by 'Treatment Plan Submitted for Authorization' (on submit) and 'Authorization Approved' (on approval). Kept so past sends still render.",
     fields: ["parent_name", "child_name", "today"],
   },
   {
@@ -1063,6 +1088,24 @@ const EMAIL_TEMPLATE_DEFAULTS = {
   milestone_authorization: {
     subject: "We're requesting your authorization for services — Spectrum Squad",
     body: "<p>Hi {{parent_name}},</p><p>We're now submitting the authorization request for {{child_name}}'s ABA services to your insurance.</p>",
+  },
+  milestone_treatment_plan_submitted: {
+    subject: "{{child_name}}'s treatment plan has been submitted — Spectrum Squad",
+    body:
+      "<p>Hi {{parent_name}},</p>" +
+      "<p>Good news — we submitted {{child_name}}'s treatment plan for authorization on <strong>{{treatment_plan_submitted_date}}</strong>. It's now with {{insurance_payer}} for review.</p>" +
+      "<p>Our clinical director will be contacting you to talk through the plan and to get {{child_name}}'s first day of ABA scheduled as soon as the authorization comes back approved.</p>" +
+      "<p>Insurance review usually takes a couple of weeks. You don't need to do anything right now — we'll reach out to you.</p>" +
+      "<p>Warmly,<br>The Spectrum Squad Team</p>",
+  },
+  milestone_authorization_approved: {
+    subject: "{{child_name}} is approved — let's pick a first day! — Spectrum Squad",
+    body:
+      "<p>Hi {{parent_name}},</p>" +
+      "<p>{{child_name}}'s authorization has been <strong>approved</strong>. We can officially get started.</p>" +
+      "<p>Our clinical director will be reaching out to schedule {{child_name}}'s first day of ABA therapy and to go over what to expect. If you already have days or times that work best for your family, just reply to this email and we'll build around them.</p>" +
+      "<p>We're so glad to have you with us.</p>" +
+      "<p>Warmly,<br>The Spectrum Squad Team</p>",
   },
   milestone_first_day_scheduled: {
     subject: "Let's get a first day scheduled! — Spectrum Squad",
@@ -1256,7 +1299,7 @@ async function seedEmailTemplates() {
     await dbRun(
       `INSERT INTO email_templates (template_key, label, category, subject_template, body_template, updated_by, updated_at)
        VALUES (?, ?, ?, ?, ?, 'system', ?)
-       ON CONFLICT (template_key) DO NOTHING`,
+       ON CONFLICT (template_key) DO UPDATE SET label = EXCLUDED.label, category = EXCLUDED.category`,
       [def.key, def.label, def.category, defaults.subject, defaults.body, nowISO()]
     );
   }
@@ -1344,6 +1387,9 @@ function sampleFieldsFor() {
     milestone_label: "Expiring in 30 Days",
     insurance_payer: "Aetna",
     auth_expiration_date: new Date(Date.now() + 30 * 86400000).toLocaleDateString(),
+    treatment_plan_submitted_date: fmtDateLong(new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10)),
+    authorization_approved_date: fmtDateLong(new Date().toISOString().slice(0, 10)),
+    auth_start_date: fmtDateLong(new Date().toISOString().slice(0, 10)),
     days_remaining: 30,
     assigned_bcba_name: "Allie R.",
     authorization_status: "Approved",
@@ -1500,20 +1546,64 @@ async function enterStage(clientId, stageKey) {
   await sendParentMilestone(client, stageKey);
 }
 
-// Stages that trigger a parent-facing milestone email. Each maps to a
-// "milestone_<stageKey>" row in the email_templates table (editable under
-// Settings -> Email Templates).
-const MILESTONE_STAGE_KEYS = ["new_submission", "authorization", "first_day_scheduled", "active"];
+// Stages that trigger a parent-facing milestone email, mapped to the template
+// key they send (rows in email_templates, editable under Settings -> Email
+// Templates).
+//
+// Note "first_day_scheduled": a client lands in that stage the moment the
+// "Submit Authorization Request" task is ticked, which is BEFORE the payer has
+// approved anything. It used to send milestone_first_day_scheduled ("your
+// authorization is in"), which told parents they were approved when the
+// request had only just gone out. It now sends the treatment-plan-submitted
+// email instead; the approval email is fired separately, by the authorization
+// status actually changing to Approved.
+const MILESTONE_STAGE_TEMPLATES = {
+  new_submission: "milestone_new_submission",
+  authorization: "milestone_authorization",
+  first_day_scheduled: "milestone_treatment_plan_submitted",
+  active: "milestone_active",
+};
+// "2026-08-10" -> "August 10, 2026". Parents read these in an email, not a
+// database. Anything unparseable is passed through untouched.
+function fmtDateLong(value) {
+  if (!value) return "";
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(value)) ? `${value}T12:00:00` : value);
+  if (isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+}
 
-async function sendParentMilestone(client, stageKey) {
-  if (!MILESTONE_STAGE_KEYS.includes(stageKey) || !client.parent_email) return;
-  const template = await emailTemplates.getEmailTemplate(`milestone_${stageKey}`);
-  if (!template) return;
-  const fields = {
+// Every merge field a parent-facing milestone email can use. Blank values
+// render as "" rather than the raw {{token}}, so a template that references a
+// date we don't have yet degrades quietly instead of leaking placeholder text.
+function parentMilestoneFields(client) {
+  return {
     parent_name: client.parent_name,
     child_name: client.child_name,
     today: new Date().toLocaleDateString(),
+    treatment_plan_submitted_date: fmtDateLong(client.treatment_plan_submitted_date),
+    authorization_approved_date: fmtDateLong(client.authorization_approved_date),
+    auth_start_date: fmtDateLong(client.auth_start_date),
+    auth_expiration_date: fmtDateLong(client.auth_expiration_date),
+    insurance_payer: client.insurance_payer || "your insurance",
+    assigned_bcba_name: client.assigned_bcba_name || "",
+    authorization_status: client.authorization_status || "",
   };
+}
+
+async function sendParentMilestone(client, stageKey) {
+  const templateKey = MILESTONE_STAGE_TEMPLATES[stageKey];
+  if (!templateKey || !client.parent_email) return;
+  await sendParentTemplate(client, templateKey);
+}
+
+// Send one parent-facing template to a client's parent. Shared by the stage
+// milestones and by the authorization-approved email, so both get the same
+// merge fields, branding and notifications_log entry.
+async function sendParentTemplate(client, templateKey) {
+  if (!client || !client.parent_email) return { sent: false, reason: "no_parent_email" };
+  const template = await emailTemplates.getEmailTemplate(templateKey);
+  if (!template) return { sent: false, reason: "no_template" };
+  const fields = parentMilestoneFields(client);
   await sendEmail({
     to: client.parent_email,
     subject: emailTemplates.renderMergeFields(template.subject_template, fields),
@@ -1521,18 +1611,38 @@ async function sendParentMilestone(client, stageKey) {
     clientId: client.id,
     type: "parent_milestone",
   }).catch((e) => console.error("sendEmail failed:", e));
+  return { sent: true };
 }
 
-async function completeTask(taskId, completedByUserId) {
+async function completeTask(taskId, completedByUserId, opts = {}) {
   const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [taskId]);
   if (!task) return { ok: false, error: "Task not found" };
 
   await dbRun("UPDATE client_tasks SET status = 'completed', completed_at = ? WHERE id = ?", [nowISO(), taskId]);
 
+  const taskLabel = await dbGet("SELECT label, stage_key FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
+
+  // Ticking "Submit Authorization Request" is the moment the treatment plan
+  // goes to the payer. Record the date BEFORE advancing the stage, because the
+  // parent email that follows quotes it back to the family.
+  //
+  // A date is always stored, never left blank: an explicit one from the office
+  // wins, otherwise today. Bulk-completing tasks sends no date, and an email
+  // reading "submitted on ." would be worse than an approximate day. An
+  // existing date is only overwritten by an explicit one, so undoing and
+  // re-ticking a task can't quietly rewrite real history.
+  if (taskLabel && taskLabel.stage_key === "authorization") {
+    const raw = String(opts.treatment_plan_submitted_date || "").slice(0, 10);
+    const explicit = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+    const existing = await dbGet("SELECT treatment_plan_submitted_date FROM clients WHERE id = ?", [task.client_id]);
+    const date = explicit || (existing && existing.treatment_plan_submitted_date) || todayISODate();
+    await dbRun("UPDATE clients SET treatment_plan_submitted_date = ?, authorization_submitted = true, updated_at = ? WHERE id = ?",
+      [date, nowISO(), task.client_id]);
+  }
+
   // If all tasks for the client's current stage are complete, auto-advance.
   const client = await dbGet("SELECT * FROM clients WHERE id = ?", [task.client_id]);
 
-  const taskLabel = await dbGet("SELECT label FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
   completions.record("stage_task_completed", {
     subject: client && client.child_name,
     detail: taskLabel && taskLabel.label,
@@ -2499,6 +2609,8 @@ const AUTH_FIELDS = [
   "insurance_payer",
   "auth_start_date",
   "auth_expiration_date",
+  "treatment_plan_submitted_date",
+  "authorization_approved_date",
   "assigned_bcba_name",
   "assigned_bcba_email",
   "assigned_billing_name",
@@ -3957,14 +4069,43 @@ async function handle(req, res, pathname, method, query = {}) {
         }
       }
 
+      // Moving the status INTO "Approved" is what tells the parent they can
+      // start. Detected as a transition, not a state, so re-saving the form
+      // while already approved never emails the family twice.
+      const becameApproved =
+        fields.includes("authorization_status") &&
+        String(body.authorization_status || "").trim().toLowerCase() === "approved" &&
+        String(client.authorization_status || "").trim().toLowerCase() !== "approved";
+
       const setClause = fields.map((f) => `${f} = ?`).join(", ");
       await dbRun(`UPDATE clients SET ${setClause}, updated_at = ? WHERE id = ?`, [
         ...fields.map((f) => body[f]),
         nowISO(),
         id,
       ]);
+
+      // Stamp the approval date if the office didn't type one in the same save.
+      if (becameApproved && !body.authorization_approved_date && !client.authorization_approved_date) {
+        await dbRun("UPDATE clients SET authorization_approved_date = ? WHERE id = ?", [todayISODate(), id]);
+      }
+
       const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
-      return json(res, 200, authAlerts.sanitizeClientForRole(user, updated));
+
+      let approvalEmail = null;
+      if (becameApproved) {
+        await authAlerts.logAuthAudit(id, null, "authorization_approved", user.email, client.authorization_status,
+          "Approved", `Approved on ${updated.authorization_approved_date || todayISODate()}`);
+        const r = await sendParentTemplate(updated, "milestone_authorization_approved");
+        approvalEmail = r.sent ? { sent: true, to: updated.parent_email } : { sent: false, reason: r.reason };
+        completions.record("client_stage_advanced", {
+          subject: updated.child_name,
+          detail: "Authorization approved",
+          clientId: Number(id),
+          dedupeKey: `auth_approved:${id}`,
+          link: `${APP_BASE_URL}/#/pipeline/${id}`,
+        });
+      }
+      return json(res, 200, { ...authAlerts.sanitizeClientForRole(user, updated), approval_email: approvalEmail });
     }
 
     const clientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
@@ -4587,7 +4728,12 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     const completeTaskMatch = pathname.match(/^\/api\/tasks\/(\d+)\/complete$/);
     if (completeTaskMatch && method === "POST") {
-      const result = await pipeline.completeTask(completeTaskMatch[1], user.id);
+      // Body is optional -- the bulk "complete" buttons send none. Only the
+      // authorization-submission task passes a treatment_plan_submitted_date.
+      const body = await readBody(req).catch(() => ({}));
+      const result = await pipeline.completeTask(completeTaskMatch[1], user.id, {
+        treatment_plan_submitted_date: body && body.treatment_plan_submitted_date,
+      });
       return json(res, result.ok ? 200 : 400, result);
     }
 
