@@ -112,12 +112,13 @@
       <div class="section-title">Relationship nurturing</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         <span style="font-size:12.5px; color:var(--text-muted);">Send a check-in email:</span>
+        <button class="btn small secondary" data-checkin="7">1-week</button>
         <button class="btn small secondary" data-checkin="30">30-day</button>
         <button class="btn small secondary" data-checkin="60">60-day</button>
         <button class="btn small secondary" data-checkin="90">90-day</button>
         <span id="checkin-status" style="font-size:12px; color:var(--text-muted);"></span>
       </div>
-      <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">The 30/60/90 automation also drops a reminder task on the assigned team member. Templates are editable under Email Templates.</div>
+      <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">The 7/30/60/90 automation also drops a reminder task on the assigned team member. Templates are editable under Email Templates.</div>
 
       <div class="section-title">Timeline</div>
       <div style="display:flex; gap:8px; margin-bottom:10px;">

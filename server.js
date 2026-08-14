@@ -1202,6 +1202,9 @@ const EMAIL_TEMPLATE_DEFS = [
   { key: "post_assessment_next_steps", label: "Post-Assessment / Next Steps (Parent)", category: "Parent Milestone Emails",
     description: "Sent to the family after they complete their in-clinic assessment. Congratulates them, thanks them for coming in, and sets clear, realistic expectations for the next steps in intake. Sent manually from the client profile, with a preview first.",
     fields: ["parent_name", "child_name", "today", "assigned_bcba_name"] },
+  { key: "lead_checkin_7", label: "Relationship Check-in — 1 Week", category: "Lead / Contract Emails",
+    description: "A friendly 1-week relationship check-in you can send to a contracted organization's contact from the Lead profile (preview first). The 7/30/60/90 automation creates a follow-up task reminding the assigned team member to reach out; this is the email they can send.",
+    fields: ["org_name", "contact_name", "assigned_to", "weekly_hours"] },
   { key: "lead_checkin_30", label: "Relationship Check-in — 30 Days", category: "Lead / Contract Emails",
     description: "A warm 30-day relationship check-in you can send to a contracted organization's contact from the Lead profile (preview first). The 30/60/90 automation creates a follow-up task reminding the assigned team member to reach out; this is the email they can send.",
     fields: ["org_name", "contact_name", "assigned_to", "weekly_hours"] },
@@ -1216,6 +1219,10 @@ const EMAIL_TEMPLATE_DEFS = [
 // The CRM's original built-in copy -- used both as the seed data and as a
 // last-resort fallback if a template row is somehow missing.
 const EMAIL_TEMPLATE_DEFAULTS = {
+  lead_checkin_7: {
+    subject: "Checking in after your first week — {{org_name}}",
+    body: "<p>Hi {{contact_name}},</p><p>It's been about a week since we started working together and I wanted to check in personally. How are the first few days going on your end? If anything came up or you have questions as {{org_name}} gets settled in, I'm just an email away.</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>",
+  },
   lead_checkin_30: {
     subject: "Checking in on our first month together — {{org_name}}",
     body: "<p>Hi {{contact_name}},</p><p>We're about a month into working together and I wanted to check in personally. How are things going from your side? Is the current level of support meeting {{org_name}}'s needs, and is there anything we could be doing better?</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>",
@@ -3545,6 +3552,21 @@ const PUBLIC_ROUTES = new Set([
 
 const CLIENT_COLOR_PALETTE = ["#5fa8a0", "#e0a430", "#3f56b5", "#3f8f89", "#c98a1b", "#8d85c8"];
 
+// Returns the first existing client whose child_name AND parent_email both
+// match (case-insensitive, trim-insensitive) the given values, or undefined.
+// Used to dedupe re-imports so we never create duplicates or revive
+// discharged/not-moving-forward clients. An empty parent_email never matches.
+async function findExistingClientKey(child_name, parent_email) {
+  if (!child_name || !parent_email) return undefined;
+  return dbGet(
+    `SELECT id, stage, child_name FROM clients
+     WHERE lower(trim(child_name)) = lower(trim(?))
+       AND lower(trim(parent_email)) = lower(trim(?))
+     LIMIT 1`,
+    [child_name, parent_email]
+  );
+}
+
 async function createClientFromPayload(c) {
   const color = CLIENT_COLOR_PALETTE[Math.floor(Math.random() * CLIENT_COLOR_PALETTE.length)];
   const submittedAt = nowISO();
@@ -4122,6 +4144,17 @@ async function handle(req, res, pathname, method, query = {}) {
       if (!c.child_name || !c.parent_email) {
         return json(res, 400, { error: "child_name and parent_email are required" });
       }
+      // Dedupe: never re-create or revive an existing client (any stage,
+      // including discharged / not_moving_forward). No emails are sent.
+      const existing = await findExistingClientKey(c.child_name, c.parent_email);
+      if (existing) {
+        return json(res, 200, {
+          skipped: true,
+          reason: "duplicate",
+          existing_id: existing.id,
+          existing_stage: existing.stage,
+        });
+      }
       const client = await createClientFromPayload(c);
       return json(res, 201, client);
     }
@@ -4138,12 +4171,20 @@ async function handle(req, res, pathname, method, query = {}) {
       const body = await readBody(req);
       const list = Array.isArray(body.clients) ? body.clients : [];
       const results = [];
+      let skippedDuplicates = 0;
       for (const c of list) {
         if (!c.child_name) continue;
+        // Dedupe: skip records that already exist (any stage). Existing rows
+        // are left untouched -- never revived or modified.
+        const existing = await findExistingClientKey(c.child_name, c.parent_email);
+        if (existing) {
+          skippedDuplicates++;
+          continue;
+        }
         const client = await createClientBackfill(c);
         results.push({ id: client.id, child_name: client.child_name, stage: client.stage });
       }
-      return json(res, 201, { imported: results.length, results });
+      return json(res, 201, { imported: results.length, skipped_duplicates: skippedDuplicates, results });
     }
 
     // One-time cleanup helper: removes synthetic demo/test clients

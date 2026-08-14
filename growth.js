@@ -84,6 +84,7 @@ module.exports = function initGrowth(ctx) {
   // Fallback copy (used if the editable email templates aren't wired). These are
   // relationship check-ins, deliberately warm and specific -- not sales blasts.
   const DEFAULT_CHECKIN = {
+    "7": { subject: "Checking in after your first week — {{org_name}}", body: "<p>Hi {{contact_name}},</p><p>It's been about a week since we started working together and I wanted to check in personally. How are the first few days going on your end? If anything came up or you have questions as {{org_name}} gets settled in, I'm just an email away.</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
     "30": { subject: "Checking in on our first month together — {{org_name}}", body: "<p>Hi {{contact_name}},</p><p>We're about a month into working together and I wanted to check in personally. How are things going from your side? Is the current level of support meeting {{org_name}}'s needs, and is there anything we could be doing better?</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
     "60": { subject: "Two months in — how are we doing, {{contact_name}}?", body: "<p>Hi {{contact_name}},</p><p>As we pass the two-month mark, I'd love your honest read on how the partnership is working. Are there upcoming needs, staffing changes, or additional services we should be planning for together?</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
     "90": { subject: "Our first quarter together — a quick check-in", body: "<p>Hi {{contact_name}},</p><p>We've reached our first quarter with {{org_name}} and I'd love to hear how you feel it's going. This is a great moment to talk through satisfaction, any changes on the horizon, and whether it makes sense to revisit the scope of our work together.</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
@@ -116,7 +117,7 @@ module.exports = function initGrowth(ctx) {
     }).catch((e) => console.error("lead follow-up task failed:", e.message));
   }
 
-  // 30 / 60 / 90-day relationship nurturing. For active partners/contracts, at
+  // 7 / 30 / 60 / 90-day relationship nurturing. For active partners/contracts, at
   // each milestone (once) it drops a follow-up task on the assigned team member
   // and notes it on the timeline, so no check-in is ever forgotten.
   async function nurtureSweep() {
@@ -133,7 +134,7 @@ module.exports = function initGrowth(ctx) {
       const days = daysBetween(anchor, today);
       if (days == null || days < 0) continue;
       let sent; try { sent = JSON.parse(lead.nurture_sent || "[]"); } catch (e) { sent = []; }
-      for (const m of [30, 60, 90]) {
+      for (const m of [7, 30, 60, 90]) {
         if (days >= m && !sent.includes(String(m))) {
           await makeFollowupTask({
             title: `${m}-day check-in: ${lead.name}`,
@@ -427,14 +428,14 @@ module.exports = function initGrowth(ctx) {
 
         // Preview / send a relationship check-in email to the contact, using an
         // editable template. Logs the send to the timeline.
-        const checkinPrev = pathname.match(/^\/api\/leads\/(\d+)\/checkin\/(30|60|90)\/preview$/);
+        const checkinPrev = pathname.match(/^\/api\/leads\/(\d+)\/checkin\/(7|30|60|90)\/preview$/);
         if (checkinPrev && method === "POST") {
           const lead = await dbGet("SELECT * FROM crm_leads WHERE id = ?", [Number(checkinPrev[1])]);
           if (!lead) return json(res, 404, { error: "Not found" });
           const r = await renderCheckin(lead, checkinPrev[2]);
           return json(res, r.ok ? 200 : 400, r);
         }
-        const checkinSend = pathname.match(/^\/api\/leads\/(\d+)\/checkin\/(30|60|90)\/send$/);
+        const checkinSend = pathname.match(/^\/api\/leads\/(\d+)\/checkin\/(7|30|60|90)\/send$/);
         if (checkinSend && method === "POST") {
           const lead = await dbGet("SELECT * FROM crm_leads WHERE id = ?", [Number(checkinSend[1])]);
           if (!lead) return json(res, 404, { error: "Not found" });
