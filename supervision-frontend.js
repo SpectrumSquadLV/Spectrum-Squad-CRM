@@ -7,6 +7,12 @@
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   function curMonth() { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); }
   function monthLabel(m) { if (!m) return ""; const [y, mo] = m.split("-"); const names = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]; return (names[+mo] || mo) + " " + y; }
+  // 'YYYY-MM-DD' -> 'Mon D, YYYY' (parsed as UTC so it never drifts a day).
+  function dayLabel(s) {
+    if (!s) return ""; const p = String(s).slice(0, 10).split("-"); if (p.length !== 3) return String(s);
+    const names = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return (names[+p[1]] || p[1]) + " " + (+p[2]) + ", " + p[0];
+  }
 
   let curM = curMonth();
 
@@ -36,7 +42,7 @@
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee);"><strong>${esc(e.name)}</strong></td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee);">${esc(e.role_title || "—")}</td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee); text-align:right;">${e.sup_hours}</td>
-        <td style="padding:8px 10px; border-top:1px solid var(--border,#eee); text-align:right;">${e.hours_worked || "—"}</td>
+        <td style="padding:8px 10px; border-top:1px solid var(--border,#eee); text-align:right;">${e.hours_worked || "—"}${e.hours_current_through ? `<div style="font-size:10.5px; color:var(--text-muted); font-weight:400;" title="Uploaded hours are current through this date">through ${esc(dayLabel(e.hours_current_through))}</div>` : ""}</td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee);">${pctCell}</td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee);">${e.signed_off ? `<span class="tag" style="background:#dcfce7; color:#166534;">✓ signed</span>` : `<span class="tag">open</span>`}</td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee); text-align:right;"><button class="btn small secondary" data-sup-untrack="${e.employee_id}" title="This person supervises rather than being supervised">Not supervised</button></td>
@@ -56,6 +62,12 @@
           <div style="font-size:26px; font-weight:800; color:${d.need_hours_upload ? "#b45309" : "var(--brand-navy,#1b2a6b)"};">${d.need_hours_upload}</div>
           <div style="font-size:12px; color:var(--text-muted);">Missing worked hours</div>
         </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; background:${d.global_hours_current_through ? "#eef4ff" : "#fff4dd"}; color:${d.global_hours_current_through ? "#1b3a7b" : "#a56b00"}; border:1px solid ${d.global_hours_current_through ? "#c7d8f5" : "#f1d9a0"}; border-radius:8px; padding:9px 13px; font-size:13px; margin-bottom:12px;">
+        <span style="font-size:15px;">🗓️</span>
+        ${d.global_hours_current_through
+          ? `<span>Uploaded worked-hours are <strong>current through ${esc(dayLabel(d.global_hours_current_through))}</strong>.${d.hours_current_through && d.hours_current_through !== d.global_hours_current_through ? ` For ${esc(monthLabel(d.month))}, through ${esc(dayLabel(d.hours_current_through))}.` : ""} Upload again to extend coverage.</span>`
+          : `<span>No worked-hours have been uploaded yet — upload the Rethink export to set the “hours current through” date.</span>`}
       </div>
       ${d.need_hours_upload ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-bottom:12px;">⬆ Upload the Rethink hours export for ${esc(monthLabel(d.month))} to calculate supervision percentages.</div>` : ""}
       <div class="card">
@@ -331,7 +343,7 @@
     const hist = (d.history || []).slice(0, 6).map((h) => `<span style="font-size:11.5px; color:var(--text-muted); margin-right:10px;">${monthLabel(h.month)}: ${h.pct == null ? "—" : h.pct + "%"}${h.signed_off ? " ✓" : ""}</span>`).join("");
     container.innerHTML = `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <strong style="font-size:13px;">${monthLabel(month)}:</strong> ${badge}
-      <span style="font-size:12px; color:var(--text-muted);">${d.sup_hours} sup hrs / ${d.hours_worked || "—"} worked</span>
+      <span style="font-size:12px; color:var(--text-muted);">${d.sup_hours} sup hrs / ${d.hours_worked || "—"} worked${d.hours_current_through ? ` · hours through ${esc(dayLabel(d.hours_current_through))}` : ""}</span>
       <button class="btn small" data-open-sup>Open tracker</button>
       ${d.signed_off ? `<span class="tag" style="background:#dcfce7; color:#166534;">✓ signed</span>` : ""}
     </div>${hist ? `<div style="margin-top:6px;">${hist}</div>` : ""}`;

@@ -83,6 +83,13 @@ module.exports = function initSupervision(ctx) {
     await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS supervision_required BOOLEAN")
       .catch((e) => console.error("supervision_required column:", e.message));
 
+    // The date through which uploaded worked-hours are current for this
+    // employee/month. Captured on every hours upload so BCBAs can see, per
+    // staff and globally, when the hours data was last refreshed and when a
+    // new upload is due. Additive; NULL for pre-existing rows.
+    await dbRun("ALTER TABLE hr_supervision_logs ADD COLUMN IF NOT EXISTS hours_current_through DATE")
+      .catch((e) => console.error("hours_current_through column:", e.message));
+
     // Amendments to an already-signed month. A signed month is a compliance
     // record: it can still be corrected -- people do log the wrong date, or a
     // session that never happened -- but not quietly. Every change after
@@ -111,6 +118,13 @@ module.exports = function initSupervision(ctx) {
   function canManage(u) { return ["owner", "super_admin", "admin", "hr_admin", "clinical"].includes(role(u)) || granted(u, "supervision"); }
 
   function num(v) { const n = parseFloat(v); return isFinite(n) ? n : 0; }
+  // Normalize a DATE value (which the pg driver may return as a Date object or
+  // string) to a plain 'YYYY-MM-DD', or null.
+  function dstr(v) {
+    if (!v) return null;
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    return String(v).slice(0, 10);
+  }
   function supHours(entries) {
     return Math.round((entries || []).reduce((s, e) => s + num(e.duration), 0) * 100) / 100;
   }
@@ -121,6 +135,17 @@ module.exports = function initSupervision(ctx) {
   function thisMonth() {
     // Derived from nowISO() so it stays resume-safe (no Date.now()).
     return nowISO().slice(0, 7);
+  }
+  // The date an hours upload for month 'YYYY-MM' is current through. Uses an
+  // explicit through-date if provided; otherwise the last day of that month,
+  // but never past today (so an in-progress month reads "through today").
+  function throughDateFor(month, explicit) {
+    if (explicit && /^\d{4}-\d{2}-\d{2}$/.test(explicit)) return explicit;
+    const [y, m] = month.split("-").map(Number);
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate(); // day 0 of next month
+    const eom = `${month}-${String(lastDay).padStart(2, "0")}`;
+    const today = nowISO().slice(0, 10);
+    return eom > today ? today : eom;
   }
 
   async function logActivity(employeeId, text) {
@@ -210,12 +235,15 @@ module.exports = function initSupervision(ctx) {
     const logs = await dbAll("SELECT * FROM hr_supervision_logs WHERE month = ?", [month]);
     const byEmp = {}; logs.forEach((l) => { byEmp[l.employee_id] = l; });
     let totSup = 0, totWorked = 0, needUpload = 0, signed = 0;
+    let monthThrough = null; // latest through-date among this month's uploads
     const list = emps.map((e) => {
       const l = byEmp[e.id];
       let entries = []; try { entries = l && l.entries ? JSON.parse(l.entries) : []; } catch (x) {}
       const sup = supHours(entries);
       const worked = l ? num(l.hours_worked) : 0;
       const p = pct(sup, worked);
+      const through = l ? dstr(l.hours_current_through) : null;
+      if (through && (!monthThrough || through > monthThrough)) monthThrough = through;
       totSup += sup; totWorked += worked;
       if (!worked) needUpload++;
       if (l && l.signed_off) signed++;
@@ -225,8 +253,13 @@ module.exports = function initSupervision(ctx) {
         meets: p != null ? p >= BACB_MIN_PCT : false,
         signed_off: !!(l && l.signed_off), signed_by: l && l.signed_by, signed_at: l && l.signed_at,
         entry_count: entries.length,
+        hours_current_through: through,
       };
     });
+    // The latest date any uploaded hours are current through, across ALL months
+    // -- so the "upload again?" banner is meaningful regardless of the month
+    // being viewed.
+    const gRow = await dbGet("SELECT MAX(hours_current_through) AS m FROM hr_supervision_logs").catch(() => null);
     return {
       month, min_pct: BACB_MIN_PCT,
       employees: list,
@@ -237,6 +270,8 @@ module.exports = function initSupervision(ctx) {
       need_hours_upload: needUpload,
       signed_count: signed,
       staff_count: list.length,
+      hours_current_through: monthThrough,                        // latest for the viewed month
+      global_hours_current_through: gRow ? dstr(gRow.m) : null,   // latest across all months
     };
   }
 
@@ -303,6 +338,7 @@ module.exports = function initSupervision(ctx) {
         let buf; try { let s = String(b.content_base64); const ci = s.indexOf(","); if (s.startsWith("data:") && ci >= 0) s = s.slice(ci + 1); buf = Buffer.from(s, "base64"); }
         catch (e) { return json(res, 400, { error: "Could not read the file." }); }
         let maps; try { maps = parseRethinkHours(buf); } catch (e) { return json(res, 400, { error: "Could not parse export: " + e.message }); }
+        const through = throughDateFor(mo, b.through_date);
         const emps = await dbAll("SELECT id, name, rethink_id FROM hr_employees");
         let updated = 0; const unmatched = [];
         for (const e of emps) {
@@ -311,14 +347,14 @@ module.exports = function initSupervision(ctx) {
           else if (e.name && maps.byName[e.name.trim().toLowerCase()] != null) worked = maps.byName[e.name.trim().toLowerCase()];
           if (worked == null) continue;
           await dbRun(
-            `INSERT INTO hr_supervision_logs (employee_id, month, entries, hours_worked, created_at, updated_at)
-             VALUES (?, ?, '[]', ?, ?, ?)
-             ON CONFLICT (employee_id, month) DO UPDATE SET hours_worked = EXCLUDED.hours_worked, updated_at = EXCLUDED.updated_at`,
-            [e.id, mo, worked, nowISO(), nowISO()]
+            `INSERT INTO hr_supervision_logs (employee_id, month, entries, hours_worked, hours_current_through, created_at, updated_at)
+             VALUES (?, ?, '[]', ?, ?, ?, ?)
+             ON CONFLICT (employee_id, month) DO UPDATE SET hours_worked = EXCLUDED.hours_worked, hours_current_through = EXCLUDED.hours_current_through, updated_at = EXCLUDED.updated_at`,
+            [e.id, mo, worked, through, nowISO(), nowISO()]
           );
           updated++;
         }
-        return json(res, 200, { ok: true, month: mo, updated });
+        return json(res, 200, { ok: true, month: mo, updated, hours_current_through: through });
       }
 
       const empMatch = pathname.match(/^\/api\/supervision\/employee\/(\d+)$/);
@@ -333,6 +369,7 @@ module.exports = function initSupervision(ctx) {
         const hist = await dbAll("SELECT month, entries, hours_worked, signed_off FROM hr_supervision_logs WHERE employee_id = ? ORDER BY month DESC LIMIT 12", [empId]);
         return json(res, 200, {
           employee: emp, month, entries, hours_worked: worked, sup_hours: sup, pct: pct(sup, worked),
+          hours_current_through: dstr(log && log.hours_current_through),
           min_pct: BACB_MIN_PCT, signed_off: !!(log && log.signed_off), signed_by: log && log.signed_by, signed_at: log && log.signed_at,
           has_pdf: !!(log && log.pdf_stored),
           amendments: await dbAll(
