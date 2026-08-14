@@ -28,6 +28,9 @@ module.exports = function initSupply(ctx) {
   // role-gated.
   const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
   function canAdmin(user) { return !!user && (ADMIN_ROLES.includes(user.role) || granted(user, "supply")); }
+  // Only the practice OWNER (role 'owner' — Quiana) may see the full supply
+  // queue. Everyone else sees only the requests they submitted themselves.
+  function isOwner(user) { return !!user && user.role === "owner"; }
 
   // Full status flow. Denied is reachable from any open state; Received/Denied
   // are terminal.
@@ -221,34 +224,51 @@ module.exports = function initSupply(ctx) {
       return (sendFile(res, 200, fs.readFileSync(full), r.photo_mime || "image/jpeg", "supply-photo"), true);
     }
 
-    // ---------------- ADMIN (owner / super_admin / admin) ----------------
-    if (!canAdmin(user)) { json(res, 403, { error: "Not permitted to manage supply requests." }); return true; }
+    // ---------------- AUTHENTICATED (any signed-in staff) ----------------
+    // Visibility rule (Change 5): the OWNER sees every request; any other
+    // signed-in user sees ONLY the requests they submitted (matched on their
+    // account email == requester_email). The "add order" form itself is the
+    // PUBLIC page above, so submitting is open to everyone.
+    if (!user) { json(res, 401, { error: "Please sign in." }); return true; }
+    const owner = isOwner(user);
+    const myEmail = (user.email || "").trim().toLowerCase();
+    const mineClause = owner ? "" : " AND lower(trim(requester_email)) = ?";
+    const mineArg = owner ? [] : [myEmail];
 
     if (pathname === "/api/supply/requests" && method === "GET") {
       const status = query.status;
       let rows;
       if (status === "open") {
-        rows = await dbAll(`SELECT * FROM supply_requests WHERE status IN ('Submitted','Approved','Ordered') ORDER BY id DESC`);
+        rows = await dbAll(`SELECT * FROM supply_requests WHERE status IN ('Submitted','Approved','Ordered')${mineClause} ORDER BY id DESC`, mineArg);
       } else if (status && STATUSES.includes(status)) {
-        rows = await dbAll("SELECT * FROM supply_requests WHERE status = ? ORDER BY id DESC", [status]);
+        rows = await dbAll(`SELECT * FROM supply_requests WHERE status = ?${mineClause} ORDER BY id DESC`, [status, ...mineArg]);
       } else {
-        rows = await dbAll("SELECT * FROM supply_requests ORDER BY id DESC LIMIT 300");
+        rows = await dbAll(`SELECT * FROM supply_requests WHERE 1=1${mineClause} ORDER BY id DESC LIMIT 300`, mineArg);
       }
       const counts = {};
       for (const st of STATUSES) {
-        const c = await dbGet("SELECT COUNT(*)::int AS c FROM supply_requests WHERE status = ?", [st]);
+        const c = await dbGet(`SELECT COUNT(*)::int AS c FROM supply_requests WHERE status = ?${mineClause}`, [st, ...mineArg]);
         counts[st] = c ? c.c : 0;
       }
-      return (json(res, 200, { rows: rows.map(adminView), counts, statuses: STATUSES }), true);
+      return (json(res, 200, { rows: rows.map(adminView), counts, statuses: STATUSES, is_owner: owner }), true);
     }
 
     const detail = pathname.match(/^\/api\/supply\/requests\/(\d+)$/);
     if (detail && method === "GET") {
       const r = await dbGet("SELECT * FROM supply_requests WHERE id = ?", [detail[1]]);
       if (!r) return (json(res, 404, { error: "Not found" }), true);
+      // Non-owners may only open their own request.
+      if (!owner && (r.requester_email || "").trim().toLowerCase() !== myEmail) {
+        return (json(res, 403, { error: "Not permitted." }), true);
+      }
       const hist = await dbAll("SELECT * FROM supply_request_history WHERE request_id = ? ORDER BY id ASC", [r.id]);
       return (json(res, 200, { request: adminView(r), history: hist }), true);
     }
+
+    // ---------------- ADMIN (owner / super_admin / admin) ----------------
+    // Managing requests (status changes, edits, notes, settings) stays gated to
+    // administrators; the visibility rule above governs who can READ them.
+    if (!canAdmin(user)) { json(res, 403, { error: "Not permitted to manage supply requests." }); return true; }
 
     // Change status (+ optional note) and email the requester.
     const statusChange = pathname.match(/^\/api\/supply\/requests\/(\d+)\/status$/);

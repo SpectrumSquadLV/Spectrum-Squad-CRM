@@ -1,6 +1,9 @@
 // supply-requests-frontend.js -- Clinic Supply Requests admin view (progressive-enhancement).
 // Injects a "Supply Requests" sidebar button and renders into #view-mount on its
-// hash route. Owner / Super Admin / Admin only. Walks each request through the
+// hash route. OWNER ONLY -- only the owner (Quiana) sees the full queue of all
+// requests. Everyone else submits + tracks their own via the public
+// /supply-request page. The server list API also filters to the current user
+// unless they are the owner (defense in depth). Walks each request through the
 // full flow and emails the requester on status changes (server-side).
 (function () {
   "use strict";
@@ -8,7 +11,8 @@
   const ADMIN_ROLES = ["owner", "super_admin", "admin"];
   const ACCENT = "#4f46e5";
 
-  function canSee() { return typeof state !== "undefined" && state.user && ADMIN_ROLES.includes(state.user.role); }
+  // Change 5: only the OWNER sees the all-requests management view.
+  function canSee() { return typeof state !== "undefined" && state.user && state.user.role === "owner"; }
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   async function api(path, opts) {
     opts = opts || {};
