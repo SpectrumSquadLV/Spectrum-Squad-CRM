@@ -1178,6 +1178,9 @@ const EMAIL_TEMPLATE_DEFS = [
   { key: "hr_welcome_docs_rbt", label: "New Hire — Welcome + Required Documents (RBT)", category: "HR / Onboarding Emails",
     description: "Sent to an RBT the moment their offer is accepted. Points them at HomeBase for the background check and payroll.",
     fields: ["first_name", "credentialing_form_link", "upload_portal_link"] },
+  { key: "hr_welcome_docs_cota", label: "New Hire — Welcome + Required Documents (COTA)", category: "HR / Onboarding Emails",
+    description: "Sent to a COTA the moment their offer is accepted. Carries the 72-hour document deadline and OT credentialing link.",
+    fields: ["first_name", "credentialing_form_link", "upload_portal_link"] },
   { key: "hr_first_day", label: "New Hire — Your First Day", category: "HR / Onboarding Emails",
     description: "Sent ahead of their first day, once a start date has been entered. The dress code and shirt count only appear if they are set.",
     fields: ["first_name", "first_day_date", "dress_code", "shirt_count", "supervisor_name", "scheduling_lead_name"] },
@@ -1372,6 +1375,24 @@ const EMAIL_TEMPLATE_DEFAULTS = {
     <p>Please also be on the lookout for a document from Sign Now, it is your new hire packet.</p>
     <p>Please also be on the lookout for an email from HomeBase our Payroll processor for your background check and to enroll in Payroll!</p>`,
   },
+  hr_welcome_docs_cota: {
+    subject: "Welcome to Spectrum Squad, {{first_name}}!",
+    body: `<p>Hi {{first_name}},</p>
+    <p>Welcome to the Spectrum Squad family! We are so excited to have you join us as our newest Certified Occupational Therapy Assistant. Your energy and dedication are exactly what we look for in our team, and we can't wait for you to start making an impact with our kiddos.</p>
+    <p>As we get everything set up for your onboarding, please send the following documents at your earliest convenience so we can complete your HR file. These documents are required within 72 hours otherwise we will unfortunately have to rescind our offer. If you need time to get a certain document please let me know and we can work around that:</p>
+    <p><strong>Required Documents:</strong></p>
+    <ul>
+      <li>Copy of your NBCOT certification</li>
+      <li>Copy of your Nevada Occupational Therapy Assistant (OTA) license</li>
+      <li>Proof of CPR/BLS certification</li>
+      <li>Updated copy of your resume</li>
+      <li>Copy of your government-issued ID</li>
+      <li>Please also complete the link below for our credentialing company &mdash; PLEASE LET ME KNOW ONCE YOU HAVE COMPLETED IT<br/><a href="{{credentialing_form_link}}">{{credentialing_form_link}}</a></li>
+    </ul>
+    <p>You can upload everything in one place here: <a href="{{upload_portal_link}}">{{upload_portal_link}}</a></p>
+    <p>Please also be on the lookout for a document from Sign Now, it is your new hire packet.</p>
+    <p>Please also be on the lookout for an email from HomeBase our Payroll processor for your background check and to enroll in Payroll!</p>`,
+  },
   hr_first_day: {
     subject: "Welcome to your first day at Spectrum Squad, {{first_name}}!",
     body: `<p>Hi {{first_name}},</p>
@@ -1483,7 +1504,7 @@ async function seedEmailTemplates() {
 // later corrected. This brings forward only the copies still marked as
 // system-owned; the moment someone saves an edit, updated_by stops being
 // 'system' and the CRM never touches their wording again.
-const TEMPLATES_TO_KEEP_CURRENT = ["hr_welcome_docs_bcba", "hr_welcome_docs_rbt", "hr_first_day", "hr_docs_complete_internal"];
+const TEMPLATES_TO_KEEP_CURRENT = ["hr_welcome_docs_bcba", "hr_welcome_docs_rbt", "hr_welcome_docs_cota", "hr_first_day", "hr_docs_complete_internal"];
 
 async function refreshSystemTemplates() {
   for (const key of TEMPLATES_TO_KEEP_CURRENT) {
