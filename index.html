@@ -2017,7 +2017,7 @@ async function openClientModal(id) {
               .map(
                 (t) => `<div class="task-row">
                   <div class="info">
-                    <span class="status-dot ${t.status}"></span><strong>${t.label}</strong>
+                    <span class="status-dot ${t.status}"></span><strong>${t.label}</strong>${t.assignable === false ? ` <span class="tag" style="background:#e7effb; color:#1b3a7b;" title="This step runs automatically — the screener is sent, reminded, and marked complete by the system. It is never assigned to staff.">Automated · not assignable</span>` : ""}
                     <div class="due">${t.department_name} · due ${fmtDate(t.due_date)} ${t.status === "overdue" ? "· <span style='color:#b91c1c;font-weight:700;'>OVERDUE</span>" : ""}</div>
                   </div>
                   ${

@@ -117,7 +117,10 @@ CREATE TABLE IF NOT EXISTS stage_tasks (
   department_id INTEGER NOT NULL,
   sla_days INTEGER NOT NULL,
   sort_order INTEGER NOT NULL,
-  next_stage_key TEXT
+  next_stage_key TEXT,
+  -- Whether this stage task may be assigned to a staff member. The automated,
+  -- parent-driven Clinical Screener is seeded false (see seedStageTasks).
+  assignable BOOLEAN NOT NULL DEFAULT true
 );
 
 CREATE TABLE IF NOT EXISTS client_tasks (
@@ -441,6 +444,12 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_services BOOLEAN NOT
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_notes TEXT;
 -- Rename the old Vineland stage task to the In-Clinic Assessment.
 UPDATE stage_tasks SET label = 'Schedule In-Clinic Assessment' WHERE stage_key = 'assessment_scheduling' AND label = 'Schedule Vineland / Intake Assessment';
+-- The Clinical Screener is auto-triggered when a family starts intake and is
+-- driven entirely by the screener module (invite, remind, host, mark complete).
+-- It must NEVER be handed to a staff member, so it is flagged non-assignable.
+-- Other stage tasks default to assignable = true.
+ALTER TABLE stage_tasks ADD COLUMN IF NOT EXISTS assignable BOOLEAN NOT NULL DEFAULT true;
+UPDATE stage_tasks SET assignable = false WHERE stage_key = 'clinical_screener';
 -- "Intake Packet" was retired as a phase. Anyone parked in it moves to the
 -- next stage along. This is a plain UPDATE rather than enterStage() on
 -- purpose: enterStage fires the department alert and the parent milestone
@@ -4528,7 +4537,7 @@ async function handle(req, res, pathname, method, query = {}) {
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
       if (!client) return json(res, 404, { error: "Not found" });
       const tasks = await dbAll(
-        `SELECT ct.*, st.label, st.stage_key, d.name AS department_name, d.color AS department_color
+        `SELECT ct.*, st.label, st.stage_key, st.assignable, d.name AS department_name, d.color AS department_color
          FROM client_tasks ct
          JOIN stage_tasks st ON st.id = ct.stage_task_id
          JOIN departments d ON d.id = st.department_id
@@ -5978,20 +5987,22 @@ async function deptId(key) {
 async function seedStageTasks() {
   const existing = await dbGet("SELECT COUNT(*) AS n FROM stage_tasks");
   if (Number(existing.n) > 0) return;
+  // Last field = assignable. The Clinical Screener is automated (parent-driven,
+  // system-managed) and must never be assigned to staff, so it seeds as false.
   const rows = [
-    ["new_submission", "Welcome call / initial contact", "intake", 1, 1],
-    ["clinical_screener", "Complete Clinical Screener", "clinical", 2, 1],
-    ["insurance_verification", "Verify Insurance Benefits", "billing", 3, 1],
-    ["assessment_scheduling", "Schedule Vineland / Intake Assessment", "clinical", 5, 1],
-    ["authorization", "Submit Authorization Request", "billing", 3, 1],
-    ["first_day_scheduled", "Schedule First Day of ABA", "scheduling", 5, 1],
+    ["new_submission", "Welcome call / initial contact", "intake", 1, 1, true],
+    ["clinical_screener", "Complete Clinical Screener", "clinical", 2, 1, false],
+    ["insurance_verification", "Verify Insurance Benefits", "billing", 3, 1, true],
+    ["assessment_scheduling", "Schedule Vineland / Intake Assessment", "clinical", 5, 1, true],
+    ["authorization", "Submit Authorization Request", "billing", 3, 1, true],
+    ["first_day_scheduled", "Schedule First Day of ABA", "scheduling", 5, 1, true],
   ];
-  for (const [stage_key, label, deptKey, sla_days, sort_order] of rows) {
+  for (const [stage_key, label, deptKey, sla_days, sort_order, assignable] of rows) {
     const did = await deptId(deptKey);
     await dbRun(
-      `INSERT INTO stage_tasks (stage_key, label, department_id, sla_days, sort_order)
-       VALUES (?, ?, ?, ?, ?)`,
-      [stage_key, label, did, sla_days, sort_order]
+      `INSERT INTO stage_tasks (stage_key, label, department_id, sla_days, sort_order, assignable)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [stage_key, label, did, sla_days, sort_order, assignable]
     );
   }
 }
