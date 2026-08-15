@@ -304,6 +304,7 @@
         <div style="display:flex; gap:8px; align-items:center;">
           ${d.can_manage ? `<button class="btn" id="pol-doc-upload">⬆ Upload source document</button>
           <button class="btn secondary" id="pol-add">+ Write one</button>
+          <button class="btn secondary" id="pol-import">📥 Import policies</button>
           <button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
         </div>
       </div>
@@ -361,6 +362,7 @@
     on("#pol-status", "change", (e) => { polStatus = e.target.value; renderPolicies(mount); });
     on("#pol-clear", "click", () => { polQ = polCat = polStatus = ""; renderPolicies(mount); });
     on("#pol-acks", "click", () => ackReport(mount));
+    on("#pol-import", "click", () => importModal(d, mount));
 
     on("#pol-add", "click", () => policyModal(null, d, mount));
     mount.querySelectorAll("[data-pol-open]").forEach((b) =>
@@ -476,6 +478,82 @@
         b2.querySelector(".close-btn").addEventListener("click", () => b2.remove());
         b2.addEventListener("click", (ev) => { if (ev.target === b2) b2.remove(); });
       } catch (err) { alert(err.message); }
+    });
+  }
+
+  // Create many policy records against one uploaded source document.
+  //
+  // Two ways in. "Detect sections" asks the server where the document appears
+  // to divide -- fine for a numbered SOP. "Paste an import map" takes a
+  // reviewed list of boundaries, which is what a handbook needs: title-case
+  // prose defeats automatic detection badly enough that it mistitles sections
+  // and lets one swallow the next.
+  //
+  // Either way the policy TEXT is whatever the map carries -- verbatim from the
+  // document. Nothing here rewrites, summarises or shortens it.
+  function importModal(d, mount) {
+    const docs = d.documents || [];
+    const bd = document.createElement("div"); bd.className = "modal-backdrop";
+    bd.innerHTML = `<div class="modal" style="width:760px; max-width:95vw;">
+      <div class="modal-header"><h2>Import policies from a document</h2><button class="close-btn">✕</button></div>
+      ${docs.length ? `
+        <div class="field"><label>Source document</label><select id="imp-doc">
+          ${docs.map((x) => `<option value="${x.id}">${esc(x.title)}${x.doc_type ? " — " + esc(x.doc_type) : ""}</option>`).join("")}
+        </select></div>
+        <div style="display:flex; gap:8px; margin:10px 0;">
+          <button class="btn small secondary" id="imp-detect">Detect sections automatically</button>
+          <span style="font-size:12px; color:var(--text-muted); align-self:center;">or paste a reviewed import map below</span>
+        </div>
+        <div class="field"><label>Import map (JSON)</label>
+          <textarea id="imp-json" rows="10" placeholder='{"sections":[{"title":"Overtime Policy","category":"Payroll &amp; Compensation","body":"..."}]}'
+            style="width:100%; font-family:ui-monospace,Menlo,monospace; font-size:11.5px;"></textarea></div>
+        <div id="imp-note" style="font-size:12px; color:var(--text-muted); margin-bottom:8px;"></div>
+        <div style="margin-top:6px; display:flex; gap:8px; align-items:center;">
+          <button class="btn" id="imp-go">Import</button>
+          <span id="imp-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+        </div>
+        <div style="font-size:11.5px; color:var(--text-muted); margin-top:8px;">
+          Imported policies are created Active, version 1, with no acknowledgment required.
+          Re-importing the same document will not duplicate a policy that is already there.</div>`
+        : `<div class="empty-state">Upload a source document first.</div>`}
+    </div>`;
+    document.body.appendChild(bd);
+    const close = () => bd.remove();
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+    if (!docs.length) return;
+
+    const note = bd.querySelector("#imp-note");
+    const status = bd.querySelector("#imp-status");
+
+    bd.querySelector("#imp-detect").addEventListener("click", async () => {
+      const id = bd.querySelector("#imp-doc").value;
+      note.textContent = "Reading document…";
+      try {
+        const r = await api("/api/policies/documents/" + id + "/sections");
+        bd.querySelector("#imp-json").value = JSON.stringify({ sections: r.sections.map((s) => ({
+          title: s.title, category: "Other", section_ref: s.section_ref || null, body: s.body,
+        })) }, null, 1);
+        note.textContent = `${r.sections.length} section(s) detected. Review the titles and set a category on each before importing — automatic detection is a starting point, not an answer.`;
+      } catch (e) { note.textContent = e.message; }
+    });
+
+    bd.querySelector("#imp-go").addEventListener("click", async () => {
+      const id = bd.querySelector("#imp-doc").value;
+      let payload;
+      try { payload = JSON.parse(bd.querySelector("#imp-json").value); }
+      catch (e) { status.textContent = "That isn't valid JSON."; return; }
+      const sections = payload && Array.isArray(payload.sections) ? payload.sections : null;
+      if (!sections || !sections.length) { status.textContent = "No sections found in that map."; return; }
+      if (!confirm(`Create ${sections.length} policy record(s) from this document?`)) return;
+      status.textContent = `Importing ${sections.length}…`;
+      try {
+        const r = await api("/api/policies/documents/" + id + "/import", { method: "POST", body: { sections } });
+        close();
+        await renderPolicies(mount);
+        const skipped = (r.skipped || []).length;
+        alert(`Imported ${r.created} policy record(s).` + (skipped ? `\n${skipped} skipped:\n` + r.skipped.map((s) => `• ${s.title} — ${s.reason}`).join("\n") : ""));
+      } catch (e) { status.textContent = e.message; }
     });
   }
 
