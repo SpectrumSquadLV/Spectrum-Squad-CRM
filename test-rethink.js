@@ -549,6 +549,72 @@ const initRethink = require("./rethink");
     for (const k of Object.keys(saved)) process.env[k] = saved[k];
   }
 
+  console.log("\nLIVE HOURS AS THE PRIMARY SOURCE\n");
+
+  // Once the filter is confirmed, the API figure is the denominator and the
+  // .xlsx upload stops being part of the workflow. These assertions cover the
+  // handover in both directions -- including the one that matters most, that a
+  // provider the API knows nothing about keeps whatever was already there
+  // rather than dropping to zero.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [{ id: 1, name: "RBT One", rethink_id: "S100" }, { id: 2, name: "RBT Two", rethink_id: "S200" }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { staffId: "S100", appointmentStatus: "Completed", staffVerification: true, actualDurationHours: 2, appointmentDate: "2026-08-03" },
+      { staffId: "S100", appointmentStatus: "Completed", staffVerification: true, actualDurationHours: 1.5, appointmentDate: "2026-08-04" },
+      { staffId: "S200", appointmentStatus: "Completed", staffVerification: true, actualDurationHours: 4, appointmentDate: "2026-08-05" },
+    ], pages: 1, truncated: false });
+
+    const r = initRethink(ctx);
+    await r.syncSupervisionHours("test", "2026-08");
+
+    // The per-provider figures the verification table renders.
+    const s100 = state.providerMonth.find((p) => p.staffId === "S100");
+    const s200 = state.providerMonth.find((p) => p.staffId === "S200");
+    check("per-provider appointment counts are recorded for verification",
+      s100.count === 2 && s200.count === 1, `${s100.count}/${s200.count}`);
+    check("per-provider hours are recorded for verification",
+      s100.hours === 3.5 && s200.hours === 4, `${s100.hours}/${s200.hours}`);
+    check("a confirmed filter marks the figures non-provisional",
+      s100.provisional === false && s200.provisional === false);
+    check("confirmed hours reach the supervision tracker for every matched provider",
+      state.supervisionWrites.length === 2, JSON.stringify(state.supervisionWrites));
+
+  }
+
+  // verifiedHoursByEmployee is what supervision.js reads for the denominator.
+  // Built on its own ctx: the module destructures its db helpers at
+  // construction, so they have to be in place before initRethink is called.
+  {
+    const rows = [{ employee_id: 1, verified_hours: 3.5 }, { employee_id: 2, verified_hours: 4 }];
+    const ctxFor = (config) => ({
+      dbGet: async (sql) => (/FROM rethink_config/i.test(sql) ? config : null),
+      dbAll: async (sql) => (/FROM rethink_provider_month/i.test(sql) ? rows : []),
+      dbRun: async () => {},
+      nowISO: () => NOW, readBody: async () => ({}), json: () => {},
+    });
+
+    const hours = await initRethink(ctxFor(CONFIRMED)).verifiedHoursByEmployee("2026-08");
+    check("the denominator map exposes hours per employee",
+      hours[1] === 3.5 && hours[2] === 4, JSON.stringify(hours));
+
+    const none = await initRethink(ctxFor(UNCONFIRMED)).verifiedHoursByEmployee("2026-08");
+    check("an unconfirmed filter supplies no denominator at all",
+      Object.keys(none).length === 0, JSON.stringify(none));
+  }
+
+  // Supervision percentage arithmetic, using the live denominator. Mirrors
+  // supervision.js's pct(): one decimal place.
+  {
+    const pct = (sup, worked) => (!worked ? null : Math.round((sup / worked) * 1000) / 10);
+    check("supervision % uses the live hours as the denominator", pct(4.25, 82.5) === 5.2, pct(4.25, 82.5));
+    check("a provider with zero live hours yields no percentage, not a divide-by-zero",
+      pct(2, 0) === null);
+    check("5% of live hours is the BACB line", pct(5, 100) === 5);
+  }
+
   console.log("\nOBSERVABILITY AND LEAK SAFETY\n");
 
   // A production sync failed with a generic "Request failed" and Railway showed

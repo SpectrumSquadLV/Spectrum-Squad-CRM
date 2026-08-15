@@ -244,6 +244,7 @@ module.exports = function initSupervision(ctx) {
     // zeroes, so a bad API response can never drop a percentage to 0%.
     const rethinkHours = await rethinkVerifiedHours(month).catch(() => ({}));
     let totSup = 0, totWorked = 0, needUpload = 0, signed = 0;
+    let fromRethink = 0, fromUpload = 0;
     let monthThrough = null; // latest through-date among this month's uploads
     const list = emps.map((e) => {
       const l = byEmp[e.id];
@@ -260,6 +261,7 @@ module.exports = function initSupervision(ctx) {
       const through = l ? dstr(l.hours_current_through) : null;
       if (through && (!monthThrough || through > monthThrough)) monthThrough = through;
       totSup += sup; totWorked += worked;
+      if (useRethink) fromRethink++; else if (uploaded) fromUpload++;
       if (!worked) needUpload++;
       if (l && l.signed_off) signed++;
       return {
@@ -290,6 +292,14 @@ module.exports = function initSupervision(ctx) {
       staff_count: list.length,
       hours_current_through: monthThrough,                        // latest for the viewed month
       global_hours_current_through: gRow ? dstr(gRow.m) : null,   // latest across all months
+      // Where the denominator came from this month. Drives the page's whole
+      // posture: once Rethink is supplying hours, the upload path and its
+      // "you must upload the export" nagging are no longer the workflow, and
+      // the button becomes an emergency fallback rather than a monthly chore.
+      // Reporting only -- the precedence that produced `hours_worked` above is
+      // unchanged, and the sign-off logic is untouched.
+      hours_source_counts: { rethink: fromRethink, upload: fromUpload, none: needUpload },
+      rethink_hours_active: fromRethink > 0,
     };
   }
 
@@ -553,6 +563,9 @@ module.exports = function initSupervision(ctx) {
       month: s.month, overall_pct: s.overall_pct, min_pct: s.min_pct,
       need_hours_upload: s.need_hours_upload, signed_count: s.signed_count, staff_count: s.staff_count,
       meeting: s.employees.filter((e) => e.meets).length,
+      // So the dashboard stops telling people to upload an export once the
+      // API is supplying the hours.
+      rethink_hours_active: s.rethink_hours_active,
     };
   }
 

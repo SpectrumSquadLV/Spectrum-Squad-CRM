@@ -998,7 +998,8 @@ function renderSupervisionWidget(s) {
       ${tile(`${s.signed_count}/${s.staff_count}`, "Signed off")}
       ${tile(s.need_hours_upload, "Missing worked hours", s.need_hours_upload ? "#b45309" : "var(--brand-navy,#1b2a6b)")}
     </div>
-    ${s.need_hours_upload ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">⬆ Upload this month's Rethink hours export on the <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a> page to calculate percentages.</div>` : ""}
+    ${s.need_hours_upload && !s.rethink_hours_active ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">⬆ Upload this month's Rethink hours export on the <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a> page to calculate percentages.</div>` : ""}
+    ${s.need_hours_upload && s.rethink_hours_active ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">${s.need_hours_upload} staff member(s) have no live Rethink hours this month — check <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a>.</div>` : ""}
     <div style="margin-top:10px;"><a href="#/supervision" class="btn small secondary">Open supervision tracker</a></div>`;
 }
 
