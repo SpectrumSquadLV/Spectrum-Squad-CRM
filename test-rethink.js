@@ -190,7 +190,8 @@ const initRethink = require("./rethink");
     check("an unmatched provider is stored with a null employee, never guessed",
       state.providerMonth[0] && state.providerMonth[0].employeeId === null);
     check("no supervision hours are written for an unmatched provider", state.supervisionWrites.length === 0);
-    check("unmatched providers are surfaced as needing a match", state.matchNeededSet > 0);
+    check("an unmatched Rethink provider is reported in the sync warnings",
+      out.warnings.some((w) => /had no matching CRM employee/.test(w)), out.warnings.join(" | "));
   }
 
   // The filter gate: provisional totals must never reach the tracker.
@@ -547,6 +548,121 @@ const initRethink = require("./rethink");
 
     reset();
     for (const k of Object.keys(saved)) process.env[k] = saved[k];
+  }
+
+  console.log("\nSUPERVISION POPULATION SCOPING\n");
+
+  // "Rethink Provider Match Needed" is a supervision-page warning and must name
+  // only supervisees. It previously named everyone without a Rethink ID --
+  // BCBAs, the clinical director, the owner -- because the SQL tested
+  // COALESCE(supervision_required, TRUE) and that column is NULL for nearly
+  // everyone. The rule now comes from supervision.js itself.
+  {
+    // The real predicate, loaded from the supervision module so this test
+    // breaks if the two ever drift apart.
+    const supervision = require("./supervision")({
+      dbGet: async () => null, dbAll: async () => [], dbRun: async () => {},
+      sendEmail: async () => {}, nowISO: () => NOW, crypto: require("crypto"),
+      APP_BASE_URL: "", readBody: async () => ({}), json: () => {},
+    });
+    const isTracked = supervision.isTracked;
+
+    check("an RBT is in the supervision population",
+      isTracked({ role_title: "Registered Behavior Technician", supervision_required: null }) === true);
+    check("a BCBA is not", isTracked({ role_title: "BCBA", supervision_required: null }) === false);
+    check("a clinical director is not",
+      isTracked({ role_title: "Clinical Director", supervision_required: null }) === false);
+    check("a student analyst IS, even though the title says BCBA-track",
+      isTracked({ role_title: "Student Analyst", supervision_required: null }) === true);
+    check("an explicit opt-in overrides the title",
+      isTracked({ role_title: "BCBA", supervision_required: true }) === true);
+    check("an explicit opt-out overrides the title",
+      isTracked({ role_title: "RBT", supervision_required: false }) === false);
+
+    // The flagging pass, driven by that predicate.
+    const employees = [
+      { id: 1, name: "Real RBT", role_title: "Registered Behavior Technician", rethink_id: null, supervision_required: null },
+      { id: 2, name: "Clarissa Vergara", role_title: "BCBA", rethink_id: null, supervision_required: null },
+      { id: 3, name: "Micah Galang", role_title: "Clinical Director", rethink_id: null, supervision_required: null },
+      { id: 4, name: "Quiana", role_title: "Owner", rethink_id: null, supervision_required: null },
+      { id: 5, name: "Linked RBT", role_title: "RBT", rethink_id: "S100", supervision_required: null },
+    ];
+    const flagged = [];
+    const ctx = {
+      dbGet: async (sql) => (/INSERT INTO rethink_sync_log/i.test(sql) ? { id: 1 }
+        : /FROM rethink_config/i.test(sql) ? CONFIRMED : null),
+      dbAll: async (sql) => (/FROM hr_employees/i.test(sql)
+        ? (/rethink_id IS NULL/i.test(sql) ? employees.filter((e) => !e.rethink_id) : employees)
+        : []),
+      dbRun: async (sql, p = []) => {
+        if (/SET rethink_match_needed = TRUE WHERE id/i.test(sql)) flagged.push(p[0]);
+      },
+      nowISO: () => NOW, readBody: async () => ({}), json: () => {},
+      isSupervisionTracked: isTracked,
+    };
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { staffId: "S100", appointmentStatus: "Completed", staffVerification: true, actualDurationHours: 6, appointmentDate: "2026-08-03" },
+    ], pages: 1, truncated: false });
+
+    await initRethink(ctx).syncSupervisionHours("test", "2026-08");
+
+    check("an unlinked RBT is flagged as needing a Rethink match", flagged.includes(1), JSON.stringify(flagged));
+    check("a BCBA without a Rethink ID is NOT flagged", !flagged.includes(2), JSON.stringify(flagged));
+    check("a clinical director is NOT flagged", !flagged.includes(3));
+    check("an already-linked RBT is not flagged", !flagged.includes(5));
+
+    // Documents a real gap rather than hiding it. The title rule only excludes
+    // BCBA-flavoured titles; every other title defaults to TRACKED on purpose,
+    // so that nobody is silently dropped from a compliance tracker. "Owner" is
+    // not a BCBA title, so the owner is in the population by default -- on the
+    // board as well as in this warning. The intended remedy is the per-person
+    // override, not a growing list of job titles hard-coded in a regex.
+    check("a non-clinical title like Owner is tracked by default (by design)",
+      flagged.includes(4), JSON.stringify(flagged));
+    check("and the per-person override is what removes them",
+      isTracked({ role_title: "Owner", supervision_required: false }) === false);
+  }
+
+  // The safety property: scoping the WARNING must not cost anyone their hours.
+  {
+    const employees = [
+      { id: 1, name: "Real RBT", role_title: "RBT", rethink_id: "S100", supervision_required: null },
+      { id: 2, name: "A BCBA", role_title: "BCBA", rethink_id: "S200", supervision_required: null },
+    ];
+    const { state, ctx } = makeDb({ now: NOW, config: CONFIRMED, employees });
+    ctx.isSupervisionTracked = (e) => !/BCBA/i.test(e.role_title || "");
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { staffId: "S100", appointmentStatus: "Completed", staffVerification: true, actualDurationHours: 5, appointmentDate: "2026-08-03" },
+      { staffId: "S200", appointmentStatus: "Completed", staffVerification: true, actualDurationHours: 7, appointmentDate: "2026-08-04" },
+    ], pages: 1, truncated: false });
+
+    await initRethink(ctx).syncSupervisionHours("test", "2026-08");
+
+    check("worked hours are still synced for a supervised RBT",
+      state.supervisionWrites.some((w) => w.employeeId === 1 && w.hours === 5), JSON.stringify(state.supervisionWrites));
+    check("worked hours are ALSO still synced for a non-supervisee",
+      state.supervisionWrites.some((w) => w.employeeId === 2 && w.hours === 7), JSON.stringify(state.supervisionWrites));
+    check("both providers keep their Rethink mapping",
+      state.providerMonth.filter((p) => p.employeeId).length === 2);
+  }
+
+  // If the wiring is lost, the warning goes quiet rather than naming everyone.
+  {
+    const { ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [{ id: 1, name: "Unlinked", role_title: "RBT", rethink_id: null }],
+    });
+    delete ctx.isSupervisionTracked;
+    const flagged = [];
+    const origRun = ctx.dbRun;
+    ctx.dbRun = async (sql, p = []) => {
+      if (/SET rethink_match_needed = TRUE WHERE id/i.test(sql)) flagged.push(p[0]);
+      return origRun(sql, p);
+    };
+    stub.dwhGetAllPages = async () => ({ rows: [], pages: 1, truncated: false });
+    await initRethink(ctx).syncSupervisionHours("test", "2026-08");
+    check("without the supervision predicate, nobody is flagged rather than everybody",
+      flagged.length === 0, JSON.stringify(flagged));
   }
 
   console.log("\nLIVE HOURS AS THE PRIMARY SOURCE\n");

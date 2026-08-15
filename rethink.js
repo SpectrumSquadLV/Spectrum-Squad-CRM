@@ -53,6 +53,12 @@ const client = require("./rethink-client");
 module.exports = function initRethink(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, readBody, json } = ctx;
 
+  // Supplied by server.js from supervision.js. Defaults to "nobody is
+  // supervised" rather than "everybody is": if the wiring is ever lost, the
+  // failure is a warning that goes quiet, not one that names half the company
+  // as needing a Rethink ID. A test asserts server.js passes it.
+  const isSupervisionTracked = ctx.isSupervisionTracked || (() => false);
+
   const DWH_APPOINTMENTS = "Appointments";
 
   // Confirmed against the DWH Swagger: GET /api/ClientAuthorization -- singular.
@@ -760,14 +766,30 @@ module.exports = function initRethink(ctx) {
     if (unmatched) {
       warnings.push(`${unmatched} Rethink provider(s) had no matching CRM employee: ${unmatchedIds.slice(0, 20).join(", ")}`);
     }
-    // A tracked employee with no rethink_id cannot ever be matched, so they are
-    // flagged directly on their record.
-    await dbRun(
-      `UPDATE hr_employees SET rethink_match_needed = TRUE
-       WHERE COALESCE(status,'active') <> 'terminated'
-         AND (rethink_id IS NULL OR TRIM(rethink_id) = '')
-         AND COALESCE(supervision_required, TRUE) = TRUE`
-    ).catch((e) => warnings.push(`Could not flag unmatched employees: ${e.message}`));
+    // A SUPERVISED employee with no rethink_id cannot ever be matched, so they
+    // are flagged directly on their record.
+    //
+    // "Supervised" is the supervision tracker's own definition, asked for
+    // rather than re-derived here. The previous SQL used
+    // COALESCE(supervision_required, TRUE), and supervision_required is NULL
+    // for nearly everyone -- it means "decide from the job title" -- so that
+    // test silently resolved to TRUE for the whole company and the warning
+    // named BCBAs, the clinical director and the owner alongside actual RBTs.
+    //
+    // This only scopes the WARNING. Staff outside the supervision population
+    // keep their Rethink IDs and their mapping for every other workflow, and
+    // their hours are still synced -- see the denominator write below, which
+    // is keyed on a matched provider and knows nothing about supervision.
+    const unlinked = await dbAll(
+      `SELECT id, name, role_title, supervision_required FROM hr_employees
+        WHERE COALESCE(status,'active') <> 'terminated'
+          AND (rethink_id IS NULL OR TRIM(rethink_id) = '')`
+    ).catch(() => []);
+    const needingMatch = unlinked.filter((e) => isSupervisionTracked(e));
+    for (const e of needingMatch) {
+      await dbRun("UPDATE hr_employees SET rethink_match_needed = TRUE WHERE id = ?", [e.id])
+        .catch((err) => warnings.push(`Could not flag employee ${e.id}: ${err.message}`));
+    }
 
     // ---- write the supervision denominator ------------------------------
     // Only ever on a confirmed filter. A provisional number is shown in the

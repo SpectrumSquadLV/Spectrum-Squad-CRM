@@ -569,5 +569,12 @@ module.exports = function initSupervision(ctx) {
     };
   }
 
-  return { initTables, handleApi, widget, _internal: { parseRethinkHours, monthSummary, buildPdf } };
+  // Exported so nothing else has to re-implement "who is on this tracker".
+  // The rule is subtle -- job title, not login role, with student analysts
+  // deliberately kept on and an explicit per-person override winning over both
+  // -- and a second copy of it somewhere else would drift.
+  return {
+    initTables, handleApi, widget, isTracked,
+    _internal: { parseRethinkHours, monthSummary, buildPdf, supervisionDefault },
+  };
 };

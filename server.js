@@ -6443,6 +6443,12 @@ const supervision = require("./supervision")({
 // authorization-expiration alert engine. =====
 const rethink = require("./rethink")({
   dbGet, dbAll, dbRun, nowISO, readBody, json,
+  // "Rethink Provider Match Needed" is a supervision-page warning, so it must
+  // use the supervision tracker's own population rule rather than a second
+  // copy of it. Without this the warning names every staff member without a
+  // Rethink ID -- BCBAs, the clinical director, the owner -- none of whom are
+  // supervisees. Passed lazily so there is no construction-order coupling.
+  isSupervisionTracked: (emp) => supervision.isTracked(emp),
 });
 // ===== COMPLETIONS: one recorder for every "X finished" event, a dashboard
 // feed, and a single daily digest email. Constructed early so every module

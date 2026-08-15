@@ -101,5 +101,19 @@ check("the server restricts client-match routes to owner/admin",
 check("the client-match routes check canMatch before doing anything",
   /pathname\.startsWith\("\/api\/rethink\/client-match"\)\)\s*\{\s*\n\s*if \(!canMatch\(user\)\)/.test(rethinkJs));
 
+// ---- server wiring -------------------------------------------------------
+console.log("\nSERVER WIRING\n");
+
+// The supervision-population predicate is passed from server.js into the
+// Rethink module. If that wiring is lost the "Rethink Provider Match Needed"
+// warning silently goes quiet, which is safe but wrong -- so it is asserted
+// here rather than left to be noticed months later.
+check("server.js passes the supervision population rule into the Rethink module",
+  /isSupervisionTracked:\s*\(emp\)\s*=>\s*supervision\.isTracked\(emp\)/.test(serverJs));
+check("supervision.js exports that rule",
+  /return \{\s*\n?\s*initTables, handleApi, widget, isTracked/.test(read("supervision.js")));
+check("the Rethink module defaults to flagging nobody when it is missing",
+  /ctx\.isSupervisionTracked \|\| \(\(\) => false\)/.test(read("rethink.js")));
+
 console.log(`\n  ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
