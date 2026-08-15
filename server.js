@@ -2167,38 +2167,47 @@ async function processTreatmentPlanReminders() {
 }
 
 // ============================== PIPELINE V2 (MILESTONE DASHBOARD) ==============================
-// Computes the 6-milestone view (New Lead, Intake & Eligibility, Clinical
-// Assessment, Authorization, Ready to Start, Active Services) on top of the
-// existing 10-value `stage` column, plus per-client progress %, missing
+// Computes the 5-phase view (Intake & Eligibility, Assessment, Authorization,
+// Ready to Start, Active) on top of the existing 10-value `stage` column, plus
+// per-client progress %, missing
 // checklist items, blocker category, owner, and next action. Read-only --
 // does not change how `stage` itself is stored or advanced.
 "use strict";
 
+// The primary pipeline is five phases:
+//   Intake & Eligibility -> Assessment -> Authorization -> Ready to Start -> Active
+// "New Lead" was retired as a standalone phase at Quiana's request: a brand-new
+// submission now lives inside Intake & Eligibility (its first sub-step) instead
+// of a column of its own. new_submission is folded into the key-2 stage list,
+// and milestoneForStage() falls back to Intake & Eligibility. The key NUMBERS
+// (2..6) are deliberately preserved so the checklist map and the milestone<=2 /
+// milestone>=6 logic in computeMilestoneView keep working unchanged. This is a
+// display/grouping change only -- no client's `stage` is altered, and nothing
+// here sends email.
+// "intake_packet" stays listed so any client still carrying that retired stage
+// key -- an old row, a stale browser tab mid-save -- still resolves to a
+// milestone instead of falling through.
 const MILESTONES = [
-  { key: 1, label: "New Lead", stages: ["new_submission"] },
-  // "intake_packet" stays listed here so any client still carrying the retired
-  // stage key -- an old row, a stale browser tab mid-save -- still resolves to
-  // a milestone instead of silently falling back to "New Lead".
-  { key: 2, label: "Intake & Eligibility", stages: ["clinical_screener", "insurance_verification", "intake_packet"] },
-  { key: 3, label: "Clinical Assessment", stages: ["assessment_scheduling"] },
+  { key: 2, label: "Intake & Eligibility", stages: ["new_submission", "clinical_screener", "insurance_verification", "intake_packet"] },
+  { key: 3, label: "Assessment", stages: ["assessment_scheduling"] },
   { key: 4, label: "Authorization", stages: ["authorization"] },
   { key: 5, label: "Ready to Start", stages: ["first_day_scheduled"] },
-  { key: 6, label: "Active Services", stages: ["active"] },
+  { key: 6, label: "Active", stages: ["active"] },
 ];
 
 function milestoneForStage(stageKey) {
   if (stageKey === "discharged" || stageKey === "not_moving_forward") return null;
   const m = MILESTONES.find((m) => m.stages.includes(stageKey));
-  return m ? m.key : 1;
+  return m ? m.key : 2;
 }
 
 const MILESTONE_CHECKLISTS = {
-  1: [
+  // Intake & Eligibility now also carries the two items that used to live under
+  // "New Lead" (diagnosis + insurance card), so nothing that was tracked there
+  // is lost -- it just lives under the merged phase now.
+  2: [
     { key: "diagnosis_uploaded", label: "Diagnosis uploaded", blocker: "parent" },
     { key: "insurance_card_uploaded", label: "Insurance card uploaded", blocker: "parent" },
-    { key: "clinical_screener_completed", label: "Clinical screener", blocker: "clinical" },
-  ],
-  2: [
     { key: "clinical_screener_completed", label: "Clinical screener completed", blocker: "clinical" },
     { key: "insurance_verification_completed", label: "Insurance verification completed", blocker: "insurance" },
     { key: "intake_packet_sent", label: "Intake packet sent", blocker: "clinical" },

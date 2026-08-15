@@ -1146,17 +1146,54 @@ function renderAuthDashboardCard(counts) {
 }
 
 // ---------------- Pipeline (Kanban) ----------------
+// The five primary pipeline phases the board displays. Each phase groups one
+// or more of the underlying `stage` keys (which are unchanged -- every task,
+// email, reminder, due date and automation still keys off those raw stages).
+// `entry` is the stage a card moves INTO when dropped onto that phase column.
+// This is display + grouping only; it does not alter how `stage` is stored.
+const PIPELINE_PHASES = [
+  {
+    key: "intake_eligibility",
+    label: "Intake & Eligibility",
+    color: "#3f56b5",
+    stages: ["new_submission", "clinical_screener", "insurance_verification", "intake_packet"],
+    entry: "new_submission",
+  },
+  { key: "assessment", label: "Assessment", color: "#1b2a6b", stages: ["assessment_scheduling"], entry: "assessment_scheduling" },
+  { key: "authorization", label: "Authorization", color: "#c98a1b", stages: ["authorization"], entry: "authorization" },
+  { key: "ready_to_start", label: "Ready to Start", color: "#e0a430", stages: ["first_day_scheduled"], entry: "first_day_scheduled" },
+  { key: "active", label: "Active", color: "#22c55e", stages: ["active"], entry: "active" },
+];
+
+// Terminal states -- kept OFF the primary board and reached via the Discharged
+// toggle, so the main pipeline reads cleanly.
+const TERMINAL_COLUMNS = [
+  { key: "discharged", label: "Discharged", color: "#64748b", stages: ["discharged"], entry: "discharged" },
+  { key: "not_moving_forward", label: "Not Moving Forward", color: "#ef4444", stages: ["not_moving_forward"], entry: "not_moving_forward" },
+];
+
+function stageLabelOf(key) {
+  const s = (state.stages || []).find((x) => x.key === key);
+  return s ? s.label : key;
+}
+
 async function renderPipeline(mount) {
-  const waitlistCount = state.clients.filter((c) => c.waitlisted).length;
-  const showWaitlistOnly = state.pipelineWaitlistOnly === true;
+  const TERMINAL_KEYS = ["discharged", "not_moving_forward"];
+  const waitlistCount = state.clients.filter((c) => c.waitlisted && !TERMINAL_KEYS.includes(c.stage)).length;
+  const dischargedCount = state.clients.filter((c) => TERMINAL_KEYS.includes(c.stage)).length;
+  const view = state.pipelineView || "active"; // "active" | "waitlist" | "discharged"
+  const waitlistOnly = view === "waitlist";
+  const columns = view === "discharged" ? TERMINAL_COLUMNS : PIPELINE_PHASES;
+
   mount.innerHTML = `
     <div class="page-header">
-      <div><h1>Client Pipeline</h1><p>Color-coded by stage. Click any card for full details and tasks, or drag a card to move it between stages.</p></div>
+      <div><h1>Client Pipeline</h1><p>Where every client sits, at a glance: Intake &amp; Eligibility → Assessment → Authorization → Ready to Start → Active. Click a card for full details and tasks, or drag it to move it to another phase.</p></div>
       <button class="btn" id="new-client-btn">+ New Enrollment</button>
     </div>
     <div style="display:flex; gap:8px; margin-bottom:14px;">
-      <button class="btn ${showWaitlistOnly ? "secondary" : ""} small" id="filter-all-btn">All clients</button>
-      <button class="btn ${showWaitlistOnly ? "" : "secondary"} small" id="filter-waitlist-btn">⏳ Waitlist (${waitlistCount})</button>
+      <button class="btn ${view === "active" ? "" : "secondary"} small" id="filter-all-btn">All clients</button>
+      <button class="btn ${view === "waitlist" ? "" : "secondary"} small" id="filter-waitlist-btn">⏳ Waitlist (${waitlistCount})</button>
+      <button class="btn ${view === "discharged" ? "" : "secondary"} small" id="filter-discharged-btn">🗂 Discharged (${dischargedCount})</button>
     </div>
     <div class="kanban" id="kanban"></div>
   `;
@@ -1167,34 +1204,39 @@ async function renderPipeline(mount) {
   const newClientBtn = mount.querySelector("#new-client-btn") || document.getElementById("new-client-btn");
   if (newClientBtn) newClientBtn.addEventListener("click", openNewClientModal);
   document.getElementById("filter-all-btn").addEventListener("click", () => {
-    state.pipelineWaitlistOnly = false;
+    state.pipelineView = "active";
     renderPipeline(mount);
   });
   document.getElementById("filter-waitlist-btn").addEventListener("click", () => {
-    state.pipelineWaitlistOnly = true;
+    state.pipelineView = "waitlist";
+    renderPipeline(mount);
+  });
+  document.getElementById("filter-discharged-btn").addEventListener("click", () => {
+    state.pipelineView = "discharged";
     renderPipeline(mount);
   });
 
   const kanban = document.getElementById("kanban");
-  const visibleStages = state.stages.filter((s) => s.key !== "not_moving_forward");
 
-  kanban.innerHTML = visibleStages
-    .map((stage) => {
+  kanban.innerHTML = columns
+    .map((phase) => {
       const clients = state.clients.filter(
-        (c) => c.stage === stage.key && (!showWaitlistOnly || c.waitlisted)
+        (c) => phase.stages.includes(c.stage) && (!waitlistOnly || c.waitlisted)
       );
+      const multi = phase.stages.length > 1;
       return `
-      <div class="kanban-col" data-stage="${stage.key}">
+      <div class="kanban-col" data-phase="${phase.key}">
         <div class="kanban-col-header">
-          <div class="kanban-col-title"><span class="dot" style="background:${stage.color}"></span>${stage.label}</div>
+          <div class="kanban-col-title"><span class="dot" style="background:${phase.color}"></span>${phase.label}</div>
           <span class="count-pill">${clients.length}</span>
         </div>
         ${clients
           .map(
-            (c) => `<div class="client-card" draggable="true" style="border-left-color:${stage.color}" data-client="${c.id}">
+            (c) => `<div class="client-card" draggable="true" style="border-left-color:${phase.color}" data-client="${c.id}">
               <div class="name">${c.child_name} ${c.waitlisted ? `<span class="tag" style="background:#fef3c7; color:#92400e;">⏳ Waitlist</span>` : ""}</div>
               <div class="meta">${c.parent_name || "—"} · ${c.service_location || "—"}</div>
               <div class="tags">
+                ${multi ? `<span class="tag" style="background:#eef2ff; color:#3f56b5;">${stageLabelOf(c.stage)}</span>` : ""}
                 ${c.desired_schedule ? `<span class="tag">${c.desired_schedule}</span>` : ""}
                 ${c.insurance_provider ? `<span class="tag">${c.insurance_provider.split(",")[0]}</span>` : ""}
               </div>
@@ -1237,12 +1279,16 @@ async function renderPipeline(mount) {
       e.preventDefault();
       col.classList.remove("drag-over");
       const clientId = e.dataTransfer.getData("text/plain") || draggedClientId;
-      const targetStage = col.dataset.stage;
-      if (!clientId || !targetStage) return;
+      const targetPhase = columns.find((p) => p.key === col.dataset.phase);
+      if (!clientId || !targetPhase) return;
       const client = state.clients.find((c) => String(c.id) === String(clientId));
-      if (!client || client.stage === targetStage) return;
+      if (!client) return;
+      // Already somewhere inside this phase -> no-op. This prevents a card
+      // sitting in (e.g.) Insurance Verification from being reset back to the
+      // phase's entry stage and re-firing that stage's milestone email.
+      if (targetPhase.stages.includes(client.stage)) return;
       try {
-        await api(`/api/clients/${clientId}/advance`, { method: "POST", body: { stage: targetStage } });
+        await api(`/api/clients/${clientId}/advance`, { method: "POST", body: { stage: targetPhase.entry } });
         await loadClients();
         route();
       } catch (err) {
