@@ -550,6 +550,58 @@ const initRethink = require("./rethink");
     for (const k of Object.keys(saved)) process.env[k] = saved[k];
   }
 
+  console.log("\nCLIENTS DATE WINDOW\n");
+
+  // /api/Clients was being called with no parameters and returned zero rows,
+  // while /api/Appointments returned 305 with a From/To window on the same
+  // credentials. These assertions pin the two-attempt probe that settles it.
+  {
+    const seen = [];
+    const clients = [{ id: 1, child_name: "Ava Nguyen", dob: "2019-04-02", rethink_client_id: null }];
+
+    // Windowed call returns rows -> the no-parameter call must never be made.
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients });
+    stub.dwhGetAllPages = async (path, params) => {
+      seen.push(Object.keys(params || {}).sort().join(","));
+      return Object.keys(params || {}).length
+        ? { rows: [{ clientId: "R1", firstName: "Ava", lastName: "Nguyen", dateOfBirth: "2019-04-02" }], pages: 1, truncated: false }
+        : { rows: [], pages: 1, truncated: false };
+    };
+    const out = await initRethink(ctx).scanClientMatches();
+    check("the Clients call now sends a date window", seen[0] === "From,To", JSON.stringify(seen));
+    check("a successful windowed call short-circuits the fallback", seen.length === 1, JSON.stringify(seen));
+    check("clients returned by the windowed call are scanned", out.ok === true && out.rethink_clients === 1, JSON.stringify(out));
+  }
+
+  {
+    // Windowed call empty -> fall back to the original no-parameter call.
+    const seen = [];
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: [{ id: 1, child_name: "Ava Nguyen", dob: "2019-04-02" }] });
+    stub.dwhGetAllPages = async (path, params) => {
+      const keys = Object.keys(params || {}).sort().join(",");
+      seen.push(keys);
+      return keys === ""
+        ? { rows: [{ clientId: "R1", firstName: "Ava", lastName: "Nguyen", dateOfBirth: "2019-04-02" }], pages: 1, truncated: false }
+        : { rows: [], pages: 1, truncated: false };
+    };
+    const out = await initRethink(ctx).scanClientMatches();
+    check("an empty windowed call falls back to no parameters",
+      seen.length === 2 && seen[1] === "", JSON.stringify(seen));
+    check("the fallback's rows are used", out.ok === true && out.rethink_clients === 1, JSON.stringify(out));
+  }
+
+  {
+    // Both empty -> report it as a Rethink-side question, not a connection fault.
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: [{ id: 1, child_name: "A B", dob: "2019-01-01" }] });
+    stub.dwhGetAllPages = async () => ({ rows: [], pages: 1, truncated: false });
+    const out = await initRethink(ctx).scanClientMatches();
+    check("both attempts empty is reported as empty, not as an error", out.ok === false && out.kind === "empty");
+    check("the message states both attempts were made",
+      /date window/.test(out.error) && /no parameters/.test(out.error), out.error);
+    check("the message does not blame the connection",
+      /reachable and authenticated/.test(out.error), out.error);
+  }
+
   console.log("\nSCHEMA DIAGNOSTIC (FIELD NAMES ONLY)\n");
 
   // /api/Clients returns HTTP 200 with zero rows while /api/Appointments

@@ -69,6 +69,18 @@ module.exports = function initRethink(ctx) {
   // Confirmed against the DWH Swagger: GET /api/Clients.
   const DWH_CLIENTS = process.env.RETHINK_CLIENTS_ENDPOINT || "Clients";
 
+  // /api/Clients returned HTTP 200 with zero rows while /api/Appointments
+  // returned 305 on the same credentials. The difference in how we called them
+  // was the date window: Appointments got From/To, Clients got nothing. The
+  // documented DWH parameter set is From, To, PageSize, Page, so a
+  // data-warehouse endpoint filtered on a date it was never given is the
+  // cheapest explanation.
+  //
+  // Wide by design. We do not know which date this window filters on -- created,
+  // modified, admitted -- so it is opened far enough back that any of them
+  // includes every client on the books, and narrowed only if that proves noisy.
+  const CLIENTS_FROM = process.env.RETHINK_CLIENTS_FROM || "2000-01-01";
+
   // The CPT this tracker cares about. Other codes are deliberately not imported.
   const TARGET_BILLING_CODE = "97153";
   // Fallback identity for 97153 when billingCode comes back empty. Comma-
@@ -331,9 +343,29 @@ module.exports = function initRethink(ctx) {
 
     client.log("sync_start", { kind: "client_match_scan", endpoint: DWH_CLIENTS });
 
-    let fetched;
+    // Two attempts, on purpose, so one run settles the question rather than
+    // costing another deploy: the windowed call first, and if it comes back
+    // empty, the original no-parameter call. Whichever returns rows is the
+    // answer, and the log says which it was. The second attempt is skipped
+    // entirely once the first produces data, so the steady state is one request.
+    const attempts = [
+      { label: "with_date_window", params: { From: CLIENTS_FROM, To: today() } },
+      { label: "no_parameters", params: {} },
+    ];
+
+    let fetched = null;
+    let usedAttempt = null;
     try {
-      fetched = await client.dwhGetAllPages(DWH_CLIENTS, {}, { nowMs: nowMs(), pageSize: 500 });
+      for (const attempt of attempts) {
+        const result = await client.dwhGetAllPages(DWH_CLIENTS, attempt.params, { nowMs: nowMs(), pageSize: 500 });
+        client.log("clients_attempt", {
+          endpoint: DWH_CLIENTS, attempt: attempt.label,
+          params_sent: Object.keys(attempt.params).sort().join(",") || "(none)",
+          rows: (result.rows || []).length,
+        });
+        if ((result.rows || []).length) { fetched = result; usedAttempt = attempt.label; break; }
+        if (!fetched) fetched = result; // keep the last empty result for reporting
+      }
     } catch (e) {
       client.log("sync_failed", {
         kind: "client_match_scan", endpoint: e.endpoint || DWH_CLIENTS, status: e.status,
@@ -346,7 +378,16 @@ module.exports = function initRethink(ctx) {
     }
 
     const rows = fetched.rows || [];
-    if (!rows.length) return { ok: false, error: `The Rethink "${DWH_CLIENTS}" endpoint returned no clients.`, kind: "empty" };
+    if (!rows.length) {
+      client.log("clients_empty", {
+        endpoint: DWH_CLIENTS, attempts: attempts.map((a) => a.label).join(","), from: CLIENTS_FROM, to: today(),
+      });
+      return {
+        ok: false, kind: "empty", detail_in_server_logs: true,
+        error: `The Rethink "${DWH_CLIENTS}" endpoint returned HTTP 200 with no clients, both with a ${CLIENTS_FROM}–${today()} date window and with no parameters at all. The endpoint is reachable and authenticated, so this is a query or permission question on Rethink's side rather than a connection problem.`,
+      };
+    }
+    client.log("clients_loaded", { endpoint: DWH_CLIENTS, attempt: usedAttempt, rows: rows.length });
 
     const { missing, keys_seen } = validateClientFields(rows[0]);
     if (missing.length) {
