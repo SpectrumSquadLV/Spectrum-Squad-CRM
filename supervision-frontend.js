@@ -145,9 +145,23 @@
     const sBtn = box.querySelector("#rt-sync");
     if (sBtn) sBtn.addEventListener("click", async () => {
       sBtn.disabled = true; sBtn.textContent = "Syncing…";
+      let failure = null;
       try { await api("/api/rethink/sync-now", { method: "POST", body: { month: curM } }); }
-      catch (e) { alert(e.message); }
+      catch (e) { failure = e.message; }
       await renderSupervision(mount);
+      // Shown in the panel rather than an alert(): the message now says which
+      // request failed and with what status, which is worth reading twice
+      // rather than dismissing.
+      if (failure) {
+        const b = mount.querySelector("#rethink-panel");
+        if (b) b.insertAdjacentHTML("afterbegin",
+          `<div class="card" style="border-left:4px solid #dc2626; margin-bottom:12px;">
+             <strong style="color:#991b1b;">Rethink sync failed</strong>
+             <div style="font-size:13px; margin-top:4px;">${esc(failure)}</div>
+             <div style="font-size:11.5px; color:var(--text-muted); margin-top:6px;">
+               The full upstream response is in the Railway deploy logs — filter for <code>[rethink]</code>.</div>
+           </div>`);
+      }
     });
   }
 

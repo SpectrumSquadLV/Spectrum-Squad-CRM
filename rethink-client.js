@@ -109,6 +109,33 @@ function redact(s) {
   return out;
 }
 
+// ---- logging -------------------------------------------------------------
+// Every line goes through redact() before it reaches stdout. That is the last
+// line of defence, not the first: nothing below ever passes a credential, a
+// token or an Authorization header to this function in the first place.
+//
+// One line per event, key=value, prefixed [rethink] so it can be grepped out of
+// Railway's deploy logs. Successful response BODIES are never logged -- they
+// carry PHI. Only failure bodies are, truncated, because that is the upstream
+// error text we need to see.
+function log(stage, fields = {}) {
+  const parts = [`[rethink] stage=${stage}`];
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined || v === null || v === "") continue;
+    const s = String(v);
+    parts.push(`${k}=${/[\s"]/.test(s) ? JSON.stringify(s) : s}`);
+  }
+  const line = redact(parts.join(" "));
+  if (fields && (fields.error || fields.status >= 400)) console.error(line);
+  else console.log(line);
+}
+
+// Upstream error text, trimmed to something loggable. Redacted like everything
+// else, and capped so a stack trace or an HTML error page cannot flood the log.
+function snippet(text, max = 500) {
+  return redact(String(text == null ? "" : text)).replace(/\s+/g, " ").trim().slice(0, max);
+}
+
 class RethinkError extends Error {
   constructor(message, opts = {}) {
     super(redact(message));
@@ -116,7 +143,35 @@ class RethinkError extends Error {
     this.status = opts.status || null;
     this.kind = opts.kind || "error"; // auth | rate_limit | timeout | http | parse | config
     this.retryable = !!opts.retryable;
+    this.endpoint = opts.endpoint || null;
+    this.stage = opts.stage || null;
+    // Upstream body text. Server-side only -- deliberately not part of what
+    // the browser receives, since we cannot promise an arbitrary upstream body
+    // is free of PHI.
+    this.upstream = opts.upstream || null;
+    // What the browser is allowed to see: shape and status, never content.
+    this.safe = opts.safe || redact(message);
   }
+}
+
+// "Rethink Appointments request failed (403)" rather than "Request failed".
+// Built from the stage, the endpoint name and the status -- all structural.
+function safeMessage({ stage, endpoint, status, kind, oauthError }) {
+  if (kind === "config") return "Rethink credentials are not configured on the server.";
+  if (stage === "token_request") {
+    if (oauthError) return `Rethink token request rejected: ${oauthError}`;
+    if (status === 401 || status === 400) return `Rethink authentication failed (${status})`;
+    if (status) return `Rethink token request failed (${status})`;
+    return kind === "timeout" ? "Rethink token request timed out." : "Could not reach the Rethink identity server.";
+  }
+  const where = endpoint ? `Rethink ${endpoint}` : "Rethink";
+  if (status === 401) return `Rethink authentication failed (401) on ${endpoint || "the API"}`;
+  if (status === 404) return `${where} endpoint returned 404`;
+  if (status === 429) return `${where} request was rate-limited (429)`;
+  if (status) return `${where} request failed (${status})`;
+  if (kind === "timeout") return `${where} request timed out.`;
+  if (kind === "parse") return `${where} returned a response the CRM could not read.`;
+  return `${where} request failed.`;
 }
 
 function timeoutSignal(ms) {
@@ -141,6 +196,10 @@ async function requestToken(nowMs) {
     scope: SCOPE,
   });
 
+  // The scope is logged because it is configuration and a wrong scope is one of
+  // the likelier failures. The client id and secret are not, ever.
+  log("token_request", { url: TOKEN_URL, scope: SCOPE, grant: "client_credentials" });
+
   const { signal, done } = timeoutSignal(REQUEST_TIMEOUT_MS);
   let res;
   try {
@@ -151,31 +210,60 @@ async function requestToken(nowMs) {
       signal,
     });
   } catch (e) {
+    const kind = e.name === "AbortError" ? "timeout" : "http";
+    log("token_request_failed", { url: TOKEN_URL, kind, error_name: e.name, error: e.message });
     throw new RethinkError(
       e.name === "AbortError" ? "Timed out contacting the Rethink identity server." : `Could not reach the Rethink identity server: ${e.message}`,
-      { kind: e.name === "AbortError" ? "timeout" : "http", retryable: true }
+      { kind, retryable: true, stage: "token_request", safe: safeMessage({ stage: "token_request", kind }) }
     );
   } finally { done(); }
 
   if (!res.ok) {
-    // The identity server echoes the grant in some error bodies, so the body is
-    // read only to classify -- never stored, never logged.
+    // Read the body to classify AND to log. OAuth error bodies are the single
+    // most useful thing in a failed integration -- "invalid_scope",
+    // "invalid_client" -- and they contain no PHI. The grant is not echoed back
+    // by the spec, and redact() scrubs it regardless.
+    const raw = await res.text().catch(() => "");
+    let oauthError = null;
+    try { const j = JSON.parse(raw); oauthError = j.error || null; } catch (e) { /* not JSON */ }
+    log("token_request_failed", {
+      url: TOKEN_URL, status: res.status, scope: SCOPE,
+      oauth_error: oauthError, body: snippet(raw),
+    });
     throw new RethinkError(
-      `Rethink token request failed (HTTP ${res.status}).`,
-      { status: res.status, kind: res.status === 401 || res.status === 400 ? "auth" : "http", retryable: res.status >= 500 }
+      `Rethink token request failed (HTTP ${res.status})${oauthError ? `: ${oauthError}` : ""}.`,
+      {
+        status: res.status, kind: res.status === 401 || res.status === 400 ? "auth" : "http",
+        retryable: res.status >= 500, stage: "token_request", upstream: snippet(raw),
+        safe: safeMessage({ stage: "token_request", status: res.status, oauthError }),
+      }
     );
   }
 
   let data;
   try { data = await res.json(); }
-  catch (e) { throw new RethinkError("Rethink token response was not valid JSON.", { kind: "parse" }); }
+  catch (e) {
+    log("token_request_failed", { url: TOKEN_URL, status: res.status, error: "response was not valid JSON" });
+    throw new RethinkError("Rethink token response was not valid JSON.", {
+      kind: "parse", stage: "token_request", safe: "Rethink returned a token response the CRM could not read.",
+    });
+  }
 
   const token = data && data.access_token;
-  if (!token) throw new RethinkError("Rethink token response contained no access_token.", { kind: "parse" });
+  if (!token) {
+    // Keys only -- a token response's VALUES are credentials by definition.
+    log("token_request_failed", { url: TOKEN_URL, status: res.status, error: "no access_token in response", keys: Object.keys(data || {}).join(",") });
+    throw new RethinkError("Rethink token response contained no access_token.", {
+      kind: "parse", stage: "token_request", safe: "Rethink's token response contained no access token.",
+    });
+  }
 
   // expires_in is seconds. Fall back to one hour, which is the documented life.
   const ttlMs = (Number(data.expires_in) > 0 ? Number(data.expires_in) : 3600) * 1000;
   cached = { token, expiresAt: nowMs + ttlMs };
+  // Lifetime only. The token itself is never logged, and redact() would strip
+  // it from this line even if a future edit tried.
+  log("token_acquired", { expires_in_seconds: Math.round(ttlMs / 1000) });
   return token;
 }
 
@@ -222,18 +310,26 @@ async function dwhGet(path, params, opts = {}) {
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const token = await getToken(nowMs);
+    const url = buildUrl(DWH_BASE, path, params);
+    // The URL is logged with its query string: From/To/Page/PageSize are what
+    // you need to reproduce a failure, and none of them are PHI. The
+    // Authorization header is never logged.
+    log("dwh_request", { endpoint: path, url, attempt: attempt + 1 });
+
     const { signal, done } = timeoutSignal(REQUEST_TIMEOUT_MS);
     let res;
     try {
-      res = await fetch(buildUrl(DWH_BASE, path, params), {
+      res = await fetch(url, {
         method: "GET",
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
         signal,
       });
     } catch (e) {
+      const kind = e.name === "AbortError" ? "timeout" : "http";
+      log("dwh_request_failed", { endpoint: path, url, kind, error_name: e.name, error: e.message, attempt: attempt + 1 });
       lastErr = new RethinkError(
         e.name === "AbortError" ? `Timed out calling Rethink ${path}.` : `Could not reach Rethink ${path}: ${e.message}`,
-        { kind: e.name === "AbortError" ? "timeout" : "http", retryable: true }
+        { kind, retryable: true, endpoint: path, stage: "dwh_request", safe: safeMessage({ endpoint: path, kind }) }
       );
       if (attempt < MAX_RETRIES) { await sleep(500 * Math.pow(2, attempt)); continue; }
       throw lastErr;
@@ -242,9 +338,14 @@ async function dwhGet(path, params, opts = {}) {
     if (res.status === 401) {
       // Token rejected. Re-authenticate once; a second 401 is a real auth
       // failure (revoked credential, wrong scope) rather than an expiry race.
+      const raw = await res.text().catch(() => "");
+      log("dwh_request_failed", { endpoint: path, url, status: 401, attempt: attempt + 1, body: snippet(raw), note: "re-authenticating" });
       invalidateToken();
       if (attempt < MAX_RETRIES) continue;
-      throw new RethinkError(`Rethink rejected our credentials on ${path} (HTTP 401).`, { status: 401, kind: "auth" });
+      throw new RethinkError(`Rethink rejected our credentials on ${path} (HTTP 401).`, {
+        status: 401, kind: "auth", endpoint: path, stage: "dwh_request", upstream: snippet(raw),
+        safe: safeMessage({ endpoint: path, status: 401 }),
+      });
     }
 
     if (res.status === 429 || res.status >= 500) {
@@ -252,23 +353,49 @@ async function dwhGet(path, params, opts = {}) {
       const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
         ? Math.min(retryAfter * 1000, 60000)
         : 500 * Math.pow(2, attempt);
+      const raw = await res.text().catch(() => "");
+      log("dwh_request_failed", {
+        endpoint: path, url, status: res.status, attempt: attempt + 1,
+        retry_after_ms: waitMs, will_retry: attempt < MAX_RETRIES, body: snippet(raw),
+      });
       lastErr = new RethinkError(
         res.status === 429 ? `Rethink rate-limited ${path}.` : `Rethink server error on ${path} (HTTP ${res.status}).`,
-        { status: res.status, kind: res.status === 429 ? "rate_limit" : "http", retryable: true }
+        {
+          status: res.status, kind: res.status === 429 ? "rate_limit" : "http", retryable: true,
+          endpoint: path, stage: "dwh_request", upstream: snippet(raw),
+          safe: safeMessage({ endpoint: path, status: res.status }),
+        }
       );
       if (attempt < MAX_RETRIES) { await sleep(waitMs); continue; }
       throw lastErr;
     }
 
     if (!res.ok) {
-      throw new RethinkError(`Rethink ${path} returned HTTP ${res.status}.`, { status: res.status, kind: "http" });
+      const raw = await res.text().catch(() => "");
+      log("dwh_request_failed", { endpoint: path, url, status: res.status, attempt: attempt + 1, body: snippet(raw) });
+      throw new RethinkError(`Rethink ${path} returned HTTP ${res.status}.`, {
+        status: res.status, kind: "http", endpoint: path, stage: "dwh_request", upstream: snippet(raw),
+        safe: safeMessage({ endpoint: path, status: res.status }),
+      });
     }
 
-    try { return await res.json(); }
-    catch (e) { throw new RethinkError(`Rethink ${path} returned a malformed JSON body.`, { kind: "parse" }); }
+    // Success. The body is NOT logged -- it is the PHI payload.
+    try {
+      const data = await res.json();
+      log("dwh_response_ok", { endpoint: path, status: res.status, attempt: attempt + 1 });
+      return data;
+    } catch (e) {
+      log("dwh_request_failed", { endpoint: path, url, status: res.status, error: "malformed JSON body" });
+      throw new RethinkError(`Rethink ${path} returned a malformed JSON body.`, {
+        kind: "parse", endpoint: path, stage: "dwh_request", status: res.status,
+        safe: safeMessage({ endpoint: path, kind: "parse" }),
+      });
+    }
   }
 
-  throw lastErr || new RethinkError(`Rethink ${path} failed.`, { kind: "http" });
+  throw lastErr || new RethinkError(`Rethink ${path} failed.`, {
+    kind: "http", endpoint: path, safe: safeMessage({ endpoint: path }),
+  });
 }
 
 // The DWH response envelope is not documented to us, and guessing a field name
@@ -311,10 +438,13 @@ async function dwhGetAllPages(path, params, opts = {}) {
     const payload = await dwhGet(path, { ...params, PageSize: pageSize, Page: page }, opts);
     const batch = extractRows(payload, path);
     rows.push(...batch);
+    // Row counts are structural, not content.
+    log("dwh_page", { endpoint: path, page, rows: batch.length, total_so_far: rows.length });
     if (batch.length < pageSize) break;
     if (page === maxPages) truncated = true;
   }
 
+  log("dwh_fetch_complete", { endpoint: path, pages: Math.min(page, maxPages), rows: rows.length, truncated });
   return { rows, pages: Math.min(page, maxPages), truncated };
 }
 
@@ -329,6 +459,9 @@ module.exports = {
   dwhGetAllPages,
   extractRows,
   redact,
+  log,
+  snippet,
+  safeMessage,
   RethinkError,
   endpoints: { TOKEN_URL, DWH_BASE, SCOPE },
 };

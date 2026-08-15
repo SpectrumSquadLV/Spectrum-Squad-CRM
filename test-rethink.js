@@ -31,6 +31,13 @@ const realClient = require("./rethink-client");
 const stub = {
   configured: () => true,
   redact: realClient.redact,
+  // Silenced in the stub so the suite's own output stays readable. The real
+  // logger is exercised directly against the real client further down, which
+  // is where the leak-safety assertions live.
+  log: () => {},
+  snippet: realClient.snippet,
+  safeMessage: realClient.safeMessage,
+  configState: realClient.configState,
   tokenState: () => ({ has_token: true, valid: true, expires_in_seconds: 3000 }),
   endpoints: realClient.endpoints,
   RethinkError: realClient.RethinkError,
@@ -334,12 +341,31 @@ const initRethink = require("./rethink");
     check("a failed authorization sync reports failure", out.ok === false);
     check("a failed authorization sync never blanks client dates", state.clientDateWrites.length === 0);
     check("a failed authorization sync writes no authorization rows", state.authRows.length === 0);
-    check("the failure names the endpoint so a wrong path is obvious",
+    // The browser gets the sanitised message; the endpoint hint is added only
+    // where it is actionable (see the 404 case below).
+    check("the browser receives a sanitised message, not raw internals",
+      typeof out.error === "string" && out.error.length > 0, out.error);
+    check("the response says the detail is in the server logs", out.detail_in_server_logs === true);
+  }
+
+  // A 404 on the authorization endpoint is nearly always a wrong path, so the
+  // path is surfaced to the operator.
+  {
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: authClients });
+    stub.dwhGetAllPages = async () => {
+      throw new realClient.RethinkError("Rethink ClientAuthorization returned HTTP 404.", {
+        kind: "http", status: 404, endpoint: "ClientAuthorization",
+        safe: "Rethink ClientAuthorization endpoint returned 404",
+      });
+    };
+    const out = await initRethink(ctx).syncAuthorizations("test");
+    check("a 404 tells the operator which path was tried",
       /RETHINK_AUTH_ENDPOINT/.test(out.error), out.error);
     // Guards against regressing to the plural we originally guessed. The DWH
     // Swagger documents GET /api/ClientAuthorization -- singular.
     check("the authorization endpoint is the documented singular path",
       /"ClientAuthorization"/.test(out.error) && !/ClientAuthorizations/.test(out.error), out.error);
+    check("the 404 message names the status", /404/.test(out.error), out.error);
   }
 
   // Repeat authorization sync -- idempotent by stable key.
@@ -521,6 +547,151 @@ const initRethink = require("./rethink");
 
     reset();
     for (const k of Object.keys(saved)) process.env[k] = saved[k];
+  }
+
+  console.log("\nOBSERVABILITY AND LEAK SAFETY\n");
+
+  // A production sync failed with a generic "Request failed" and Railway showed
+  // no log line at all -- the client logged nothing and the route returned no
+  // top-level `error` for the browser's api() helper to read. Both are fixed;
+  // these assertions hold the line, especially the ones proving that adding
+  // logging did not start leaking credentials.
+  {
+    const SECRET = "sUperSecre7-VALUE-xyz";
+    const ID = "client-id-abc123";
+    const TOKEN = "eyJhbGciOiJIUzI1NiJ9.TOKENVALUE.sig";
+    const savedEnv = { ...process.env };
+    process.env.RETHINK_CLIENT_ID = ID;
+    process.env.RETHINK_CLIENT_SECRET = SECRET;
+
+    // Capture everything the module writes to stdout/stderr.
+    const lines = [];
+    const realLog = console.log, realErr = console.error;
+    const capture = (...a) => lines.push(a.join(" "));
+
+    // Drive the REAL client (not the stub) against a stubbed fetch, so the
+    // logging and redaction paths actually execute.
+    const realFetch = global.fetch;
+    const restore = () => {
+      global.fetch = realFetch; console.log = realLog; console.error = realErr;
+      for (const k of Object.keys(process.env)) if (!(k in savedEnv)) delete process.env[k];
+      Object.assign(process.env, savedEnv);
+    };
+
+    // --- token rejected with an OAuth error code ---------------------------
+    lines.length = 0;
+    console.log = capture; console.error = capture;
+    global.fetch = async () => ({
+      ok: false, status: 400,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ error: "invalid_scope", error_description: "scope not granted" }),
+      json: async () => ({ error: "invalid_scope" }),
+    });
+    realClient.invalidateToken();
+    let caught = null;
+    try { await realClient.dwhGet("Appointments", {}, { nowMs: 1 }); } catch (e) { caught = e; }
+    console.log = realLog; console.error = realErr;
+
+    check("a failed token request is logged", lines.some((l) => /stage=token_request_failed/.test(l)),
+      lines.join(" | ").slice(0, 200));
+    check("the log records the HTTP status", lines.some((l) => /status=400/.test(l)));
+    check("the log records the upstream OAuth error", lines.some((l) => /oauth_error=invalid_scope/.test(l)));
+    check("the log records the upstream body", lines.some((l) => /scope not granted/.test(l)));
+    check("the log records the endpoint being called", lines.some((l) => /url=.*connect\/token/.test(l)));
+    check("the browser-safe message names the OAuth error",
+      caught && caught.safe === "Rethink token request rejected: invalid_scope", caught && caught.safe);
+    check("NO log line contains the client secret", !lines.some((l) => l.includes(SECRET)));
+    check("NO log line contains the client id", !lines.some((l) => l.includes(ID)));
+    check("the safe message contains no credential",
+      caught && !caught.safe.includes(SECRET) && !caught.safe.includes(ID));
+
+    // --- DWH endpoint 404 --------------------------------------------------
+    lines.length = 0;
+    console.log = capture; console.error = capture;
+    let calls = 0;
+    global.fetch = async () => {
+      calls++;
+      if (calls === 1) return { ok: true, status: 200, headers: { get: () => null },
+        json: async () => ({ access_token: TOKEN, expires_in: 3600 }) };
+      return { ok: false, status: 404, headers: { get: () => null }, text: async () => "No route matched." };
+    };
+    realClient.invalidateToken();
+    caught = null;
+    try { await realClient.dwhGet("ClientAuthorization", {}, { nowMs: 1 }); } catch (e) { caught = e; }
+    console.log = realLog; console.error = realErr;
+
+    check("the successful token acquisition is logged", lines.some((l) => /stage=token_acquired/.test(l)));
+    check("the outgoing DWH request is logged with its endpoint",
+      lines.some((l) => /stage=dwh_request\b.*endpoint=ClientAuthorization/.test(l)), lines.join(" | ").slice(0, 300));
+    check("the 404 is logged with status and body",
+      lines.some((l) => /stage=dwh_request_failed.*status=404/.test(l) && /No route matched/.test(l)));
+    check("the browser-safe message names the endpoint and status",
+      caught && caught.safe === "Rethink ClientAuthorization endpoint returned 404", caught && caught.safe);
+    check("NO log line contains the bearer token", !lines.some((l) => l.includes(TOKEN)));
+    check("NO log line contains an Authorization header", !lines.some((l) => /Authorization:/i.test(l)));
+    check("NO log line contains the client secret", !lines.some((l) => l.includes(SECRET)));
+
+    // --- 401 on a data endpoint -------------------------------------------
+    lines.length = 0;
+    console.log = capture; console.error = capture;
+    calls = 0;
+    global.fetch = async () => {
+      calls++;
+      if (calls % 2 === 1) return { ok: true, status: 200, headers: { get: () => null },
+        json: async () => ({ access_token: TOKEN, expires_in: 3600 }) };
+      return { ok: false, status: 401, headers: { get: () => null }, text: async () => "unauthorized" };
+    };
+    realClient.invalidateToken();
+    caught = null;
+    try { await realClient.dwhGet("Appointments", {}, { nowMs: 1 }); } catch (e) { caught = e; }
+    console.log = realLog; console.error = realErr;
+
+    check("a 401 on a data endpoint produces an authentication message",
+      caught && /authentication failed \(401\)/.test(caught.safe), caught && caught.safe);
+    check("the retry/re-auth is visible in the log", lines.some((l) => /re-authenticating/.test(l)));
+    check("still no token in the log after a re-auth cycle", !lines.some((l) => l.includes(TOKEN)));
+
+    // --- a successful response body is never logged ------------------------
+    lines.length = 0;
+    console.log = capture; console.error = capture;
+    calls = 0;
+    global.fetch = async () => {
+      calls++;
+      if (calls === 1) return { ok: true, status: 200, headers: { get: () => null },
+        json: async () => ({ access_token: TOKEN, expires_in: 3600 }) };
+      return { ok: true, status: 200, headers: { get: () => null },
+        json: async () => [{ clientId: "C1", firstName: "Ava", lastName: "Nguyen", dateOfBirth: "2019-04-02" }] };
+    };
+    realClient.invalidateToken();
+    await realClient.dwhGet("Clients", {}, { nowMs: 1 });
+    console.log = realLog; console.error = realErr;
+
+    check("a successful request is logged", lines.some((l) => /stage=dwh_response_ok/.test(l)));
+    check("the PHI in a SUCCESSFUL response body is never logged",
+      !lines.some((l) => /Nguyen|Ava|2019-04-02/.test(l)), lines.join(" | ").slice(0, 200));
+
+    // --- redaction as a last line of defence -------------------------------
+    lines.length = 0;
+    console.log = capture; console.error = capture;
+    realClient.log("manual_test", { note: `secret=${SECRET} id=${ID} auth=Bearer ${TOKEN}` });
+    console.log = realLog; console.error = realErr;
+    check("redact() strips a credential even if a caller passes one in",
+      !lines.some((l) => l.includes(SECRET) || l.includes(ID) || l.includes(TOKEN)), lines.join(" | "));
+    check("and leaves a visible marker that something was removed",
+      lines.some((l) => /\[redacted\]/.test(l)), lines.join(" | "));
+
+    restore();
+  }
+
+  // The sanitised message the browser receives must never carry an upstream
+  // body, which we cannot promise is PHI-free.
+  {
+    const e = new realClient.RethinkError("boom", {
+      status: 500, endpoint: "Appointments", upstream: "patient Ava Nguyen not found",
+      safe: "Rethink Appointments request failed (500)",
+    });
+    check("the upstream body is kept server-side on the error object", e.upstream.includes("Ava"));
+    check("the browser-safe message excludes the upstream body", !e.safe.includes("Ava"), e.safe);
   }
 
   console.log("\nPURE LOGIC\n");

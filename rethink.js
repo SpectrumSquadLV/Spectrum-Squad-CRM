@@ -323,13 +323,19 @@ module.exports = function initRethink(ctx) {
       return { ok: false, error: "Rethink credentials are not configured.", kind: "config" };
     }
 
+    client.log("sync_start", { kind: "client_match_scan", endpoint: DWH_CLIENTS });
+
     let fetched;
     try {
       fetched = await client.dwhGetAllPages(DWH_CLIENTS, {}, { nowMs: nowMs(), pageSize: 500 });
     } catch (e) {
+      client.log("sync_failed", {
+        kind: "client_match_scan", endpoint: e.endpoint || DWH_CLIENTS, status: e.status,
+        stage: e.stage, error_kind: e.kind, error_name: e.name, upstream: e.upstream, error: e.message,
+      });
       return {
-        ok: false, kind: e.kind || "http",
-        error: `${client.redact(e.message)} (endpoint "${DWH_CLIENTS}" -- set RETHINK_CLIENTS_ENDPOINT if that path is wrong)`,
+        ok: false, kind: e.kind || "http", status: e.status || null, detail_in_server_logs: true,
+        error: e.safe || client.redact(e.message),
       };
     }
 
@@ -604,18 +610,34 @@ module.exports = function initRethink(ctx) {
     ).catch(() => null);
     const logId = logRow && logRow.id;
 
-    const fail = async (message, kind) => {
+    client.log("sync_start", { kind: "supervision_hours", month, triggered_by: triggeredBy });
+
+    const fail = async (message, kind, err) => {
+      // Everything useful goes to stdout for Railway; the browser gets only the
+      // sanitised line. The upstream body in particular stays server-side --
+      // we cannot promise an arbitrary upstream body is free of PHI.
+      client.log("sync_failed", {
+        kind: "supervision_hours", month, error_kind: kind,
+        status: err && err.status, endpoint: err && err.endpoint, stage: err && err.stage,
+        error_name: err && err.name, upstream: err && err.upstream, error: message,
+      });
       // A failed sync leaves every previously synced value exactly as it was.
       // Nothing is blanked, nothing is zeroed.
       await dbRun(
         "UPDATE rethink_sync_log SET finished_at = ?, status = 'failed', error = ?, error_kind = ?, warnings = ? WHERE id = ?",
         [nowISO(), client.redact(message).slice(0, 500), kind || "error", JSON.stringify(warnings), logId]
       ).catch(() => {});
-      return { ok: false, error: client.redact(message), kind: kind || "error", month };
+      return {
+        ok: false,
+        error: (err && err.safe) || client.redact(message),
+        kind: kind || "error", status: (err && err.status) || null, month,
+        detail_in_server_logs: true,
+      };
     };
 
     if (!client.configured()) {
-      return fail("Rethink credentials are not configured. Add RETHINK_CLIENT_ID and RETHINK_CLIENT_SECRET.", "config");
+      return fail("Rethink credentials are not configured. Add RETHINK_CLIENT_ID and RETHINK_CLIENT_SECRET.", "config",
+        { safe: "Rethink credentials are not configured on the server." });
     }
 
     const cfg = await getConfig();
@@ -633,7 +655,7 @@ module.exports = function initRethink(ctx) {
         IncludeCanceled: false,
       }, { nowMs: nowMs(), pageSize: 500 });
     } catch (e) {
-      return fail(e.message, e.kind || "http");
+      return fail(e.message, e.kind || "http", e);
     }
 
     if (fetched.truncated) {
@@ -832,27 +854,46 @@ module.exports = function initRethink(ctx) {
     ).catch(() => null);
     const logId = logRow && logRow.id;
 
-    const fail = async (message, kind) => {
+    client.log("sync_start", { kind: "authorizations", triggered_by: triggeredBy, endpoint: DWH_AUTHORIZATIONS });
+
+    const fail = async (message, kind, err) => {
+      client.log("sync_failed", {
+        kind: "authorizations", error_kind: kind,
+        status: err && err.status, endpoint: err && err.endpoint, stage: err && err.stage,
+        error_name: err && err.name, upstream: err && err.upstream, error: message,
+      });
       // Nothing is blanked. Every previously synced authorization value and
       // every client auth date stays exactly as the last good sync left it.
       await dbRun(
         "UPDATE rethink_sync_log SET finished_at = ?, status = 'failed', error = ?, error_kind = ?, warnings = ? WHERE id = ?",
         [nowISO(), client.redact(message).slice(0, 500), kind || "error", JSON.stringify(warnings), logId]
       ).catch(() => {});
-      return { ok: false, error: client.redact(message), kind: kind || "error" };
+      return {
+        ok: false,
+        error: (err && err.safe) || client.redact(message),
+        kind: kind || "error", status: (err && err.status) || null,
+        detail_in_server_logs: true,
+      };
     };
 
     if (!client.configured()) {
-      return fail("Rethink credentials are not configured. Add RETHINK_CLIENT_ID and RETHINK_CLIENT_SECRET.", "config");
+      return fail("Rethink credentials are not configured. Add RETHINK_CLIENT_ID and RETHINK_CLIENT_SECRET.", "config",
+        { safe: "Rethink credentials are not configured on the server." });
     }
 
     let fetched;
     try {
       fetched = await client.dwhGetAllPages(DWH_AUTHORIZATIONS, {}, { nowMs: nowMs(), pageSize: 500 });
     } catch (e) {
+      // A 404 here almost always means the configured path is wrong, so the
+      // path travels to the browser too. It is configuration, not a secret,
+      // and it is the difference between "something failed" and "fix this".
+      if (e.status === 404) {
+        e.safe = `${e.safe || client.redact(e.message)} — the configured path is "${DWH_AUTHORIZATIONS}"; set RETHINK_AUTH_ENDPOINT if that is wrong.`;
+      }
       return fail(
         `${e.message} (endpoint "${DWH_AUTHORIZATIONS}" -- set RETHINK_AUTH_ENDPOINT if that path is wrong)`,
-        e.kind || "http"
+        e.kind || "http", e
       );
     }
 
@@ -1138,6 +1179,17 @@ module.exports = function initRethink(ctx) {
       if (which === "all" || which === "hours") out.hours = await syncSupervisionHours("manual", b && b.month);
       if (which === "all" || which === "authorizations") out.authorizations = await syncAuthorizations("manual");
       out.ok = Object.values(out).every((v) => typeof v !== "object" || v.ok !== false);
+      // The browser's api() helper reads `data.error` and otherwise shows a
+      // useless "Request failed" -- which is exactly what a real upstream
+      // failure looked like from the UI. Lift the sanitised reasons to the top
+      // level. Only the safe messages travel; upstream bodies stay in the logs.
+      if (!out.ok) {
+        out.error = [out.hours, out.authorizations]
+          .filter((r) => r && r.ok === false && r.error)
+          .map((r) => r.error)
+          .join(" · ") || "The Rethink sync failed. See the server logs for detail.";
+        out.detail_in_server_logs = true;
+      }
       json(res, out.ok ? 200 : 502, out);
       return true;
     }

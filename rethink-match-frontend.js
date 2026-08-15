@@ -47,7 +47,9 @@
       const box = mount.querySelector("#rm-body");
       box.innerHTML = `<div class="card" style="border-left:4px solid #dc2626;">
         <strong>Scan failed.</strong>
-        <div style="font-size:13px; color:var(--text-muted); margin-top:6px;">${esc(e.message)}</div>
+        <div style="font-size:13px; margin-top:6px;">${esc(e.message)}</div>
+        <div style="font-size:11.5px; color:var(--text-muted); margin-top:6px;">
+          The full upstream response is in the Railway deploy logs — filter for <code>[rethink]</code>.</div>
       </div>` + box.innerHTML;
     }
     btn.disabled = false; btn.textContent = "⟳ Scan Rethink clients";
