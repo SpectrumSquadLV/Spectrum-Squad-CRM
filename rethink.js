@@ -55,16 +55,15 @@ module.exports = function initRethink(ctx) {
 
   const DWH_APPOINTMENTS = "Appointments";
 
-  // The appointments path is confirmed (GET /api/Appointments). The
-  // authorization collection's PATH was never confirmed to us -- we were given
-  // its response schema, not its route -- so it is configuration rather than a
-  // literal. Set RETHINK_AUTH_ENDPOINT to the exact path from the DWH Swagger
-  // page. A wrong value fails loudly on the first sync, naming the path it
-  // tried, instead of guessing a second one.
-  const DWH_AUTHORIZATIONS = process.env.RETHINK_AUTH_ENDPOINT || "ClientAuthorizations";
+  // Confirmed against the DWH Swagger: GET /api/ClientAuthorization -- singular.
+  // Kept overridable so a path change does not need a deploy, but the default
+  // is now the documented route rather than a guess.
+  const DWH_AUTHORIZATIONS = process.env.RETHINK_AUTH_ENDPOINT || "ClientAuthorization";
 
-  // Like the authorization route, the client collection's PATH was never given
-  // to us. Configurable, with a loud failure naming what it tried.
+  // NOT yet confirmed. The client collection's path and field names have not
+  // been read off the Swagger spec, so this stays a placeholder: a wrong value
+  // fails loudly naming the path it tried, and the field map is auto-detected
+  // and reported rather than assumed.
   const DWH_CLIENTS = process.env.RETHINK_CLIENTS_ENDPOINT || "Clients";
 
   // The CPT this tracker cares about. Other codes are deliberately not imported.
@@ -269,7 +268,7 @@ module.exports = function initRethink(ctx) {
   // reads as a different child.
   function normName(s) {
     return String(s == null ? "" : s)
-      .normalize("NFD").replace(/[̀-ͯ]/g, "")   // fold accents: José -> Jose
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")   // fold accents: José -> Jose
       .toLowerCase()
       // Apostrophes are REMOVED rather than turned into a space: O'Brien and
       // OBrien are the same surname, and splitting it produces a phantom
@@ -640,12 +639,12 @@ module.exports = function initRethink(ctx) {
 
     // ---- aggregate ------------------------------------------------------
     const perStaff = new Map();      // staffId -> { hours, count }
-    const observed = new Map();      // `${field} ${norm}` -> { field, raw, norm, n, hours }
+    const observed = new Map();      // `${field}|${norm}` -> { field, raw, norm, n, hours }
     let counted = 0, skippedNoDuration = 0, skippedFuture = 0;
     const cutoff = today();
 
     const observe = (field, raw, hours) => {
-      const key = `${field} ${norm(raw)}`;
+      const key = `${field}|${norm(raw)}`;
       const cur = observed.get(key) || { field, raw: raw === undefined ? null : raw, norm: norm(raw), n: 0, hours: 0 };
       cur.n += 1; cur.hours += hours;
       observed.set(key, cur);

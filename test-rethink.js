@@ -335,7 +335,11 @@ const initRethink = require("./rethink");
     check("a failed authorization sync never blanks client dates", state.clientDateWrites.length === 0);
     check("a failed authorization sync writes no authorization rows", state.authRows.length === 0);
     check("the failure names the endpoint so a wrong path is obvious",
-      /ClientAuthorizations|RETHINK_AUTH_ENDPOINT/.test(out.error), out.error);
+      /RETHINK_AUTH_ENDPOINT/.test(out.error), out.error);
+    // Guards against regressing to the plural we originally guessed. The DWH
+    // Swagger documents GET /api/ClientAuthorization -- singular.
+    check("the authorization endpoint is the documented singular path",
+      /"ClientAuthorization"/.test(out.error) && !/ClientAuthorizations/.test(out.error), out.error);
   }
 
   // Repeat authorization sync -- idempotent by stable key.
