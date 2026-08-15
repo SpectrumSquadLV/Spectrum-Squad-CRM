@@ -387,6 +387,8 @@ module.exports = function initGrowth(ctx) {
       ["effective_date", "TEXT"],
       ["requires_acknowledgment", "BOOLEAN DEFAULT FALSE"],
       ["ack_required_since", "TEXT"],       // when the CURRENT version's requirement began
+      ["last_distributed_at", "TEXT"],      // pushing a policy out is separate from requiring a signature
+      ["last_distributed_by", "TEXT"],
     ]) {
       await dbRun(`ALTER TABLE crm_policies ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
     }
@@ -413,6 +415,45 @@ module.exports = function initGrowth(ctx) {
     )`).catch((e) => console.error("crm_policy_acknowledgments:", e.message));
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_policy_ack_policy ON crm_policy_acknowledgments(policy_id)`).catch(() => {});
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_policy_ack_employee ON crm_policy_acknowledgments(employee_id)`).catch(() => {});
+  }
+
+  // Where a document divides into policies. Structural only -- numbering, an
+  // all-caps line, or a short line with no closing punctuation. The text
+  // between headings is carried across byte for byte, so approved language is
+  // never touched. A proposal for a human to confirm, never an import.
+  function splitIntoSections(text) {
+    const lines = String(text || "").split("\n");
+    const isHeading = (raw) => {
+      const l = raw.trim();
+      if (l.length < 3 || l.length > 90) return false;
+      if (/[.,;:]$/.test(l)) return false;
+      if (/^(section|article|policy|appendix)\b/i.test(l)) return true;
+      if (/^\d+(\.\d+)*[.)]?\s+\S/.test(l)) return true;                 // 1. / 1.2 / 3)
+      if (/^[A-Z][A-Z0-9 &'’(),./-]{4,}$/.test(l)) return true;          // ALL CAPS
+      // Title Case line of a few words, no sentence punctuation.
+      const words = l.split(/\s+/);
+      if (words.length <= 8 && words.filter((w) => /^[A-Z]/.test(w)).length >= Math.ceil(words.length * 0.6)) return true;
+      return false;
+    };
+
+    const out = [];
+    let cur = null;
+    for (const raw of lines) {
+      if (isHeading(raw)) {
+        if (cur && cur.body.join("\n").trim()) out.push(cur);
+        cur = { title: raw.trim().replace(/^\d+(\.\d+)*[.)]?\s*/, "").trim() || raw.trim(), section_ref: (raw.trim().match(/^\d+(\.\d+)*/) || [null])[0], body: [] };
+      } else if (cur) {
+        cur.body.push(raw);
+      }
+    }
+    if (cur && cur.body.join("\n").trim()) out.push(cur);
+
+    // Fragments below a few sentences are page furniture -- headers, footers,
+    // a stray line -- far more often than they are policies.
+    return out
+      .map((s) => ({ title: s.title, section_ref: s.section_ref, body: s.body.join("\n").trim() }))
+      .filter((s) => s.body.replace(/\s/g, "").length >= 120)
+      .map((s) => ({ ...s, characters: s.body.length, preview: s.body.slice(0, 200) }));
   }
 
   // A policy's current version. Unversioned policies are treated as "v1" so an
@@ -752,6 +793,124 @@ module.exports = function initGrowth(ctx) {
           [...fields.map((f) => b[f]), nowISO(), Number(docOne[1])]
         );
         return json(res, 200, { ok: true });
+      }
+
+      // ---- SPLIT A SOURCE DOCUMENT INTO POLICY SECTIONS -------------------
+      // Proposes where a document divides. Read-only: it writes nothing and
+      // decides nothing. Headings are detected structurally -- numbering, an
+      // all-caps line, a short line with no closing punctuation -- and the text
+      // between them is carried across BYTE FOR BYTE. No summarising, no
+      // rewriting, no model anywhere near the approved language.
+      const secMatch = pathname.match(/^\/api\/policies\/documents\/(\d+)\/sections$/);
+      if (secMatch && method === "GET") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const d = await dbGet("SELECT * FROM crm_policy_documents WHERE id = ?", [Number(secMatch[1])]);
+        if (!d) return json(res, 404, { error: "Document not found." });
+        const existing = await dbAll(
+          "SELECT title, section_ref FROM crm_policies WHERE document_id = ?", [d.id]
+        ).catch(() => []);
+        const already = new Set(existing.map((e) => String(e.title || "").trim().toLowerCase()));
+        const sections = splitIntoSections(String(d.body || ""))
+          .map((s) => ({ ...s, already_imported: already.has(s.title.trim().toLowerCase()) }));
+        return json(res, 200, {
+          document: { id: d.id, title: d.title, doc_type: d.doc_type },
+          sections, categories: POLICY_CATEGORIES,
+        });
+      }
+
+      // Create policy records from confirmed sections. The caller supplies the
+      // title, category and body for each -- the operator has reviewed them --
+      // and every one points back at the source document rather than copying it.
+      const impMatch = pathname.match(/^\/api\/policies\/documents\/(\d+)\/import$/);
+      if (impMatch && method === "POST") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const d = await dbGet("SELECT * FROM crm_policy_documents WHERE id = ?", [Number(impMatch[1])]);
+        if (!d) return json(res, 404, { error: "Document not found." });
+        const b = await readBody(req);
+        const items = Array.isArray(b.sections) ? b.sections : [];
+        if (!items.length) return json(res, 400, { error: "No sections selected." });
+
+        const created = [], skipped = [];
+        for (const s of items) {
+          const title = String(s.title || "").trim();
+          if (!title) { skipped.push({ title: "(untitled)", reason: "no title" }); continue; }
+          if (s.category && !ALL_CATEGORIES.includes(s.category)) {
+            skipped.push({ title, reason: "unknown category" }); continue;
+          }
+          // Re-importing the same document must not duplicate policies.
+          const dupe = await dbGet(
+            "SELECT id FROM crm_policies WHERE document_id = ? AND LOWER(title) = LOWER(?)", [d.id, title]
+          ).catch(() => null);
+          if (dupe) { skipped.push({ title, reason: "already imported" }); continue; }
+
+          let slug = slugify(title);
+          if (await dbGet("SELECT id FROM crm_policies WHERE slug = ?", [slug])) {
+            slug = slug + "-" + crypto.randomBytes(3).toString("hex");
+          }
+          const body = String(s.body == null ? "" : s.body);
+          const requiresAck = s.requires_acknowledgment === true;
+          const row = await dbGet(
+            `INSERT INTO crm_policies
+               (title, category, body, slug, published, summary, updated_by, created_at, updated_at,
+                document_id, section_ref, status, version, effective_date, requires_acknowledgment, ack_required_since)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, title, slug`,
+            [title, s.category || "Other", body, slug, b.published !== false,
+             body.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 2).join(" ").slice(0, 220),
+             (user && user.name) || null, nowISO(), nowISO(),
+             d.id, s.section_ref || null,
+             POLICY_STATUSES.includes(b.status) ? b.status : "Active",
+             String(b.version || d.version || "1"), b.effective_date || d.effective_date || null,
+             requiresAck, requiresAck ? nowISO() : null]
+          );
+          created.push(row);
+        }
+        return json(res, 200, { ok: true, created: created.length, skipped, policies: created });
+      }
+
+      // ---- PUSH A POLICY OUT TO STAFF ------------------------------------
+      // Distribution is separate from acknowledgment on purpose: telling people
+      // a policy exists and requiring them to sign for it are different acts,
+      // and most policies only need the first.
+      const distMatch = pathname.match(/^\/api\/policies\/(\d+)\/distribute$/);
+      if (distMatch && method === "POST") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const p = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [Number(distMatch[1])]);
+        if (!p) return json(res, 404, { error: "Policy not found." });
+        if ((p.status || "Active") !== "Active") {
+          return json(res, 400, { error: "Only an active policy can be sent to staff." });
+        }
+        const b = await readBody(req);
+        const staff = await dbAll(
+          "SELECT id, name, email FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated' AND email IS NOT NULL AND TRIM(email) <> ''"
+        ).catch(() => []);
+        const targets = Array.isArray(b.employee_ids) && b.employee_ids.length
+          ? staff.filter((s) => b.employee_ids.map(Number).includes(s.id))
+          : staff;
+        if (!targets.length) return json(res, 400, { error: "No staff with an email address to send to." });
+
+        const base = String(APP_BASE_URL || "").replace(/\/+$/, "");
+        const link = base ? `${base}/policies/${p.slug}` : `/policies/${p.slug}`;
+        const note = String(b.message || "").trim();
+        const needsAck = p.requires_acknowledgment === true || p.requires_acknowledgment === "t";
+        let sent = 0; const failed = [];
+        for (const s of targets) {
+          const html =
+            `<p>Hi ${esc(s.name || "there")},</p>` +
+            `<p>A policy has been shared with you: <strong>${esc(p.title)}</strong>${p.version ? ` (version ${esc(p.version)})` : ""}.</p>` +
+            (note ? `<p>${esc(note)}</p>` : "") +
+            `<p><a href="${esc(link)}">Read the policy</a></p>` +
+            (needsAck ? `<p>This policy asks you to confirm you have read it. Please open it in the CRM and acknowledge it.</p>` : "") +
+            `<p>— Spectrum Squad</p>`;
+          const r = await sendEmail({
+            to: s.email, subject: `Policy: ${p.title}`, html, type: "policy_distribution",
+          }).catch((e) => ({ ok: false, error: e.message }));
+          if (r && r.ok === false) failed.push({ name: s.name, error: r.error }); else sent++;
+        }
+        await dbRun(
+          "UPDATE crm_policies SET last_distributed_at = ?, last_distributed_by = ? WHERE id = ?",
+          [nowISO(), (user && user.name) || null, p.id]
+        ).catch(() => {});
+        return json(res, 200, { ok: true, sent, recipients: targets.length, failed, requires_acknowledgment: needsAck });
       }
 
       // ---- ACKNOWLEDGMENTS -----------------------------------------------
