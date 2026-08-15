@@ -1062,6 +1062,10 @@ module.exports = function initRethink(ctx) {
 
     return {
       month: mo,
+      // Per-variable booleans, never values. "configured" alone could not tell
+      // an owner WHICH credential was missing, which is exactly what made a
+      // mistyped variable name invisible in production.
+      credentials: client.configState(),
       authorizations: {
         endpoint: DWH_AUTHORIZATIONS,
         target_code: TARGET_BILLING_CODE,

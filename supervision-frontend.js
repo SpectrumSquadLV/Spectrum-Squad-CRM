@@ -68,8 +68,23 @@
           <button class="btn small secondary" id="rt-sync">⟳ Sync Rethink now</button>
         </div>
       </div>
-      ${!s.configured ? `<div style="background:#fee2e2; color:#991b1b; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">
-        Not configured — add <strong>RETHINK_CLIENT_ID</strong> and <strong>RETHINK_CLIENT_SECRET</strong> in Railway.</div>` : ""}
+      ${!s.configured ? (() => {
+        const cr = s.credentials || {};
+        const missing = [
+          !cr.clientIdConfigured ? "RETHINK_CLIENT_ID" : null,
+          !cr.clientSecretConfigured ? "RETHINK_CLIENT_SECRET" : null,
+        ].filter(Boolean);
+        const bad = cr.malformed_variable_names || [];
+        return `<div style="background:#fee2e2; color:#991b1b; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">
+          <div>Not configured — the server cannot read ${missing.map((m) => `<strong>${esc(m)}</strong>`).join(" and ")} from its environment.</div>
+          ${missing.length === 1 ? `<div style="margin-top:4px;">The other variable is present, so this is one variable, not both.</div>` : ""}
+          ${bad.length ? `<div style="margin-top:6px; padding-top:6px; border-top:1px solid #fca5a5;">
+            <strong>Found the likely cause.</strong> A variable is set under a name with stray whitespace, which is a different variable as far as the server is concerned:
+            <ul style="margin:4px 0 0 16px;">${bad.map((b) => `<li><code>${esc(b.actual)}</code> should be <code>${esc(b.expected)}</code></li>`).join("")}</ul>
+            <div style="margin-top:4px;">Delete it in Railway and re-add it, typing the name by hand rather than pasting.</div>
+          </div>` : ""}
+        </div>`;
+      })() : ""}
       ${stale ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">
         ⚠ The most recent sync failed. The figures below are the last good values and may be stale.</div>` : ""}
       ${!s.filter.confirmed && s.configured ? `<div style="background:#eef4ff; color:#1b3a7b; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">

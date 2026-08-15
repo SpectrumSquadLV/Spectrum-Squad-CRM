@@ -460,6 +460,69 @@ const initRethink = require("./rethink");
     check("and records what it replaced", forced.replaced === "R42");
   }
 
+  console.log("\nCREDENTIAL REPORTING\n");
+
+  // A mistyped variable NAME cost a production debugging session: Railway held
+  // "RETHINK_CLIENT_ID\n" -- a trailing newline in the key -- so process.env
+  // never saw it, while the panel said "add both variables" with one already
+  // present. These assertions are about making that visible, never about
+  // reading a value.
+  {
+    const saved = { ...process.env };
+    const reset = () => {
+      delete process.env.RETHINK_CLIENT_ID;
+      delete process.env.RETHINK_CLIENT_SECRET;
+      for (const k of Object.keys(process.env)) if (k.trim() !== k && k.includes("RETHINK")) delete process.env[k];
+    };
+
+    reset();
+    let st = realClient.configState();
+    check("with nothing set, both credentials report false",
+      st.clientIdConfigured === false && st.clientSecretConfigured === false && st.configured === false);
+
+    reset();
+    process.env.RETHINK_CLIENT_SECRET = "x";
+    st = realClient.configState();
+    check("a present secret and absent id are reported separately",
+      st.clientIdConfigured === false && st.clientSecretConfigured === true && st.configured === false,
+      JSON.stringify(st));
+
+    // The exact production failure.
+    reset();
+    process.env["RETHINK_CLIENT_ID\n"] = "x";
+    process.env.RETHINK_CLIENT_SECRET = "y";
+    st = realClient.configState();
+    check("a trailing newline in the variable NAME still reads as not configured",
+      st.clientIdConfigured === false && st.configured === false);
+    check("and the malformed name is detected and named",
+      st.malformed_variable_names.length === 1
+        && st.malformed_variable_names[0].expected === "RETHINK_CLIENT_ID",
+      JSON.stringify(st.malformed_variable_names));
+    check("the malformed name is rendered so the whitespace is visible",
+      /\\n/.test(st.malformed_variable_names[0].actual), st.malformed_variable_names[0].actual);
+
+    reset();
+    process.env.RETHINK_CLIENT_ID = "a";
+    process.env.RETHINK_CLIENT_SECRET = "b";
+    st = realClient.configState();
+    check("with both set correctly, configured is true",
+      st.clientIdConfigured === true && st.clientSecretConfigured === true && st.configured === true);
+    check("no malformed names are reported when the environment is clean",
+      st.malformed_variable_names.length === 0);
+    check("configState never returns a credential value",
+      !JSON.stringify(st).includes('"a"') && !JSON.stringify(st).includes('"b"'), JSON.stringify(st));
+
+    // An unrelated badly-named variable must not be reported as ours.
+    reset();
+    process.env["SOME_OTHER_VAR "] = "z";
+    check("unrelated malformed variable names are ignored",
+      realClient.configState().malformed_variable_names.length === 0);
+    delete process.env["SOME_OTHER_VAR "];
+
+    reset();
+    for (const k of Object.keys(saved)) process.env[k] = saved[k];
+  }
+
   console.log("\nPURE LOGIC\n");
   {
     const { ctx } = makeDb({ now: NOW, config: CONFIRMED });

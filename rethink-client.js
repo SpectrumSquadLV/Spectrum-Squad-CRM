@@ -49,6 +49,40 @@ function clientSecret() { return process.env.RETHINK_CLIENT_SECRET || ""; }
 // missing credential produces a clear, recorded reason rather than a 401 storm.
 function configured() { return !!(clientId() && clientSecret()); }
 
+const CREDENTIAL_VARS = ["RETHINK_CLIENT_ID", "RETHINK_CLIENT_SECRET"];
+
+// Environment variable NAMES that are nearly right but not right -- almost
+// always a trailing newline or space picked up when pasting the name into a
+// hosting dashboard. process.env is keyed exactly, so "RETHINK_CLIENT_ID\n" is
+// a different variable that no amount of correct code will ever read.
+//
+// This cost a production debugging session: the panel said "add both
+// variables" while one of them was sitting right there in Railway with an
+// invisible \n on the end of its key. Names are configuration, not secrets, so
+// reporting them is safe -- values are never touched here.
+function malformedCredentialNames() {
+  const out = [];
+  for (const key of Object.keys(process.env)) {
+    const tidy = key.trim();
+    if (tidy === key) continue;                       // name is clean
+    if (!CREDENTIAL_VARS.includes(tidy)) continue;    // not one of ours
+    out.push({ expected: tidy, actual: JSON.stringify(key) }); // JSON shows the \n
+  }
+  return out;
+}
+
+// Booleans only. Deliberately no values, no lengths, no prefixes -- enough to
+// tell an owner which variable is missing and nothing that could leak a secret
+// into a browser, a log line or a screenshot.
+function configState() {
+  return {
+    clientIdConfigured: !!clientId(),
+    clientSecretConfigured: !!clientSecret(),
+    configured: configured(),
+    malformed_variable_names: malformedCredentialNames(),
+  };
+}
+
 // ---- token cache ---------------------------------------------------------
 // Module-level, in-memory, process-lifetime. `pending` is the single-flight
 // guard: when several syncs start at once they await one token request instead
@@ -286,6 +320,8 @@ async function dwhGetAllPages(path, params, opts = {}) {
 
 module.exports = {
   configured,
+  configState,
+  malformedCredentialNames,
   getToken,
   invalidateToken,
   tokenState,
