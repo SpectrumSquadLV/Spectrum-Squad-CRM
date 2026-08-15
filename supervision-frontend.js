@@ -22,10 +22,117 @@
         <input type="month" id="sup-month" value="${curM}" />
         <button class="btn secondary" id="sup-upload">⬆ Upload Rethink hours</button>
       </div></div>
+      <div id="rethink-panel"></div>
       <div id="sup-body"><div class="empty-state">Loading…</div></div>`;
     mount.querySelector("#sup-month").addEventListener("change", (e) => { curM = e.target.value || curMonth(); renderSupervision(mount); });
     mount.querySelector("#sup-upload").addEventListener("click", () => openHoursUpload(mount));
     await fillTable(mount);
+    renderRethinkPanel(mount).catch(() => {});
+  }
+
+  // ---- Rethink integration status ----------------------------------------
+  // Operational, not analytical: is it connected, when did it last work, who
+  // could not be matched, and what does production actually return in the two
+  // fields that decide whether an hour counts.
+  async function renderRethinkPanel(mount) {
+    const box = mount.querySelector("#rethink-panel");
+    if (!box) return;
+    let s;
+    try { s = await api("/api/rethink/status?month=" + encodeURIComponent(curM)); }
+    catch (e) { box.innerHTML = ""; return; } // not permitted, or not deployed yet
+    const a = s.authorizations || {};
+
+    const dot = (ok, warn) => `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${ok ? "#16a34a" : warn ? "#d97706" : "#dc2626"}; margin-right:6px;"></span>`;
+    const when = (t) => (t ? new Date(t).toLocaleString() : "never");
+    const connOk = s.configured && s.last_successful_sync;
+    const stale = s.stale || a.stale;
+
+    // Distinct values seen in production, so the filter is confirmed against
+    // reality rather than a guess.
+    const vals = (field) => (s.observed_values || []).filter((o) => o.field === field);
+    const chips = (field, selected) => vals(field).map((o) => {
+      const on = (selected || []).map(String).map((x) => x.toLowerCase()).includes(String(o.value_norm));
+      return `<label style="display:inline-flex; align-items:center; gap:5px; background:${on ? "#dcfce7" : "var(--bg,#f7f8fb)"}; border:1px solid ${on ? "#86efac" : "var(--border,#e5e7eb)"}; border-radius:999px; padding:3px 10px; font-size:12px; margin:2px 3px 2px 0; cursor:pointer;">
+        <input type="checkbox" data-rt-field="${field}" value="${esc(o.value_raw == null ? "" : o.value_raw)}" ${on ? "checked" : ""} style="margin:0;" />
+        <strong>${esc(o.value_raw == null ? "(null)" : o.value_raw)}</strong>
+        <span style="color:var(--text-muted);">${o.occurrences}× · ${o.hours_sum}h</span>
+      </label>`;
+    }).join("") || `<span style="font-size:12px; color:var(--text-muted);">No values observed yet — run a sync.</span>`;
+
+    box.innerHTML = `
+    <div class="card" style="margin-bottom:14px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0; font-size:14px;">${dot(connOk, s.configured && !connOk)}Rethink integration</h3>
+        <div style="display:flex; gap:6px;">
+          <button class="btn small secondary" id="rt-sync">⟳ Sync Rethink now</button>
+        </div>
+      </div>
+      ${!s.configured ? `<div style="background:#fee2e2; color:#991b1b; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">
+        Not configured — add <strong>RETHINK_CLIENT_ID</strong> and <strong>RETHINK_CLIENT_SECRET</strong> in Railway.</div>` : ""}
+      ${stale ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">
+        ⚠ The most recent sync failed. The figures below are the last good values and may be stale.</div>` : ""}
+      ${!s.filter.confirmed && s.configured ? `<div style="background:#eef4ff; color:#1b3a7b; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">
+        Hours are <strong>provisional</strong> and are not being used for supervision percentages yet. Confirm below which values mean “completed” and “staff verified”.</div>` : ""}
+
+      <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; margin-top:12px;">
+        <div><div style="color:var(--text-muted);">Last successful sync</div><strong>${when(s.last_successful_sync && s.last_successful_sync.finished_at)}</strong></div>
+        <div><div style="color:var(--text-muted);">Last attempted</div><strong>${when(s.last_attempted_sync && s.last_attempted_sync.finished_at)}</strong></div>
+        <div><div style="color:var(--text-muted);">Providers matched</div><strong>${s.totals.matched} / ${s.totals.providers}</strong></div>
+        <div><div style="color:var(--text-muted);">Need matching</div><strong style="color:${s.providers_needing_match.length ? "#b45309" : "inherit"};">${s.providers_needing_match.length}</strong></div>
+        <div><div style="color:var(--text-muted);">97153 auths</div><strong>${a.counts ? a.counts.total : 0}</strong> <span style="color:var(--text-muted);">(${a.counts ? a.counts.current : 0} current)</span></div>
+        <div><div style="color:var(--text-muted);">Clients need review</div><strong style="color:${(a.clients_needing_review || []).length ? "#b45309" : "inherit"};">${(a.clients_needing_review || []).length}</strong></div>
+      </div>
+
+      ${s.providers_needing_match.length ? `<div style="margin-top:10px; font-size:12px;">
+        <strong style="color:#b45309;">Rethink Provider Match Needed:</strong> ${s.providers_needing_match.map((p) => esc(p.name)).join(", ")}
+        <div style="color:var(--text-muted); margin-top:2px;">Add their Rethink ID on the staff record — they are never matched by name.</div></div>` : ""}
+
+      ${(a.clients_needing_review || []).length ? `<div style="margin-top:8px; font-size:12px;">
+        <strong style="color:#b45309;">Overlapping 97153 authorizations:</strong> ${a.clients_needing_review.map((c) => esc(c.child_name)).join(", ")}
+        <div style="color:var(--text-muted); margin-top:2px;">Dates were left unchanged for these clients rather than picking one.</div></div>` : ""}
+
+      <details style="margin-top:12px;" ${s.filter.confirmed ? "" : "open"}>
+        <summary style="cursor:pointer; font-size:12.5px; font-weight:600;">Completed / verified filter ${s.filter.confirmed ? "✓ confirmed" : "— needs confirming"}</summary>
+        <div style="margin-top:8px; font-size:12px;">
+          <div style="color:var(--text-muted); margin-bottom:4px;">Values seen in <code>appointmentStatus</code> this month — tick the ones that mean completed:</div>
+          <div>${chips("appointmentStatus", s.filter.completed_statuses)}</div>
+          <div style="color:var(--text-muted); margin:8px 0 4px;">Values seen in <code>staffVerification</code> — tick the ones that mean verified:</div>
+          <div>${chips("staffVerification", s.filter.verified_values)}</div>
+          <div style="margin-top:10px;">
+            <button class="btn small" id="rt-confirm">Save &amp; use for supervision %</button>
+            ${s.filter.confirmed ? `<button class="btn small secondary" id="rt-unconfirm">Re-open</button>
+              <span style="color:var(--text-muted); margin-left:8px;">confirmed by ${esc(s.filter.confirmed_by || "—")}</span>` : ""}
+          </div>
+        </div>
+      </details>
+
+      ${(s.warnings || []).length ? `<details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12.5px; color:#b45309;">${s.warnings.length} sync warning(s)</summary>
+        <ul style="font-size:11.5px; color:var(--text-muted); margin:6px 0 0 16px;">${s.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></details>` : ""}
+    </div>`;
+
+    const picked = (field) => Array.from(box.querySelectorAll(`[data-rt-field="${field}"]:checked`)).map((i) => i.value);
+    const saveFilter = async (confirm) => {
+      try {
+        await api("/api/rethink/filter", { method: "PUT", body: {
+          filter_confirmed: confirm,
+          completed_statuses: picked("appointmentStatus"),
+          verified_values: picked("staffVerification"),
+          require_staff_verification: true,
+        } });
+        await renderSupervision(mount);
+      } catch (e) { alert(e.message); }
+    };
+    const cBtn = box.querySelector("#rt-confirm");
+    if (cBtn) cBtn.addEventListener("click", () => saveFilter(true));
+    const uBtn = box.querySelector("#rt-unconfirm");
+    if (uBtn) uBtn.addEventListener("click", () => saveFilter(false));
+    const sBtn = box.querySelector("#rt-sync");
+    if (sBtn) sBtn.addEventListener("click", async () => {
+      sBtn.disabled = true; sBtn.textContent = "Syncing…";
+      try { await api("/api/rethink/sync-now", { method: "POST", body: { month: curM } }); }
+      catch (e) { alert(e.message); }
+      await renderSupervision(mount);
+    });
   }
 
   async function fillTable(mount) {
@@ -42,7 +149,9 @@
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee);"><strong>${esc(e.name)}</strong></td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee);">${esc(e.role_title || "—")}</td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee); text-align:right;">${e.sup_hours}</td>
-        <td style="padding:8px 10px; border-top:1px solid var(--border,#eee); text-align:right;">${e.hours_worked || "—"}${e.hours_current_through ? `<div style="font-size:10.5px; color:var(--text-muted); font-weight:400;" title="Uploaded hours are current through this date">through ${esc(dayLabel(e.hours_current_through))}</div>` : ""}</td>
+        <td style="padding:8px 10px; border-top:1px solid var(--border,#eee); text-align:right;">${e.hours_worked || "—"}${e.hours_source === "rethink"
+          ? `<div style="font-size:10.5px; color:#166534; font-weight:600;" title="Verified completed service hours from Rethink">Rethink verified</div>`
+          : (e.hours_current_through ? `<div style="font-size:10.5px; color:var(--text-muted); font-weight:400;" title="Uploaded hours are current through this date">through ${esc(dayLabel(e.hours_current_through))}</div>` : "")}</td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee);">${pctCell}</td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee);">${e.signed_off ? `<span class="tag" style="background:#dcfce7; color:#166534;">✓ signed</span>` : `<span class="tag">open</span>`}</td>
         <td style="padding:8px 10px; border-top:1px solid var(--border,#eee); text-align:right;"><button class="btn small secondary" data-sup-untrack="${e.employee_id}" title="This person supervises rather than being supervised">Not supervised</button></td>

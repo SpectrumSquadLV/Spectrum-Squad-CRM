@@ -3860,6 +3860,12 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Rethink integration status, filter confirmation and manual sync.
+  if (pathname.startsWith("/api/rethink")) {
+    const handled = await rethink.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/fin/")) {
     // The ledger module claims only the routes it owns and returns false for
     // the rest, so the original Financial Center routes below still run.
@@ -6423,6 +6429,16 @@ const geoMap = require("./geo-map")({
 const supervision = require("./supervision")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
   onCompletion: (...args) => completions.record(...args),
+  // Verified completed hours from Rethink, when the filter has been confirmed.
+  // Returns {} until then, so the tracker keeps using the uploaded figure.
+  rethinkVerifiedHours: (month) => rethink.verifiedHoursByEmployee(month),
+});
+// ===== RETHINK INTEGRATION: the one place that talks to the Rethink API.
+// Owns /api/rethink/*. Supplies verified monthly service hours to the
+// supervision tracker and 97153 authorization dates to the existing
+// authorization-expiration alert engine. =====
+const rethink = require("./rethink")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json,
 });
 // ===== COMPLETIONS: one recorder for every "X finished" event, a dashboard
 // feed, and a single daily digest email. Constructed early so every module
@@ -6663,6 +6679,7 @@ async function start() {
     if (!existing) await setAppSetting(key, url).catch(() => {});
   }
   await authorizations.initTables().catch((e) => console.error("Authorizations initTables failed:", e));
+  await rethink.initTables().catch((e) => console.error("Rethink initTables failed:", e));
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
@@ -6671,6 +6688,18 @@ async function start() {
   await ensureSeeded();
   await retireDefaultPasswords().catch((e) => console.error("Default-password retirement failed:", e.message));
   await pipeline.checkOverdueTasks();
+
+  // Rethink sync runs BEFORE the expiration sweep so the alert engine reads
+  // freshly synced 97153 dates rather than yesterday's. Both are no-ops with a
+  // recorded reason when credentials are absent, so a CRM without the
+  // integration configured boots exactly as it did before.
+  const rethinkSweep = () => {
+    rethink.syncSupervisionHours("scheduled").catch((e) => console.error("Rethink hours sync failed:", e.message));
+    rethink.syncAuthorizations("scheduled").catch((e) => console.error("Rethink authorization sync failed:", e.message));
+  };
+  await rethink.syncAuthorizations("boot").catch((e) => console.error("Rethink authorization sync failed:", e.message));
+  await rethink.syncSupervisionHours("boot").catch((e) => console.error("Rethink hours sync failed:", e.message));
+
   await authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
   await clickupIntegration.syncNow("scheduled").catch((e) => console.error("ClickUp sync failed:", e));
 
@@ -6731,6 +6760,11 @@ async function start() {
   setInterval(() => {
     onboarding.deadlineSweep().catch((e) => console.error("Onboarding sweep failed:", e));
   }, 60 * 60 * 1000);
+
+  // Rethink refresh. Every 4 hours -- six passes a day, which keeps the
+  // month-to-date figure live without hammering an API whose rate limits we
+  // have not been told. Both syncs are cheap when nothing has changed.
+  setInterval(rethinkSweep, 4 * 60 * 60 * 1000);
 
   // Daily authorization-expiration check (also runs once on boot above).
   setInterval(() => {

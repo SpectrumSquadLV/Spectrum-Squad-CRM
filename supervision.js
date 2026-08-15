@@ -18,6 +18,10 @@ const zlib = require("zlib");
 module.exports = function initSupervision(ctx) {
   const { dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json } = ctx;
   const onCompletion = ctx.onCompletion || (() => {});
+  // Verified completed service hours from the Rethink API. Returns {} until an
+  // admin has confirmed the completed/verified filter, so the payroll-upload
+  // denominator stays in force until the API figure is trustworthy.
+  const rethinkVerifiedHours = ctx.rethinkVerifiedHours || (async () => ({}));
 
   const DATA_DIR = path.join(__dirname, "data");
   const SUP_DIR = path.join(DATA_DIR, "supervision");
@@ -234,13 +238,24 @@ module.exports = function initSupervision(ctx) {
     }));
     const logs = await dbAll("SELECT * FROM hr_supervision_logs WHERE month = ?", [month]);
     const byEmp = {}; logs.forEach((l) => { byEmp[l.employee_id] = l; });
+    // Rethink is authoritative for the denominator once its filter is
+    // confirmed. Until then this map is empty and nothing below changes. A
+    // failed sync also leaves it holding the last good values rather than
+    // zeroes, so a bad API response can never drop a percentage to 0%.
+    const rethinkHours = await rethinkVerifiedHours(month).catch(() => ({}));
     let totSup = 0, totWorked = 0, needUpload = 0, signed = 0;
     let monthThrough = null; // latest through-date among this month's uploads
     const list = emps.map((e) => {
       const l = byEmp[e.id];
       let entries = []; try { entries = l && l.entries ? JSON.parse(l.entries) : []; } catch (x) {}
       const sup = supHours(entries);
-      const worked = l ? num(l.hours_worked) : 0;
+      // Denominator precedence: Rethink verified completed hours, else the
+      // uploaded payroll figure. Only a positive Rethink value takes over --
+      // a provider with no synced hours keeps whatever was already there.
+      const uploaded = l ? num(l.hours_worked) : 0;
+      const verified = num(rethinkHours[e.id]);
+      const useRethink = verified > 0;
+      const worked = useRethink ? verified : uploaded;
       const p = pct(sup, worked);
       const through = l ? dstr(l.hours_current_through) : null;
       if (through && (!monthThrough || through > monthThrough)) monthThrough = through;
@@ -250,6 +265,9 @@ module.exports = function initSupervision(ctx) {
       return {
         employee_id: e.id, name: e.name, role_title: e.role_title || "",
         sup_hours: sup, hours_worked: worked, pct: p,
+        hours_source: useRethink ? "rethink" : (uploaded ? "upload" : "none"),
+        rethink_verified_hours: useRethink ? verified : null,
+        rethink_synced_at: (l && l.rethink_synced_at) || null,
         meets: p != null ? p >= BACB_MIN_PCT : false,
         signed_off: !!(l && l.signed_off), signed_by: l && l.signed_by, signed_at: l && l.signed_at,
         entry_count: entries.length,
