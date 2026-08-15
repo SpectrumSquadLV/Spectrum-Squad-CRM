@@ -63,7 +63,6 @@
       <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
         <h3 style="margin:0; font-size:14px;">${dot(connOk, s.configured && !connOk)}Rethink integration</h3>
         <div style="display:flex; gap:6px;">
-          <a class="btn small secondary" href="#/rethink-clients">Client matching</a>
           <button class="btn small secondary" id="rt-sync">⟳ Sync Rethink now</button>
         </div>
       </div>

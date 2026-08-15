@@ -134,6 +134,11 @@ module.exports = function initRethink(ctx) {
        VALUES (1, FALSE, '[]', '[]', ?) ON CONFLICT (id) DO NOTHING`,
       [nowISO()]
     ).catch(() => {});
+    // When the client-match scan last ran. Previously derived from
+    // MAX(scanned_at) on the candidates table, which empties as candidates are
+    // approved -- so a fully-worked queue reported "No scan yet" while showing
+    // 27 linked clients. Recorded here instead, where approving cannot erase it.
+    await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS last_client_scan_at TEXT").catch(() => {});
 
     // Every sync attempt, success or failure, so the panel can always show
     // last-attempted, last-successful, and why a run failed.
@@ -566,6 +571,8 @@ module.exports = function initRethink(ctx) {
       rethink_only_active: orphans.filter((o) => statusAllowsReady(o.status)).length,
     });
 
+    await dbRun("UPDATE rethink_config SET last_client_scan_at = ? WHERE id = 1", [nowISO()]).catch(() => {});
+
     return {
       ok: true,
       rethink_clients: rethinkClients.length,
@@ -628,7 +635,13 @@ module.exports = function initRethink(ctx) {
       };
     });
 
-    const last = await dbGet("SELECT MAX(scanned_at) AS m FROM rethink_client_match_candidates").catch(() => null);
+    // The scan's own timestamp, not one inferred from rows that approving
+    // deletes. Falls back to the old derivation for a database that has not
+    // recorded a scan since this column was added.
+    const cfgRow = await dbGet("SELECT last_client_scan_at FROM rethink_config WHERE id = 1").catch(() => null);
+    const last = (cfgRow && cfgRow.last_client_scan_at)
+      ? { m: cfgRow.last_client_scan_at }
+      : await dbGet("SELECT MAX(scanned_at) AS m FROM rethink_client_match_candidates").catch(() => null);
 
     // Rethink clients with no CRM counterpart. Ordered so the ones that may be
     // established therapy clients omitted from the CRM come first: Active,

@@ -646,7 +646,7 @@ module.exports = function initGrowth(ctx) {
           const acknowledgedAt = mine.get(ackKey(p.id, v)) || null;
           return {
             id: p.id, title: p.title, category: p.category, slug: p.slug,
-            summary: p.summary, color: colorFor(p.category, p.color),
+            summary: p.summary, body: p.body, color: colorFor(p.category, p.color),
             status: p.status || "Active", version: v,
             effective_date: p.effective_date, updated_at: p.updated_at, created_at: p.created_at,
             section_ref: p.section_ref,
@@ -661,8 +661,14 @@ module.exports = function initGrowth(ctx) {
         // Legacy categories are only offered once something is still filed
         // under them, so the picker does not carry dead options forever.
         const inUse = new Set(policies.map((p) => p.category).filter(Boolean));
+        // Source documents, so a policy record can be attached to one without
+        // a second round trip.
+        const documents = await dbAll(
+          "SELECT id, title, doc_type FROM crm_policy_documents ORDER BY title"
+        ).catch(() => []);
         return json(res, 200, {
           policies: filtered,
+          documents,
           total: policies.length,
           categories: POLICY_CATEGORIES.concat(LEGACY_CATEGORIES.filter((c) => inUse.has(c))),
           statuses: POLICY_STATUSES,

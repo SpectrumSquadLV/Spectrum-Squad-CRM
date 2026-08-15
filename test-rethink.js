@@ -637,12 +637,22 @@ const initRethink = require("./rethink");
       { rethink_client_id: "P1", first_name: "Pending", last_name: "Person", dob: "2021-01-01", status: "Pending Acceptance" },
     ];
     const ctx = {
-      dbGet: async (sql) => (/FROM rethink_config/i.test(sql) ? CONFIRMED : null),
+      // The candidates table is deliberately empty here -- the state after
+      // every candidate has been approved.
+      dbGet: async (sql) => (/last_client_scan_at FROM rethink_config/i.test(sql)
+        ? { last_client_scan_at: "2026-08-15T09:00:00.000Z" }
+        : /FROM rethink_config/i.test(sql) ? CONFIRMED
+        : /MAX\(scanned_at\)/i.test(sql) ? { m: null } : null),
       dbAll: async (sql) => (/FROM rethink_unmatched_clients/i.test(sql) ? orphanRows
         : /FROM clients/i.test(sql) ? [] : []),
       dbRun: async () => {}, nowISO: () => NOW, readBody: async () => ({}), json: () => {},
     };
     const review = await initRethink(ctx).clientMatchReview();
+    // The scan timestamp must survive an emptied candidates table. Approving a
+    // link deletes that client's candidates, so a fully-worked queue used to
+    // report "No scan yet" while showing 27 linked clients.
+    check("the scan timestamp comes from the scan record, not from candidates",
+      review.last_scanned_at === "2026-08-15T09:00:00.000Z", review.last_scanned_at);
     check("Active orphans sort first", review.rethink_only[0].status === "Active", JSON.stringify(review.rethink_only.map((r) => r.status)));
     check("Inactive orphans sort last", review.rethink_only[2].status === "Inactive");
     check("priority is exposed for colour-coding",
