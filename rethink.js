@@ -63,6 +63,10 @@ module.exports = function initRethink(ctx) {
   // tried, instead of guessing a second one.
   const DWH_AUTHORIZATIONS = process.env.RETHINK_AUTH_ENDPOINT || "ClientAuthorizations";
 
+  // Like the authorization route, the client collection's PATH was never given
+  // to us. Configurable, with a loud failure naming what it tried.
+  const DWH_CLIENTS = process.env.RETHINK_CLIENTS_ENDPOINT || "Clients";
+
   // The CPT this tracker cares about. Other codes are deliberately not imported.
   const TARGET_BILLING_CODE = "97153";
   // Fallback identity for 97153 when billingCode comes back empty. Comma-
@@ -78,6 +82,8 @@ module.exports = function initRethink(ctx) {
   const roleOf = (u) => (u && (u.role || u.role_key || "")) || "";
   const canView = (u) => VIEW_ROLES.includes(roleOf(u));
   const canManage = (u) => MANAGE_ROLES.includes(roleOf(u));
+  // Client matching links PHI records together, so it stays owner/admin-only.
+  const canMatch = (u) => ["owner", "super_admin", "admin"].includes(roleOf(u));
 
   const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
   const round2 = (n) => Math.round(n * 100) / 100;
@@ -226,7 +232,292 @@ module.exports = function initRethink(ctx) {
       .catch((e) => console.error("clients.auth_dates_source column:", e.message));
     await dbRun("ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_dates_synced_at TEXT")
       .catch((e) => console.error("clients.auth_dates_synced_at column:", e.message));
+
+    // ---- client matching staging ---------------------------------------
+    // Proposals only. Nothing here is authoritative and nothing here writes to
+    // clients.rethink_client_id -- an owner has to approve each link. Rebuilt
+    // on every scan, so it can be thrown away safely.
+    await dbRun(`CREATE TABLE IF NOT EXISTS rethink_client_match_candidates (
+      id SERIAL PRIMARY KEY,
+      crm_client_id INTEGER NOT NULL,
+      rethink_client_id TEXT NOT NULL,
+      rethink_first TEXT,
+      rethink_last TEXT,
+      rethink_dob TEXT,
+      confidence TEXT,                  -- high | medium
+      reason TEXT,
+      scanned_at TEXT,
+      UNIQUE (crm_client_id, rethink_client_id)
+    )`).catch((e) => console.error("rethink_client_match_candidates initTables:", e.message));
+
+    // Audit of every link an owner approved: who, when, and what it replaced.
+    await dbRun(`CREATE TABLE IF NOT EXISTS rethink_client_link_log (
+      id SERIAL PRIMARY KEY,
+      crm_client_id INTEGER NOT NULL,
+      rethink_client_id TEXT,
+      previous_value TEXT,
+      confidence TEXT,
+      approved_by TEXT,
+      approved_at TEXT
+    )`).catch((e) => console.error("rethink_client_link_log initTables:", e.message));
   }
+
+  // ======================= CLIENT MATCHING ===================
+  // Names are compared on a normalised form: accents folded, punctuation and
+  // suffixes dropped, case and spacing flattened. "O'Brien-Smith Jr." and
+  // "obrien smith" become the same string, so a formatting difference never
+  // reads as a different child.
+  function normName(s) {
+    return String(s == null ? "" : s)
+      .normalize("NFD").replace(/[̀-ͯ]/g, "")   // fold accents: José -> Jose
+      .toLowerCase()
+      // Apostrophes are REMOVED rather than turned into a space: O'Brien and
+      // OBrien are the same surname, and splitting it produces a phantom
+      // given-name token that makes the two records look like different
+      // children. Hyphens and everything else still become spaces.
+      .replace(/['’]/g, "")
+      .replace(/\b(jr|sr|ii|iii|iv)\b\.?/g, " ")
+      .replace(/[^a-z ]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // The CRM stores one child_name; Rethink gives first and last separately.
+  // Last token is the surname, everything before it the given name(s), which
+  // handles both "Ana Maria Lopez" and "Lopez" without inventing a middle-name
+  // rule the data does not support.
+  function splitName(full) {
+    const parts = normName(full).split(" ").filter(Boolean);
+    if (!parts.length) return { first: "", last: "" };
+    if (parts.length === 1) return { first: parts[0], last: "" };
+    return { first: parts.slice(0, -1).join(" "), last: parts[parts.length - 1] };
+  }
+
+  // Resolve which keys in a Rethink client row carry the identifiers we need.
+  // The client endpoint's field names were never documented to us, so rather
+  // than hard-code a guess this inspects the keys actually present and reports
+  // what it resolved. Keys are structure, not PHI, so surfacing them is safe.
+  const FIELD_CANDIDATES = {
+    id: ["clientid", "id", "rethinkclientid", "clientnumber"],
+    first: ["legalfirstname", "firstname", "first_name", "first", "givenname"],
+    last: ["legallastname", "lastname", "last_name", "last", "surname", "familyname"],
+    dob: ["dateofbirth", "dob", "birthdate", "birthday", "datebirth"],
+  };
+  function resolveFieldMap(sampleRow) {
+    // An explicit override always wins, for the day the auto-detection is wrong.
+    let override = {};
+    try { override = JSON.parse(process.env.RETHINK_CLIENT_FIELD_MAP || "{}"); } catch (e) { override = {}; }
+    const keys = Object.keys(sampleRow || {});
+    const lower = new Map(keys.map((k) => [k.toLowerCase().replace(/[^a-z]/g, ""), k]));
+    const map = {};
+    for (const [role, candidates] of Object.entries(FIELD_CANDIDATES)) {
+      if (override[role] && keys.includes(override[role])) { map[role] = override[role]; continue; }
+      map[role] = null;
+      for (const c of candidates) { if (lower.has(c)) { map[role] = lower.get(c); break; } }
+    }
+    return { map, keys_seen: keys };
+  }
+
+  // Pull the Rethink client list, compare against active CRM clients, and store
+  // proposals. Writes nothing to clients.rethink_client_id -- ever.
+  async function scanClientMatches() {
+    if (!client.configured()) {
+      return { ok: false, error: "Rethink credentials are not configured.", kind: "config" };
+    }
+
+    let fetched;
+    try {
+      fetched = await client.dwhGetAllPages(DWH_CLIENTS, {}, { nowMs: nowMs(), pageSize: 500 });
+    } catch (e) {
+      return {
+        ok: false, kind: e.kind || "http",
+        error: `${client.redact(e.message)} (endpoint "${DWH_CLIENTS}" -- set RETHINK_CLIENTS_ENDPOINT if that path is wrong)`,
+      };
+    }
+
+    const rows = fetched.rows || [];
+    if (!rows.length) return { ok: false, error: `The Rethink "${DWH_CLIENTS}" endpoint returned no clients.`, kind: "empty" };
+
+    const { map, keys_seen } = resolveFieldMap(rows[0]);
+    const missing = Object.entries(map).filter(([, v]) => !v).map(([k]) => k);
+    if (missing.length) {
+      return {
+        ok: false, kind: "field_map",
+        error: `Could not find ${missing.join(", ")} in the Rethink client response. Keys returned: ${keys_seen.join(", ")}. Set RETHINK_CLIENT_FIELD_MAP to map them explicitly.`,
+        keys_seen,
+      };
+    }
+
+    const crmClients = await dbAll(
+      "SELECT id, child_name, dob, rethink_client_id FROM clients WHERE stage NOT IN ('discharged','not_moving_forward')"
+    ).catch(() => []);
+
+    // Index the Rethink side once.
+    const rethinkClients = rows.map((r) => ({
+      id: String(r[map.id] == null ? "" : r[map.id]).trim(),
+      first: normName(r[map.first]),
+      last: normName(r[map.last]),
+      dob: dateOnly(r[map.dob]),
+      rawFirst: r[map.first] == null ? "" : String(r[map.first]),
+      rawLast: r[map.last] == null ? "" : String(r[map.last]),
+    })).filter((r) => r.id);
+
+    await dbRun("DELETE FROM rethink_client_match_candidates").catch(() => {});
+
+    let ready = 0, review = 0, none = 0, alreadyLinked = 0;
+
+    for (const c of crmClients) {
+      if (c.rethink_client_id && String(c.rethink_client_id).trim()) { alreadyLinked++; continue; }
+
+      const { first, last } = splitName(c.child_name);
+      const dob = dateOnly(c.dob);
+      const candidates = [];
+
+      for (const r of rethinkClients) {
+        const firstOk = !!first && !!r.first && first === r.first;
+        const lastOk = !!last && !!r.last && last === r.last;
+        const dobOk = !!dob && !!r.dob && dob === r.dob;
+        const dobKnown = !!dob && !!r.dob;
+
+        let confidence = null, reason = "";
+        if (firstOk && lastOk && dobOk) { confidence = "high"; reason = "first + last + DOB"; }
+        else if (firstOk && lastOk && !dobKnown) { confidence = "medium"; reason = "first + last, DOB missing on one side"; }
+        else if (firstOk && lastOk && !dobOk) { confidence = "medium"; reason = "first + last match but DOB differs"; }
+        else if (lastOk && dobOk) { confidence = "medium"; reason = "last + DOB, first name differs"; }
+        else if (firstOk && dobOk) { confidence = "medium"; reason = "first + DOB, last name differs"; }
+        if (confidence) candidates.push({ r, confidence, reason });
+      }
+
+      for (const cand of candidates) {
+        await dbRun(
+          `INSERT INTO rethink_client_match_candidates
+             (crm_client_id, rethink_client_id, rethink_first, rethink_last, rethink_dob, confidence, reason, scanned_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (crm_client_id, rethink_client_id) DO UPDATE SET
+             confidence = EXCLUDED.confidence, reason = EXCLUDED.reason, scanned_at = EXCLUDED.scanned_at`,
+          [c.id, cand.r.id, cand.r.rawFirst, cand.r.rawLast, cand.r.dob, cand.confidence, cand.reason, nowISO()]
+        ).catch(() => {});
+      }
+
+      // "Ready to Link" means exactly one high-confidence candidate and no
+      // other candidate of any kind competing with it. Anything else is a
+      // human decision.
+      const highs = candidates.filter((x) => x.confidence === "high");
+      if (highs.length === 1 && candidates.length === 1) ready++;
+      else if (candidates.length) review++;
+      else none++;
+    }
+
+    return {
+      ok: true,
+      rethink_clients: rethinkClients.length,
+      crm_clients_considered: crmClients.length - alreadyLinked,
+      already_linked: alreadyLinked,
+      ready_to_link: ready,
+      needs_review: review,
+      no_match: none,
+      field_map: map,
+    };
+  }
+
+  // The review screen's data: one entry per unlinked active CRM client.
+  async function clientMatchReview() {
+    const crmClients = await dbAll(
+      `SELECT id, child_name, dob, rethink_client_id FROM clients
+        WHERE stage NOT IN ('discharged','not_moving_forward') ORDER BY child_name`
+    ).catch(() => []);
+    const cands = await dbAll(
+      "SELECT * FROM rethink_client_match_candidates ORDER BY crm_client_id, confidence, rethink_last"
+    ).catch(() => []);
+    const byClient = new Map();
+    for (const c of cands) {
+      const list = byClient.get(c.crm_client_id) || [];
+      list.push(c);
+      byClient.set(c.crm_client_id, list);
+    }
+
+    const items = crmClients.map((c) => {
+      const list = byClient.get(c.id) || [];
+      const highs = list.filter((x) => x.confidence === "high");
+      let status;
+      if (c.rethink_client_id && String(c.rethink_client_id).trim()) status = "linked";
+      else if (highs.length === 1 && list.length === 1) status = "ready";
+      else if (list.length) status = "review";
+      else status = "no_match";
+      return {
+        crm_client_id: c.id,
+        crm_name: c.child_name,
+        crm_dob: dateOnly(c.dob),
+        linked_rethink_client_id: c.rethink_client_id || null,
+        status,
+        candidates: list.map((x) => ({
+          rethink_client_id: x.rethink_client_id,
+          name: `${x.rethink_first || ""} ${x.rethink_last || ""}`.trim(),
+          dob: x.rethink_dob,
+          confidence: x.confidence,
+          reason: x.reason,
+        })),
+      };
+    });
+
+    const last = await dbGet("SELECT MAX(scanned_at) AS m FROM rethink_client_match_candidates").catch(() => null);
+    return {
+      items,
+      last_scanned_at: (last && last.m) || null,
+      counts: {
+        linked: items.filter((i) => i.status === "linked").length,
+        ready: items.filter((i) => i.status === "ready").length,
+        review: items.filter((i) => i.status === "review").length,
+        no_match: items.filter((i) => i.status === "no_match").length,
+      },
+    };
+  }
+
+  // Approve one proposed link. An existing id is never replaced without an
+  // explicit confirm, and the previous value is kept in the audit log either way.
+  async function approveClientLink(crmClientId, rethinkClientId, opts = {}, actor = "unknown") {
+    const c = await dbGet("SELECT id, rethink_client_id FROM clients WHERE id = ?", [crmClientId]).catch(() => null);
+    if (!c) return { ok: false, error: "That client no longer exists." };
+
+    const incoming = String(rethinkClientId == null ? "" : rethinkClientId).trim();
+    if (!incoming) return { ok: false, error: "No Rethink client ID given." };
+
+    const existing = c.rethink_client_id ? String(c.rethink_client_id).trim() : "";
+    if (existing && existing !== incoming && !opts.confirm_overwrite) {
+      return {
+        ok: false, needs_confirmation: true, existing_value: existing,
+        error: `This client is already linked to Rethink ID ${existing}. Confirm to replace it.`,
+      };
+    }
+    if (existing === incoming) return { ok: true, unchanged: true };
+
+    // Refuse to point two CRM clients at the same Rethink client by accident.
+    const clash = await dbGet(
+      "SELECT id, child_name FROM clients WHERE rethink_client_id = ? AND id <> ?", [incoming, crmClientId]
+    ).catch(() => null);
+    if (clash && !opts.confirm_duplicate) {
+      return {
+        ok: false, needs_confirmation: true, duplicate_of: { id: clash.id, name: clash.child_name },
+        error: `Rethink ID ${incoming} is already linked to another client. Confirm to link it anyway.`,
+      };
+    }
+
+    const cand = await dbGet(
+      "SELECT confidence FROM rethink_client_match_candidates WHERE crm_client_id = ? AND rethink_client_id = ?",
+      [crmClientId, incoming]
+    ).catch(() => null);
+
+    await dbRun("UPDATE clients SET rethink_client_id = ? WHERE id = ?", [incoming, crmClientId]);
+    await dbRun(
+      `INSERT INTO rethink_client_link_log (crm_client_id, rethink_client_id, previous_value, confidence, approved_by, approved_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [crmClientId, incoming, existing || null, (cand && cand.confidence) || "manual", actor, nowISO()]
+    ).catch(() => {});
+    await dbRun("DELETE FROM rethink_client_match_candidates WHERE crm_client_id = ?", [crmClientId]).catch(() => {});
+
+    return { ok: true, crm_client_id: crmClientId, rethink_client_id: incoming, replaced: existing || null };
+  }
+
 
   // ======================= CONFIG ============================
   async function getConfig() {
@@ -882,6 +1173,54 @@ module.exports = function initRethink(ctx) {
       return true;
     }
 
+    // ---- client matching (owner/admin only) ----------------------------
+    if (pathname.startsWith("/api/rethink/client-match")) {
+      if (!canMatch(user)) { json(res, 403, { error: "Owner or admin only." }); return true; }
+
+      if (pathname === "/api/rethink/client-match" && method === "GET") {
+        json(res, 200, await clientMatchReview());
+        return true;
+      }
+
+      if (pathname === "/api/rethink/client-match/scan" && method === "POST") {
+        const out = await scanClientMatches();
+        json(res, out.ok ? 200 : 502, out);
+        return true;
+      }
+
+      if (pathname === "/api/rethink/client-match/approve" && method === "POST") {
+        const b = await readBody(req).catch(() => ({}));
+        const actor = (user && (user.email || user.name)) || "unknown";
+        const links = Array.isArray(b.links) && b.links.length
+          ? b.links
+          : [{ crm_client_id: b.crm_client_id, rethink_client_id: b.rethink_client_id }];
+
+        const results = [];
+        let linked = 0;
+        for (const l of links) {
+          const out = await approveClientLink(
+            Number(l.crm_client_id), l.rethink_client_id,
+            { confirm_overwrite: b.confirm_overwrite === true, confirm_duplicate: b.confirm_duplicate === true },
+            actor
+          ).catch((e) => ({ ok: false, error: client.redact(e.message) }));
+          results.push({ crm_client_id: l.crm_client_id, ...out });
+          if (out.ok && !out.unchanged) linked++;
+        }
+
+        // Newly linked clients have no authorization data yet, so pull it now
+        // rather than making someone wait for the next scheduled sweep.
+        let authSync = null;
+        if (linked > 0 && b.sync !== false) {
+          authSync = await syncAuthorizations("client_link").catch((e) => ({ ok: false, error: e.message }));
+        }
+        json(res, 200, { ok: results.every((r) => r.ok), linked, results, authorization_sync: authSync });
+        return true;
+      }
+
+      json(res, 404, { error: "Unknown client-match route." });
+      return true;
+    }
+
     if (pathname === "/api/rethink/sync-log" && method === "GET") {
       json(res, 200, {
         rows: await dbAll("SELECT * FROM rethink_sync_log ORDER BY id DESC LIMIT 25").catch(() => []),
@@ -914,6 +1253,9 @@ module.exports = function initRethink(ctx) {
     integrationStatus,
     verifiedHoursByEmployee,
     getConfig,
-    _internal: { decide, norm, monthWindow, standingOf, is97153, dateOnly },
+    scanClientMatches,
+    clientMatchReview,
+    approveClientLink,
+    _internal: { decide, norm, monthWindow, standingOf, is97153, dateOnly, normName, splitName, resolveFieldMap },
   };
 };

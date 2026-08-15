@@ -567,6 +567,7 @@ async function route() {
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/rethink-clients")) { if (window.__renderRethinkMatch) await window.__renderRethinkMatch(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/policies")) { if (window.__renderPolicies) await window.__renderPolicies(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/map")) { if (window.__renderMap) await window.__renderMap(mount); else await renderDashboard(mount); }
@@ -4942,6 +4943,7 @@ function openAccessModal(u, onDone) {
   <script src="ot-frontend.js"></script>
   <script src="hr-attendance-frontend.js"></script>
   <script src="supervision-frontend.js"></script>
+  <script src="rethink-match-frontend.js"></script>
   <script src="growth-frontend.js"></script>
   <script src="supply-requests-frontend.js"></script>
   <script src="geo-map-frontend.js"></script>

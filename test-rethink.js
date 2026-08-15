@@ -353,6 +353,89 @@ const initRethink = require("./rethink");
     check("a repeat authorization sync writes the same dates", b.clientDateWrites.length === 1);
   }
 
+  console.log("\nCLIENT MATCHING\n");
+
+  // The matcher proposes; it must never write clients.rethink_client_id itself.
+  {
+    const crm = [
+      { id: 1, child_name: "Ava Nguyen", dob: "2019-04-02", rethink_client_id: null },   // exact
+      { id: 2, child_name: "Liam O'Brien", dob: "2018-11-20", rethink_client_id: null },  // punctuation
+      { id: 3, child_name: "Noah Patel", dob: null, rethink_client_id: null },            // DOB missing in CRM
+      { id: 4, child_name: "Mia Garcia", dob: "2020-01-15", rethink_client_id: null },    // two same-name candidates
+      { id: 5, child_name: "Zoe Absent", dob: "2017-06-01", rethink_client_id: null },    // nobody
+      { id: 6, child_name: "Already Linked", dob: "2019-01-01", rethink_client_id: "R99" },
+    ];
+    const { state, ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: crm });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { clientId: "R1", firstName: "Ava", lastName: "Nguyen", dateOfBirth: "2019-04-02T00:00:00Z" },
+      { clientId: "R2", firstName: "Liam", lastName: "O'Brien", dateOfBirth: "2018-11-20" },
+      { clientId: "R3", firstName: "Noah", lastName: "Patel", dateOfBirth: "2016-02-02" },
+      { clientId: "R4", firstName: "Mia", lastName: "Garcia", dateOfBirth: "2020-01-15" },
+      { clientId: "R5", firstName: "Mia", lastName: "Garcia", dateOfBirth: "2021-09-09" },
+    ], pages: 1, truncated: false });
+
+    const r = initRethink(ctx);
+    const out = await r.scanClientMatches();
+
+    const cands = state.sql.filter((s) => /INSERT INTO rethink_client_match_candidates/i.test(s));
+    check("the scan resolves the Rethink field names automatically", out.ok === true, out.error);
+    check("field map found the identifier", out.field_map && out.field_map.id === "clientId", JSON.stringify(out.field_map));
+    check("an exact first + last + DOB match is Ready to Link", out.ready_to_link === 2, out.ready_to_link);
+    check("punctuation and apostrophes do not break a match", out.ready_to_link === 2);
+    check("two same-name candidates are Needs Review, never auto-picked", out.needs_review >= 1, out.needs_review);
+    check("a client with no candidate is reported as no-match", out.no_match === 1, out.no_match);
+    check("an already-linked client is skipped", out.already_linked === 1, out.already_linked);
+    check("the scan proposes but never writes rethink_client_id",
+      !state.sql.some((s) => /UPDATE clients SET rethink_client_id/i.test(s)));
+    check("candidates are staged for review", cands.length > 0);
+  }
+
+  // A missing field must fail loudly with the keys it did see.
+  {
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: [{ id: 1, child_name: "A B", dob: "2019-01-01" }] });
+    stub.dwhGetAllPages = async () => ({ rows: [{ clientId: "R1", nickname: "Bee" }], pages: 1, truncated: false });
+    const out = await initRethink(ctx).scanClientMatches();
+    check("an unmappable client response fails rather than guessing", out.ok === false);
+    check("and names the keys it actually received", /nickname/.test(out.error || ""), out.error);
+  }
+
+  // Approve & Link, and the overwrite guard.
+  {
+    const { state, ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: [] });
+    let clientRow = { id: 7, rethink_client_id: null };
+    ctx.dbGet = async (sql, p = []) => {
+      state.sql.push(sql);
+      if (/INSERT INTO rethink_sync_log/i.test(sql)) return { id: 1 };
+      if (/FROM rethink_config/i.test(sql)) return CONFIRMED;
+      if (/SELECT id, rethink_client_id FROM clients WHERE id/i.test(sql)) return clientRow;
+      if (/WHERE rethink_client_id = \? AND id <>/i.test(sql)) return null;
+      if (/FROM rethink_client_match_candidates WHERE crm_client_id/i.test(sql)) return { confidence: "high" };
+      return null;
+    };
+    ctx.dbRun = async (sql, p = []) => {
+      state.sql.push(sql);
+      if (/UPDATE clients SET rethink_client_id/i.test(sql)) { clientRow.rethink_client_id = p[0]; state.clientDateWrites.push({ link: p[0] }); }
+    };
+
+    const r = initRethink(ctx);
+    const first = await r.approveClientLink(7, "R42", {}, "owner@x");
+    check("approving a link saves the Rethink client ID", first.ok === true && clientRow.rethink_client_id === "R42");
+    check("the link is written to an audit log", state.sql.some((s) => /INSERT INTO rethink_client_link_log/i.test(s)));
+
+    const same = await r.approveClientLink(7, "R42", {}, "owner@x");
+    check("re-approving the same link is a no-op", same.ok === true && same.unchanged === true);
+
+    const blocked = await r.approveClientLink(7, "R77", {}, "owner@x");
+    check("an existing link is NOT overwritten without confirmation",
+      blocked.ok === false && blocked.needs_confirmation === true, JSON.stringify(blocked));
+    check("the refusal names the value it would replace", blocked.existing_value === "R42");
+    check("the client ID is unchanged after a refused overwrite", clientRow.rethink_client_id === "R42");
+
+    const forced = await r.approveClientLink(7, "R77", { confirm_overwrite: true }, "owner@x");
+    check("an explicit confirmation does replace it", forced.ok === true && clientRow.rethink_client_id === "R77");
+    check("and records what it replaced", forced.replaced === "R42");
+  }
+
   console.log("\nPURE LOGIC\n");
   {
     const { ctx } = makeDb({ now: NOW, config: CONFIRMED });
@@ -370,6 +453,18 @@ const initRethink = require("./rethink");
       monthWindow("2026-08").to === "2026-08-15", monthWindow("2026-08").to);
     check("month window starts on the first", monthWindow("2026-08").from === "2026-08-01");
     check("a past month uses its real end date", monthWindow("2026-07").to === "2026-07-31");
+
+    const { normName, splitName, resolveFieldMap } = initRethink(ctx)._internal;
+    check("names fold accents and case", normName("José") === normName("JOSE"));
+    check("names drop punctuation", normName("O'Brien-Smith") === "obrien smith");
+    check("names drop generational suffixes", normName("John Smith Jr.") === "john smith");
+    check("a two-part name splits into first and last",
+      splitName("Ava Nguyen").first === "ava" && splitName("Ava Nguyen").last === "nguyen");
+    check("a three-part name keeps the last token as the surname",
+      splitName("Ana Maria Lopez").first === "ana maria" && splitName("Ana Maria Lopez").last === "lopez");
+    check("a single-token name has no surname", splitName("Cher").last === "");
+    check("field detection is case- and separator-insensitive",
+      resolveFieldMap({ Client_ID: 1, Legal_First_Name: "a", LegalLastName: "b", "date-of-birth": "c" }).map.first === "Legal_First_Name");
   }
 
   console.log(`\n  ${pass} passed, ${fail} failed\n`);
