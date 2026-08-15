@@ -60,10 +60,7 @@ module.exports = function initRethink(ctx) {
   // is now the documented route rather than a guess.
   const DWH_AUTHORIZATIONS = process.env.RETHINK_AUTH_ENDPOINT || "ClientAuthorization";
 
-  // NOT yet confirmed. The client collection's path and field names have not
-  // been read off the Swagger spec, so this stays a placeholder: a wrong value
-  // fails loudly naming the path it tried, and the field map is auto-detected
-  // and reported rather than assumed.
+  // Confirmed against the DWH Swagger: GET /api/Clients.
   const DWH_CLIENTS = process.env.RETHINK_CLIENTS_ENDPOINT || "Clients";
 
   // The CPT this tracker cares about. Other codes are deliberately not imported.
@@ -248,6 +245,9 @@ module.exports = function initRethink(ctx) {
       scanned_at TEXT,
       UNIQUE (crm_client_id, rethink_client_id)
     )`).catch((e) => console.error("rethink_client_match_candidates initTables:", e.message));
+    // Informational only -- shown to the reviewer, never filtered on.
+    await dbRun("ALTER TABLE rethink_client_match_candidates ADD COLUMN IF NOT EXISTS rethink_status TEXT")
+      .catch((e) => console.error("rethink_status column:", e.message));
 
     // Audit of every link an owner approved: who, when, and what it replaced.
     await dbRun(`CREATE TABLE IF NOT EXISTS rethink_client_link_log (
@@ -292,29 +292,28 @@ module.exports = function initRethink(ctx) {
     return { first: parts.slice(0, -1).join(" "), last: parts[parts.length - 1] };
   }
 
-  // Resolve which keys in a Rethink client row carry the identifiers we need.
-  // The client endpoint's field names were never documented to us, so rather
-  // than hard-code a guess this inspects the keys actually present and reports
-  // what it resolved. Keys are structure, not PHI, so surfacing them is safe.
-  const FIELD_CANDIDATES = {
-    id: ["clientid", "id", "rethinkclientid", "clientnumber"],
-    first: ["legalfirstname", "firstname", "first_name", "first", "givenname"],
-    last: ["legallastname", "lastname", "last_name", "last", "surname", "familyname"],
-    dob: ["dateofbirth", "dob", "birthdate", "birthday", "datebirth"],
+  // The documented GET /api/Clients schema. These are the exact property names
+  // from the DWH Swagger, not a guess and not auto-detected -- earlier versions
+  // sniffed the keys because the schema had not been published to us.
+  const CLIENT_FIELDS = {
+    id: "clientId",
+    first: "firstName",
+    last: "lastName",
+    dob: "dateOfBirth",
+    status: "status",
   };
-  function resolveFieldMap(sampleRow) {
-    // An explicit override always wins, for the day the auto-detection is wrong.
-    let override = {};
-    try { override = JSON.parse(process.env.RETHINK_CLIENT_FIELD_MAP || "{}"); } catch (e) { override = {}; }
+
+  // The documented names are used directly; this only checks they are actually
+  // present, so a schema change surfaces as a clear error naming the keys that
+  // came back instead of silently matching nobody. Keys are structure, not PHI.
+  // `status` is informational on the review screen, so it is not required.
+  const REQUIRED_CLIENT_FIELDS = ["id", "first", "last", "dob"];
+  function validateClientFields(sampleRow) {
     const keys = Object.keys(sampleRow || {});
-    const lower = new Map(keys.map((k) => [k.toLowerCase().replace(/[^a-z]/g, ""), k]));
-    const map = {};
-    for (const [role, candidates] of Object.entries(FIELD_CANDIDATES)) {
-      if (override[role] && keys.includes(override[role])) { map[role] = override[role]; continue; }
-      map[role] = null;
-      for (const c of candidates) { if (lower.has(c)) { map[role] = lower.get(c); break; } }
-    }
-    return { map, keys_seen: keys };
+    const missing = REQUIRED_CLIENT_FIELDS
+      .filter((role) => !keys.includes(CLIENT_FIELDS[role]))
+      .map((role) => CLIENT_FIELDS[role]);
+    return { missing, keys_seen: keys };
   }
 
   // Pull the Rethink client list, compare against active CRM clients, and store
@@ -337,12 +336,11 @@ module.exports = function initRethink(ctx) {
     const rows = fetched.rows || [];
     if (!rows.length) return { ok: false, error: `The Rethink "${DWH_CLIENTS}" endpoint returned no clients.`, kind: "empty" };
 
-    const { map, keys_seen } = resolveFieldMap(rows[0]);
-    const missing = Object.entries(map).filter(([, v]) => !v).map(([k]) => k);
+    const { missing, keys_seen } = validateClientFields(rows[0]);
     if (missing.length) {
       return {
         ok: false, kind: "field_map",
-        error: `Could not find ${missing.join(", ")} in the Rethink client response. Keys returned: ${keys_seen.join(", ")}. Set RETHINK_CLIENT_FIELD_MAP to map them explicitly.`,
+        error: `The Rethink client response is missing ${missing.join(", ")}. Keys returned: ${keys_seen.join(", ")}.`,
         keys_seen,
       };
     }
@@ -351,14 +349,20 @@ module.exports = function initRethink(ctx) {
       "SELECT id, child_name, dob, rethink_client_id FROM clients WHERE stage NOT IN ('discharged','not_moving_forward')"
     ).catch(() => []);
 
-    // Index the Rethink side once.
+    // Index the Rethink side once, reading the documented fields directly.
+    const F = CLIENT_FIELDS;
     const rethinkClients = rows.map((r) => ({
-      id: String(r[map.id] == null ? "" : r[map.id]).trim(),
-      first: normName(r[map.first]),
-      last: normName(r[map.last]),
-      dob: dateOnly(r[map.dob]),
-      rawFirst: r[map.first] == null ? "" : String(r[map.first]),
-      rawLast: r[map.last] == null ? "" : String(r[map.last]),
+      id: String(r[F.id] == null ? "" : r[F.id]).trim(),
+      first: normName(r[F.first]),
+      last: normName(r[F.last]),
+      dob: dateOnly(r[F.dob]),
+      rawFirst: r[F.first] == null ? "" : String(r[F.first]),
+      rawLast: r[F.last] == null ? "" : String(r[F.last]),
+      // Shown to the reviewer so they do not link a child to a closed Rethink
+      // record. Not filtered on: the status vocabulary is not documented to us,
+      // and silently dropping clients on a guessed value is how a real child
+      // goes missing from the tracker.
+      status: r[F.status] == null ? "" : String(r[F.status]),
     })).filter((r) => r.id);
 
     await dbRun("DELETE FROM rethink_client_match_candidates").catch(() => {});
@@ -390,11 +394,12 @@ module.exports = function initRethink(ctx) {
       for (const cand of candidates) {
         await dbRun(
           `INSERT INTO rethink_client_match_candidates
-             (crm_client_id, rethink_client_id, rethink_first, rethink_last, rethink_dob, confidence, reason, scanned_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             (crm_client_id, rethink_client_id, rethink_first, rethink_last, rethink_dob, rethink_status, confidence, reason, scanned_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (crm_client_id, rethink_client_id) DO UPDATE SET
-             confidence = EXCLUDED.confidence, reason = EXCLUDED.reason, scanned_at = EXCLUDED.scanned_at`,
-          [c.id, cand.r.id, cand.r.rawFirst, cand.r.rawLast, cand.r.dob, cand.confidence, cand.reason, nowISO()]
+             rethink_status = EXCLUDED.rethink_status, confidence = EXCLUDED.confidence,
+             reason = EXCLUDED.reason, scanned_at = EXCLUDED.scanned_at`,
+          [c.id, cand.r.id, cand.r.rawFirst, cand.r.rawLast, cand.r.dob, cand.r.status, cand.confidence, cand.reason, nowISO()]
         ).catch(() => {});
       }
 
@@ -415,7 +420,7 @@ module.exports = function initRethink(ctx) {
       ready_to_link: ready,
       needs_review: review,
       no_match: none,
-      field_map: map,
+      field_map: CLIENT_FIELDS,
     };
   }
 
@@ -453,6 +458,7 @@ module.exports = function initRethink(ctx) {
           rethink_client_id: x.rethink_client_id,
           name: `${x.rethink_first || ""} ${x.rethink_last || ""}`.trim(),
           dob: x.rethink_dob,
+          status: x.rethink_status || null,
           confidence: x.confidence,
           reason: x.reason,
         })),
@@ -1255,6 +1261,6 @@ module.exports = function initRethink(ctx) {
     scanClientMatches,
     clientMatchReview,
     approveClientLink,
-    _internal: { decide, norm, monthWindow, standingOf, is97153, dateOnly, normName, splitName, resolveFieldMap },
+    _internal: { decide, norm, monthWindow, standingOf, is97153, dateOnly, normName, splitName, validateClientFields, CLIENT_FIELDS },
   };
 };

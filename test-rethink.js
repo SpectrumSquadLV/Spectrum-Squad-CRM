@@ -382,8 +382,11 @@ const initRethink = require("./rethink");
     const out = await r.scanClientMatches();
 
     const cands = state.sql.filter((s) => /INSERT INTO rethink_client_match_candidates/i.test(s));
-    check("the scan resolves the Rethink field names automatically", out.ok === true, out.error);
-    check("field map found the identifier", out.field_map && out.field_map.id === "clientId", JSON.stringify(out.field_map));
+    check("the scan reads the documented client schema", out.ok === true, out.error);
+    check("it uses the documented field names, not auto-detection",
+      out.field_map && out.field_map.id === "clientId" && out.field_map.first === "firstName"
+        && out.field_map.last === "lastName" && out.field_map.dob === "dateOfBirth",
+      JSON.stringify(out.field_map));
     check("an exact first + last + DOB match is Ready to Link", out.ready_to_link === 2, out.ready_to_link);
     check("punctuation and apostrophes do not break a match", out.ready_to_link === 2);
     check("two same-name candidates are Needs Review, never auto-picked", out.needs_review >= 1, out.needs_review);
@@ -394,13 +397,30 @@ const initRethink = require("./rethink");
     check("candidates are staged for review", cands.length > 0);
   }
 
-  // A missing field must fail loudly with the keys it did see.
+  // A schema change must fail loudly with the keys it did see, rather than
+  // silently matching nobody.
   {
     const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: [{ id: 1, child_name: "A B", dob: "2019-01-01" }] });
     stub.dwhGetAllPages = async () => ({ rows: [{ clientId: "R1", nickname: "Bee" }], pages: 1, truncated: false });
     const out = await initRethink(ctx).scanClientMatches();
-    check("an unmappable client response fails rather than guessing", out.ok === false);
+    check("a client response missing documented fields fails rather than guessing", out.ok === false);
+    check("the error names the documented fields that were missing",
+      /firstName/.test(out.error || "") && /dateOfBirth/.test(out.error || ""), out.error);
     check("and names the keys it actually received", /nickname/.test(out.error || ""), out.error);
+  }
+
+  // Client status is carried through for the reviewer but never filters anyone out.
+  {
+    const { ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      clients: [{ id: 1, child_name: "Ava Nguyen", dob: "2019-04-02", rethink_client_id: null }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { clientId: "R1", firstName: "Ava", lastName: "Nguyen", dateOfBirth: "2019-04-02", status: "Discharged" },
+    ], pages: 1, truncated: false });
+    const out = await initRethink(ctx).scanClientMatches();
+    check("a client is still matched regardless of its Rethink status", out.ready_to_link === 1, out.ready_to_link);
+    check("client status is part of the documented field map", out.field_map.status === "status");
   }
 
   // Approve & Link, and the overwrite guard.
@@ -458,7 +478,7 @@ const initRethink = require("./rethink");
     check("month window starts on the first", monthWindow("2026-08").from === "2026-08-01");
     check("a past month uses its real end date", monthWindow("2026-07").to === "2026-07-31");
 
-    const { normName, splitName, resolveFieldMap } = initRethink(ctx)._internal;
+    const { normName, splitName, validateClientFields, CLIENT_FIELDS } = initRethink(ctx)._internal;
     check("names fold accents and case", normName("José") === normName("JOSE"));
     check("names drop punctuation", normName("O'Brien-Smith") === "obrien smith");
     check("names drop generational suffixes", normName("John Smith Jr.") === "john smith");
@@ -467,8 +487,18 @@ const initRethink = require("./rethink");
     check("a three-part name keeps the last token as the surname",
       splitName("Ana Maria Lopez").first === "ana maria" && splitName("Ana Maria Lopez").last === "lopez");
     check("a single-token name has no surname", splitName("Cher").last === "");
-    check("field detection is case- and separator-insensitive",
-      resolveFieldMap({ Client_ID: 1, Legal_First_Name: "a", LegalLastName: "b", "date-of-birth": "c" }).map.first === "Legal_First_Name");
+    // Pins the documented Swagger schema. If any of these change, this fails
+    // rather than the integration quietly matching nobody in production.
+    check("client schema is exactly the documented Swagger fields",
+      CLIENT_FIELDS.id === "clientId" && CLIENT_FIELDS.first === "firstName"
+        && CLIENT_FIELDS.last === "lastName" && CLIENT_FIELDS.dob === "dateOfBirth"
+        && CLIENT_FIELDS.status === "status", JSON.stringify(CLIENT_FIELDS));
+    check("a complete client row validates",
+      validateClientFields({ clientId: 1, firstName: "a", lastName: "b", dateOfBirth: "c", status: "d" }).missing.length === 0);
+    check("a client row missing DOB is reported as missing dateOfBirth",
+      validateClientFields({ clientId: 1, firstName: "a", lastName: "b" }).missing.join() === "dateOfBirth");
+    check("status is informational, so its absence does not fail validation",
+      validateClientFields({ clientId: 1, firstName: "a", lastName: "b", dateOfBirth: "c" }).missing.length === 0);
   }
 
   console.log(`\n  ${pass} passed, ${fail} failed\n`);

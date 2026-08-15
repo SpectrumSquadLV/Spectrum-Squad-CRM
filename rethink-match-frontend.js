@@ -84,6 +84,7 @@
         ? cands.map((x) => `<div style="margin:2px 0;">
             <strong>${esc(x.name || "—")}</strong>
             <span class="tag" style="background:${x.confidence === "high" ? "#dcfce7" : "#fef3c7"}; color:${x.confidence === "high" ? "#166534" : "#92400e"}; margin-left:4px;">${esc(x.confidence)}</span>
+            ${x.status ? `<span class="tag" style="background:#f1f5f9; color:#475569; margin-left:4px;" title="Client status in Rethink">${esc(x.status)}</span>` : ""}
             <div style="font-size:11px; color:var(--text-muted);">${esc(x.reason || "")}</div>
           </div>`).join("")
         : `<span style="color:var(--text-muted);">No candidate</span>`;
