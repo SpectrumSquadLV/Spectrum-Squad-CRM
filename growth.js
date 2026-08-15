@@ -210,10 +210,20 @@ module.exports = function initGrowth(ctx) {
   // when something is still filed there.
   const POLICY_CATEGORIES = [
     "Employee Handbook",
+    // Work authorisation, I-9, employment classification (exempt / non-exempt /
+    // full-time / per diem), employment verifications. Added after reading the
+    // handbook: these were scattering across Payroll, Administrative SOPs and
+    // Other, none of which is where anyone would look for them.
+    "Conditions of Employment",
     "Attendance & Timekeeping",
     "Scheduling & Call-Outs",
     "Payroll & Compensation",
     "Benefits",
+    // Split out of Professional Conduct, which was absorbing about a dozen
+    // policies and mixing general workplace ethics with federally-mandated
+    // anti-harassment law. Nobody looks under "Professional Conduct" for the
+    // harassment reporting procedure.
+    "Equal Opportunity & Harassment",
     "Professional Conduct",
     "Dress Code & Appearance",
     "Client Care & Clinical",
@@ -241,6 +251,8 @@ module.exports = function initGrowth(ctx) {
   // between the staff view and the public QR page.
   const CATEGORY_COLORS = {
     "Employee Handbook": "#1b2a6b",
+    "Conditions of Employment": "#25376f",
+    "Equal Opportunity & Harassment": "#9d2449",
     "Attendance & Timekeeping": "#3f56b5",
     "Scheduling & Call-Outs": "#4a6fd4",
     "Payroll & Compensation": "#c98a1b",

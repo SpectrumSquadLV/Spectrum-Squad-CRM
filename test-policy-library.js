@@ -140,7 +140,13 @@ const STAFF = { id: 42, name: "Riley RBT", email: "riley@x.com", role: "clinical
     const r = await call(g, { path: "/api/policies/library", user: OWNER });
     const cats = r.body.categories;
     check("the new category list is offered", cats.includes("HIPAA, Privacy & Confidentiality") && cats.includes("Mandated Reporting"), cats.length);
-    check("all 25 requested categories are present", cats.length >= 25, cats.length);
+    check("all requested categories are present", cats.length >= 27, cats.length);
+    // Added after reading the real handbook: work-authorisation and
+    // classification policies had no home, and Professional Conduct was
+    // absorbing a dozen policies including the anti-harassment ones.
+    check("Conditions of Employment exists", cats.includes("Conditions of Employment"));
+    check("Equal Opportunity & Harassment is its own category",
+      cats.includes("Equal Opportunity & Harassment"));
     check("legacy categories are hidden when nothing uses them",
       !cats.includes("HR") && !cats.includes("Billing"), JSON.stringify(cats.slice(-6)));
     check("statuses are exposed", JSON.stringify(r.body.statuses) === JSON.stringify(["Active", "Draft", "Archived"]));
