@@ -267,6 +267,25 @@ module.exports = function initRethink(ctx) {
     await dbRun("ALTER TABLE rethink_client_match_candidates ADD COLUMN IF NOT EXISTS rethink_status TEXT")
       .catch((e) => console.error("rethink_status column:", e.message));
 
+    // Rethink clients the scan saw that have no CRM counterpart. Populated from
+    // the same 69-client fetch the matcher already performs -- no extra API
+    // call -- and rebuilt on every scan. Read-only: nothing here creates or
+    // links anything.
+    await dbRun(`CREATE TABLE IF NOT EXISTS rethink_unmatched_clients (
+      id SERIAL PRIMARY KEY,
+      rethink_client_id TEXT NOT NULL UNIQUE,
+      first_name TEXT,
+      last_name TEXT,
+      dob TEXT,
+      status TEXT,
+      -- Set when a CLOSED-stage CRM client looks like this person. The matcher
+      -- only considers open-stage clients, so without this a discharged client
+      -- would be reported as "no CRM record" and someone would recreate them.
+      possible_closed_crm_client_id INTEGER,
+      possible_closed_crm_name TEXT,
+      scanned_at TEXT
+    )`).catch((e) => console.error("rethink_unmatched_clients initTables:", e.message));
+
     // Audit of every link an owner approved: who, when, and what it replaced.
     await dbRun(`CREATE TABLE IF NOT EXISTS rethink_client_link_log (
       id SERIAL PRIMARY KEY,
@@ -441,6 +460,23 @@ module.exports = function initRethink(ctx) {
 
     await dbRun("DELETE FROM rethink_client_match_candidates").catch(() => {});
 
+    // Every Rethink id already saved on a CRM client, across ALL stages. A
+    // discharged client still holds a real link, and a Rethink client that is
+    // linked is not missing from the CRM by any definition.
+    const linkedRows = await dbAll(
+      "SELECT id, child_name, rethink_client_id FROM clients WHERE rethink_client_id IS NOT NULL AND TRIM(rethink_client_id) <> ''"
+    ).catch(() => []);
+    const linkedRethinkIds = new Set(linkedRows.map((r) => String(r.rethink_client_id).trim()));
+
+    // Closed-stage clients, used only to label an orphan as a possible
+    // already-existing record. The matcher's population is unchanged.
+    const closedClients = await dbAll(
+      "SELECT id, child_name, dob FROM clients WHERE stage IN ('discharged','not_moving_forward')"
+    ).catch(() => []);
+
+    // Rethink ids that turned up as a candidate for some CRM client this scan.
+    const candidateRethinkIds = new Set();
+
     let ready = 0, review = 0, none = 0, alreadyLinked = 0;
 
     for (const c of crmClients) {
@@ -466,6 +502,7 @@ module.exports = function initRethink(ctx) {
       }
 
       for (const cand of candidates) {
+        candidateRethinkIds.add(cand.r.id);
         await dbRun(
           `INSERT INTO rethink_client_match_candidates
              (crm_client_id, rethink_client_id, rethink_first, rethink_last, rethink_dob, rethink_status, confidence, reason, scanned_at)
@@ -487,9 +524,53 @@ module.exports = function initRethink(ctx) {
       else none++;
     }
 
+    // ---- Rethink-only clients ------------------------------------------
+    // A Rethink client is "missing from the CRM" only if nothing in the CRM
+    // points at it and the matcher found no CRM client it could belong to.
+    // Both exclusions matter: the first catches deliberate links, the second
+    // catches people already sitting in the review queue.
+    const orphans = rethinkClients.filter(
+      (r) => !linkedRethinkIds.has(r.id) && !candidateRethinkIds.has(r.id)
+    );
+
+    await dbRun("DELETE FROM rethink_unmatched_clients").catch(() => {});
+    for (const o of orphans) {
+      // Same name rules as the matcher, applied to closed-stage clients purely
+      // to label the row. Nothing is linked and no CRM record is touched.
+      let closed = null;
+      for (const c of closedClients) {
+        const { first, last } = splitName(c.child_name);
+        const cdob = dateOnly(c.dob);
+        const nameHit = first && last && first === o.first && last === o.last;
+        const dobHit = cdob && o.dob && cdob === o.dob;
+        if ((nameHit && (dobHit || !cdob || !o.dob)) || (dobHit && last === o.last)) { closed = c; break; }
+      }
+      await dbRun(
+        `INSERT INTO rethink_unmatched_clients
+           (rethink_client_id, first_name, last_name, dob, status,
+            possible_closed_crm_client_id, possible_closed_crm_name, scanned_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (rethink_client_id) DO UPDATE SET
+           first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, dob = EXCLUDED.dob,
+           status = EXCLUDED.status, possible_closed_crm_client_id = EXCLUDED.possible_closed_crm_client_id,
+           possible_closed_crm_name = EXCLUDED.possible_closed_crm_name, scanned_at = EXCLUDED.scanned_at`,
+        [o.id, o.rawFirst, o.rawLast, o.dob, o.status,
+         closed ? closed.id : null, closed ? closed.child_name : null, nowISO()]
+      ).catch((e) => client.log("orphan_store_failed", { error: e.message }));
+    }
+    client.log("clients_reconciled", {
+      rethink_total: rethinkClients.length,
+      linked: linkedRethinkIds.size,
+      candidates: candidateRethinkIds.size,
+      rethink_only: orphans.length,
+      rethink_only_active: orphans.filter((o) => statusAllowsReady(o.status)).length,
+    });
+
     return {
       ok: true,
       rethink_clients: rethinkClients.length,
+      rethink_only: orphans.length,
+      rethink_only_active: orphans.filter((o) => statusAllowsReady(o.status)).length,
       crm_clients_considered: crmClients.length - alreadyLinked,
       already_linked: alreadyLinked,
       ready_to_link: ready,
@@ -548,8 +629,33 @@ module.exports = function initRethink(ctx) {
     });
 
     const last = await dbGet("SELECT MAX(scanned_at) AS m FROM rethink_client_match_candidates").catch(() => null);
+
+    // Rethink clients with no CRM counterpart. Ordered so the ones that may be
+    // established therapy clients omitted from the CRM come first: Active,
+    // then Pending Acceptance, then Inactive.
+    const orphanRows = await dbAll("SELECT * FROM rethink_unmatched_clients ORDER BY last_name, first_name").catch(() => []);
+    const rank = (s) => (norm(s) === "active" ? 0 : norm(s) === "inactive" ? 2 : 1);
+    const rethinkOnly = orphanRows
+      .map((r) => ({
+        rethink_client_id: r.rethink_client_id,
+        name: `${r.first_name || ""} ${r.last_name || ""}`.trim(),
+        dob: r.dob,
+        status: r.status || null,
+        priority: rank(r.status),          // 0 needs attention, 1 review, 2 informational
+        possible_closed_crm: r.possible_closed_crm_client_id
+          ? { id: r.possible_closed_crm_client_id, name: r.possible_closed_crm_name } : null,
+      }))
+      .sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name));
+
     return {
       items,
+      rethink_only: rethinkOnly,
+      rethink_only_counts: {
+        total: rethinkOnly.length,
+        active: rethinkOnly.filter((r) => r.priority === 0).length,
+        pending: rethinkOnly.filter((r) => r.priority === 1).length,
+        inactive: rethinkOnly.filter((r) => r.priority === 2).length,
+      },
       last_scanned_at: (last && last.m) || null,
       counts: {
         linked: items.filter((i) => i.status === "linked").length,

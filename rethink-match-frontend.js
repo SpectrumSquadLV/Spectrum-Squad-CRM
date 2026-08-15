@@ -125,11 +125,62 @@
 
     const tab = (key, label, n) => `<button class="btn small ${filter === key ? "" : "secondary"}" data-rm-filter="${key}">${label} (${n})</button>`;
 
+    // Rethink clients with no CRM counterpart. Read-only: no approve action,
+    // no create action, nothing that writes. An Active client here may be an
+    // established therapy client omitted from the CRM, which is why the
+    // priority colouring exists.
+    const oc = d.rethink_only_counts || { total: 0, active: 0, pending: 0, inactive: 0 };
+    const PRIORITY = [
+      { dot: "🔴", label: "Needs attention", note: "Active in Rethink with no CRM record — may be an established therapy client missing from the CRM." },
+      { dot: "🟡", label: "Review", note: "Pending Acceptance in Rethink — likely not yet an active therapy client." },
+      { dot: "⚪", label: "Informational", note: "Inactive in Rethink — historical record." },
+    ];
+    const rethinkOnlyTable = () => {
+      const rows = (d.rethink_only || []).map((r) => {
+        const p = PRIORITY[r.priority] || PRIORITY[2];
+        return `<tr>
+          <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">
+            <span title="${esc(p.label)}">${p.dot}</span> <strong>${esc(r.name || "—")}</strong></td>
+          <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${esc(dayLabel(r.dob))}</td>
+          <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><code>${esc(r.rethink_client_id)}</code></td>
+          <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${statusTag(r.status)}</td>
+          <td style="padding:9px 10px; border-top:1px solid var(--border,#eee); font-size:12.5px;">
+            <span class="tag" style="background:#fee2e2; color:#991b1b;">No CRM record found</span>
+            ${r.possible_closed_crm ? `<div style="font-size:11px; color:#b45309; margin-top:3px;">
+              ⚠ A closed CRM client looks like this person: <strong>${esc(r.possible_closed_crm.name)}</strong>
+              (#${r.possible_closed_crm.id}). Check before creating anything — it may be the same child.</div>` : ""}
+          </td>
+        </tr>`;
+      }).join("");
+
+      return `<div style="background:#eef4ff; color:#1b3a7b; border:1px solid #c7d8f5; border-radius:8px; padding:9px 13px; font-size:12.5px; margin-bottom:12px;">
+          Clients that exist in Rethink but have no CRM record, and are not already linked or awaiting review.
+          <strong>Read-only</strong> — nothing here creates or links a client.
+          ${oc.active ? ` <strong style="color:#991b1b;">${oc.active} Active</strong> need attention.` : ""}
+        </div>
+        <div style="display:flex; gap:14px; flex-wrap:wrap; font-size:11.5px; color:var(--text-muted); margin-bottom:10px;">
+          ${PRIORITY.map((p) => `<span>${p.dot} ${esc(p.label)} — ${esc(p.note)}</span>`).join("")}
+        </div>
+        <div class="card"><div style="overflow-x:auto;">
+          <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:760px;">
+            <thead><tr style="text-align:left; color:var(--text-muted); font-size:11px; text-transform:uppercase;">
+              <th style="padding:8px 10px;">Rethink client</th>
+              <th style="padding:8px 10px;">DOB</th>
+              <th style="padding:8px 10px;">Rethink client ID</th>
+              <th style="padding:8px 10px;">Rethink status</th>
+              <th style="padding:8px 10px;">CRM</th>
+            </tr></thead>
+            <tbody>${rows || `<tr><td colspan="5"><div class="empty-state">Every Rethink client has a CRM record or a pending match.</div></td></tr>`}</tbody>
+          </table>
+        </div></div>`;
+    };
+
     box.innerHTML = `
       ${scanOut && scanOut.ok ? `<div style="background:#eef4ff; color:#1b3a7b; border:1px solid #c7d8f5; border-radius:8px; padding:9px 13px; font-size:12.5px; margin-bottom:12px;">
         Scanned ${scanOut.rethink_clients} Rethink clients against ${scanOut.crm_clients_considered} unlinked CRM clients —
         <strong>${scanOut.ready_to_link} ready</strong>, ${scanOut.needs_review} need review, ${scanOut.no_match} with no match.
         ${scanOut.already_linked ? ` ${scanOut.already_linked} already linked.` : ""}
+        ${scanOut.rethink_only ? `<div style="margin-top:4px;">${scanOut.rethink_only} Rethink client(s) have no CRM record${scanOut.rethink_only_active ? `, <strong style="color:#991b1b;">${scanOut.rethink_only_active} of them Active</strong>` : ""} — see “Missing from CRM”.</div>` : ""}
       </div>` : ""}
 
       <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px;">
@@ -138,9 +189,10 @@
         ${tab("review", "Needs Review", c.review)}
         ${tab("no_match", "No match", c.no_match)}
         ${tab("linked", "Linked", c.linked)}
+        ${tab("rethink_only", "Missing from CRM", oc.total)}
       </div>
 
-      ${c.ready ? `<div style="margin-bottom:12px;">
+      ${c.ready && filter !== "rethink_only" ? `<div style="margin-bottom:12px;">
         <button class="btn" id="rm-approve-all">Approve all ${c.ready} ready-to-link</button>
         <span style="font-size:12px; color:var(--text-muted); margin-left:8px;">Only exact first + last + DOB matches with no competing candidate.</span>
       </div>` : ""}
@@ -149,7 +201,7 @@
         ${d.last_scanned_at ? `Last scan: ${esc(new Date(d.last_scanned_at).toLocaleString())}` : "No scan yet — press “Scan Rethink clients”."}
       </div>
 
-      <div class="card"><div style="overflow-x:auto;">
+      ${filter === "rethink_only" ? rethinkOnlyTable() : `<div class="card"><div style="overflow-x:auto;">
         <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:820px;">
           <thead><tr style="text-align:left; color:var(--text-muted); font-size:11px; text-transform:uppercase;">
             <th style="padding:8px 10px;">CRM client</th>
@@ -160,7 +212,7 @@
           </tr></thead>
           <tbody>${rows || `<tr><td colspan="5"><div class="empty-state">Nothing here.</div></td></tr>`}</tbody>
         </table>
-      </div></div>`;
+      </div></div>`}`;
 
     box.querySelectorAll("[data-rm-filter]").forEach((el) => el.addEventListener("click", () => {
       filter = el.getAttribute("data-rm-filter"); fill(mount);

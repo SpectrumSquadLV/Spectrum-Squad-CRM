@@ -555,6 +555,104 @@ const initRethink = require("./rethink");
     for (const k of Object.keys(saved)) process.env[k] = saved[k];
   }
 
+  console.log("\nMISSING FROM CRM (RETHINK-ONLY CLIENTS)\n");
+
+  // Read-only reconciliation. A Rethink client with no CRM record was
+  // previously invisible: the matcher iterates CRM clients, so anyone existing
+  // only in Rethink was fetched, ignored and discarded. An established therapy
+  // client omitted from the CRM could sit there indefinitely.
+  {
+    const stored = [];
+    const crmOpen = [
+      { id: 1, child_name: "Matched Child", dob: "2020-01-01", rethink_client_id: null },
+    ];
+    const crmLinked = [{ id: 9, child_name: "Already Linked", rethink_client_id: "R_LINKED" }];
+    const crmClosed = [{ id: 20, child_name: "Discharged Child", dob: "2018-08-08" }];
+
+    const ctx = {
+      dbGet: async (sql) => (/FROM rethink_config/i.test(sql) ? CONFIRMED : null),
+      dbAll: async (sql) => {
+        if (/rethink_client_id IS NOT NULL/i.test(sql)) return crmLinked;
+        if (/stage IN \('discharged'/i.test(sql)) return crmClosed;
+        if (/FROM clients/i.test(sql)) return crmOpen;
+        return [];
+      },
+      dbRun: async (sql, p = []) => {
+        if (/INSERT INTO rethink_unmatched_clients/i.test(sql)) {
+          stored.push({ id: p[0], first: p[1], last: p[2], dob: p[3], status: p[4], closedId: p[5], closedName: p[6] });
+        }
+      },
+      nowISO: () => NOW, readBody: async () => ({}), json: () => {},
+    };
+
+    stub.dwhGetAllPages = async () => ({ rows: [
+      // Matches an open CRM client -> a candidate, so NOT missing.
+      { clientId: "R_CAND", firstName: "Matched", lastName: "Child", dateOfBirth: "2020-01-01", status: "Active" },
+      // Already saved on a CRM client -> NOT missing, even though nothing matched by name.
+      { clientId: "R_LINKED", firstName: "Already", lastName: "Linked", dateOfBirth: "2019-09-09", status: "Active" },
+      // Genuinely absent from the CRM. This is the Ervel case.
+      { clientId: "R_ORPHAN_A", firstName: "Ervel", lastName: "Medina", dateOfBirth: "2017-03-03", status: "Active" },
+      { clientId: "R_ORPHAN_P", firstName: "Pending", lastName: "Person", dateOfBirth: "2021-02-02", status: "Pending Acceptance" },
+      { clientId: "R_ORPHAN_I", firstName: "Old", lastName: "Record", dateOfBirth: "2015-05-05", status: "Inactive" },
+      // Absent from the OPEN population but present as a discharged client.
+      { clientId: "R_CLOSED", firstName: "Discharged", lastName: "Child", dateOfBirth: "2018-08-08", status: "Inactive" },
+    ], pages: 1, truncated: false });
+
+    const out = await initRethink(ctx).scanClientMatches();
+    const ids = stored.map((s) => s.id);
+
+    check("a Rethink client matching an open CRM client is not reported missing",
+      !ids.includes("R_CAND"), JSON.stringify(ids));
+    check("a Rethink client already linked to a CRM client is not reported missing",
+      !ids.includes("R_LINKED"), JSON.stringify(ids));
+    check("a genuinely absent Active client IS reported missing", ids.includes("R_ORPHAN_A"), JSON.stringify(ids));
+    check("Pending Acceptance and Inactive orphans are reported too",
+      ids.includes("R_ORPHAN_P") && ids.includes("R_ORPHAN_I"), JSON.stringify(ids));
+    check("the scan reports the orphan count", out.rethink_only === 4, out.rethink_only);
+    check("and how many of them are Active", out.rethink_only_active === 1, out.rethink_only_active);
+
+    // The duplicate-creation trap: the matcher only considers open-stage CRM
+    // clients, so a discharged client would otherwise read as "no CRM record".
+    const closedRow = stored.find((s) => s.id === "R_CLOSED");
+    check("a discharged CRM client is flagged as a possible existing record, not silently absent",
+      closedRow && closedRow.closedId === 20, JSON.stringify(closedRow));
+    check("and it names the CRM client so nobody recreates them",
+      closedRow && closedRow.closedName === "Discharged Child");
+
+    check("the stored row carries name, DOB, id and status for display",
+      stored.some((s) => s.id === "R_ORPHAN_A" && s.first === "Ervel" && s.last === "Medina"
+        && s.dob === "2017-03-03" && s.status === "Active"), JSON.stringify(stored));
+
+    // Read-only: nothing may be created or linked by the reconciliation pass.
+    check("no CRM client is created by the reconciliation pass",
+      !stored.some((s) => s.created), "reconciliation must never insert into clients");
+  }
+
+  // Ordering: Active first, so an established client omitted from the CRM is
+  // not buried under historical records.
+  {
+    const orphanRows = [
+      { rethink_client_id: "I1", first_name: "Old", last_name: "Record", dob: "2015-01-01", status: "Inactive" },
+      { rethink_client_id: "A1", first_name: "Ervel", last_name: "Medina", dob: "2017-03-03", status: "Active" },
+      { rethink_client_id: "P1", first_name: "Pending", last_name: "Person", dob: "2021-01-01", status: "Pending Acceptance" },
+    ];
+    const ctx = {
+      dbGet: async (sql) => (/FROM rethink_config/i.test(sql) ? CONFIRMED : null),
+      dbAll: async (sql) => (/FROM rethink_unmatched_clients/i.test(sql) ? orphanRows
+        : /FROM clients/i.test(sql) ? [] : []),
+      dbRun: async () => {}, nowISO: () => NOW, readBody: async () => ({}), json: () => {},
+    };
+    const review = await initRethink(ctx).clientMatchReview();
+    check("Active orphans sort first", review.rethink_only[0].status === "Active", JSON.stringify(review.rethink_only.map((r) => r.status)));
+    check("Inactive orphans sort last", review.rethink_only[2].status === "Inactive");
+    check("priority is exposed for colour-coding",
+      review.rethink_only[0].priority === 0 && review.rethink_only[2].priority === 2);
+    check("counts are broken out by status",
+      review.rethink_only_counts.total === 3 && review.rethink_only_counts.active === 1
+        && review.rethink_only_counts.pending === 1 && review.rethink_only_counts.inactive === 1,
+      JSON.stringify(review.rethink_only_counts));
+  }
+
   console.log("\nRETHINK CLIENT STATUS GATING\n");
 
   // Status decides auto-approvability separately from name confidence. An
