@@ -398,11 +398,12 @@ const initRethink = require("./rethink");
     ];
     const { state, ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: crm });
     stub.dwhGetAllPages = async () => ({ rows: [
-      { clientId: "R1", firstName: "Ava", lastName: "Nguyen", dateOfBirth: "2019-04-02T00:00:00Z" },
-      { clientId: "R2", firstName: "Liam", lastName: "O'Brien", dateOfBirth: "2018-11-20" },
-      { clientId: "R3", firstName: "Noah", lastName: "Patel", dateOfBirth: "2016-02-02" },
-      { clientId: "R4", firstName: "Mia", lastName: "Garcia", dateOfBirth: "2020-01-15" },
-      { clientId: "R5", firstName: "Mia", lastName: "Garcia", dateOfBirth: "2021-09-09" },
+      // status: "Active" throughout, because Ready to Link now requires it.
+      { clientId: "R1", firstName: "Ava", lastName: "Nguyen", dateOfBirth: "2019-04-02T00:00:00Z", status: "Active" },
+      { clientId: "R2", firstName: "Liam", lastName: "O'Brien", dateOfBirth: "2018-11-20", status: "Active" },
+      { clientId: "R3", firstName: "Noah", lastName: "Patel", dateOfBirth: "2016-02-02", status: "Active" },
+      { clientId: "R4", firstName: "Mia", lastName: "Garcia", dateOfBirth: "2020-01-15", status: "Active" },
+      { clientId: "R5", firstName: "Mia", lastName: "Garcia", dateOfBirth: "2021-09-09", status: "Active" },
     ], pages: 1, truncated: false });
 
     const r = initRethink(ctx);
@@ -446,7 +447,11 @@ const initRethink = require("./rethink");
       { clientId: "R1", firstName: "Ava", lastName: "Nguyen", dateOfBirth: "2019-04-02", status: "Discharged" },
     ], pages: 1, truncated: false });
     const out = await initRethink(ctx).scanClientMatches();
-    check("a client is still matched regardless of its Rethink status", out.ready_to_link === 1, out.ready_to_link);
+    // Still scanned and still matched -- just held for a human, because the
+    // record is Discharged rather than Active.
+    check("a discharged client is still scanned and matched, not dropped",
+      out.no_match === 0 && out.needs_review === 1, JSON.stringify(out));
+    check("but a non-Active status keeps it out of Ready to Link", out.ready_to_link === 0, out.ready_to_link);
     check("client status is part of the documented field map", out.field_map.status === "status");
   }
 
@@ -548,6 +553,98 @@ const initRethink = require("./rethink");
 
     reset();
     for (const k of Object.keys(saved)) process.env[k] = saved[k];
+  }
+
+  console.log("\nRETHINK CLIENT STATUS GATING\n");
+
+  // Status decides auto-approvability separately from name confidence. An
+  // exact first + last + DOB hit on a closed record is still a human decision,
+  // because linking it drives that child's 97153 authorization data.
+  {
+    const crm = [
+      { id: 1, child_name: "Amir Fentress", dob: "2022-01-09", rethink_client_id: null },
+      { id: 2, child_name: "Alexander Borja", dob: "2022-05-16", rethink_client_id: null },
+      { id: 3, child_name: "Bryce Collera", dob: "2022-07-26", rethink_client_id: null },
+      { id: 4, child_name: "Nostatus Child", dob: "2021-03-03", rethink_client_id: null },
+      { id: 5, child_name: "Unknown Status", dob: "2020-02-02", rethink_client_id: null },
+    ];
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: crm });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { clientId: "R1", firstName: "Amir", lastName: "Fentress", dateOfBirth: "2022-01-09", status: "Active" },
+      { clientId: "R2", firstName: "Alexander", lastName: "Borja", dateOfBirth: "2022-05-16", status: "Inactive" },
+      { clientId: "R3", firstName: "Bryce", lastName: "Collera", dateOfBirth: "2022-07-26", status: "Pending Acceptance" },
+      { clientId: "R4", firstName: "Nostatus", lastName: "Child", dateOfBirth: "2021-03-03", status: "" },
+      { clientId: "R5", firstName: "Unknown", lastName: "Status", dateOfBirth: "2020-02-02", status: "Some Future Value" },
+    ], pages: 1, truncated: false });
+
+    const out = await initRethink(ctx).scanClientMatches();
+    check("only the Active client is Ready to Link", out.ready_to_link === 1, out.ready_to_link);
+    check("Inactive, Pending Acceptance, blank and unknown statuses all go to review",
+      out.needs_review === 4, out.needs_review);
+    check("no candidate is dropped from the scan because of its status",
+      out.no_match === 0, out.no_match);
+  }
+
+  // The same gate, applied on the review screen rather than in the counters.
+  {
+    const candidates = [
+      { crm_client_id: 1, rethink_client_id: "R1", rethink_first: "Amir", rethink_last: "Fentress", rethink_dob: "2022-01-09", rethink_status: "Active", confidence: "high", reason: "first + last + DOB" },
+      { crm_client_id: 2, rethink_client_id: "R2", rethink_first: "Alexander", rethink_last: "Borja", rethink_dob: "2022-05-16", rethink_status: "Inactive", confidence: "high", reason: "first + last + DOB" },
+      { crm_client_id: 3, rethink_client_id: "R3", rethink_first: "Bryce", rethink_last: "Collera", rethink_dob: "2022-07-26", rethink_status: "Pending Acceptance", confidence: "high", reason: "first + last + DOB" },
+    ];
+    const ctx = {
+      dbGet: async (sql) => (/FROM rethink_config/i.test(sql) ? CONFIRMED : null),
+      dbAll: async (sql) => (/FROM rethink_client_match_candidates/i.test(sql) ? candidates
+        : /FROM clients/i.test(sql) ? [
+            { id: 1, child_name: "Amir Fentress", dob: "2022-01-09", rethink_client_id: null },
+            { id: 2, child_name: "Alexander Borja", dob: "2022-05-16", rethink_client_id: null },
+            { id: 3, child_name: "Bryce Collera", dob: "2022-07-26", rethink_client_id: null },
+          ] : []),
+      dbRun: async () => {}, nowISO: () => NOW, readBody: async () => ({}), json: () => {},
+    };
+    const review = await initRethink(ctx).clientMatchReview();
+    const byId = (id) => review.items.find((i) => i.crm_client_id === id);
+
+    check("an Active exact match shows as ready", byId(1).status === "ready", byId(1).status);
+    check("an Inactive exact match shows as review", byId(2).status === "review", byId(2).status);
+    check("a Pending Acceptance exact match shows as review", byId(3).status === "review", byId(3).status);
+    check("the counters agree with the rows",
+      review.counts.ready === 1 && review.counts.review === 2, JSON.stringify(review.counts));
+
+    check("the Inactive row explains WHY a perfect match is held",
+      /Inactive/.test(byId(2).candidates[0].status_blocks_ready || ""), byId(2).candidates[0].status_blocks_ready);
+    check("the Pending Acceptance row explains why too",
+      /Pending Acceptance/.test(byId(3).candidates[0].status_blocks_ready || ""), byId(3).candidates[0].status_blocks_ready);
+    check("an Active row carries no block reason",
+      byId(1).candidates[0].status_blocks_ready === null);
+    check("the status itself is exposed on every row for display",
+      byId(1).candidates[0].status === "Active" && byId(2).candidates[0].status === "Inactive"
+        && byId(3).candidates[0].status === "Pending Acceptance");
+    check("an Inactive client is still linkable by hand — it is held, not hidden",
+      byId(2).candidates.length === 1 && byId(2).candidates[0].rethink_client_id === "R2");
+  }
+
+  // Status must not rescue a weak name match, and must not override the
+  // matching rules the operator asked to keep manual.
+  {
+    const crm = [
+      { id: 1, child_name: "Daymond estrada", dob: "2022-11-15", rethink_client_id: null },
+      { id: 2, child_name: "Angela Huffman", dob: "2017-05-19", rethink_client_id: null },
+      { id: 3, child_name: "Ariana Rush", dob: null, rethink_client_id: null },
+    ];
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: crm });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { clientId: "R1", firstName: "Daymond", lastName: "Estrada Arenas", dateOfBirth: "2022-11-15", status: "Active" },
+      { clientId: "R2", firstName: "Angela", lastName: "Huffman", dateOfBirth: "2017-05-17", status: "Active" },
+      { clientId: "R3", firstName: "Ariana", lastName: "Rush", dateOfBirth: "2019-05-19", status: "Active" },
+    ], pages: 1, truncated: false });
+
+    const out = await initRethink(ctx).scanClientMatches();
+    check("an Active status does NOT promote a compound-surname match",
+      out.ready_to_link === 0, `ready=${out.ready_to_link}`);
+    check("an Active status does NOT auto-resolve a DOB mismatch", out.ready_to_link === 0);
+    check("an Active status does NOT auto-resolve a missing DOB", out.ready_to_link === 0);
+    check("all three stay in review", out.needs_review === 3, out.needs_review);
   }
 
   console.log("\nCLIENTS DATE WINDOW\n");

@@ -310,6 +310,27 @@ module.exports = function initRethink(ctx) {
     return { first: parts.slice(0, -1).join(" "), last: parts[parts.length - 1] };
   }
 
+  // Rethink client status decides whether a high-confidence match may be
+  // auto-approvable, separately from how confident the NAME match is. A record
+  // can be a perfect first + last + DOB hit and still be the wrong thing to
+  // link, because it is a closed or not-yet-accepted record.
+  //
+  //   Active             -> may reach Ready to Link
+  //   Pending Acceptance -> always Needs Review
+  //   Inactive           -> always Needs Review
+  //
+  // The allowlist is deliberately positive: any status we have not seen -- a
+  // blank, or a value Rethink adds later -- lands in Needs Review rather than
+  // being auto-approved on the assumption it is harmless. Nothing is ever
+  // excluded from the scan; every candidate stays visible for a human to judge.
+  const READY_STATUSES = ["active"];
+  const statusAllowsReady = (s) => READY_STATUSES.includes(norm(s));
+  function whyStatusBlocks(s) {
+    const v = String(s == null ? "" : s).trim();
+    if (!v) return "Rethink reports no status for this record";
+    return `Rethink status is "${v}"`;
+  }
+
   // The documented GET /api/Clients schema. These are the exact property names
   // from the DWH Swagger, not a guess and not auto-detected -- earlier versions
   // sniffed the keys because the schema had not been published to us.
@@ -456,11 +477,12 @@ module.exports = function initRethink(ctx) {
         ).catch(() => {});
       }
 
-      // "Ready to Link" means exactly one high-confidence candidate and no
-      // other candidate of any kind competing with it. Anything else is a
-      // human decision.
+      // "Ready to Link" means exactly one high-confidence candidate, no other
+      // candidate of any kind competing with it, AND a Rethink status that
+      // permits auto-approval. Anything else is a human decision.
       const highs = candidates.filter((x) => x.confidence === "high");
-      if (highs.length === 1 && candidates.length === 1) ready++;
+      const uncontestedHigh = highs.length === 1 && candidates.length === 1;
+      if (uncontestedHigh && statusAllowsReady(highs[0].r.status)) ready++;
       else if (candidates.length) review++;
       else none++;
     }
@@ -496,9 +518,11 @@ module.exports = function initRethink(ctx) {
     const items = crmClients.map((c) => {
       const list = byClient.get(c.id) || [];
       const highs = list.filter((x) => x.confidence === "high");
+      const uncontestedHigh = highs.length === 1 && list.length === 1;
+      const statusOk = uncontestedHigh && statusAllowsReady(highs[0].rethink_status);
       let status;
       if (c.rethink_client_id && String(c.rethink_client_id).trim()) status = "linked";
-      else if (highs.length === 1 && list.length === 1) status = "ready";
+      else if (statusOk) status = "ready";
       else if (list.length) status = "review";
       else status = "no_match";
       return {
@@ -514,6 +538,11 @@ module.exports = function initRethink(ctx) {
           status: x.rethink_status || null,
           confidence: x.confidence,
           reason: x.reason,
+          // Why an otherwise-perfect match is still sitting in review. Without
+          // this the reviewer sees "first + last + DOB" next to "Needs Review"
+          // and reasonably concludes the page is broken.
+          status_blocks_ready: x.confidence === "high" && !statusAllowsReady(x.rethink_status)
+            ? whyStatusBlocks(x.rethink_status) : null,
         })),
       };
     });

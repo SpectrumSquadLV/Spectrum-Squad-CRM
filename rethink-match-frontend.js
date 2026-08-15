@@ -18,6 +18,19 @@
 
   let filter = "all";
 
+  // Rethink client status, colour-coded so a closed record cannot be mistaken
+  // for an open one at a glance. Only Active is ever auto-approvable; anything
+  // else -- including a status we have not seen before -- reads as caution.
+  function statusTag(s) {
+    if (!s) return "";
+    const v = String(s).trim();
+    const k = v.toLowerCase();
+    const style = k === "active" ? "background:#dcfce7; color:#166534;"
+      : k === "inactive" ? "background:#fee2e2; color:#991b1b;"
+      : "background:#fef3c7; color:#92400e;";
+    return `<span class="tag" style="${style} margin-left:4px;" title="Client status in Rethink">${esc(v)}</span>`;
+  }
+
   const BADGE = {
     ready:    { bg: "#dcfce7", fg: "#166534", label: "Ready to Link" },
     review:   { bg: "#fef3c7", fg: "#92400e", label: "Needs Review" },
@@ -86,8 +99,10 @@
         ? cands.map((x) => `<div style="margin:2px 0;">
             <strong>${esc(x.name || "—")}</strong>
             <span class="tag" style="background:${x.confidence === "high" ? "#dcfce7" : "#fef3c7"}; color:${x.confidence === "high" ? "#166534" : "#92400e"}; margin-left:4px;">${esc(x.confidence)}</span>
-            ${x.status ? `<span class="tag" style="background:#f1f5f9; color:#475569; margin-left:4px;" title="Client status in Rethink">${esc(x.status)}</span>` : ""}
+            ${statusTag(x.status)}
             <div style="font-size:11px; color:var(--text-muted);">${esc(x.reason || "")}</div>
+            ${x.status_blocks_ready ? `<div style="font-size:11px; color:#b45309; margin-top:2px;">
+              ⚠ Held for review — ${esc(x.status_blocks_ready)}. Confirm this is the right historical record before linking.</div>` : ""}
           </div>`).join("")
         : `<span style="color:var(--text-muted);">No candidate</span>`;
 
