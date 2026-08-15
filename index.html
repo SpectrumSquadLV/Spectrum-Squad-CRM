@@ -602,6 +602,7 @@ const MODULE_CATALOG = {
   tasks: { label: "Tasks & Alerts", icon: "✓" },
   staff: { label: "Staff", icon: "🧑‍⚕️" },
   supervision: { label: "RBT Supervision", icon: "📋" },
+  "rethink-clients": { label: "Rethink Client Matching", icon: "🔗", hash: "#/rethink-clients" },
   leads: { label: "Lead Management", icon: "🎯" },
   policies: { label: "Policies & SOPs", icon: "📚" },
   map: { label: "Map", icon: "🗺️" },
@@ -677,6 +678,11 @@ function renderShell(active) {
     navItems.push({ key: "staff", label: "Staff", icon: "🧑‍⚕️" });
   if (["owner", "admin", "super_admin", "hr_admin", "clinical"].includes(state.user.role))
     navItems.push({ key: "supervision", label: "RBT Supervision", icon: "📋" });
+  // Rethink client matching. Owner/admin only, matching the server-side role
+  // check on /api/rethink/client-match -- the nav entry hides it, the route
+  // guard is what actually enforces it.
+  if (["owner", "admin", "super_admin"].includes(state.user.role))
+    navItems.push({ key: "rethink-clients", label: "Rethink Client Matching", icon: "🔗", hash: "#/rethink-clients" });
   if (["owner", "super_admin", "admin", "intake", "scheduling"].includes(state.user.role))
     navItems.push({ key: "leads", label: "Lead Management", icon: "🎯" });
   navItems.push({ key: "policies", label: "Policies & SOPs", icon: "📚" });

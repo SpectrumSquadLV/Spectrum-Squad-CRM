@@ -6319,6 +6319,10 @@ const PUBLIC_FILES = new Set([
   "/signnow-import-frontend.js",
   "/new-hire.html",
   "/scheduling-frontend.js",
+  // Rethink client matching screen. Without this entry the file 404s, the
+  // window.__renderRethinkMatch global never defines, and #/rethink-clients
+  // silently falls back to the dashboard -- which is exactly what happened.
+  "/rethink-match-frontend.js",
 ]);
 
 function serveStatic(req, res, pathname) {
