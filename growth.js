@@ -1269,5 +1269,11 @@ module.exports = function initGrowth(ctx) {
     return { ok: true, lead_id: lead.id, applied: type };
   }
 
-  return { initTables, handleApi, servePage, nurtureSweep, contractAlertSweep, applyStripeEvent };
+  return {
+    initTables, handleApi, servePage, nurtureSweep, contractAlertSweep, applyStripeEvent,
+    // Exposed so the section splitter can be run against a real document
+    // outside the request path, which is how its output gets reviewed before
+    // anyone imports 50-odd policy records from it.
+    _internal: { splitIntoSections, POLICY_CATEGORIES },
+  };
 };
