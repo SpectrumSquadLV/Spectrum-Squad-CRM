@@ -550,6 +550,52 @@ const initRethink = require("./rethink");
     for (const k of Object.keys(saved)) process.env[k] = saved[k];
   }
 
+  console.log("\nSCHEMA DIAGNOSTIC (FIELD NAMES ONLY)\n");
+
+  // /api/Clients returns HTTP 200 with zero rows while /api/Appointments
+  // returns 305 with the same credentials. To find out what an Appointment
+  // actually carries -- and whether it carries client demographics -- we log
+  // its FIELD NAMES. Not one value may appear, because every value on that
+  // record is PHI.
+  {
+    const { schemaOf } = realClient;
+    const appt = {
+      staffId: 7, clientId: 42, appointmentStatus: "Completed", staffVerification: true,
+      actualDurationHours: 2.5, appointmentDate: "2026-08-03T09:00:00Z",
+      sessionNote: "Client made good progress on tacting.",
+      client: { firstName: "Ava", lastName: "Nguyen", dateOfBirth: "2019-04-02" },
+      services: [{ code: "97153" }],
+    };
+    const fields = schemaOf(appt).sort();
+
+    check("top-level field names are reported", fields.includes("clientId") && fields.includes("staffId"));
+    check("nested objects are expanded as parent.child",
+      fields.includes("client.firstName") && fields.includes("client.dateOfBirth"), fields.join(","));
+    check("arrays are named but not descended into",
+      fields.includes("services[]") && !fields.some((f) => f.startsWith("services.")), fields.join(","));
+
+    const dump = fields.join(",");
+    check("NO value appears in the schema dump — not a name",
+      !/Ava|Nguyen/.test(dump), dump);
+    check("NO value appears in the schema dump — not a DOB",
+      !/2019-04-02/.test(dump), dump);
+    check("NO value appears in the schema dump — not a session note",
+      !/tacting|progress/i.test(dump), dump);
+    check("NO value appears in the schema dump — not an id or a status",
+      !/\b42\b/.test(dump) && !/Completed/.test(dump), dump);
+
+    // The empty-result case: an endpoint returning 200-with-nothing must be
+    // distinguishable from a wrong filter, so the envelope and the params sent
+    // are recorded.
+    const lines = [];
+    const realLog = console.log, realErr = console.error;
+    console.log = (...a) => lines.push(a.join(" ")); console.error = console.log;
+    realClient.log("schema", { endpoint: "Clients", source: "empty_result", rows: 0, params_sent: "PageSize,Page" });
+    console.log = realLog; console.error = realErr;
+    check("an empty result records which params were sent",
+      lines.some((l) => /source=empty_result/.test(l) && /params_sent=PageSize,Page/.test(l)), lines.join(" | "));
+  }
+
   console.log("\nSUPERVISION POPULATION SCOPING\n");
 
   // "Rethink Provider Match Needed" is a supervision-page warning and must name

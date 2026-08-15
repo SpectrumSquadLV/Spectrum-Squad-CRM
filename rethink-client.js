@@ -427,6 +427,30 @@ function extractRows(payload, path) {
 // short (or empty), or when maxPages is reached -- the latter is a runaway
 // guard, and when it trips the caller is told so it can be reported rather than
 // silently truncating the month.
+// The FIELD NAMES on a record, never the values. Used to answer "what does
+// this endpoint actually return" without putting a single byte of PHI in a log
+// line: Object.keys only, sorted, with one level of nesting expanded as
+// parent.child so a nested demographics object would be visible as structure.
+//
+// Arrays are reported by name with a [] suffix and are not descended into --
+// their contents are data, and their shape is not worth the risk.
+function schemaOf(row, prefix = "", depth = 0) {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return [];
+  const out = [];
+  for (const key of Object.keys(row)) {
+    const v = row[key];
+    const name = prefix ? `${prefix}.${key}` : key;
+    if (Array.isArray(v)) { out.push(`${name}[]`); continue; }
+    if (v && typeof v === "object" && depth < 1) {
+      const nested = schemaOf(v, name, depth + 1);
+      out.push(...(nested.length ? nested : [`${name}{}`]));
+      continue;
+    }
+    out.push(name);
+  }
+  return out;
+}
+
 async function dwhGetAllPages(path, params, opts = {}) {
   const pageSize = Number(opts.pageSize || 500);
   const maxPages = Number(opts.maxPages || 200);
@@ -437,6 +461,26 @@ async function dwhGetAllPages(path, params, opts = {}) {
   for (; page <= maxPages; page++) {
     const payload = await dwhGet(path, { ...params, PageSize: pageSize, Page: page }, opts);
     const batch = extractRows(payload, path);
+
+    // Once per fetch, on the first record only. This is what tells us whether
+    // an Appointment carries client demographics or only a clientId, without
+    // anyone having to read a production record.
+    if (page === 1) {
+      if (batch.length) {
+        log("schema", { endpoint: path, source: "first_record", fields: schemaOf(batch[0]).sort().join(",") });
+      } else {
+        // An empty result is itself a finding -- record the envelope shape and
+        // the query that produced it, so a zero-row response can be told apart
+        // from a wrong filter.
+        log("schema", {
+          endpoint: path, source: "empty_result", rows: 0,
+          envelope_keys: (payload && typeof payload === "object" && !Array.isArray(payload))
+            ? Object.keys(payload).sort().join(",") : Array.isArray(payload) ? "(bare array)" : typeof payload,
+          params_sent: Object.keys(params || {}).sort().join(",") || "(none)",
+        });
+      }
+    }
+
     rows.push(...batch);
     // Row counts are structural, not content.
     log("dwh_page", { endpoint: path, page, rows: batch.length, total_so_far: rows.length });
@@ -458,6 +502,7 @@ module.exports = {
   dwhGet,
   dwhGetAllPages,
   extractRows,
+  schemaOf,
   redact,
   log,
   snippet,
