@@ -1906,7 +1906,12 @@ async function checkOverdueTasks() {
      JOIN stage_tasks st ON st.id = ct.stage_task_id
      JOIN clients c ON c.id = ct.client_id
      WHERE ct.status = 'pending' AND ct.due_date < ? AND ct.overdue_notified_at IS NULL
-       AND st.stage_key <> 'clinical_screener'`,
+       AND st.stage_key <> 'clinical_screener'
+       -- Nobody is working a waitlisted or closed client, so flagging their
+       -- tasks overdue only emails staff about work they are not meant to do.
+       -- The task stays pending; it is simply not chased.
+       AND COALESCE(c.waitlisted, false) = false
+       AND c.stage NOT IN ('discharged','not_moving_forward')`,
     [now]
   );
 
@@ -4015,8 +4020,12 @@ async function handle(req, res, pathname, method, query = {}) {
     // ---------- DASHBOARD ----------
     if (pathname === "/api/dashboard" && method === "GET") {
       const byStage = await dbAll("SELECT stage, COUNT(*) AS n FROM clients GROUP BY stage");
-      const overdue = (await dbGet("SELECT COUNT(*) AS n FROM client_tasks WHERE status = 'overdue'")).n;
-      const pending = (await dbGet("SELECT COUNT(*) AS n FROM client_tasks WHERE status = 'pending'")).n;
+      // Counted over the same population the Tasks & Alerts page shows, so the
+      // dashboard number and the list cannot disagree.
+      const workedTasks = `FROM client_tasks ct JOIN clients c ON c.id = ct.client_id
+         WHERE COALESCE(c.waitlisted, false) = false AND c.stage NOT IN ('discharged','not_moving_forward')`;
+      const overdue = (await dbGet(`SELECT COUNT(*) AS n ${workedTasks} AND ct.status = 'overdue'`)).n;
+      const pending = (await dbGet(`SELECT COUNT(*) AS n ${workedTasks} AND ct.status = 'pending'`)).n;
       const today = new Date().toISOString().slice(0, 10);
       const upcomingFirstDays = await dbAll(
         "SELECT id, child_name, first_day_date FROM clients WHERE first_day_date IS NOT NULL AND first_day_date >= ? ORDER BY first_day_date LIMIT 5",
@@ -5267,13 +5276,18 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     if (pathname === "/api/tasks" && method === "GET") {
       const showAll = query.status === "all";
+      // Waitlisted and closed clients are not being worked, so their tasks are
+      // noise on this page -- an overdue count nobody can act on, sitting next
+      // to real work. The tasks themselves are untouched and still show on the
+      // client's own card; only this list stops carrying them.
+      const notWorked = `COALESCE(c.waitlisted, false) = false AND c.stage NOT IN ('discharged','not_moving_forward')`;
       const tasks = await dbAll(
         `SELECT ct.*, st.label, st.stage_key, c.child_name, d.name AS department_name, d.color AS department_color
          FROM client_tasks ct
          JOIN stage_tasks st ON st.id = ct.stage_task_id
          JOIN clients c ON c.id = ct.client_id
          JOIN departments d ON d.id = st.department_id
-         ${showAll ? "" : "WHERE ct.status != 'completed'"}
+         WHERE ${notWorked}${showAll ? "" : " AND ct.status != 'completed'"}
          ORDER BY ct.due_date ASC`
       );
       return json(res, 200, tasks);
