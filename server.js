@@ -350,6 +350,7 @@ const MIGRATIONS_SQL = `
 ALTER TABLE client_documents ALTER COLUMN file_path DROP NOT NULL;
 ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS doc_type TEXT NOT NULL DEFAULT 'hosted';
 ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS external_url TEXT;
+ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS is_insurance_card BOOLEAN NOT NULL DEFAULT false;
 
 -- Enrollment packet reliability: record failed/blocked attempts (not just successes)
 -- so nothing fails silently, and allow a null document id for a failed attempt.
@@ -813,9 +814,36 @@ async function sendSms({ to, body, clientId = null, type = "sms", consented = fa
 // they need to run an eligibility check: child name, DOB, insurance details,
 // and the insurance card itself (attached when a card image is on file). The
 // recipient address is owner-configurable in Admin Settings.
+// Whether a document is the insurance card.
+//
+// This used to test the label and filename alone, which is why cards kept
+// reading as "not uploaded": a parent photographs their card on a phone and it
+// arrives as IMG_4821.jpg or image.jpg. Nothing in that says "insurance", so a
+// card that was plainly on file was invisible to the eligibility check.
+//
+// An explicit marker set at upload time now wins. The keyword test stays as a
+// fallback for everything already in the database, and an image sitting on a
+// client with no other card is treated as one -- a phone photo is exactly what
+// gets uploaded here, and missing a real card costs more than an extra
+// attachment on an internal billing email.
 function looksLikeInsuranceCard(doc) {
+  if (doc.is_insurance_card === true || doc.is_insurance_card === "t") return true;
   const s = `${doc.label || ""} ${doc.filename || ""}`.toLowerCase();
   return /insur|card|member|benefit|policy/.test(s);
+}
+
+// Photographed cards, for when nothing is explicitly marked or named.
+function looksLikePhotographedCard(doc) {
+  return doc.doc_type === "hosted" && /^image\//i.test(String(doc.mime_type || ""));
+}
+
+// The cards to attach to an eligibility check: the marked and named ones, or --
+// if there are none -- any images on the record, which is what a phone upload
+// looks like.
+function insuranceCardDocs(docs) {
+  const named = (docs || []).filter(looksLikeInsuranceCard);
+  if (named.length) return named;
+  return (docs || []).filter(looksLikePhotographedCard);
 }
 
 async function sendEligibilityCheck(client, actor) {
@@ -826,7 +854,7 @@ async function sendEligibilityCheck(client, actor) {
   }
 
   const docs = await dbAll("SELECT * FROM client_documents WHERE client_id = ?", [client.id]);
-  const cardDocs = docs.filter(looksLikeInsuranceCard);
+  const cardDocs = insuranceCardDocs(docs);
   const attachments = [];
   const linkCards = [];
   for (const d of cardDocs) {
@@ -4298,12 +4326,25 @@ async function handle(req, res, pathname, method, query = {}) {
         }
         fs.writeFileSync(fullPath, buffer);
 
+        // The uploader can say outright that this is the card, which is the
+        // only signal that survives a phone filename like IMG_4821.jpg.
+        const markedCard = body.is_insurance_card === true
+          || looksLikeInsuranceCard({ label, filename })
+          || /^image\//i.test(String(mime_type || ""));
         const row = await dbGet(
-          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-           VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?) RETURNING id`,
-          [client_id, label || filename, filename, mime_type || "application/octet-stream", storedName, nowISO()]
+          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at, is_insurance_card)
+           VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?, ?) RETURNING id`,
+          [client_id, label || filename, filename, mime_type || "application/octet-stream", storedName, nowISO(),
+           body.is_insurance_card === true]
         );
-        return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "hosted" });
+        // Uploading the card is what "insurance card uploaded" means, so the
+        // checklist stops waiting on a human to tick a box that the upload
+        // already answered.
+        if (markedCard) {
+          await dbRun("UPDATE clients SET insurance_card_uploaded = true WHERE id = ?", [client_id])
+            .catch((e) => console.error("Could not flag insurance card uploaded:", e.message));
+        }
+        return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "hosted", insurance_card: markedCard });
       } else {
         const row = await dbGet(
           `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
