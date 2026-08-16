@@ -429,6 +429,25 @@ module.exports = function initGrowth(ctx) {
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_policy_ack_employee ON crm_policy_acknowledgments(employee_id)`).catch(() => {});
   }
 
+  // Postgres text columns cannot hold a NUL byte, and a failed PDF extraction
+  // is full of them -- the insert dies with `invalid byte sequence for encoding
+  // "UTF8": 0x00`, which is a database error leaking into a user's face. Strip
+  // NUL and the other control characters that cannot legally appear in text.
+  // This removes bytes, never words: no policy language is altered.
+  function stripUnstorable(s) {
+    return String(s == null ? "" : s).replace(new RegExp("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]", "g"), "");
+  }
+
+  // Whether an extraction actually produced prose. A PDF whose embedded fonts
+  // use a custom encoding extracts as glyph codes -- symbols, one per line --
+  // and storing that would fill the library with 60 policies of gibberish that
+  // look real until somebody opens one. Real prose contains common words in
+  // quantity; glyph soup does not.
+  function looksLikeProse(t) {
+    const hits = (String(t || "").match(/\b(the|and|of|to|for|is|in|that|will|not|any|with|employee)\b/gi) || []).length;
+    return hits >= 25;
+  }
+
   // Where a document divides into policies. Structural only -- numbering, an
   // all-caps line, or a short line with no closing punctuation. The text
   // between headings is carried across byte for byte, so approved language is
@@ -776,9 +795,18 @@ module.exports = function initGrowth(ctx) {
           else return json(res, 400, { error: "Upload a PDF, a Word .docx, or a plain text file. (Old .doc files need to be saved as .docx first.)" });
         } catch (e) { return json(res, 400, { error: e.message || "Could not read that file." }); }
 
-        text = text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
+        text = stripUnstorable(text).replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
         if (text.replace(/\s/g, "").length < 40) {
           return json(res, 400, { error: "That file didn't have readable text in it. If it's a scan or a photo, it needs to be a text document." });
+        }
+        // A PDF whose embedded fonts use a custom encoding extracts as glyph
+        // codes rather than words. Refusing it here is the point: storing it
+        // would fill the library with policies that look real until somebody
+        // opens one, and no amount of careful importing recovers from that.
+        if (!looksLikeProse(text)) {
+          return json(res, 400, {
+            error: "This file's text could not be decoded — it came out as symbols rather than words, which happens with PDFs whose fonts use a custom encoding. Save it as .docx or .txt and upload that instead.",
+          });
         }
 
         const fileTitle = name.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ").trim();
@@ -1032,9 +1060,12 @@ module.exports = function initGrowth(ctx) {
           }
         } catch (e) { return json(res, 400, { error: e.message || "Could not read that file." }); }
 
-        text = text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
+        text = stripUnstorable(text).replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
         if (text.replace(/\s/g, "").length < 40) {
           return json(res, 400, { error: "That file didn't have readable text in it. If it's a scan or a photo, it needs to be a text document to become a policy card." });
+        }
+        if (!looksLikeProse(text)) {
+          return json(res, 400, { error: "This file's text could not be decoded — it came out as symbols rather than words. Save it as .docx or .txt and upload that instead." });
         }
 
         const fileTitle = name.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ").trim();
