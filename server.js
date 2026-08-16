@@ -6785,6 +6785,29 @@ async function start() {
   }
   await authorizations.initTables().catch((e) => console.error("Authorizations initTables failed:", e));
   await rethink.initTables().catch((e) => console.error("Rethink initTables failed:", e));
+
+  // One-time backfill: every client that existed before the eligibility check
+  // became card-triggered is stamped as already sent.
+  //
+  // Without this, uploading a card to a client enrolled months ago would fire a
+  // fresh benefits request at billing for somebody whose eligibility was
+  // settled long ago -- the old code already sent theirs at enrollment. The
+  // stamp records that enrollment date rather than today, because that is when
+  // the email actually went.
+  //
+  // Guarded by a setting so it runs exactly once. Clients created afterwards
+  // keep a NULL stamp and are handled by the normal card trigger.
+  if (!(await getAppSetting("eligibility_backfill_done", ""))) {
+    const done = await dbRun(
+      `UPDATE clients SET eligibility_check_sent_at = COALESCE(submitted_at, updated_at, ?)
+        WHERE eligibility_check_sent_at IS NULL`,
+      [nowISO()]
+    ).catch((e) => { console.error("Eligibility backfill failed:", e.message); return null; });
+    if (done) {
+      await setAppSetting("eligibility_backfill_done", nowISO()).catch(() => {});
+      console.log("Eligibility check backfill: existing clients stamped as already sent.");
+    }
+  }
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
