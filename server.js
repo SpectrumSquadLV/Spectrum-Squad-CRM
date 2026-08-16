@@ -392,6 +392,7 @@ CREATE TABLE IF NOT EXISTS sms_opt_outs (
 );
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS diagnosis_uploaded BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_card_uploaded BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS eligibility_check_sent_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS clinical_screener_completed BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_verification_completed BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_packet_sent BOOLEAN NOT NULL DEFAULT false;
@@ -914,6 +915,36 @@ async function sendEligibilityCheck(client, actor) {
     `client=${client.id} to=${to} attachments=${attachments.length} result=${result.delivered}`
   ).catch(() => {});
   return { ok: result.delivered !== "failed", ...result, attachments: attachments.length };
+}
+
+// Send the eligibility check only once, and only when the card is actually on
+// file.
+//
+// It used to fire the moment an intake form was submitted, before any card
+// could exist, so billing routinely received a request with nothing attached
+// and somebody re-sent it by hand later. Now the trigger is the card, not the
+// form: whichever happens last -- the intake arriving or the card being
+// uploaded -- is what sends it, exactly once.
+//
+// A client with no card never silently loses the email; it stays pending until
+// a card appears, and the manual re-send is still there for the cases where
+// billing needs it before then.
+async function maybeSendEligibilityCheck(clientId, actor) {
+  const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]).catch(() => null);
+  if (!client) return { ok: false, skipped: "no such client" };
+  if (client.eligibility_check_sent_at) return { ok: true, skipped: "already sent" };
+
+  const docs = await dbAll("SELECT * FROM client_documents WHERE client_id = ?", [clientId]).catch(() => []);
+  if (!insuranceCardDocs(docs).length) {
+    return { ok: false, skipped: "no insurance card on file yet" };
+  }
+
+  const result = await sendEligibilityCheck(client, actor || "system");
+  if (result && result.ok) {
+    await dbRun("UPDATE clients SET eligibility_check_sent_at = ? WHERE id = ?", [nowISO(), clientId])
+      .catch((e) => console.error("Could not stamp eligibility_check_sent_at:", e.message));
+  }
+  return result;
 }
 
 // ---- Failed-email retry ("push" failed emails) --------------------------
@@ -3661,7 +3692,9 @@ async function createClientFromPayload(c) {
   await pipeline.enterStage(row.id, "new_submission");
   const client = await dbGet("SELECT * FROM clients WHERE id = ?", [row.id]);
   sendEnrollmentPacket(client).catch((e) => console.error("sendEnrollmentPacket failed:", e));
-  sendEligibilityCheck(client, "system").catch((e) => console.error("sendEligibilityCheck failed:", e));
+  // Sends only if a card came in with the intake; otherwise it waits for the
+  // upload, which triggers it below.
+  maybeSendEligibilityCheck(client.id, "system").catch((e) => console.error("eligibility check failed:", e));
   return client;
 }
 
@@ -4343,6 +4376,9 @@ async function handle(req, res, pathname, method, query = {}) {
         if (markedCard) {
           await dbRun("UPDATE clients SET insurance_card_uploaded = true WHERE id = ?", [client_id])
             .catch((e) => console.error("Could not flag insurance card uploaded:", e.message));
+          // The card is what the eligibility check was waiting for.
+          maybeSendEligibilityCheck(Number(client_id), (user && user.email) || "system")
+            .catch((e) => console.error("eligibility check failed:", e.message));
         }
         return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "hosted", insurance_card: markedCard });
       } else {
@@ -5479,6 +5515,10 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [eligibilityMatch[1]]);
       if (!client) return json(res, 404, { error: "Not found" });
       const result = await sendEligibilityCheck(client, user.email);
+      // Stamped so the automatic trigger cannot send it a second time.
+      if (result && result.ok) {
+        await dbRun("UPDATE clients SET eligibility_check_sent_at = ? WHERE id = ?", [nowISO(), client.id]).catch(() => {});
+      }
       if (!result.ok && result.error) return json(res, 400, result);
       return json(res, 200, result);
     }
