@@ -417,6 +417,26 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_intake_coordinator_name TE
 -- A task can be assigned to someone who works here but has no CRM login, so
 -- their address is stored on the task rather than resolved through users.
 ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS assigned_email TEXT;
+-- Reopening a task that was ticked by accident. The task itself is reused --
+-- never duplicated -- so these columns are what is left to show that it WAS
+-- completed and was later put back: when it was last completed, who reopened
+-- it, when, and how many times. Additive; every existing row reads as
+-- "never reopened".
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS last_completed_at TEXT;
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS reopened_at TEXT;
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS reopened_by TEXT;
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS reopen_count INTEGER NOT NULL DEFAULT 0;
+-- The same, for the per-client stage tasks on the client record.
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS last_completed_at TEXT;
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS reopened_at TEXT;
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS reopened_by TEXT;
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS reopen_count INTEGER NOT NULL DEFAULT 0;
+-- Backfill: a task that is already completed has its completion date copied
+-- across, so a task ticked before this change still shows its original
+-- completion date if it is reopened later. Runs once; the WHERE clause makes
+-- it a no-op afterwards.
+UPDATE client_tasks SET last_completed_at = completed_at WHERE completed_at IS NOT NULL AND last_completed_at IS NULL;
+UPDATE staff_tasks SET last_completed_at = completed_at WHERE completed_at IS NOT NULL AND last_completed_at IS NULL;
 -- Task priority for the personal Task Center: low | normal | high | urgent.
 ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal';
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted BOOLEAN NOT NULL DEFAULT false;
@@ -1889,7 +1909,9 @@ async function completeTask(taskId, completedByUserId, opts = {}) {
   const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [taskId]);
   if (!task) return { ok: false, error: "Task not found" };
 
-  await dbRun("UPDATE client_tasks SET status = 'completed', completed_at = ? WHERE id = ?", [nowISO(), taskId]);
+  // last_completed_at mirrors completed_at and is deliberately never cleared,
+  // so a task that is reopened still shows when it had been ticked.
+  await dbRun("UPDATE client_tasks SET status = 'completed', completed_at = ?, last_completed_at = ? WHERE id = ?", [nowISO(), nowISO(), taskId]);
 
   const taskLabel = await dbGet("SELECT label, stage_key FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
 
@@ -2041,6 +2063,54 @@ async function processAssessmentReminders() {
 }
 
 const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone, processAssessmentReminders };
+
+// The live pipeline stages a closed-out client may be restored into. Derived
+// from STAGES so a stage added later is automatically offered, minus the two
+// terminal ones (restoring a client INTO "not moving forward" is a no-op) and
+// minus "active", which is a clinical state reached by finishing the pipeline
+// rather than something to be dropped into by hand.
+const REACTIVATABLE_STAGES = STAGE_ORDER.filter(
+  (k) => !["discharged", "not_moving_forward", "active"].includes(k)
+);
+
+// A note written by the app on the user's behalf, in the client's existing
+// note trail. Used for record-level events (closed out, reactivated) that
+// staff need to still see months later.
+async function addSystemClientNote(clientId, user, body) {
+  await dbRun(
+    `INSERT INTO client_notes (client_id, author_id, author_name, body, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [clientId, (user && user.id) || null, (user && (user.name || user.email)) || "System", body, nowISO()]
+  ).catch((e) => console.error("addSystemClientNote failed:", e.message));
+}
+
+// Put a completed client stage task back on the open list. The SAME task row
+// is reused -- reopening never creates a second copy of the task, and its due
+// date, department and stage are all untouched. What changes is only its
+// status, plus the small history trail (who reopened it, when, how many times,
+// and the completion date it is being rolled back from) that lets the card say
+// "completed 3 Aug, reopened by Quiana 5 Aug".
+//
+// Deliberately does NOT rewind the client's stage: the stage change already
+// fired its department alert and its parent milestone email, and walking those
+// back would either re-send them or leave the record claiming something that
+// never un-happened.
+async function reopenClientTask(taskId, user) {
+  const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [taskId]);
+  if (!task) return { ok: false, error: "Task not found" };
+  if (task.status !== "completed") return { ok: true, already_open: true };
+  await dbRun(
+    `UPDATE client_tasks
+        SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL,
+            last_completed_at = COALESCE(last_completed_at, ?),
+            reopened_at = ?, reopened_by = ?, reopen_count = COALESCE(reopen_count, 0) + 1
+      WHERE id = ?`,
+    [task.completed_at, nowISO(), (user && (user.name || user.email)) || "staff", taskId]
+  );
+  const label = await dbGet("SELECT label FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
+  console.log(`[client ${task.client_id}] task ${taskId} (${(label && label.label) || "?"}) reopened by ${(user && user.email) || "unknown"} at ${nowISO()}`);
+  return { ok: true, reopened: true };
+}
 
 // ---- Staff to-do tasks (assignable, with due dates + email reminders) ----
 const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
@@ -2562,11 +2632,20 @@ const SIGNNOW_BASIC_TOKEN = process.env.SIGNNOW_BASIC_TOKEN || "";
 const SIGNNOW_USERNAME = process.env.SIGNNOW_USERNAME || "";
 const SIGNNOW_PASSWORD = process.env.SIGNNOW_PASSWORD || "";
 
-// True if SignNow can send at all: either the auto-refresh credentials OR a
-// static API key is present, AND we have a template to send.
+// True if we can authenticate against SignNow at all -- either the
+// auto-refresh credentials or the legacy static API key. Reading a document's
+// status only needs this; sending additionally needs a template (below).
+// One helper rather than the same expression copied into five places, because
+// the copies had already drifted: checkEnrollmentPackets tested SIGNNOW_API_KEY
+// alone and so did nothing on installs using the auto-refresh credentials.
+function signNowAuthConfigured() {
+  return !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY);
+}
+
+// True if SignNow can send at all: authentication is available AND we have a
+// template to send.
 function signNowConfigured() {
-  const hasAuth = (SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY;
-  return !!(hasAuth && SIGNNOW_ENROLLMENT_TEMPLATE_ID);
+  return !!(signNowAuthConfigured() && SIGNNOW_ENROLLMENT_TEMPLATE_ID);
 }
 
 // Cached access token so we don't re-auth on every call.
@@ -2779,7 +2858,7 @@ async function sendNewHirePacket(employee, { actor = "automation", force = false
   }
 
   const templateId = await newHireTemplateId();
-  const hasAuth = (SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY;
+  const hasAuth = signNowAuthConfigured();
   if (!hasAuth || !templateId) {
     const msg = !hasAuth
       ? "SignNow is not connected on the server (needs SIGNNOW_BASIC_TOKEN / SIGNNOW_USERNAME / SIGNNOW_PASSWORD, or SIGNNOW_API_KEY)."
@@ -2822,7 +2901,7 @@ async function sendNewHirePacket(employee, { actor = "automation", force = false
 async function getNewHirePacket(employeeId) {
   const row = await dbGet("SELECT * FROM newhire_packets WHERE employee_id = ?", [employeeId]);
   const templateId = await newHireTemplateId();
-  const hasAuth = !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY);
+  const hasAuth = signNowAuthConfigured();
   return { packet: row || null, configured: hasAuth && !!templateId, signnow_connected: hasAuth, template_set: !!templateId };
 }
 
@@ -2851,7 +2930,13 @@ async function retryFailedEnrollmentPackets() {
 }
 
 async function checkEnrollmentPackets() {
-  if (!SIGNNOW_API_KEY) return;
+  // Polling a document's status needs authentication, not a template. This
+  // used to test SIGNNOW_API_KEY, which is empty on every install using the
+  // preferred auto-refresh credentials -- so the sweep returned immediately,
+  // packets were never marked 'completed', the daily reminders never went out,
+  // and (because the Clinical Screener invite is triggered by packet
+  // completion) no screener was ever sent automatically.
+  if (!signNowAuthConfigured()) return;
   const pending = await dbAll("SELECT * FROM enrollment_packets WHERE status = 'sent'");
   const now = Date.now();
 
@@ -4797,11 +4882,95 @@ async function handle(req, res, pathname, method, query = {}) {
     if (dischargeMatch && method === "POST") {
       const id = dischargeMatch[1];
       const { reason, stage } = await readBody(req);
+      const before = await dbGet("SELECT stage FROM clients WHERE id = ?", [id]);
+      const target = stage || "discharged";
       await dbRun(
         "UPDATE clients SET stage = ?, discharge_reason = ?, updated_at = ? WHERE id = ?",
-        [stage || "discharged", reason || null, nowISO(), id]
+        [target, reason || null, nowISO(), id]
       );
+      // Closing a record out is written into the client's own note history, so
+      // that when it is later reopened the timeline still shows it happened,
+      // who did it and why. Uses the existing client_notes trail rather than a
+      // second audit store.
+      if (!before || before.stage !== target) {
+        await addSystemClientNote(
+          id, user,
+          `Marked ${target === "not_moving_forward" ? "Not Moving Forward" : "Discharged"}` +
+          (reason ? ` — ${reason}` : "") + "."
+        );
+      }
       return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
+    }
+
+    // Bring a client back from "Not Moving Forward" (or Discharged) into the
+    // live pipeline. Deliberately NOT pipeline.enterStage(): that fires the
+    // department alert and the parent milestone email, and a family being put
+    // back on the board should not receive "great news, time for your
+    // assessment" as a side effect of an office correction.
+    //
+    // The same record is reused throughout -- no new client row, nothing
+    // deleted, notes/documents/tasks/communications all stay attached -- and
+    // the closure it is coming back from is written into the client's note
+    // history first, so the fact that they were once marked Not Moving Forward
+    // survives the restore.
+    const reactivateMatch = pathname.match(/^\/api\/clients\/(\d+)\/reactivate$/);
+    if (reactivateMatch && method === "POST") {
+      const id = reactivateMatch[1];
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      if (client.stage !== "not_moving_forward" && client.stage !== "discharged") {
+        return json(res, 409, { error: "This client is already in the active pipeline." });
+      }
+      const body = await readBody(req).catch(() => ({}));
+      const requested = (body && body.stage) || "new_submission";
+      if (!REACTIVATABLE_STAGES.includes(requested)) {
+        return json(res, 400, { error: "Choose a stage in the active pipeline to move this client back into." });
+      }
+      const closedAs = client.stage === "not_moving_forward" ? "Not Moving Forward" : "Discharged";
+      const stageDef = pipeline.getStage(requested);
+      const note = (body && String(body.note || "").trim()) || "";
+
+      await addSystemClientNote(
+        id, user,
+        `Reactivated — moved back into the ${(stageDef && stageDef.label) || requested} stage. ` +
+        `Previously marked ${closedAs}${client.discharge_reason ? ` (reason on file: ${client.discharge_reason})` : ""}.` +
+        (note ? ` Note: ${note}` : "")
+      );
+
+      // discharge_reason is cleared because it now describes a closure that has
+      // been undone -- it would otherwise keep showing on the live record as if
+      // still current. Its text is preserved verbatim in the note above.
+      await dbRun(
+        "UPDATE clients SET stage = ?, discharge_reason = NULL, stage_entered_at = ?, updated_at = ? WHERE id = ?",
+        [requested, nowISO(), nowISO(), id]
+      );
+
+      // Give the stage its checklist back, but only the tasks that are actually
+      // missing: a client who already has a row for one of these tasks keeps
+      // that row (and its completion history) rather than gaining a duplicate.
+      const stageTasks = await dbAll("SELECT * FROM stage_tasks WHERE stage_key = ?", [requested]);
+      let tasksCreated = 0;
+      for (const task of stageTasks) {
+        const existing = await dbGet(
+          "SELECT id FROM client_tasks WHERE client_id = ? AND stage_task_id = ?",
+          [id, task.id]
+        );
+        if (existing) continue;
+        await dbRun(
+          `INSERT INTO client_tasks (client_id, stage_task_id, status, due_date, created_at)
+           VALUES (?, ?, 'pending', ?, ?)`,
+          [id, task.id, addBusinessDays(new Date(), task.sla_days).toISOString(), nowISO()]
+        );
+        tasksCreated++;
+      }
+
+      console.log(`[client ${id}] reactivated from ${closedAs} into ${requested} by ${user.email} at ${nowISO()}`);
+      const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      return json(res, 200, {
+        ...authAlerts.sanitizeClientForRole(user, updated),
+        reactivated_from: closedAs,
+        tasks_created: tasksCreated,
+      });
     }
 
     // Place a client on (or take them off) the waitlist. Placing sends the
@@ -5243,13 +5412,69 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     // ---------- Staff to-do tasks (assignable, due dates, reminders) ----------
     // Supervisory roles (owner / super_admin / admin) may see the whole
-    // organization's task list. Everyone else is scoped to their OWN tasks at
-    // the query level -- enforced here on the server, not merely hidden in the
-    // UI -- so a normal staffer can never browse another employee's task list.
-    // "Mine" = tasks whose assigned_user_id is me, or whose assigned_email
-    // matches my login (covers tasks assigned to staff who have no CRM user id).
+    // organization's task list. Everyone else is scoped at the QUERY level --
+    // enforced here on the server, not merely hidden in the UI -- so a normal
+    // staffer can never browse another employee's task list.
+    //
+    // What a non-supervisory staff member may see is exactly three things:
+    //   1. tasks assigned to them (by user id, or by email for staff with no
+    //      CRM login),
+    //   2. tasks they created themselves,
+    //   3. tasks attached to a client they are assigned to (their own
+    //      caseload -- the same "assigned to this client" test the message
+    //      history already uses).
+    // Anything else -- another staffer's personal to-do list, a client task on
+    // a family they have nothing to do with -- is invisible to them, and stays
+    // invisible however the request is crafted.
     const canSeeAllTasks = (u) => !!u && ["owner", "super_admin", "admin"].includes(u.role);
+    // "Mine" = tasks whose assigned_user_id is me, or whose assigned_email
+    // matches my login (which covers staff who have no CRM user id).
     const mineClause = "(st.assigned_user_id = ? OR (st.assigned_email IS NOT NULL AND lower(st.assigned_email) = lower(?)))";
+    // 15 placeholders, filled by visibleParams() below in this order:
+    // my user id, my email (assignee), my email (creator), then my email twice
+    // for each of the two assigned-*-email columns and my name twice for each
+    // of the four assigned-*-name columns.
+    const visibleClause =
+      "(" + mineClause +
+      " OR (st.created_by IS NOT NULL AND lower(st.created_by) = lower(?))" +
+      " OR (st.client_id IS NOT NULL AND EXISTS (" +
+      "      SELECT 1 FROM clients vc WHERE vc.id = st.client_id AND (" +
+      "        (? <> '' AND lower(COALESCE(vc.assigned_bcba_email, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_billing_email, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_bcba_name, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_rbt_name, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_billing_name, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_intake_coordinator_name, '')) = lower(?))" +
+      "      )))" +
+      ")";
+    const visibleParams = (u) => {
+      const email = String((u && u.email) || "").trim();
+      const name = String((u && u.name) || "").trim();
+      return [
+        u.id, email,                                    // assigned to me
+        email,                                          // created by me
+        email, email,                                   // caseload: assigned_bcba_email
+        email, email,                                   // caseload: assigned_billing_email
+        name, name,                                     // caseload: assigned_bcba_name
+        name, name,                                     // caseload: assigned_rbt_name
+        name, name,                                     // caseload: assigned_billing_name
+        name, name,                                     // caseload: assigned_intake_coordinator_name
+      ];
+    };
+    // Only a task's assignee, its creator, or a supervisor may change or delete
+    // it. Without this, a staffer who knows a task id could tick off or delete
+    // work belonging to someone whose list they cannot even read.
+    async function canEditStaffTask(u, taskId) {
+      if (canSeeAllTasks(u)) return true;
+      const t = await dbGet("SELECT assigned_user_id, assigned_email, created_by FROM staff_tasks WHERE id = ?", [taskId]);
+      if (!t) return false;
+      const email = String((u && u.email) || "").trim().toLowerCase();
+      return (
+        (t.assigned_user_id != null && Number(t.assigned_user_id) === Number(u.id)) ||
+        (!!t.assigned_email && String(t.assigned_email).trim().toLowerCase() === email) ||
+        (!!t.created_by && String(t.created_by).trim().toLowerCase() === email)
+      );
+    }
 
     if (pathname === "/api/staff-tasks/summary" && method === "GET") {
       // Counts for the logged-in user's OWN incomplete tasks -- powers the
@@ -5272,13 +5497,20 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     }
 
     if (pathname === "/api/staff-tasks" && method === "GET") {
-      // Non-supervisory users are forced to their own tasks no matter what
-      // scope they ask for. Supervisors default to everything but can still
-      // request scope=mine for their personal view.
-      const wantMine = query.scope === "mine" || !canSeeAllTasks(user);
+      // scope=mine   -> only tasks assigned to me (the personal Task Center).
+      // default      -> everything a supervisor may see, or the three-way
+      //                 visible set above for everyone else.
+      // A non-supervisory user CANNOT widen this by asking: the else-branch
+      // applies visibleClause unconditionally.
       const clauses = [];
       const params = [];
-      if (wantMine) { clauses.push(mineClause); params.push(user.id, user.email || ""); }
+      if (query.scope === "mine") {
+        clauses.push(mineClause);
+        params.push(user.id, user.email || "");
+      } else if (!canSeeAllTasks(user)) {
+        clauses.push(visibleClause);
+        params.push(...visibleParams(user));
+      }
       if (query.status === "open" || query.status === "done") { clauses.push("st.status = ?"); params.push(query.status); }
       const where = clauses.length ? "WHERE " + clauses.join(" AND ") : "";
       const rows = await dbAll(
@@ -5288,19 +5520,54 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
          ORDER BY (st.status = 'done'), st.due_date NULLS LAST, st.id DESC`,
         params
       );
-      return json(res, 200, rows);
+      // So the UI can render the right buttons without guessing at the rules.
+      const email = String(user.email || "").trim().toLowerCase();
+      return json(res, 200, rows.map((r) => ({
+        ...r,
+        can_edit: canSeeAllTasks(user) ||
+          (r.assigned_user_id != null && Number(r.assigned_user_id) === Number(user.id)) ||
+          (!!r.assigned_email && String(r.assigned_email).trim().toLowerCase() === email) ||
+          (!!r.created_by && String(r.created_by).trim().toLowerCase() === email),
+      })));
     }
     if (pathname === "/api/staff-tasks" && method === "POST") {
       const body = await readBody(req);
       const title = (body.title || "").trim();
       if (!title) return json(res, 400, { error: "A task title is required." });
+
+      // Any signed-in staff member may raise a task -- for themselves, or for
+      // a colleague. Assigning is not a supervisory privilege; SEEING someone
+      // else's list still is (the GET above), so handing work over never opens
+      // up the rest of that person's to-do list.
+      let assignedUserId = body.assigned_user_id ? Number(body.assigned_user_id) : null;
+      let assignedName = body.assigned_name || null;
+      let assignedEmail = body.assigned_email || null;
+      // No assignee given = a task for myself. This is what makes "create a
+      // task for myself" a single click rather than picking your own name.
+      if (!assignedUserId && !assignedName && !assignedEmail) {
+        assignedUserId = user.id;
+        assignedName = user.name || null;
+        assignedEmail = user.email || null;
+      }
+
+      // Attaching a task to a client is client-record access, so it is checked
+      // as such rather than trusted from the body.
+      let clientId = body.client_id ? Number(body.client_id) : null;
+      if (clientId) {
+        if (!canAccessClients(user) && !moduleGranted(user, "pipeline")) {
+          return json(res, 403, { error: "You don't have access to client records, so this task can't be linked to a client." });
+        }
+        const exists = await dbGet("SELECT id FROM clients WHERE id = ?", [clientId]);
+        if (!exists) return json(res, 400, { error: "That client no longer exists." });
+      }
+
       const row = await createStaffTask({
         title,
         description: body.description,
-        assigned_user_id: body.assigned_user_id ? Number(body.assigned_user_id) : null,
-        assigned_name: body.assigned_name,
-        assigned_email: body.assigned_email,
-        client_id: body.client_id ? Number(body.client_id) : null,
+        assigned_user_id: assignedUserId,
+        assigned_name: assignedName,
+        assigned_email: assignedEmail,
+        client_id: clientId,
         due_date: body.due_date || null,
         priority: body.priority,
         created_by: user.email,
@@ -5310,6 +5577,11 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     const staffTaskMatch = pathname.match(/^\/api\/staff-tasks\/(\d+)$/);
     if (staffTaskMatch && method === "PATCH") {
       const id = Number(staffTaskMatch[1]);
+      // Backend, not just the UI: a task may only be changed by the person it
+      // is assigned to, the person who raised it, or a supervisor.
+      if (!(await canEditStaffTask(user, id))) {
+        return json(res, 403, { error: "This task belongs to someone else." });
+      }
       const body = await readBody(req);
       const sets = [];
       const params = [];
@@ -5328,6 +5600,23 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         const done = body.status === "done";
         sets.push("status = ?", "completed_at = ?");
         params.push(done ? "done" : "open", done ? nowISO() : null);
+        if (done) {
+          // Kept even after a later reopen, so the task can still say when it
+          // had been completed.
+          sets.push("last_completed_at = ?");
+          params.push(nowISO());
+        } else {
+          // Reopening: the SAME task goes back on the open list -- title, due
+          // date, assignee, client link and description all untouched -- with
+          // a trail of who put it back and how many times.
+          sets.push(
+            "last_completed_at = COALESCE(last_completed_at, completed_at)",
+            "reminder_sent_at = NULL",
+            "reopened_at = ?", "reopened_by = ?",
+            "reopen_count = COALESCE(reopen_count, 0) + 1"
+          );
+          params.push(nowISO(), user.name || user.email || "staff");
+        }
       }
       if (!sets.length) return json(res, 400, { error: "Nothing to update." });
       params.push(id);
@@ -5347,7 +5636,11 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       return json(res, 200, afterTask);
     }
     if (staffTaskMatch && method === "DELETE") {
-      await dbRun("DELETE FROM staff_tasks WHERE id = ?", [Number(staffTaskMatch[1])]);
+      const id = Number(staffTaskMatch[1]);
+      if (!(await canEditStaffTask(user, id))) {
+        return json(res, 403, { error: "This task belongs to someone else." });
+      }
+      await dbRun("DELETE FROM staff_tasks WHERE id = ?", [id]);
       return json(res, 200, { ok: true });
     }
 
@@ -5383,14 +5676,8 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     const reopenTaskMatch = pathname.match(/^\/api\/tasks\/(\d+)\/reopen$/);
     if (reopenTaskMatch && method === "POST") {
-      const id = reopenTaskMatch[1];
-      const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [id]);
-      if (!task) return json(res, 404, { error: "Not found" });
-      await dbRun(
-        "UPDATE client_tasks SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL WHERE id = ?",
-        [id]
-      );
-      return json(res, 200, { ok: true });
+      const r = await reopenClientTask(reopenTaskMatch[1], user);
+      return json(res, r.ok ? 200 : 404, r);
     }
 
     if (pathname === "/api/tasks/bulk-update" && method === "POST") {
@@ -5406,11 +5693,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         if (status === "completed") {
           results.push(await pipeline.completeTask(id, user.id));
         } else {
-          await dbRun(
-            "UPDATE client_tasks SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL WHERE id = ?",
-            [id]
-          );
-          results.push({ ok: true });
+          results.push(await reopenClientTask(id, user));
         }
       }
       return json(res, 200, { ok: true, results });
@@ -5808,7 +6091,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         shirt_count_full_time: await getAppSetting("shirt_count_full_time", DEFAULT_SETTINGS.shirt_count_full_time),
         shirt_count_part_time: await getAppSetting("shirt_count_part_time", DEFAULT_SETTINGS.shirt_count_part_time),
         signnow_newhire_env_default: SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV ? "set" : "",
-        signnow_connected: !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY),
+        signnow_connected: signNowAuthConfigured(),
       });
     }
     if (pathname === "/api/admin/settings" && method === "PATCH") {
@@ -6132,7 +6415,13 @@ async function seedUsers() {
   // The owner sets real passwords from Admin Settings > Users. Nothing is
   // ever printed to the deploy log.
   const rnd = () => crypto.randomBytes(24).toString("base64url");
-  await createUser({ name: "Quiana Blake", email: "admin@spectrumsquadlv.com", password: rnd(), role: "admin", department_id: null });
+  // Seeded as the Owner outright. A migration in MIGRATIONS_SQL promotes this
+  // account from 'admin' to 'owner', but migrations run before seeding, so on
+  // a brand-new install the account sat on 'admin' until the NEXT restart --
+  // and owner-only features (the full supply-request queue, owner financials)
+  // quietly did nothing in the meantime. The migration is still there for
+  // installs that were seeded before this change.
+  await createUser({ name: "Quiana Blake", email: "admin@spectrumsquadlv.com", password: rnd(), role: "owner", department_id: null });
   await createUser({ name: "Intake Staff", email: "intake@spectrumsquadlv.com", password: rnd(), role: "intake", department_id: await deptId("intake") });
   await createUser({ name: "Clinical Staff", email: "clinical@spectrumsquadlv.com", password: rnd(), role: "clinical", department_id: await deptId("clinical") });
   await createUser({ name: "Billing Staff", email: "billing@spectrumsquadlv.com", password: rnd(), role: "billing", department_id: await deptId("billing") });
@@ -6806,6 +7095,35 @@ async function start() {
     if (done) {
       await setAppSetting("eligibility_backfill_done", nowISO()).catch(() => {});
       console.log("Eligibility check backfill: existing clients stamped as already sent.");
+    }
+  }
+
+  // One-time grace for the enrollment-packet sweep.
+  //
+  // checkEnrollmentPackets() used to bail out unless a static SIGNNOW_API_KEY
+  // was set, so on an install using the auto-refresh credentials it had never
+  // actually run. Now that it does, every packet still sitting at 'sent' would
+  // be measured against its ORIGINAL send date on the very first sweep -- and
+  // anything older than seven days would be marked "Not Moving Forward" and
+  // chased with a reminder in the same minute, for a deadline that was never
+  // being enforced against those families.
+  //
+  // So the elapsed time is banked into paused_ms (the field the waitlist pause
+  // already uses) and the reminder clock is stamped as of now: every
+  // outstanding family gets a clean seven days and their first nudge tomorrow,
+  // rather than being closed out retroactively. Guarded by a setting so it
+  // happens exactly once; packets sent from here on are timed normally.
+  if (!(await getAppSetting("packet_sweep_grace_done", ""))) {
+    const graced = await dbRun(
+      `UPDATE enrollment_packets
+          SET paused_ms = GREATEST(0, EXTRACT(EPOCH FROM (now() - sent_at::timestamptz)) * 1000)::bigint,
+              last_reminder_at = ?
+        WHERE status = 'sent' AND sent_at IS NOT NULL`,
+      [nowISO()]
+    ).catch((e) => { console.error("Packet sweep grace failed:", e.message); return null; });
+    if (graced) {
+      await setAppSetting("packet_sweep_grace_done", nowISO()).catch(() => {});
+      console.log(`Enrollment packet sweep: ${graced.rowCount} outstanding packet(s) given a fresh 7-day window (the sweep had not been running).`);
     }
   }
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));

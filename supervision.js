@@ -111,6 +111,18 @@ module.exports = function initSupervision(ctx) {
       previous_signed_by TEXT,
       previous_signed_at TEXT
     )`).catch((e) => console.error("supervision amendments initTables:", e.message));
+
+    // Deleting a month reuses this same table rather than adding a second
+    // history store: the row keeps the entries, the worked hours and the
+    // signature exactly as they were, so a deleted record is still auditable.
+    // `action` distinguishes the two kinds of entry; existing rows are all
+    // amendments, which is what the default says.
+    await dbRun("ALTER TABLE hr_supervision_amendments ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'amendment'")
+      .catch((e) => console.error("supervision amendments action column:", e.message));
+    // The signed PDF is never unlinked from disk on delete -- this records
+    // which file the deleted month's signature lives in.
+    await dbRun("ALTER TABLE hr_supervision_amendments ADD COLUMN IF NOT EXISTS previous_pdf_stored TEXT")
+      .catch((e) => console.error("supervision amendments pdf column:", e.message));
   }
 
   function role(u) { return (u && (u.role || u.role_key || "")) || ""; }
@@ -120,6 +132,12 @@ module.exports = function initSupervision(ctx) {
   // role-gated.
   const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
   function canManage(u) { return ["owner", "super_admin", "admin", "hr_admin", "clinical"].includes(role(u)) || granted(u, "supervision"); }
+  // Deleting a supervision month is destructive and is deliberately NOT part of
+  // the ordinary manage tier: a BCBA or clinical lead can correct a month (which
+  // is recorded and withdraws the signature), but only the practice owner or an
+  // administrator can remove one outright. A module grant from the Access editor
+  // does not unlock it.
+  function canDelete(u) { return ["owner", "super_admin", "admin"].includes(role(u)); }
 
   function num(v) { const n = parseFloat(v); return isFinite(n) ? n : 0; }
   // Normalize a DATE value (which the pg driver may return as a Date object or
@@ -400,8 +418,10 @@ module.exports = function initSupervision(ctx) {
           hours_current_through: dstr(log && log.hours_current_through),
           min_pct: BACB_MIN_PCT, signed_off: !!(log && log.signed_off), signed_by: log && log.signed_by, signed_at: log && log.signed_at,
           has_pdf: !!(log && log.pdf_stored),
+          can_delete: canDelete(user),
+          has_record: !!log,
           amendments: await dbAll(
-            "SELECT reason, changed_by, changed_at, previous_signed_by FROM hr_supervision_amendments WHERE employee_id = ? AND month = ? ORDER BY id DESC",
+            "SELECT action, reason, changed_by, changed_at, previous_signed_by FROM hr_supervision_amendments WHERE employee_id = ? AND month = ? ORDER BY id DESC",
             [empId, month]
           ).catch(() => []),
           history: hist.map((h) => { let en = []; try { en = JSON.parse(h.entries || "[]"); } catch (x) {} const s = supHours(en); return { month: h.month, sup_hours: s, hours_worked: num(h.hours_worked), pct: pct(s, num(h.hours_worked)), signed_off: !!h.signed_off }; }),
@@ -467,6 +487,54 @@ module.exports = function initSupervision(ctx) {
           [empId, mo, JSON.stringify(entries), worked, nowISO(), nowISO()]
         );
         return json(res, 200, { ok: true, amended, sup_hours: supHours(entries), pct: pct(supHours(entries), worked) });
+      }
+
+      // Delete one employee's supervision record for one month. Owner/admin
+      // only, and never silent: the entries, the worked hours and any signature
+      // are copied into hr_supervision_amendments first (action = 'deleted'),
+      // along with who deleted it and why, so the deletion itself is part of
+      // the compliance history rather than a gap in it.
+      //
+      // Nothing else depends on the row existing. monthSummary() already treats
+      // a missing log as "no supervision recorded, worked hours not uploaded",
+      // which is exactly what is true once it is gone -- the percentages, the
+      // "meeting the minimum" count and the missing-hours count all recompute
+      // from what is left. Any signed PDF stays on disk.
+      if (empMatch && method === "DELETE") {
+        if (!canDelete(user)) {
+          return json(res, 403, { error: "Only the practice owner or an administrator can delete a supervision record." });
+        }
+        const empId = Number(empMatch[1]);
+        let b = {};
+        try { b = (await readBody(req)) || {}; } catch (e) { b = {}; }
+        const mo = (b.month && /^\d{4}-\d{2}$/.test(b.month)) ? b.month : month;
+        const reason = String(b.reason || query.reason || "").trim();
+        if (!reason) {
+          return json(res, 400, {
+            error: "Say why this record is being deleted — it is kept in the supervision history.",
+            code: "delete_needs_reason",
+          });
+        }
+        const log = await dbGet("SELECT * FROM hr_supervision_logs WHERE employee_id = ? AND month = ?", [empId, mo]);
+        if (!log) return json(res, 404, { error: "There is no supervision record for that month." });
+        const emp = await dbGet("SELECT id, name FROM hr_employees WHERE id = ?", [empId]).catch(() => null);
+
+        await dbRun(
+          `INSERT INTO hr_supervision_amendments
+             (employee_id, month, action, reason, changed_by, changed_at,
+              previous_entries, previous_hours_worked, previous_signed_by, previous_signed_at, previous_pdf_stored)
+           VALUES (?, ?, 'deleted', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [empId, mo, reason, user.name || user.email || "unknown", nowISO(),
+           log.entries || "[]", num(log.hours_worked), log.signed_by, log.signed_at, log.pdf_stored]
+        );
+        await dbRun("DELETE FROM hr_supervision_logs WHERE id = ?", [log.id]);
+
+        let deletedEntries = []; try { deletedEntries = JSON.parse(log.entries || "[]"); } catch (x) {}
+        await logActivity(empId, `Supervision record for ${mo} deleted by ${user.name || user.email}: ${reason}. ` +
+          `(${deletedEntries.length} session${deletedEntries.length === 1 ? "" : "s"}, ${supHours(deletedEntries)} supervision hrs, ` +
+          `${num(log.hours_worked)} worked hrs${log.signed_by ? `, signed by ${log.signed_by}` : ""} — kept in the supervision history.)`);
+        console.log(`[supervision] ${(emp && emp.name) || "employee " + empId} ${mo} deleted by ${user.email || user.name} at ${nowISO()}`);
+        return json(res, 200, { ok: true, employee_id: empId, month: mo, deleted_sessions: deletedEntries.length });
       }
 
       // BCBA sign-off → PDF + auto-email staff + BCBA.

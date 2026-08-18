@@ -900,6 +900,15 @@ const TC_PRIORITY = {
 };
 let _tcTasks = [];
 let _tcFilter = "today";
+// "Completed 3 Aug, reopened by Quiana 5 Aug" -- the trail a task keeps when it
+// is ticked by mistake and put back. Shared by the Task Center and the Tasks &
+// Alerts table so both read the same way.
+function taskHistoryLine(t) {
+  if (!t || !t.reopened_at) return "";
+  const was = t.last_completed_at ? `Completed ${fmtDate(t.last_completed_at)} · ` : "";
+  const times = t.reopen_count > 1 ? ` (reopened ${t.reopen_count}×)` : "";
+  return `<div style="font-size:11.5px; color:#946213; margin-top:3px;">↩ ${was}reopened by ${staffEsc(t.reopened_by || "staff")} ${fmtDate(t.reopened_at)}${times}</div>`;
+}
 function _tcBucket(t) {
   const today = new Date().toLocaleDateString("en-CA");
   if (t.status === "done") return "completed";
@@ -965,7 +974,9 @@ function _tcRenderList(body) {
           ${t.reminder_sent_at ? `<span class="tc-reminded" title="A reminder was emailed to you">🔔 reminded</span>` : ""}
         </div>
         ${t.description ? `<div class="tc-desc">${staffEsc(t.description)}</div>` : ""}
+        ${taskHistoryLine(t)}
       </div>
+      ${done ? `<button class="btn small secondary" data-tc-reopen="${t.id}" title="Ticked by mistake? Put it back on your open list">Reopen</button>` : ""}
     </div>`;
   }).join("");
   body.querySelectorAll("[data-tc-complete]").forEach((btn) => {
@@ -979,6 +990,28 @@ function _tcRenderList(body) {
         _tcRenderList(body);
         refreshTaskBadge();
       } catch (e) { btn.disabled = false; alert(e.message || "Could not complete the task."); }
+    });
+  });
+  // Undo an accidental tick. The same task goes back on the open list -- it is
+  // never re-created -- and keeps a note of having been completed and reopened.
+  body.querySelectorAll("[data-tc-reopen]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const updated = await api(`/api/staff-tasks/${btn.dataset.tcReopen}`, { method: "PATCH", body: { status: "open" } });
+        const t = _tcTasks.find((x) => String(x.id) === String(btn.dataset.tcReopen));
+        if (t) {
+          t.status = "open";
+          t.completed_at = null;
+          t.last_completed_at = (updated && updated.last_completed_at) || t.last_completed_at;
+          t.reopened_at = (updated && updated.reopened_at) || new Date().toISOString();
+          t.reopened_by = (updated && updated.reopened_by) || (state.user && (state.user.name || state.user.email));
+          t.reopen_count = (updated && updated.reopen_count) || (t.reopen_count || 0) + 1;
+        }
+        _tcUpdateCounts();
+        _tcRenderList(body);
+        refreshTaskBadge();
+      } catch (e) { btn.disabled = false; alert(e.message || "Could not reopen the task."); }
     });
   });
   body.querySelectorAll("[data-tc-client]").forEach((a) => {
@@ -1178,6 +1211,14 @@ const PIPELINE_PHASES = [
 const TERMINAL_COLUMNS = [
   { key: "discharged", label: "Discharged", color: "#64748b", stages: ["discharged"], entry: "discharged" },
   { key: "not_moving_forward", label: "Not Moving Forward", color: "#ef4444", stages: ["not_moving_forward"], entry: "not_moving_forward" },
+];
+
+// Stages a closed-out client can be restored into. Mirrors REACTIVATABLE_STAGES
+// in server.js, which is the copy that is actually enforced -- this one only
+// decides what the dropdown offers.
+const REACTIVATABLE_STAGES = [
+  "new_submission", "clinical_screener", "insurance_verification",
+  "assessment_scheduling", "authorization", "first_day_scheduled",
 ];
 
 function stageLabelOf(key) {
@@ -1905,11 +1946,20 @@ async function openClientModal(id) {
   const signnowConfigured = data.signnowConfigured;
   const sMap = stageMap();
   const stage = sMap[client.stage] || {};
+  // A closed-out record swaps the close-out buttons for the Reactivate panel.
+  const isClosedOut = client.stage === "not_moving_forward" || client.stage === "discharged";
+  const escapeHtml = (v) => { const d = document.createElement("div"); d.textContent = v == null ? "" : String(v); return d.innerHTML; };
 
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
+  // Which client this card is for, readable from the DOM. The add-ons that
+  // inject buttons into this card (screener-admin.js) used to work this out
+  // from the URL hash alone, which only gets set when the card is opened from
+  // the pipeline board -- so their buttons silently went missing when the same
+  // card was opened from the Task Center, the tasks table or an auth alert.
+  backdrop.dataset.clientId = String(id);
   backdrop.innerHTML = `
-    <div class="modal">
+    <div class="modal" data-client-id="${id}">
       <div class="modal-header">
         <div>
           <h2>${client.child_name}</h2>
@@ -2073,6 +2123,7 @@ async function openClientModal(id) {
                   <div class="info">
                     <span class="status-dot ${t.status}"></span><strong>${t.label}</strong>${t.assignable === false ? ` <span class="tag" style="background:#e7effb; color:#1b3a7b;" title="This step runs automatically — the screener is sent, reminded, and marked complete by the system. It is never assigned to staff.">Automated · not assignable</span>` : ""}
                     <div class="due">${t.department_name} · due ${fmtDate(t.due_date)} ${t.status === "overdue" ? "· <span style='color:#b91c1c;font-weight:700;'>OVERDUE</span>" : ""}</div>
+                    ${taskHistoryLine(t)}
                   </div>
                   ${
                     t.status !== "completed"
@@ -2114,10 +2165,24 @@ async function openClientModal(id) {
       }
 
       <div class="section-title">Advance / Close Out</div>
+      ${isClosedOut ? `
+      <div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:12px 14px; margin-bottom:10px;">
+        <div style="font-weight:700; color:#9a3412; font-size:13.5px;">${client.stage === "not_moving_forward" ? "Marked Not Moving Forward" : "Discharged"}${client.discharge_reason ? ` — ${escapeHtml(client.discharge_reason)}` : ""}</div>
+        <div style="font-size:12.5px; color:#7c2d12; margin-top:4px;">Bringing this family back keeps this same record — every note, document, task and message stays exactly where it is, and the closure above is written into their notes so it is never lost.</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+          <label style="font-size:12.5px; color:#7c2d12;">Move back into
+            <select id="reactivate-stage" style="margin-left:6px;">
+              ${REACTIVATABLE_STAGES.map((k) => `<option value="${k}">${escapeHtml(stageLabelOf(k))}</option>`).join("")}
+            </select>
+          </label>
+          <button class="btn small" id="reactivate-btn" style="background:#16a34a; border-color:#16a34a;">↩ Reactivate / Move Back to Active</button>
+          <span id="reactivate-status" style="font-size:12.5px; color:#7c2d12;"></span>
+        </div>
+      </div>` : ""}
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button class="btn secondary small" id="advance-btn">Advance to next stage manually</button>
+        ${isClosedOut ? "" : `<button class="btn secondary small" id="advance-btn">Advance to next stage manually</button>
         <button class="btn secondary small" id="discharge-btn">Mark discharged</button>
-        <button class="btn secondary small" id="not-moving-btn" style="color:#b91c1c;">Not moving forward</button>
+        <button class="btn secondary small" id="not-moving-btn" style="color:#b91c1c;">Not moving forward</button>`}
       <button class="btn secondary small" id="delete-lead-btn" style="color:#fff; background:#b91c1c; border-color:#b91c1c;">Delete Lead</button>
       </div>
 
@@ -2530,13 +2595,17 @@ async function openClientModal(id) {
     });
   }
 
-  backdrop.querySelector("#advance-btn").addEventListener("click", async () => {
+  // The advance / close-out trio is only rendered while a client is live; a
+  // closed-out record shows the Reactivate panel in its place.
+  const advanceBtn = backdrop.querySelector("#advance-btn");
+  if (advanceBtn) advanceBtn.addEventListener("click", async () => {
     await api(`/api/clients/${id}/advance`, { method: "POST", body: {} });
     close();
     await loadClients();
     route();
   });
-  backdrop.querySelector("#discharge-btn").addEventListener("click", async () => {
+  const dischargeBtn = backdrop.querySelector("#discharge-btn");
+  if (dischargeBtn) dischargeBtn.addEventListener("click", async () => {
     const reason = await askReason("Discharge reason");
     if (reason === null) return;
     await api(`/api/clients/${id}/discharge`, { method: "POST", body: { reason, stage: "discharged" } });
@@ -2544,13 +2613,36 @@ async function openClientModal(id) {
     await loadClients();
     route();
   });
-  backdrop.querySelector("#not-moving-btn").addEventListener("click", async () => {
+  const notMovingBtn = backdrop.querySelector("#not-moving-btn");
+  if (notMovingBtn) notMovingBtn.addEventListener("click", async () => {
     const reason = await askReason("Reason client is not moving forward");
     if (reason === null) return;
     await api(`/api/clients/${id}/discharge`, { method: "POST", body: { reason, stage: "not_moving_forward" } });
     close();
     await loadClients();
     route();
+  });
+
+  const reactivateBtn = backdrop.querySelector("#reactivate-btn");
+  if (reactivateBtn) reactivateBtn.addEventListener("click", async () => {
+    const stage = backdrop.querySelector("#reactivate-stage").value;
+    const statusEl = backdrop.querySelector("#reactivate-status");
+    const label = stageLabelOf(stage);
+    if (!confirm(`Bring ${client.child_name} back into ${label}?\n\nTheir existing record is kept as-is — nothing is duplicated or deleted — and the note history will show they were previously ${client.stage === "not_moving_forward" ? "marked Not Moving Forward" : "discharged"}.`)) return;
+    reactivateBtn.disabled = true;
+    statusEl.textContent = "Reactivating…";
+    try {
+      const note = await askReason("Anything to record about bringing them back? (optional)");
+      if (note === null) { reactivateBtn.disabled = false; statusEl.textContent = ""; return; }
+      await api(`/api/clients/${id}/reactivate`, { method: "POST", body: { stage, note: note || null } });
+      close();
+      state.pipelineView = "active";
+      await loadClients();
+      route();
+    } catch (e) {
+      reactivateBtn.disabled = false;
+      statusEl.textContent = e.message || "Could not reactivate.";
+    }
   });
   backdrop.querySelector("#delete-lead-btn").addEventListener("click", async () => {
    const password = await askPassword(`This will permanently delete ${client.child_name}'s record, including all tasks, notes, documents, and notification history. Enter your own password to confirm.`);
@@ -2652,23 +2744,27 @@ async function renderStaffTasks(mount) {
     : optionsFor(withLogin);
   const clientOpts = (state.clients || []).map((c) => `<option value="${c.id}">${esc(c.child_name)}</option>`).join("");
   const overdue = (t) => t.status !== "done" && t.due_date && new Date(t.due_date) < new Date(new Date().toDateString());
-  // Only supervisory roles may assign tasks to other people. Everyone else sees
-  // just their own tasks (the server scopes the list to them regardless), so
-  // the assign-to-anyone form is hidden for them.
-  const canAssign = ["owner", "super_admin", "admin"].includes(state.user.role);
+  // Every staff member can raise a task -- for themselves ("Myself" is the
+  // default) or for a colleague. Being able to hand work over is not the same
+  // as being able to read someone's list: the server still only returns tasks
+  // assigned to you, raised by you, or sitting on a client you're assigned to.
+  const canSeeAll = ["owner", "super_admin", "admin"].includes(state.user.role);
   const prioOpts = `<option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option><option value="low">Low</option>`;
+  const canLinkClient = CLIENT_ACCESS_ROLES.includes(state.user.role);
 
   body.innerHTML = `
-    ${canAssign ? `<div class="form-grid" style="gap:10px;">
+    <div class="form-grid" style="gap:10px;">
       <div class="field"><label>Task</label><input id="stask-title" placeholder="e.g. Call insurance about auth" /></div>
-      <div class="field"><label>Assign to</label><select id="stask-assignee"><option value="">— Choose staff —</option>${staffOpts}</select></div>
+      <div class="field"><label>Assign to</label><select id="stask-assignee"><option value="">Myself (${esc(state.user.name || state.user.email)})</option>${staffOpts}</select></div>
       <div class="field"><label>Priority</label><select id="stask-priority">${prioOpts}</select></div>
       <div class="field"><label>Due date</label><input id="stask-due" type="date" /></div>
-      <div class="field"><label>Related client (optional)</label><select id="stask-client"><option value="">— None —</option>${clientOpts}</select></div>
+      ${canLinkClient ? `<div class="field"><label>Related client (optional)</label><select id="stask-client"><option value="">— None —</option>${clientOpts}</select></div>` : ""}
     </div>
     <div class="field full" style="margin-top:8px;"><label>Details (optional)</label><textarea id="stask-desc" rows="2" placeholder="Any details or context..."></textarea></div>
-    <div style="margin-top:8px;"><button class="btn small" id="stask-add">+ Assign task</button> <span id="stask-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span></div>`
-    : `<div style="font-size:13px; color:var(--text-muted); margin-bottom:6px;">These are the tasks assigned to you. Your personal <strong>Task Center</strong> on the Dashboard has quick filters and one-tap complete.</div>`}
+    <div style="margin-top:8px;"><button class="btn small" id="stask-add">+ Add task</button> <span id="stask-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span></div>
+    <div style="font-size:12px; color:var(--text-muted); margin-top:8px;">${canSeeAll
+      ? "As an administrator you can see every staff task here."
+      : "You see tasks assigned to you, tasks you created, and tasks on clients you're assigned to. Other staff members' personal task lists stay private."}</div>
 
     <div style="margin-top:16px; overflow-x:auto;">
       <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:620px;">
@@ -2678,17 +2774,17 @@ async function renderStaffTasks(mount) {
         <tbody>
           ${
             tasks.length
-              ? tasks.map((t) => { const pr = TC_PRIORITY[(t.priority || "normal")] || TC_PRIORITY.normal; return `<tr style="${t.status === "done" ? "opacity:.55;" : ""}">
-                  <td style="padding:7px 8px;"><strong>${esc(t.title)}</strong>${t.description ? `<div style="color:var(--text-muted); font-size:12px;">${esc(t.description)}</div>` : ""}</td>
+              ? tasks.map((t) => { const pr = TC_PRIORITY[(t.priority || "normal")] || TC_PRIORITY.normal; const mine = t.can_edit !== false; return `<tr style="${t.status === "done" ? "opacity:.55;" : ""}">
+                  <td style="padding:7px 8px;"><strong>${esc(t.title)}</strong>${t.description ? `<div style="color:var(--text-muted); font-size:12px;">${esc(t.description)}</div>` : ""}${taskHistoryLine(t)}</td>
                   <td style="padding:7px 8px;"><span class="tc-pill" style="background:${pr.bg}; color:${pr.fg};">${pr.label}</span></td>
                   <td style="padding:7px 8px;">${esc(t.assigned_name || "—")}</td>
                   <td style="padding:7px 8px;">${esc(t.child_name || "—")}</td>
                   <td style="padding:7px 8px; ${overdue(t) ? "color:#b91c1c; font-weight:700;" : ""}">${t.due_date ? fmtDate(t.due_date) : "—"}${overdue(t) ? " ⚠" : ""}</td>
                   <td style="padding:7px 8px; white-space:nowrap;">
-                    ${t.status === "done"
-                      ? `<button class="btn small secondary" data-stask-reopen="${t.id}">Reopen</button>`
-                      : `<button class="btn small" data-stask-done="${t.id}">Done</button>`}
-                    <button class="btn small secondary" data-stask-del="${t.id}" style="color:#b91c1c;">Delete</button>
+                    ${!mine ? `<span style="font-size:12px; color:var(--text-muted);">—</span>` : (t.status === "done"
+                      ? `<button class="btn small secondary" data-stask-reopen="${t.id}" title="Put this task back on the open list">Reopen</button>`
+                      : `<button class="btn small" data-stask-done="${t.id}">Done</button>`)}
+                    ${mine ? `<button class="btn small secondary" data-stask-del="${t.id}" style="color:#b91c1c;">Delete</button>` : ""}
                   </td>
                 </tr>`; }).join("")
               : `<tr><td colspan="6"><div class="empty-state">No staff tasks yet.</div></td></tr>`
@@ -2705,11 +2801,14 @@ async function renderStaffTasks(mount) {
     addBtn.disabled = true;
     statusEl.textContent = "Saving…";
     try {
+      const clientSel = body.querySelector("#stask-client");
       await api("/api/staff-tasks", { method: "POST", body: {
         title,
         ...(() => {
+          // Blank assignee = "Myself"; the server fills in the current user
+          // rather than the browser guessing at its own identity.
           const raw = body.querySelector("#stask-assignee").value;
-          if (!raw) return { assigned_user_id: null };
+          if (!raw) return {};
           try {
             const a = JSON.parse(raw);
             return { assigned_user_id: a.user_id || null, assigned_name: a.name || null, assigned_email: a.email || null };
@@ -2721,9 +2820,11 @@ async function renderStaffTasks(mount) {
         })(),
         priority: (body.querySelector("#stask-priority") || {}).value || "normal",
         due_date: body.querySelector("#stask-due").value || null,
-        client_id: body.querySelector("#stask-client").value || null,
+        client_id: clientSel ? clientSel.value || null : null,
         description: body.querySelector("#stask-desc").value || null,
       } });
+      body.querySelector("#stask-title").value = "";
+      body.querySelector("#stask-desc").value = "";
       refreshTaskBadge();
       await renderStaffTasks(mount);
     } catch (e) {
@@ -2732,14 +2833,20 @@ async function renderStaffTasks(mount) {
     }
   });
   body.querySelectorAll("[data-stask-done]").forEach((b) => b.addEventListener("click", async () => {
-    await api(`/api/staff-tasks/${b.dataset.staskDone}`, { method: "PATCH", body: { status: "done" } }); refreshTaskBadge(); renderStaffTasks(mount);
+    try { await api(`/api/staff-tasks/${b.dataset.staskDone}`, { method: "PATCH", body: { status: "done" } }); }
+    catch (e) { alert(e.message || "Could not complete the task."); return; }
+    refreshTaskBadge(); renderStaffTasks(mount);
   }));
   body.querySelectorAll("[data-stask-reopen]").forEach((b) => b.addEventListener("click", async () => {
-    await api(`/api/staff-tasks/${b.dataset.staskReopen}`, { method: "PATCH", body: { status: "open" } }); refreshTaskBadge(); renderStaffTasks(mount);
+    try { await api(`/api/staff-tasks/${b.dataset.staskReopen}`, { method: "PATCH", body: { status: "open" } }); }
+    catch (e) { alert(e.message || "Could not reopen the task."); return; }
+    refreshTaskBadge(); renderStaffTasks(mount);
   }));
   body.querySelectorAll("[data-stask-del]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("Delete this task?")) return;
-    await api(`/api/staff-tasks/${b.dataset.staskDel}`, { method: "DELETE" }); refreshTaskBadge(); renderStaffTasks(mount);
+    try { await api(`/api/staff-tasks/${b.dataset.staskDel}`, { method: "DELETE" }); }
+    catch (e) { alert(e.message || "Could not delete the task."); return; }
+    refreshTaskBadge(); renderStaffTasks(mount);
   }));
 }
 
@@ -2774,7 +2881,7 @@ async function renderTasks(mount) {
                     <td><input type="checkbox" class="tasks-row-check" data-id="${t.id}" /></td>
                     <td><span class="status-dot ${t.status}"></span>${t.status}</td>
                     <td>${t.child_name}</td>
-                    <td>${t.label}</td>
+                    <td>${t.label}${taskHistoryLine(t)}</td>
                     <td><span class="badge" style="background:${t.department_color}">${t.department_name}</span></td>
                     <td>${fmtDate(t.due_date)}</td>
                     <td>${
