@@ -58,6 +58,26 @@ module.exports = function initPeople(ctx) {
   }
 
   // ======================= SCHEMA ============================
+  // A client's emergency contact must be someone OTHER than the parent or
+  // guardian, and someone who does not live in the child's home -- otherwise
+  // one incident takes out both the primary contact and the backup. Enforced
+  // on the server so it holds however the record is created.
+  //
+  // Matched on the relationship the office types in. Deliberately narrow: it
+  // catches the words that unambiguously mean the parent/guardian and nothing
+  // else, so "grandmother", "aunt", "family friend", "neighbour" all pass.
+  const PARENT_RELATIONSHIP = /\b(mother|father|mom|mum|mommy|dad|daddy|parent|guardian|step-?mother|step-?father|step-?mom|step-?dad)\b/i;
+
+  function clientContactProblem(relationship, outsideHousehold) {
+    if (PARENT_RELATIONSHIP.test(String(relationship || ""))) {
+      return "The emergency contact has to be someone other than the parent or guardian — please add a relative, friend or neighbour who can be reached if the parent can't be.";
+    }
+    if (outsideHousehold !== true) {
+      return "Please confirm this person does not live in the client's home. An emergency contact who lives in the same household can't act as a backup.";
+    }
+    return null;
+  }
+
   async function initTables() {
     // departments already exists in the core schema. Two additive columns:
     // `active` so a department can be retired without destroying the history
@@ -87,6 +107,13 @@ module.exports = function initPeople(ctx) {
     )`);
     await dbRun(`CREATE INDEX IF NOT EXISTS emergency_contacts_owner_idx
                  ON emergency_contacts (owner_type, owner_id)`).catch(() => {});
+    // A child's emergency contact has to be somebody we can actually reach when
+    // the parent cannot be reached -- which rules out anyone living in the same
+    // house. NULL (not just false) on purpose: contacts entered before this
+    // rule existed read as "not recorded yet" rather than being silently
+    // asserted to live in, or out of, the home. Only clients use it; a staff
+    // member's emergency contact is usually their spouse.
+    await dbRun("ALTER TABLE emergency_contacts ADD COLUMN IF NOT EXISTS outside_household BOOLEAN").catch(() => {});
 
     await dbRun(`CREATE TABLE IF NOT EXISTS staff_certifications (
       id SERIAL PRIMARY KEY,
@@ -508,7 +535,16 @@ module.exports = function initPeople(ctx) {
             ORDER BY is_primary DESC, sort_order, id`,
           [ownerType, ownerId]
         );
-        json(res, 200, { contacts: rows });
+        if (ownerType !== "client") { json(res, 200, { contacts: rows }); return true; }
+        // Which of these actually satisfy the rule, and which pre-date it and
+        // still need the household question answered.
+        const compliant = rows.filter((c) => !clientContactProblem(c.relationship, c.outside_household === true));
+        json(res, 200, {
+          contacts: rows,
+          requires_outside_household: true,
+          has_compliant_contact: compliant.length > 0,
+          needs_review: rows.filter((c) => c.outside_household == null).map((c) => c.id),
+        });
         return true;
       }
 
@@ -524,17 +560,22 @@ module.exports = function initPeople(ctx) {
           json(res, 400, { error: "An emergency contact needs at least one phone number." });
           return true;
         }
+        if (ownerType === "client") {
+          const problem = clientContactProblem(b.relationship, b.outside_household === true);
+          if (problem) { json(res, 400, { error: problem }); return true; }
+        }
         if (b.is_primary) {
           await dbRun("UPDATE emergency_contacts SET is_primary = FALSE WHERE owner_type = ? AND owner_id = ?", [ownerType, ownerId]);
         }
         const row = await dbGet(
           `INSERT INTO emergency_contacts
              (owner_type, owner_id, name, relationship, phone, alt_phone, email, address,
-              is_primary, can_pick_up, notes, sort_order, created_by, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *`,
+              is_primary, can_pick_up, outside_household, notes, sort_order, created_by, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *`,
           [ownerType, ownerId, name.slice(0, 120), clean(b.relationship) || null,
            clean(b.phone) || null, clean(b.alt_phone) || null, clean(b.email) || null,
            clean(b.address) || null, !!b.is_primary, ownerType === "client" && !!b.can_pick_up,
+           ownerType === "client" ? b.outside_household === true : null,
            clean(b.notes) || null, Number(b.sort_order) || 0, user.email, nowISO(), nowISO()]
         );
         json(res, 201, row);
@@ -562,6 +603,19 @@ module.exports = function initPeople(ctx) {
             if (f === "name" && !clean(b.name)) { json(res, 400, { error: "An emergency contact needs a name." }); return true; }
             sets.push(`${f} = ?`); params.push(clean(b[f]) || null);
           }
+        }
+        // Re-run the client rule against the record as it WILL be, so an edit
+        // can never turn a compliant contact into the parent, or quietly clear
+        // the out-of-household confirmation.
+        if (row.owner_type === "client" && ("relationship" in b || "outside_household" in b)) {
+          const nextRel = "relationship" in b ? b.relationship : row.relationship;
+          const nextOutside = "outside_household" in b ? b.outside_household === true : row.outside_household === true;
+          const problem = clientContactProblem(nextRel, nextOutside);
+          if (problem) { json(res, 400, { error: problem }); return true; }
+        }
+        if ("outside_household" in b) {
+          sets.push("outside_household = ?");
+          params.push(row.owner_type === "client" ? b.outside_household === true : null);
         }
         if ("can_pick_up" in b) { sets.push("can_pick_up = ?"); params.push(row.owner_type === "client" && !!b.can_pick_up); }
         if ("sort_order" in b) { sets.push("sort_order = ?"); params.push(Number(b.sort_order) || 0); }

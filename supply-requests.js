@@ -265,6 +265,22 @@ module.exports = function initSupply(ctx) {
       return (json(res, 200, { request: adminView(r), history: hist }), true);
     }
 
+    // The photo attached to a request, by id. Sits with the other
+    // read-a-request routes rather than in the admin block below, so a staff
+    // member can see the photo on their OWN request -- same ownership test as
+    // the detail route above.
+    const reqPhoto = pathname.match(/^\/api\/supply\/requests\/(\d+)\/photo$/);
+    if (reqPhoto && method === "GET") {
+      const r = await dbGet("SELECT requester_email, photo_stored, photo_mime FROM supply_requests WHERE id = ?", [reqPhoto[1]]);
+      if (!r || !r.photo_stored) return (json(res, 404, { error: "No photo" }), true);
+      if (!owner && (r.requester_email || "").trim().toLowerCase() !== myEmail) {
+        return (json(res, 403, { error: "Not permitted." }), true);
+      }
+      const full = path.join(SUPPLY_DIR, r.photo_stored);
+      if (!fs.existsSync(full)) return (json(res, 404, { error: "No photo" }), true);
+      return (sendFile(res, 200, fs.readFileSync(full), r.photo_mime || "image/jpeg", "supply-photo"), true);
+    }
+
     // ---------------- ADMIN (owner / super_admin / admin) ----------------
     // Managing requests (status changes, edits, notes, settings) stays gated to
     // administrators; the visibility rule above governs who can READ them.
@@ -322,16 +338,6 @@ module.exports = function initSupply(ctx) {
       const b = await readBody(req);
       await history(r.id, { action: "note", note: b.note || "", actor_id: user.id, actor_name: user.name || user.email });
       return (json(res, 200, { ok: true }), true);
-    }
-
-    // Serve the photo to an admin (by id).
-    const adminPhoto = pathname.match(/^\/api\/supply\/requests\/(\d+)\/photo$/);
-    if (adminPhoto && method === "GET") {
-      const r = await dbGet("SELECT photo_stored, photo_mime FROM supply_requests WHERE id = ?", [adminPhoto[1]]);
-      if (!r || !r.photo_stored) return (json(res, 404, { error: "No photo" }), true);
-      const full = path.join(SUPPLY_DIR, r.photo_stored);
-      if (!fs.existsSync(full)) return (json(res, 404, { error: "No photo" }), true);
-      return (sendFile(res, 200, fs.readFileSync(full), r.photo_mime || "image/jpeg", "supply-photo"), true);
     }
 
     // Settings (notification recipients).

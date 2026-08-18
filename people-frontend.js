@@ -107,13 +107,16 @@
     if (!el || !ownerId) return;
     el.innerHTML = `<div style="font-size:13px; color:var(--text-muted); padding:8px 2px;">Loading emergency contacts…</div>`;
     let contacts = [];
+    let meta = {};
     try {
       const data = await call(`/api/people/emergency-contacts?owner_type=${encodeURIComponent(ownerType)}&owner_id=${ownerId}`);
       contacts = data.contacts || [];
+      meta = data || {};
     } catch (e) {
       el.innerHTML = EMPTY(`Couldn't load emergency contacts: ${e.message}`);
       return;
     }
+    const isClient = ownerType === "client";
 
     const reload = () => renderEmergencyContacts(el, ownerType, ownerId);
 
@@ -126,7 +129,13 @@
               ${c.is_primary ? `<span class="tag" style="background:#fee2e2; color:#991b1b; margin-left:6px;">Primary</span>` : ""}
               ${c.can_pick_up ? `<span class="tag" style="background:#dcfce7; color:#166534; margin-left:4px;">Authorized pickup</span>` : ""}
             </div>
-            <div style="font-size:12.5px; color:var(--text-muted); margin-top:2px;">${esc(c.relationship || "Relationship not recorded")}</div>
+            <div style="font-size:12.5px; color:var(--text-muted); margin-top:2px;">${esc(c.relationship || "Relationship not recorded")}${
+              isClient
+                ? (c.outside_household === true
+                    ? ` &middot; <span style="color:#166534;">✓ does not live in the client's home</span>`
+                    : ` &middot; <span style="color:#946213;">⚠ household not confirmed — open Edit and answer the question</span>`)
+                : ""
+            }</div>
             <div style="font-size:13.5px; margin-top:6px; display:flex; flex-wrap:wrap; gap:12px; align-items:center;">
               ${c.phone ? `<a href="tel:${esc(c.phone)}" style="display:inline-flex; align-items:center; gap:5px; text-decoration:none; color:inherit;">${ICON.phone}<strong>${esc(c.phone)}</strong></a>` : ""}
               ${c.alt_phone ? `<a href="tel:${esc(c.alt_phone)}" style="display:inline-flex; align-items:center; gap:5px; text-decoration:none; color:var(--text-muted);">${ICON.phone}${esc(c.alt_phone)}</a>` : ""}
@@ -142,7 +151,16 @@
         </div>
       </div>`;
 
+    const banner = !isClient ? "" : (
+      meta.has_compliant_contact
+        ? ""
+        : `<div style="background:#fffbeb; border:1px solid #fde68a; color:#92400e; border-radius:10px; padding:10px 12px; font-size:12.5px; margin-bottom:10px;">
+             <strong>Emergency contact needed.</strong> This client needs at least one emergency contact who is <strong>not</strong> the parent/guardian and who <strong>does not live in the client's home</strong>${contacts.length ? " — the contacts below don't meet that yet." : "."}
+           </div>`
+    );
+
     el.innerHTML = `
+      ${banner}
       ${contacts.length ? contacts.map(row).join("") : EMPTY("No emergency contact on file yet.")}
       <button class="btn small" data-ec-add>+ Add emergency contact</button>`;
 
@@ -152,7 +170,17 @@
       drawer(isNew ? "Add emergency contact" : `Edit ${c.name}`,
         [
           textField("name", "Full name", c.name),
-          textField("relationship", "Relationship", c.relationship, { placeholder: ownerType === "client" ? "Mother, Grandparent, Neighbor…" : "Spouse, Parent, Friend…" }),
+          textField("relationship", "Relationship to " + (ownerType === "client" ? "client" : "staff member"), c.relationship,
+            { placeholder: ownerType === "client" ? "Grandparent, Aunt, Family friend, Neighbor…" : "Spouse, Parent, Friend…" }),
+          ownerType === "client"
+            ? `<div class="field full" style="background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:9px 11px;">
+                 <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; margin:0;">
+                   <input data-k="outside_household" type="checkbox" ${c.outside_household === true ? "checked" : ""} style="width:auto; margin-top:2px;" />
+                   <span>I confirm this person <strong>does not live in the client's home</strong>, and is not the parent/guardian.</span>
+                 </label>
+                 <div style="font-size:11.5px; color:var(--text-muted); margin-top:5px;">Required. An emergency contact is the person we call when the parent/guardian can't be reached, so they can't be in the same household.</div>
+               </div>`
+            : "",
           textField("phone", "Phone", c.phone, { placeholder: "(702) 555-0134" }),
           textField("alt_phone", "Alternate phone", c.alt_phone),
           textField("email", "Email", c.email, { type: "email", full: true }),
@@ -164,6 +192,11 @@
         async (v) => {
           if (!clean(v.name)) throw new Error("A name is required.");
           if (!clean(v.phone) && !clean(v.alt_phone)) throw new Error("At least one phone number is required.");
+          // Mirrors the server rule so the message arrives before the round
+          // trip; the server is still the copy that enforces it.
+          if (ownerType === "client" && v.outside_household !== true) {
+            throw new Error("Please confirm this person does not live in the client's home.");
+          }
           // owner_type rides on the query string as well as the body so the
           // per-user module gate in server.js can tell a client contact from a
           // staff one before the request reaches this module.

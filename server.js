@@ -417,6 +417,26 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_intake_coordinator_name TE
 -- A task can be assigned to someone who works here but has no CRM login, so
 -- their address is stored on the task rather than resolved through users.
 ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS assigned_email TEXT;
+-- Reopening a task that was ticked by accident. The task itself is reused --
+-- never duplicated -- so these columns are what is left to show that it WAS
+-- completed and was later put back: when it was last completed, who reopened
+-- it, when, and how many times. Additive; every existing row reads as
+-- "never reopened".
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS last_completed_at TEXT;
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS reopened_at TEXT;
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS reopened_by TEXT;
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS reopen_count INTEGER NOT NULL DEFAULT 0;
+-- The same, for the per-client stage tasks on the client record.
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS last_completed_at TEXT;
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS reopened_at TEXT;
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS reopened_by TEXT;
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS reopen_count INTEGER NOT NULL DEFAULT 0;
+-- Backfill: a task that is already completed has its completion date copied
+-- across, so a task ticked before this change still shows its original
+-- completion date if it is reopened later. Runs once; the WHERE clause makes
+-- it a no-op afterwards.
+UPDATE client_tasks SET last_completed_at = completed_at WHERE completed_at IS NOT NULL AND last_completed_at IS NULL;
+UPDATE staff_tasks SET last_completed_at = completed_at WHERE completed_at IS NOT NULL AND last_completed_at IS NULL;
 -- Task priority for the personal Task Center: low | normal | high | urgent.
 ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal';
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted BOOLEAN NOT NULL DEFAULT false;
@@ -877,11 +897,29 @@ async function sendEligibilityCheck(client, actor) {
 
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const row = (label, val) => `<tr><td style="padding:6px 12px;color:#555;">${label}</td><td style="padding:6px 12px;font-weight:600;">${esc(val || "—")}</td></tr>`;
+  // The card is the point of this email: billing cannot run a benefits check
+  // without it, and a request that arrives with nothing attached just becomes
+  // a second job for somebody. So this never sends card-less -- not on the
+  // automatic trigger, and not from the manual button either. The caller gets
+  // a "no_card" answer it can act on instead.
+  //
+  // Tested on what actually came out the other end rather than on what is on
+  // the record: a card row whose file has gone missing from disk fails the
+  // read above and leaves attachments empty, and that must block the send too.
+  if (!attachments.length && !linkCards.length) {
+    return {
+      ok: false,
+      code: "no_card",
+      error: cardDocs.length
+        ? "This client's insurance card is on file but could not be read, so the eligibility check was not sent. Re-upload the card and try again."
+        : "No insurance card is on file for this client, so the eligibility check was not sent. Use \u201cRequest documents from parent\u201d to ask the family for the front and back of the card.",
+      attachments: 0,
+    };
+  }
+
   const cardNote = attachments.length
     ? `<p>The insurance card ${attachments.length > 1 ? "images are" : "image is"} attached to this email.</p>`
-    : linkCards.length
-    ? `<p>Insurance card link(s): ${linkCards.map((d) => `<a href="${esc(d.external_url)}">${esc(d.label || d.filename)}</a>`).join(", ")}</p>`
-    : `<p><em>No insurance card image is on file yet. Once it's uploaded to the client's record, you can re-send this from the CRM.</em></p>`;
+    : `<p>Insurance card link(s): ${linkCards.map((d) => `<a href="${esc(d.external_url)}">${esc(d.label || d.filename)}</a>`).join(", ")}</p>`;
 
   const html = `
     <div style="font-family:Arial,Helvetica,sans-serif;color:#222;">
@@ -945,6 +983,107 @@ async function maybeSendEligibilityCheck(clientId, actor) {
       .catch((e) => console.error("Could not stamp eligibility_check_sent_at:", e.message));
   }
   return result;
+}
+
+const MAX_CLIENT_DOC_BYTES = 15 * 1024 * 1024;
+
+// Whether a document is the official diagnosis, so the checklist item stops
+// waiting on someone to tick a box the upload already answered. Kept narrow on
+// purpose -- "progress report" and "session note" must not read as a diagnosis.
+function looksLikeDiagnosis(doc) {
+  const s = `${doc.label || ""} ${doc.filename || ""}`.toLowerCase();
+  return /diagnos|autism|\basd\b|\bdx\b|psych/.test(s);
+}
+
+// ---- One way to put a document on a client's record ----------------------
+// Staff uploads from the client card, the admin bulk import, and the parent's
+// own upload link all land here, so the three of them cannot drift on the
+// things that matter: where the file is written, how big it may be, whether it
+// counts as the insurance card or the diagnosis, which checklist boxes that
+// ticks, and -- the part that was missing -- kicking the eligibility check now
+// that the card it was waiting for has arrived.
+//
+// Before this, only the bulk-import path fired the eligibility check. A card
+// uploaded the normal way, from the client card, never triggered anything,
+// which is why staff fell back to pressing "Send Benefits & Eligibility Check"
+// by hand and billing kept receiving requests with nothing attached.
+async function saveClientDocument(opts) {
+  const clientId = Number(opts.client_id);
+  const client = await dbGet("SELECT id FROM clients WHERE id = ?", [clientId]);
+  if (!client) return { ok: false, status: 404, error: "Client not found." };
+
+  const filename = String(opts.filename || "").trim();
+  const label = String(opts.label || filename || "Document").trim();
+  const mimeType = opts.mime_type || null;
+
+  let row;
+  if (opts.external_url) {
+    row = await dbGet(
+      `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at, is_insurance_card)
+       VALUES (?, ?, ?, ?, NULL, 'link', ?, ?, ?) RETURNING *`,
+      [clientId, label, filename || opts.external_url, mimeType, opts.external_url, nowISO(), opts.is_insurance_card === true]
+    );
+  } else {
+    if (!opts.content_base64 || !filename) {
+      return { ok: false, status: 400, error: "A file (or a link) is required." };
+    }
+    let buffer;
+    try {
+      buffer = Buffer.from(String(opts.content_base64), "base64");
+    } catch (e) {
+      return { ok: false, status: 400, error: "Invalid file data." };
+    }
+    if (!buffer.length) return { ok: false, status: 400, error: "That file came through empty. Please try again." };
+    if (buffer.length > MAX_CLIENT_DOC_BYTES) {
+      return { ok: false, status: 400, error: "File is too large (15MB max)." };
+    }
+    const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const storedName = `${clientId}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
+    try {
+      fs.writeFileSync(path.join(DOCS_DIR, storedName), buffer);
+    } catch (e) {
+      console.error("Could not save client document:", e.message);
+      return { ok: false, status: 500, error: "Could not save file." };
+    }
+    row = await dbGet(
+      `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at, is_insurance_card)
+       VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?, ?) RETURNING *`,
+      [clientId, label, filename, mimeType || "application/octet-stream", storedName, nowISO(), opts.is_insurance_card === true]
+    );
+  }
+
+  // Checklist flags the upload has already answered. An explicit flag from the
+  // caller wins; otherwise the label/filename is read, which is what the
+  // eligibility check has always done.
+  const isCard = opts.is_insurance_card === true || looksLikeInsuranceCard(row);
+  if (isCard) {
+    await dbRun("UPDATE clients SET insurance_card_uploaded = true WHERE id = ?", [clientId])
+      .catch((e) => console.error("Could not flag insurance card uploaded:", e.message));
+  }
+  if (opts.is_diagnosis === true || looksLikeDiagnosis(row)) {
+    await dbRun("UPDATE clients SET diagnosis_uploaded = true WHERE id = ?", [clientId])
+      .catch((e) => console.error("Could not flag diagnosis uploaded:", e.message));
+  }
+
+  // Fired on every upload rather than only on ones we think are a card:
+  // maybeSendEligibilityCheck decides for itself whether a card is on file and
+  // whether the email has already gone, so it is safe to call and it cannot
+  // miss a card that arrived under an unhelpful filename.
+  const eligibility = await maybeSendEligibilityCheck(clientId, opts.actor || "system")
+    .catch((e) => { console.error("eligibility check failed:", e.message); return null; });
+
+  return {
+    ok: true,
+    document: {
+      id: row.id,
+      client_id: clientId,
+      filename: row.filename,
+      label: row.label,
+      doc_type: row.doc_type,
+      insurance_card: isCard,
+    },
+    eligibility,
+  };
 }
 
 // ---- Failed-email retry ("push" failed emails) --------------------------
@@ -1889,7 +2028,9 @@ async function completeTask(taskId, completedByUserId, opts = {}) {
   const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [taskId]);
   if (!task) return { ok: false, error: "Task not found" };
 
-  await dbRun("UPDATE client_tasks SET status = 'completed', completed_at = ? WHERE id = ?", [nowISO(), taskId]);
+  // last_completed_at mirrors completed_at and is deliberately never cleared,
+  // so a task that is reopened still shows when it had been ticked.
+  await dbRun("UPDATE client_tasks SET status = 'completed', completed_at = ?, last_completed_at = ? WHERE id = ?", [nowISO(), nowISO(), taskId]);
 
   const taskLabel = await dbGet("SELECT label, stage_key FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
 
@@ -2041,6 +2182,54 @@ async function processAssessmentReminders() {
 }
 
 const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone, processAssessmentReminders };
+
+// The live pipeline stages a closed-out client may be restored into. Derived
+// from STAGES so a stage added later is automatically offered, minus the two
+// terminal ones (restoring a client INTO "not moving forward" is a no-op) and
+// minus "active", which is a clinical state reached by finishing the pipeline
+// rather than something to be dropped into by hand.
+const REACTIVATABLE_STAGES = STAGE_ORDER.filter(
+  (k) => !["discharged", "not_moving_forward", "active"].includes(k)
+);
+
+// A note written by the app on the user's behalf, in the client's existing
+// note trail. Used for record-level events (closed out, reactivated) that
+// staff need to still see months later.
+async function addSystemClientNote(clientId, user, body) {
+  await dbRun(
+    `INSERT INTO client_notes (client_id, author_id, author_name, body, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [clientId, (user && user.id) || null, (user && (user.name || user.email)) || "System", body, nowISO()]
+  ).catch((e) => console.error("addSystemClientNote failed:", e.message));
+}
+
+// Put a completed client stage task back on the open list. The SAME task row
+// is reused -- reopening never creates a second copy of the task, and its due
+// date, department and stage are all untouched. What changes is only its
+// status, plus the small history trail (who reopened it, when, how many times,
+// and the completion date it is being rolled back from) that lets the card say
+// "completed 3 Aug, reopened by Quiana 5 Aug".
+//
+// Deliberately does NOT rewind the client's stage: the stage change already
+// fired its department alert and its parent milestone email, and walking those
+// back would either re-send them or leave the record claiming something that
+// never un-happened.
+async function reopenClientTask(taskId, user) {
+  const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [taskId]);
+  if (!task) return { ok: false, error: "Task not found" };
+  if (task.status !== "completed") return { ok: true, already_open: true };
+  await dbRun(
+    `UPDATE client_tasks
+        SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL,
+            last_completed_at = COALESCE(last_completed_at, ?),
+            reopened_at = ?, reopened_by = ?, reopen_count = COALESCE(reopen_count, 0) + 1
+      WHERE id = ?`,
+    [task.completed_at, nowISO(), (user && (user.name || user.email)) || "staff", taskId]
+  );
+  const label = await dbGet("SELECT label FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
+  console.log(`[client ${task.client_id}] task ${taskId} (${(label && label.label) || "?"}) reopened by ${(user && user.email) || "unknown"} at ${nowISO()}`);
+  return { ok: true, reopened: true };
+}
 
 // ---- Staff to-do tasks (assignable, with due dates + email reminders) ----
 const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
@@ -2562,11 +2751,20 @@ const SIGNNOW_BASIC_TOKEN = process.env.SIGNNOW_BASIC_TOKEN || "";
 const SIGNNOW_USERNAME = process.env.SIGNNOW_USERNAME || "";
 const SIGNNOW_PASSWORD = process.env.SIGNNOW_PASSWORD || "";
 
-// True if SignNow can send at all: either the auto-refresh credentials OR a
-// static API key is present, AND we have a template to send.
+// True if we can authenticate against SignNow at all -- either the
+// auto-refresh credentials or the legacy static API key. Reading a document's
+// status only needs this; sending additionally needs a template (below).
+// One helper rather than the same expression copied into five places, because
+// the copies had already drifted: checkEnrollmentPackets tested SIGNNOW_API_KEY
+// alone and so did nothing on installs using the auto-refresh credentials.
+function signNowAuthConfigured() {
+  return !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY);
+}
+
+// True if SignNow can send at all: authentication is available AND we have a
+// template to send.
 function signNowConfigured() {
-  const hasAuth = (SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY;
-  return !!(hasAuth && SIGNNOW_ENROLLMENT_TEMPLATE_ID);
+  return !!(signNowAuthConfigured() && SIGNNOW_ENROLLMENT_TEMPLATE_ID);
 }
 
 // Cached access token so we don't re-auth on every call.
@@ -2779,7 +2977,7 @@ async function sendNewHirePacket(employee, { actor = "automation", force = false
   }
 
   const templateId = await newHireTemplateId();
-  const hasAuth = (SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY;
+  const hasAuth = signNowAuthConfigured();
   if (!hasAuth || !templateId) {
     const msg = !hasAuth
       ? "SignNow is not connected on the server (needs SIGNNOW_BASIC_TOKEN / SIGNNOW_USERNAME / SIGNNOW_PASSWORD, or SIGNNOW_API_KEY)."
@@ -2822,7 +3020,7 @@ async function sendNewHirePacket(employee, { actor = "automation", force = false
 async function getNewHirePacket(employeeId) {
   const row = await dbGet("SELECT * FROM newhire_packets WHERE employee_id = ?", [employeeId]);
   const templateId = await newHireTemplateId();
-  const hasAuth = !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY);
+  const hasAuth = signNowAuthConfigured();
   return { packet: row || null, configured: hasAuth && !!templateId, signnow_connected: hasAuth, template_set: !!templateId };
 }
 
@@ -2851,7 +3049,13 @@ async function retryFailedEnrollmentPackets() {
 }
 
 async function checkEnrollmentPackets() {
-  if (!SIGNNOW_API_KEY) return;
+  // Polling a document's status needs authentication, not a template. This
+  // used to test SIGNNOW_API_KEY, which is empty on every install using the
+  // preferred auto-refresh credentials -- so the sweep returned immediately,
+  // packets were never marked 'completed', the daily reminders never went out,
+  // and (because the Clinical Screener invite is triggered by packet
+  // completion) no screener was ever sent automatically.
+  if (!signNowAuthConfigured()) return;
   const pending = await dbAll("SELECT * FROM enrollment_packets WHERE status = 'sent'");
   const now = Date.now();
 
@@ -4344,51 +4548,24 @@ async function handle(req, res, pathname, method, query = {}) {
       if (!content_base64 && !external_url) {
         return json(res, 400, { error: "content_base64 or external_url is required" });
       }
-      const client = await dbGet("SELECT id FROM clients WHERE id = ?", [client_id]);
-      if (!client) return json(res, 404, { error: "Client not found" });
-
-      if (content_base64) {
-        const safeName = String(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
-        const storedName = `${client_id}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
-        const fullPath = path.join(DOCS_DIR, storedName);
-        let buffer;
-        try {
-          buffer = Buffer.from(content_base64, "base64");
-        } catch (e) {
-          return json(res, 400, { error: "Invalid base64 content" });
-        }
-        fs.writeFileSync(fullPath, buffer);
-
-        // The uploader can say outright that this is the card, which is the
-        // only signal that survives a phone filename like IMG_4821.jpg.
-        const markedCard = body.is_insurance_card === true
+      // Same storage, same card/diagnosis detection and same eligibility
+      // trigger as the client card and the parent's upload link. The importer
+      // keeps its one extra rule: an image with no other signal is treated as
+      // the card, because a bulk import of phone photos is exactly that.
+      const result = await saveClientDocument({
+        client_id,
+        label,
+        filename,
+        mime_type,
+        content_base64,
+        external_url,
+        is_insurance_card: body.is_insurance_card === true
           || looksLikeInsuranceCard({ label, filename })
-          || /^image\//i.test(String(mime_type || ""));
-        const row = await dbGet(
-          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at, is_insurance_card)
-           VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?, ?) RETURNING id`,
-          [client_id, label || filename, filename, mime_type || "application/octet-stream", storedName, nowISO(),
-           body.is_insurance_card === true]
-        );
-        // Uploading the card is what "insurance card uploaded" means, so the
-        // checklist stops waiting on a human to tick a box that the upload
-        // already answered.
-        if (markedCard) {
-          await dbRun("UPDATE clients SET insurance_card_uploaded = true WHERE id = ?", [client_id])
-            .catch((e) => console.error("Could not flag insurance card uploaded:", e.message));
-          // The card is what the eligibility check was waiting for.
-          maybeSendEligibilityCheck(Number(client_id), (user && user.email) || "system")
-            .catch((e) => console.error("eligibility check failed:", e.message));
-        }
-        return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "hosted", insurance_card: markedCard });
-      } else {
-        const row = await dbGet(
-          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-           VALUES (?, ?, ?, ?, NULL, 'link', ?, ?) RETURNING id`,
-          [client_id, label || filename, filename, mime_type || null, external_url, nowISO()]
-        );
-        return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "link" });
-      }
+          || (!!content_base64 && /^image\//i.test(String(mime_type || ""))),
+        actor: (user && user.email) || "import",
+      });
+      if (!result.ok) return json(res, result.status || 400, { error: result.error });
+      return json(res, 201, result.document);
     }
 
     // Removes a single document row (and its file on disk, if hosted).
@@ -4658,7 +4835,7 @@ async function handle(req, res, pathname, method, query = {}) {
         ? await dbAll("SELECT * FROM notifications_log WHERE client_id = ? ORDER BY sent_at DESC", [id])
         : [];
       const documents = await dbAll(
-        "SELECT id, label, filename, mime_type, doc_type, external_url, uploaded_at FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
+        "SELECT id, label, filename, mime_type, doc_type, external_url, uploaded_at, is_insurance_card FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
         [id]
       );
       const enrollmentPacket = await dbGet(
@@ -4797,11 +4974,95 @@ async function handle(req, res, pathname, method, query = {}) {
     if (dischargeMatch && method === "POST") {
       const id = dischargeMatch[1];
       const { reason, stage } = await readBody(req);
+      const before = await dbGet("SELECT stage FROM clients WHERE id = ?", [id]);
+      const target = stage || "discharged";
       await dbRun(
         "UPDATE clients SET stage = ?, discharge_reason = ?, updated_at = ? WHERE id = ?",
-        [stage || "discharged", reason || null, nowISO(), id]
+        [target, reason || null, nowISO(), id]
       );
+      // Closing a record out is written into the client's own note history, so
+      // that when it is later reopened the timeline still shows it happened,
+      // who did it and why. Uses the existing client_notes trail rather than a
+      // second audit store.
+      if (!before || before.stage !== target) {
+        await addSystemClientNote(
+          id, user,
+          `Marked ${target === "not_moving_forward" ? "Not Moving Forward" : "Discharged"}` +
+          (reason ? ` — ${reason}` : "") + "."
+        );
+      }
       return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
+    }
+
+    // Bring a client back from "Not Moving Forward" (or Discharged) into the
+    // live pipeline. Deliberately NOT pipeline.enterStage(): that fires the
+    // department alert and the parent milestone email, and a family being put
+    // back on the board should not receive "great news, time for your
+    // assessment" as a side effect of an office correction.
+    //
+    // The same record is reused throughout -- no new client row, nothing
+    // deleted, notes/documents/tasks/communications all stay attached -- and
+    // the closure it is coming back from is written into the client's note
+    // history first, so the fact that they were once marked Not Moving Forward
+    // survives the restore.
+    const reactivateMatch = pathname.match(/^\/api\/clients\/(\d+)\/reactivate$/);
+    if (reactivateMatch && method === "POST") {
+      const id = reactivateMatch[1];
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      if (client.stage !== "not_moving_forward" && client.stage !== "discharged") {
+        return json(res, 409, { error: "This client is already in the active pipeline." });
+      }
+      const body = await readBody(req).catch(() => ({}));
+      const requested = (body && body.stage) || "new_submission";
+      if (!REACTIVATABLE_STAGES.includes(requested)) {
+        return json(res, 400, { error: "Choose a stage in the active pipeline to move this client back into." });
+      }
+      const closedAs = client.stage === "not_moving_forward" ? "Not Moving Forward" : "Discharged";
+      const stageDef = pipeline.getStage(requested);
+      const note = (body && String(body.note || "").trim()) || "";
+
+      await addSystemClientNote(
+        id, user,
+        `Reactivated — moved back into the ${(stageDef && stageDef.label) || requested} stage. ` +
+        `Previously marked ${closedAs}${client.discharge_reason ? ` (reason on file: ${client.discharge_reason})` : ""}.` +
+        (note ? ` Note: ${note}` : "")
+      );
+
+      // discharge_reason is cleared because it now describes a closure that has
+      // been undone -- it would otherwise keep showing on the live record as if
+      // still current. Its text is preserved verbatim in the note above.
+      await dbRun(
+        "UPDATE clients SET stage = ?, discharge_reason = NULL, stage_entered_at = ?, updated_at = ? WHERE id = ?",
+        [requested, nowISO(), nowISO(), id]
+      );
+
+      // Give the stage its checklist back, but only the tasks that are actually
+      // missing: a client who already has a row for one of these tasks keeps
+      // that row (and its completion history) rather than gaining a duplicate.
+      const stageTasks = await dbAll("SELECT * FROM stage_tasks WHERE stage_key = ?", [requested]);
+      let tasksCreated = 0;
+      for (const task of stageTasks) {
+        const existing = await dbGet(
+          "SELECT id FROM client_tasks WHERE client_id = ? AND stage_task_id = ?",
+          [id, task.id]
+        );
+        if (existing) continue;
+        await dbRun(
+          `INSERT INTO client_tasks (client_id, stage_task_id, status, due_date, created_at)
+           VALUES (?, ?, 'pending', ?, ?)`,
+          [id, task.id, addBusinessDays(new Date(), task.sla_days).toISOString(), nowISO()]
+        );
+        tasksCreated++;
+      }
+
+      console.log(`[client ${id}] reactivated from ${closedAs} into ${requested} by ${user.email} at ${nowISO()}`);
+      const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      return json(res, 200, {
+        ...authAlerts.sanitizeClientForRole(user, updated),
+        reactivated_from: closedAs,
+        tasks_created: tasksCreated,
+      });
     }
 
     // Place a client on (or take them off) the waitlist. Placing sends the
@@ -4900,38 +5161,19 @@ async function handle(req, res, pathname, method, query = {}) {
       const client = await dbGet("SELECT id FROM clients WHERE id = ?", [id]);
       if (!client) return json(res, 404, { error: "Not found" });
       const body = await readBody(req);
-      const label = (body.label || body.filename || "Document").trim();
-      if (body.external_url) {
-        const row = await dbGet(
-          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-           VALUES (?, ?, ?, ?, NULL, 'link', ?, ?) RETURNING id`,
-          [id, label, body.filename || body.external_url, body.mime_type || null, body.external_url, nowISO()]
-        );
-        return json(res, 201, { id: row.id, doc_type: "link" });
-      }
-      if (!body.content_base64 || !body.filename) {
-        return json(res, 400, { error: "A file (or a link) is required." });
-      }
-      let buffer;
-      try {
-        buffer = Buffer.from(body.content_base64, "base64");
-      } catch (e) {
-        return json(res, 400, { error: "Invalid file data." });
-      }
-      if (buffer.length > 15 * 1024 * 1024) return json(res, 400, { error: "File is too large (15MB max)." });
-      const safeName = String(body.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
-      const storedName = `${id}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
-      try {
-        fs.writeFileSync(path.join(DOCS_DIR, storedName), buffer);
-      } catch (e) {
-        return json(res, 500, { error: "Could not save file." });
-      }
-      const row = await dbGet(
-        `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-         VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?) RETURNING id`,
-        [id, label, body.filename, body.mime_type || "application/octet-stream", storedName, nowISO()]
-      );
-      return json(res, 201, { id: row.id, doc_type: "hosted" });
+      const result = await saveClientDocument({
+        client_id: id,
+        label: body.label,
+        filename: body.filename,
+        mime_type: body.mime_type,
+        content_base64: body.content_base64,
+        external_url: body.external_url,
+        is_insurance_card: body.is_insurance_card === true,
+        is_diagnosis: body.is_diagnosis === true,
+        actor: user.email,
+      });
+      if (!result.ok) return json(res, result.status || 400, { error: result.error });
+      return json(res, 201, result.document);
     }
 
     const docItemMatch = pathname.match(/^\/api\/clients\/(\d+)\/documents\/(\d+)$/);
@@ -5243,13 +5485,69 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     // ---------- Staff to-do tasks (assignable, due dates, reminders) ----------
     // Supervisory roles (owner / super_admin / admin) may see the whole
-    // organization's task list. Everyone else is scoped to their OWN tasks at
-    // the query level -- enforced here on the server, not merely hidden in the
-    // UI -- so a normal staffer can never browse another employee's task list.
-    // "Mine" = tasks whose assigned_user_id is me, or whose assigned_email
-    // matches my login (covers tasks assigned to staff who have no CRM user id).
+    // organization's task list. Everyone else is scoped at the QUERY level --
+    // enforced here on the server, not merely hidden in the UI -- so a normal
+    // staffer can never browse another employee's task list.
+    //
+    // What a non-supervisory staff member may see is exactly three things:
+    //   1. tasks assigned to them (by user id, or by email for staff with no
+    //      CRM login),
+    //   2. tasks they created themselves,
+    //   3. tasks attached to a client they are assigned to (their own
+    //      caseload -- the same "assigned to this client" test the message
+    //      history already uses).
+    // Anything else -- another staffer's personal to-do list, a client task on
+    // a family they have nothing to do with -- is invisible to them, and stays
+    // invisible however the request is crafted.
     const canSeeAllTasks = (u) => !!u && ["owner", "super_admin", "admin"].includes(u.role);
+    // "Mine" = tasks whose assigned_user_id is me, or whose assigned_email
+    // matches my login (which covers staff who have no CRM user id).
     const mineClause = "(st.assigned_user_id = ? OR (st.assigned_email IS NOT NULL AND lower(st.assigned_email) = lower(?)))";
+    // 15 placeholders, filled by visibleParams() below in this order:
+    // my user id, my email (assignee), my email (creator), then my email twice
+    // for each of the two assigned-*-email columns and my name twice for each
+    // of the four assigned-*-name columns.
+    const visibleClause =
+      "(" + mineClause +
+      " OR (st.created_by IS NOT NULL AND lower(st.created_by) = lower(?))" +
+      " OR (st.client_id IS NOT NULL AND EXISTS (" +
+      "      SELECT 1 FROM clients vc WHERE vc.id = st.client_id AND (" +
+      "        (? <> '' AND lower(COALESCE(vc.assigned_bcba_email, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_billing_email, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_bcba_name, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_rbt_name, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_billing_name, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_intake_coordinator_name, '')) = lower(?))" +
+      "      )))" +
+      ")";
+    const visibleParams = (u) => {
+      const email = String((u && u.email) || "").trim();
+      const name = String((u && u.name) || "").trim();
+      return [
+        u.id, email,                                    // assigned to me
+        email,                                          // created by me
+        email, email,                                   // caseload: assigned_bcba_email
+        email, email,                                   // caseload: assigned_billing_email
+        name, name,                                     // caseload: assigned_bcba_name
+        name, name,                                     // caseload: assigned_rbt_name
+        name, name,                                     // caseload: assigned_billing_name
+        name, name,                                     // caseload: assigned_intake_coordinator_name
+      ];
+    };
+    // Only a task's assignee, its creator, or a supervisor may change or delete
+    // it. Without this, a staffer who knows a task id could tick off or delete
+    // work belonging to someone whose list they cannot even read.
+    async function canEditStaffTask(u, taskId) {
+      if (canSeeAllTasks(u)) return true;
+      const t = await dbGet("SELECT assigned_user_id, assigned_email, created_by FROM staff_tasks WHERE id = ?", [taskId]);
+      if (!t) return false;
+      const email = String((u && u.email) || "").trim().toLowerCase();
+      return (
+        (t.assigned_user_id != null && Number(t.assigned_user_id) === Number(u.id)) ||
+        (!!t.assigned_email && String(t.assigned_email).trim().toLowerCase() === email) ||
+        (!!t.created_by && String(t.created_by).trim().toLowerCase() === email)
+      );
+    }
 
     if (pathname === "/api/staff-tasks/summary" && method === "GET") {
       // Counts for the logged-in user's OWN incomplete tasks -- powers the
@@ -5272,13 +5570,20 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     }
 
     if (pathname === "/api/staff-tasks" && method === "GET") {
-      // Non-supervisory users are forced to their own tasks no matter what
-      // scope they ask for. Supervisors default to everything but can still
-      // request scope=mine for their personal view.
-      const wantMine = query.scope === "mine" || !canSeeAllTasks(user);
+      // scope=mine   -> only tasks assigned to me (the personal Task Center).
+      // default      -> everything a supervisor may see, or the three-way
+      //                 visible set above for everyone else.
+      // A non-supervisory user CANNOT widen this by asking: the else-branch
+      // applies visibleClause unconditionally.
       const clauses = [];
       const params = [];
-      if (wantMine) { clauses.push(mineClause); params.push(user.id, user.email || ""); }
+      if (query.scope === "mine") {
+        clauses.push(mineClause);
+        params.push(user.id, user.email || "");
+      } else if (!canSeeAllTasks(user)) {
+        clauses.push(visibleClause);
+        params.push(...visibleParams(user));
+      }
       if (query.status === "open" || query.status === "done") { clauses.push("st.status = ?"); params.push(query.status); }
       const where = clauses.length ? "WHERE " + clauses.join(" AND ") : "";
       const rows = await dbAll(
@@ -5288,19 +5593,54 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
          ORDER BY (st.status = 'done'), st.due_date NULLS LAST, st.id DESC`,
         params
       );
-      return json(res, 200, rows);
+      // So the UI can render the right buttons without guessing at the rules.
+      const email = String(user.email || "").trim().toLowerCase();
+      return json(res, 200, rows.map((r) => ({
+        ...r,
+        can_edit: canSeeAllTasks(user) ||
+          (r.assigned_user_id != null && Number(r.assigned_user_id) === Number(user.id)) ||
+          (!!r.assigned_email && String(r.assigned_email).trim().toLowerCase() === email) ||
+          (!!r.created_by && String(r.created_by).trim().toLowerCase() === email),
+      })));
     }
     if (pathname === "/api/staff-tasks" && method === "POST") {
       const body = await readBody(req);
       const title = (body.title || "").trim();
       if (!title) return json(res, 400, { error: "A task title is required." });
+
+      // Any signed-in staff member may raise a task -- for themselves, or for
+      // a colleague. Assigning is not a supervisory privilege; SEEING someone
+      // else's list still is (the GET above), so handing work over never opens
+      // up the rest of that person's to-do list.
+      let assignedUserId = body.assigned_user_id ? Number(body.assigned_user_id) : null;
+      let assignedName = body.assigned_name || null;
+      let assignedEmail = body.assigned_email || null;
+      // No assignee given = a task for myself. This is what makes "create a
+      // task for myself" a single click rather than picking your own name.
+      if (!assignedUserId && !assignedName && !assignedEmail) {
+        assignedUserId = user.id;
+        assignedName = user.name || null;
+        assignedEmail = user.email || null;
+      }
+
+      // Attaching a task to a client is client-record access, so it is checked
+      // as such rather than trusted from the body.
+      let clientId = body.client_id ? Number(body.client_id) : null;
+      if (clientId) {
+        if (!canAccessClients(user) && !moduleGranted(user, "pipeline")) {
+          return json(res, 403, { error: "You don't have access to client records, so this task can't be linked to a client." });
+        }
+        const exists = await dbGet("SELECT id FROM clients WHERE id = ?", [clientId]);
+        if (!exists) return json(res, 400, { error: "That client no longer exists." });
+      }
+
       const row = await createStaffTask({
         title,
         description: body.description,
-        assigned_user_id: body.assigned_user_id ? Number(body.assigned_user_id) : null,
-        assigned_name: body.assigned_name,
-        assigned_email: body.assigned_email,
-        client_id: body.client_id ? Number(body.client_id) : null,
+        assigned_user_id: assignedUserId,
+        assigned_name: assignedName,
+        assigned_email: assignedEmail,
+        client_id: clientId,
         due_date: body.due_date || null,
         priority: body.priority,
         created_by: user.email,
@@ -5310,6 +5650,11 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     const staffTaskMatch = pathname.match(/^\/api\/staff-tasks\/(\d+)$/);
     if (staffTaskMatch && method === "PATCH") {
       const id = Number(staffTaskMatch[1]);
+      // Backend, not just the UI: a task may only be changed by the person it
+      // is assigned to, the person who raised it, or a supervisor.
+      if (!(await canEditStaffTask(user, id))) {
+        return json(res, 403, { error: "This task belongs to someone else." });
+      }
       const body = await readBody(req);
       const sets = [];
       const params = [];
@@ -5328,6 +5673,23 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         const done = body.status === "done";
         sets.push("status = ?", "completed_at = ?");
         params.push(done ? "done" : "open", done ? nowISO() : null);
+        if (done) {
+          // Kept even after a later reopen, so the task can still say when it
+          // had been completed.
+          sets.push("last_completed_at = ?");
+          params.push(nowISO());
+        } else {
+          // Reopening: the SAME task goes back on the open list -- title, due
+          // date, assignee, client link and description all untouched -- with
+          // a trail of who put it back and how many times.
+          sets.push(
+            "last_completed_at = COALESCE(last_completed_at, completed_at)",
+            "reminder_sent_at = NULL",
+            "reopened_at = ?", "reopened_by = ?",
+            "reopen_count = COALESCE(reopen_count, 0) + 1"
+          );
+          params.push(nowISO(), user.name || user.email || "staff");
+        }
       }
       if (!sets.length) return json(res, 400, { error: "Nothing to update." });
       params.push(id);
@@ -5347,7 +5709,11 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       return json(res, 200, afterTask);
     }
     if (staffTaskMatch && method === "DELETE") {
-      await dbRun("DELETE FROM staff_tasks WHERE id = ?", [Number(staffTaskMatch[1])]);
+      const id = Number(staffTaskMatch[1]);
+      if (!(await canEditStaffTask(user, id))) {
+        return json(res, 403, { error: "This task belongs to someone else." });
+      }
+      await dbRun("DELETE FROM staff_tasks WHERE id = ?", [id]);
       return json(res, 200, { ok: true });
     }
 
@@ -5383,14 +5749,8 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     const reopenTaskMatch = pathname.match(/^\/api\/tasks\/(\d+)\/reopen$/);
     if (reopenTaskMatch && method === "POST") {
-      const id = reopenTaskMatch[1];
-      const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [id]);
-      if (!task) return json(res, 404, { error: "Not found" });
-      await dbRun(
-        "UPDATE client_tasks SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL WHERE id = ?",
-        [id]
-      );
-      return json(res, 200, { ok: true });
+      const r = await reopenClientTask(reopenTaskMatch[1], user);
+      return json(res, r.ok ? 200 : 404, r);
     }
 
     if (pathname === "/api/tasks/bulk-update" && method === "POST") {
@@ -5406,11 +5766,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         if (status === "completed") {
           results.push(await pipeline.completeTask(id, user.id));
         } else {
-          await dbRun(
-            "UPDATE client_tasks SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL WHERE id = ?",
-            [id]
-          );
-          results.push({ ok: true });
+          results.push(await reopenClientTask(id, user));
         }
       }
       return json(res, 200, { ok: true, results });
@@ -5515,11 +5871,14 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [eligibilityMatch[1]]);
       if (!client) return json(res, 404, { error: "Not found" });
       const result = await sendEligibilityCheck(client, user.email);
-      // Stamped so the automatic trigger cannot send it a second time.
+      // Only a send that actually happened is stamped. Stamping a refused send
+      // would be the worst of both worlds: billing never gets the request, and
+      // the automatic card-triggered send is permanently switched off for this
+      // family because the CRM thinks it already went.
       if (result && result.ok) {
         await dbRun("UPDATE clients SET eligibility_check_sent_at = ? WHERE id = ?", [nowISO(), client.id]).catch(() => {});
       }
-      if (!result.ok && result.error) return json(res, 400, result);
+      if (!result.ok) return json(res, 400, result);
       return json(res, 200, result);
     }
 
@@ -5808,7 +6167,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         shirt_count_full_time: await getAppSetting("shirt_count_full_time", DEFAULT_SETTINGS.shirt_count_full_time),
         shirt_count_part_time: await getAppSetting("shirt_count_part_time", DEFAULT_SETTINGS.shirt_count_part_time),
         signnow_newhire_env_default: SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV ? "set" : "",
-        signnow_connected: !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY),
+        signnow_connected: signNowAuthConfigured(),
       });
     }
     if (pathname === "/api/admin/settings" && method === "PATCH") {
@@ -6132,7 +6491,13 @@ async function seedUsers() {
   // The owner sets real passwords from Admin Settings > Users. Nothing is
   // ever printed to the deploy log.
   const rnd = () => crypto.randomBytes(24).toString("base64url");
-  await createUser({ name: "Quiana Blake", email: "admin@spectrumsquadlv.com", password: rnd(), role: "admin", department_id: null });
+  // Seeded as the Owner outright. A migration in MIGRATIONS_SQL promotes this
+  // account from 'admin' to 'owner', but migrations run before seeding, so on
+  // a brand-new install the account sat on 'admin' until the NEXT restart --
+  // and owner-only features (the full supply-request queue, owner financials)
+  // quietly did nothing in the meantime. The migration is still there for
+  // installs that were seeded before this change.
+  await createUser({ name: "Quiana Blake", email: "admin@spectrumsquadlv.com", password: rnd(), role: "owner", department_id: null });
   await createUser({ name: "Intake Staff", email: "intake@spectrumsquadlv.com", password: rnd(), role: "intake", department_id: await deptId("intake") });
   await createUser({ name: "Clinical Staff", email: "clinical@spectrumsquadlv.com", password: rnd(), role: "clinical", department_id: await deptId("clinical") });
   await createUser({ name: "Billing Staff", email: "billing@spectrumsquadlv.com", password: rnd(), role: "billing", department_id: await deptId("billing") });
@@ -6494,6 +6859,9 @@ const hr = require("./hr")({
 const clientForms = require("./client-forms")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
   onCompletion: (...a) => completions.record(...a),
+  // The parent document-request link uploads through the one shared writer, so
+  // a file a parent sends is filed exactly like one staff uploads by hand.
+  saveClientDocument: (opts) => saveClientDocument(opts),
 });
 const ot = require("./ot")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
@@ -6700,7 +7068,8 @@ const server = http.createServer(async (req, res) => {
   // Client-facing form pages (financial responsibility, schedule picker, etc.)
   if (
     pathname === "/financial-form" || pathname.startsWith("/financial-form/") ||
-    pathname === "/schedule-request" || pathname.startsWith("/schedule-request/")
+    pathname === "/schedule-request" || pathname.startsWith("/schedule-request/") ||
+    pathname === "/client-documents" || pathname.startsWith("/client-documents/")
   ) {
     if (await clientForms.servePage(req, res, pathname)) return;
   }
@@ -6806,6 +7175,35 @@ async function start() {
     if (done) {
       await setAppSetting("eligibility_backfill_done", nowISO()).catch(() => {});
       console.log("Eligibility check backfill: existing clients stamped as already sent.");
+    }
+  }
+
+  // One-time grace for the enrollment-packet sweep.
+  //
+  // checkEnrollmentPackets() used to bail out unless a static SIGNNOW_API_KEY
+  // was set, so on an install using the auto-refresh credentials it had never
+  // actually run. Now that it does, every packet still sitting at 'sent' would
+  // be measured against its ORIGINAL send date on the very first sweep -- and
+  // anything older than seven days would be marked "Not Moving Forward" and
+  // chased with a reminder in the same minute, for a deadline that was never
+  // being enforced against those families.
+  //
+  // So the elapsed time is banked into paused_ms (the field the waitlist pause
+  // already uses) and the reminder clock is stamped as of now: every
+  // outstanding family gets a clean seven days and their first nudge tomorrow,
+  // rather than being closed out retroactively. Guarded by a setting so it
+  // happens exactly once; packets sent from here on are timed normally.
+  if (!(await getAppSetting("packet_sweep_grace_done", ""))) {
+    const graced = await dbRun(
+      `UPDATE enrollment_packets
+          SET paused_ms = GREATEST(0, EXTRACT(EPOCH FROM (now() - sent_at::timestamptz)) * 1000)::bigint,
+              last_reminder_at = ?
+        WHERE status = 'sent' AND sent_at IS NOT NULL`,
+      [nowISO()]
+    ).catch((e) => { console.error("Packet sweep grace failed:", e.message); return null; });
+    if (graced) {
+      await setAppSetting("packet_sweep_grace_done", nowISO()).catch(() => {});
+      console.log(`Enrollment packet sweep: ${graced.rowCount} outstanding packet(s) given a fresh 7-day window (the sweep had not been running).`);
     }
   }
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));

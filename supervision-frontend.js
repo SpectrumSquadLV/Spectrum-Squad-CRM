@@ -400,8 +400,8 @@
           You can still correct this month — you'll be asked what changed, and it will go back to needing a fresh sign-off.
         </div>` : ""}
         ${amendments.length ? `<div style="background:#fffbeb; border:1px solid #fde68a; color:#92400e; border-radius:10px; padding:10px 12px; font-size:12.5px; margin-bottom:12px;">
-          <strong>Corrected after sign-off</strong>
-          ${amendments.map((a) => `<div style="margin-top:4px;">${esc(String(a.changed_at || "").slice(0, 10))} — ${esc(a.changed_by || "someone")}: ${esc(a.reason)}</div>`).join("")}
+          <strong>Supervision history for this month</strong>
+          ${amendments.map((a) => `<div style="margin-top:4px;">${esc(String(a.changed_at || "").slice(0, 10))} — ${a.action === "deleted" ? "<strong>record deleted</strong> by " : ""}${esc(a.changed_by || "someone")}: ${esc(a.reason)}</div>`).join("")}
         </div>` : ""}
         <div id="sup-sessions">${entries.map(sessionCard).join("")}</div>
         <div><button class="btn small secondary" id="sup-add-row">+ Add a session</button></div>
@@ -411,6 +411,10 @@
           <button class="btn secondary" id="sup-signoff">Sign off &amp; email</button>
           <span id="sup-status" style="font-size:12.5px; color:var(--text-muted);"></span>
         </div>
+        ${d.can_delete && d.has_record ? `<div style="margin-top:14px; padding-top:12px; border-top:1px dashed var(--border,#e5e7eb);">
+          <button class="btn secondary" id="sup-delete" style="color:#b91c1c; border-color:#fecaca;">Delete this month's supervision record</button>
+          <div style="font-size:11.5px; color:var(--text-muted); margin-top:5px;">Owner/administrator only. For a month that is wrong or no longer needed. The sessions, worked hours and any signature are kept in the supervision history above along with your reason — and any signed PDF stays on file.</div>
+        </div>` : ""}
       </div>`;
       bd.querySelector(".close-btn").addEventListener("click", close);
       pull();
@@ -433,6 +437,29 @@
       bd.querySelector("#sup-add-row").addEventListener("click", () => { entries.push(BLANK()); render(); });
       bd.querySelector("#sup-save").addEventListener("click", () => save(false));
       bd.querySelector("#sup-signoff").addEventListener("click", () => signOff());
+      const delBtn = bd.querySelector("#sup-delete");
+      if (delBtn) delBtn.addEventListener("click", () => removeMonth());
+    }
+
+    // Deleting a month is owner/admin only and is enforced on the server; this
+    // just collects the reason the server insists on.
+    async function removeMonth() {
+      const reason = prompt(
+        `Delete ${d.employee.name}'s supervision record for ${monthLabel(month)}?\n\n` +
+        "This removes the month's sessions and worked hours. It is kept in the supervision history with your reason, " +
+        "and any signed PDF stays on file.\n\nWhy is it being deleted?"
+      );
+      if (reason === null) return;
+      if (!String(reason).trim()) { alert("A reason is required."); return; }
+      const st = bd.querySelector("#sup-status");
+      st.textContent = "Deleting…";
+      try {
+        await api("/api/supervision/employee/" + empId, { method: "DELETE", body: { month, reason: String(reason).trim() } });
+        close();
+        if (typeof onDone === "function") onDone();
+      } catch (e) {
+        st.textContent = e.message || "Could not delete the record.";
+      }
     }
     function pull() {
       bd.querySelectorAll("[data-f]").forEach((el) => {

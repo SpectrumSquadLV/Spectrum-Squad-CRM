@@ -29,6 +29,11 @@ module.exports = function initClientForms(ctx) {
     // Optional: modules are constructed in different orders, and a missing
     // recorder must never be the reason a parent's signature fails to save.
   } = ctx;
+  // Writing a file onto a client's record is server.js's job -- it owns the
+  // volume, the size cap, the card/diagnosis detection and the eligibility
+  // trigger. This module hands it the parent's upload rather than keeping a
+  // second copy of any of that.
+  const saveClientDocument = ctx.saveClientDocument || (async () => ({ ok: false, status: 500, error: "Uploads are not available on this server." }));
 
   // ============================ SCHEMA ============================
   async function initTables() {
@@ -71,7 +76,256 @@ module.exports = function initClientForms(ctx) {
         created_at TEXT
       );
     `);
+    // Documents we ask the PARENT for, and the tokenized link they upload
+    // through. One row per client per request; asking again reuses the open
+    // row rather than minting a second link, so a family never ends up with
+    // two live upload pages.
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS client_document_requests (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER NOT NULL,
+        token TEXT UNIQUE NOT NULL,
+        status TEXT NOT NULL DEFAULT 'sent',  -- sent | viewed | partial | complete
+        received TEXT NOT NULL DEFAULT '{}',  -- JSON: { slotKey: {document_id, filename, at} }
+        viewed_at TEXT,
+        completed_at TEXT,
+        sent_at TEXT,
+        send_count INTEGER NOT NULL DEFAULT 1,
+        last_sent_at TEXT,
+        created_by TEXT,
+        created_at TEXT
+      );
+    `);
+    await dbRun(`CREATE INDEX IF NOT EXISTS client_document_requests_client_idx
+                 ON client_document_requests (client_id)`).catch(() => {});
     console.log("Client Forms schema ready.");
+  }
+
+  // ==================== PARENT DOCUMENT REQUESTS ====================
+  // The two things intake cannot start without: the official autism diagnosis,
+  // and both sides of the insurance card. Asking for them by email and having
+  // the reply land straight on the client's record is the whole point -- an
+  // attachment in somebody's inbox is not on the record, and the eligibility
+  // check is blocked until the card actually is.
+  const DOC_SLOTS = [
+    {
+      key: "diagnosis",
+      label: "Official autism diagnosis",
+      hint: "The signed evaluation or diagnostic report from the doctor or psychologist. A photo of each page is fine.",
+      icon: "📄",
+      docLabel: "Official Autism Diagnosis",
+    },
+    {
+      key: "card_front",
+      label: "Insurance card — front",
+      hint: "A clear photo of the front of the card. Make sure the member ID is readable.",
+      icon: "💳",
+      docLabel: "Insurance Card (front)",
+      insuranceCard: true,
+    },
+    {
+      key: "card_back",
+      label: "Insurance card — back",
+      hint: "The back of the same card — this is where the claims address and phone number live.",
+      icon: "🔄",
+      docLabel: "Insurance Card (back)",
+      insuranceCard: true,
+    },
+  ];
+  const DOC_SLOT_KEYS = DOC_SLOTS.map((s) => s.key);
+  const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+  const MAX_UPLOADS_PER_REQUEST = 20;
+
+  function parseReceived(row) {
+    try { return JSON.parse((row && row.received) || "{}") || {}; } catch (e) { return {}; }
+  }
+  function requestStatus(received) {
+    const have = DOC_SLOT_KEYS.filter((k) => received[k]);
+    if (have.length === DOC_SLOT_KEYS.length) return "complete";
+    if (have.length) return "partial";
+    return "sent";
+  }
+  function documentRequestLink(token) {
+    return `${APP_BASE_URL}/client-documents/?token=${token}`;
+  }
+
+  // Create (or reuse) a request and email the parent. `resend` is what the
+  // staff button sends when they want to chase a family who already has a link
+  // -- it re-emails the SAME link rather than issuing a new one.
+  async function sendDocumentRequest(clientId, actor) {
+    const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+    if (!client) return { ok: false, status: 404, error: "Client not found." };
+    if (!client.parent_email) {
+      return { ok: false, status: 400, error: "This family has no parent email on file, so the request can't be sent." };
+    }
+
+    let row = await dbGet(
+      "SELECT * FROM client_document_requests WHERE client_id = ? ORDER BY id DESC LIMIT 1",
+      [clientId]
+    );
+    const now = nowISO();
+    if (!row) {
+      const token = crypto.randomBytes(24).toString("hex");
+      row = await dbGet(
+        `INSERT INTO client_document_requests (client_id, token, status, received, sent_at, last_sent_at, send_count, created_by, created_at)
+         VALUES (?, ?, 'sent', '{}', ?, ?, 1, ?, ?) RETURNING *`,
+        [clientId, token, now, now, actor || "system", now]
+      );
+    } else {
+      row = await dbGet(
+        `UPDATE client_document_requests
+            SET last_sent_at = ?, send_count = send_count + 1
+          WHERE id = ? RETURNING *`,
+        [now, row.id]
+      );
+    }
+
+    const received = parseReceived(row);
+    const outstanding = DOC_SLOTS.filter((sl) => !received[sl.key]);
+    if (!outstanding.length) {
+      return { ok: false, status: 409, code: "already_complete", error: "This family has already sent everything we asked for." };
+    }
+
+    const link = documentRequestLink(row.token);
+    const items = outstanding
+      .map((sl) => `<li style="margin-bottom:6px;"><strong>${esc(sl.label)}</strong><br/><span style="color:#666;font-size:13px;">${esc(sl.hint)}</span></li>`)
+      .join("");
+    const html = `
+      <div style="font-family:Arial,Helvetica,sans-serif;color:#1b2a6b;">
+        <h2 style="color:#1b2a6b;">Two documents for ${esc(client.child_name)} 💛</h2>
+        <p>Hi ${esc(client.parent_name || "there")},</p>
+        <p>To keep ${esc(client.child_name)}'s enrollment moving, we need a couple of documents from you. You can take photos with your phone and upload them straight from this link — no account, no printing, no scanner.</p>
+        <ul style="padding-left:18px;">${items}</ul>
+        <p style="text-align:center;margin:28px 0;">
+          <a href="${esc(link)}" style="background:#e0a430;color:#1b2a6b;font-weight:700;text-decoration:none;padding:14px 28px;border-radius:999px;font-size:16px;display:inline-block;">Upload Documents →</a>
+        </p>
+        <p style="font-size:13px;color:#666;">If the button doesn't work, copy and paste this link:<br/>${esc(link)}</p>
+        <p style="font-size:13px;color:#666;">This link is private to your family. Please don't forward it.</p>
+        <p>Thank you!<br/>The Spectrum Squad Team</p>
+      </div>`;
+
+    const sent = await sendEmail({
+      to: client.parent_email,
+      subject: `Documents needed for ${client.child_name} — Spectrum Squad`,
+      html,
+      clientId,
+      type: "document_request",
+    }).catch((e) => { console.error("document request email failed:", e.message); return null; });
+
+    return {
+      ok: true,
+      token: row.token,
+      link,
+      sent_to: client.parent_email,
+      delivered: sent ? sent.delivered : "failed",
+      outstanding: outstanding.map((sl) => sl.key),
+      resend: Number(row.send_count) > 1,
+    };
+  }
+
+  // What staff see on the client card.
+  async function documentRequestStatus(clientId) {
+    const row = await dbGet(
+      "SELECT * FROM client_document_requests WHERE client_id = ? ORDER BY id DESC LIMIT 1",
+      [clientId]
+    );
+    const received = parseReceived(row);
+    return {
+      client_id: Number(clientId),
+      requested: !!row,
+      status: row ? row.status : null,
+      sent_at: row ? row.sent_at : null,
+      last_sent_at: row ? row.last_sent_at : null,
+      send_count: row ? Number(row.send_count || 1) : 0,
+      viewed_at: row ? row.viewed_at : null,
+      completed_at: row ? row.completed_at : null,
+      link: row ? documentRequestLink(row.token) : null,
+      items: DOC_SLOTS.map((sl) => ({
+        key: sl.key,
+        label: sl.label,
+        received: !!received[sl.key],
+        received_at: received[sl.key] ? received[sl.key].at : null,
+        filename: received[sl.key] ? received[sl.key].filename : null,
+        document_id: received[sl.key] ? received[sl.key].document_id : null,
+      })),
+    };
+  }
+
+  // The parent's upload. Files land on the client's record through the shared
+  // saveClientDocument() in server.js -- the same function the client card and
+  // the bulk importer use -- so the card is flagged as the card, the checklist
+  // boxes tick themselves, and the eligibility check fires as soon as a card is
+  // genuinely on file.
+  async function receiveDocumentUpload(token, slotKey, file) {
+    const row = await dbGet("SELECT * FROM client_document_requests WHERE token = ?", [token]);
+    if (!row) return { ok: false, status: 404, error: "This upload link is not valid." };
+    const slot = DOC_SLOTS.find((sl) => sl.key === slotKey);
+    if (!slot) return { ok: false, status: 400, error: "Unknown document type." };
+    // Re-uploading is legitimate -- a first photo is often too dark to read --
+    // but the link is unauthenticated, so the number of files one request can
+    // put on a client's record is bounded. Generous enough that no real family
+    // will meet it.
+    const already = await dbGet(
+      "SELECT COUNT(*)::int AS n FROM client_documents WHERE client_id = ? AND label IN (?, ?, ?)",
+      [row.client_id, DOC_SLOTS[0].docLabel, DOC_SLOTS[1].docLabel, DOC_SLOTS[2].docLabel]
+    ).catch(() => ({ n: 0 }));
+    if (already && Number(already.n) >= MAX_UPLOADS_PER_REQUEST) {
+      return {
+        ok: false, status: 429,
+        error: "This link has reached its upload limit. Please contact Spectrum Squad and we'll send you a fresh one.",
+      };
+    }
+    if (!file || !file.content_base64 || !file.filename) {
+      return { ok: false, status: 400, error: "Please choose a file to upload." };
+    }
+    // Sized here as well as in saveClientDocument so a parent on a phone gets
+    // the friendly message rather than a generic failure.
+    const approxBytes = Math.floor((String(file.content_base64).length * 3) / 4);
+    if (approxBytes > MAX_UPLOAD_BYTES) {
+      return { ok: false, status: 400, error: "That file is too large (15MB max). Try taking the photo again at a smaller size." };
+    }
+
+    const saved = await saveClientDocument({
+      client_id: row.client_id,
+      label: slot.docLabel,
+      filename: file.filename,
+      mime_type: file.mime_type,
+      content_base64: file.content_base64,
+      is_insurance_card: !!slot.insuranceCard,
+      is_diagnosis: slot.key === "diagnosis",
+      actor: "parent upload",
+    });
+    if (!saved.ok) return { ok: false, status: saved.status || 400, error: saved.error };
+
+    const received = parseReceived(row);
+    received[slot.key] = { document_id: saved.document.id, filename: file.filename, at: nowISO() };
+    const status = requestStatus(received);
+    await dbRun(
+      `UPDATE client_document_requests
+          SET received = ?, status = ?, viewed_at = COALESCE(viewed_at, ?),
+              completed_at = CASE WHEN ? = 'complete' THEN COALESCE(completed_at, ?) ELSE completed_at END
+        WHERE id = ?`,
+      [JSON.stringify(received), status, nowISO(), status, nowISO(), row.id]
+    );
+
+    if (status === "complete") {
+      const client = await dbGet("SELECT child_name FROM clients WHERE id = ?", [row.client_id]).catch(() => null);
+      onCompletion("client_documents_received", {
+        subject: client && client.child_name,
+        detail: "Diagnosis and both sides of the insurance card received",
+        clientId: row.client_id,
+        dedupeKey: `doc_request:${row.id}`,
+        link: `${APP_BASE_URL}/#/pipeline/${row.client_id}`,
+      });
+    }
+
+    return {
+      ok: true,
+      slot: slot.key,
+      status,
+      received: DOC_SLOT_KEYS.filter((k) => received[k]),
+      eligibility_sent: !!(saved.eligibility && saved.eligibility.ok && !saved.eligibility.skipped),
+    };
   }
 
   // Clinic operating window and scheduling rules (Mon-Fri 8am-7pm).
@@ -491,6 +745,41 @@ module.exports = function initClientForms(ctx) {
     if (!pathname.startsWith("/api/client-forms/")) return false;
 
     // ---- Public (no auth) ----
+    // Parent document upload link. Nothing here identifies the family beyond
+    // the child's first-line name, so a leaked link exposes no more than the
+    // email it came in did.
+    if (pathname === "/api/client-forms/public/documents" && method === "GET") {
+      const row = await dbGet("SELECT * FROM client_document_requests WHERE token = ?", [query.token || ""]);
+      if (!row) { json(res, 404, { error: "This upload link is invalid or has expired." }); return true; }
+      if (!row.viewed_at) {
+        await dbRun("UPDATE client_document_requests SET viewed_at = ?, status = CASE WHEN status = 'sent' THEN 'viewed' ELSE status END WHERE id = ?",
+          [nowISO(), row.id]).catch(() => {});
+      }
+      const client = await dbGet("SELECT child_name, parent_name FROM clients WHERE id = ?", [row.client_id]).catch(() => null);
+      const received = parseReceived(row);
+      json(res, 200, {
+        child_name: client ? client.child_name : "",
+        parent_name: client ? client.parent_name : "",
+        status: requestStatus(received),
+        items: DOC_SLOTS.map((sl) => ({
+          key: sl.key, label: sl.label, hint: sl.hint, icon: sl.icon,
+          received: !!received[sl.key],
+          received_at: received[sl.key] ? received[sl.key].at : null,
+        })),
+      });
+      return true;
+    }
+    if (pathname === "/api/client-forms/public/documents/upload" && method === "POST") {
+      const body = await readBody(req);
+      const result = await receiveDocumentUpload(body.token || "", body.slot || "", {
+        filename: body.filename,
+        mime_type: body.mime_type,
+        content_base64: body.content_base64,
+      });
+      json(res, result.ok ? 200 : (result.status || 400), result);
+      return true;
+    }
+
     if (pathname === "/api/client-forms/public/financial" && method === "GET") {
       const data = await getPublicForm(query.token || "");
       if (!data) { json(res, 404, { error: "This form link is invalid or has expired." }); return true; }
@@ -575,6 +864,19 @@ module.exports = function initClientForms(ctx) {
       json(res, 200, await listScheduleRequests(Number(schedListMatch[1])));
       return true;
     }
+    // ---- Staff: ask the parent for their documents ----
+    if (pathname === "/api/client-forms/documents" && method === "POST") {
+      const body = await readBody(req);
+      const result = await sendDocumentRequest(Number(body.client_id), user.email || user.name || "staff");
+      json(res, result.ok ? 200 : (result.status || 400), result);
+      return true;
+    }
+    const docReqMatch = pathname.match(/^\/api\/client-forms\/documents\/(\d+)$/);
+    if (docReqMatch && method === "GET") {
+      json(res, 200, await documentRequestStatus(Number(docReqMatch[1])));
+      return true;
+    }
+
     if (pathname === "/api/client-forms/staffing-estimate" && method === "GET") {
       json(res, 200, await staffingEstimate({ rbtCapacity: query.rbtCapacity, bcbaPerRbt: query.bcbaPerRbt }));
       return true;
@@ -593,6 +895,12 @@ module.exports = function initClientForms(ctx) {
     if (pathname === "/schedule-request" || pathname.startsWith("/schedule-request/")) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(scheduleRequestHtml());
+      return true;
+    }
+    if (pathname === "/client-documents" || pathname.startsWith("/client-documents/")) {
+      // no-referrer so the token cannot leak to anything the page links out to.
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer" });
+      res.end(documentUploadHtml());
       return true;
     }
     return false;
@@ -848,5 +1156,108 @@ function celebrate(){
 </body></html>`;
   }
 
-  return { initTables, handleApi, servePage, createFinancialForm, sendScheduleRequest, staffingEstimate };
+  // The page a parent lands on from the document-request email. Phone-first:
+  // each slot is one big tap target that opens the camera, uploads immediately,
+  // and turns green. No login, no account, no app.
+  function documentUploadHtml() {
+    return `<!doctype html><html><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="referrer" content="no-referrer"/>
+<title>Upload Documents — Spectrum Squad</title>
+<style>
+  :root{--navy:#1b2a6b;--gold:#e0a430;--teal:#5fa8a0;--ok:#16a34a;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--navy);
+       background:linear-gradient(160deg,#f7f5ff 0%,#eef6f5 100%);min-height:100vh;padding:20px 14px 60px;}
+  .wrap{max-width:560px;margin:0 auto;}
+  h1{font-size:24px;margin:0 0 6px;}
+  .sub{color:#5b5876;font-size:15px;line-height:1.5;margin:0 0 22px;}
+  .slot{background:#fff;border:2px solid #e7e5f2;border-radius:16px;padding:16px 18px;margin-bottom:14px;
+        box-shadow:0 2px 10px rgba(27,42,107,.05);transition:border-color .15s,background .15s;}
+  .slot.done{border-color:var(--ok);background:#f2fdf6;}
+  .slot h2{font-size:17px;margin:0 0 4px;display:flex;align-items:center;gap:9px;}
+  .slot p{margin:0 0 12px;color:#666;font-size:13.5px;line-height:1.45;}
+  .btn{display:inline-block;background:var(--gold);color:var(--navy);font-weight:800;border:none;
+       padding:13px 22px;border-radius:999px;font-size:15.5px;cursor:pointer;width:100%;}
+  .btn:disabled{opacity:.6;cursor:default;}
+  .tick{color:var(--ok);font-weight:800;font-size:15px;display:flex;align-items:center;gap:8px;}
+  .msg{font-size:13px;margin-top:9px;min-height:18px;}
+  .err{color:#b91c1c;}
+  input[type=file]{display:none;}
+  .done-card{background:#fff;border-radius:16px;padding:28px 22px;text-align:center;box-shadow:0 2px 14px rgba(27,42,107,.08);}
+  .foot{text-align:center;color:#8a8797;font-size:12.5px;margin-top:26px;line-height:1.6;}
+</style></head><body>
+<div class="wrap" id="app"><p class="sub">Loading…</p></div>
+<script>
+(function(){
+  var token=new URL(location.href).searchParams.get("token")||"";
+  var app=document.getElementById("app");
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
+  function api(p,o){o=o||{};return fetch(p,{method:o.method||"GET",headers:o.body?{"Content-Type":"application/json"}:undefined,
+    body:o.body?JSON.stringify(o.body):undefined}).then(function(r){return r.json().catch(function(){return{};}).then(function(d){
+      if(!r.ok)throw new Error(d.error||"Something went wrong.");return d;});});}
+
+  function fail(msg){app.innerHTML='<div class="done-card"><div style="font-size:44px;">🌈</div><h1>'+esc(msg)+'</h1>'+
+    '<p class="sub" style="margin-top:10px;">Please contact Spectrum Squad and we will send you a fresh link.</p></div>';}
+
+  function render(d){
+    if(d.status==="complete"){
+      app.innerHTML='<div class="done-card"><div style="font-size:52px;">🎉</div>'+
+        '<h1>All done — thank you!</h1><p class="sub" style="margin-top:10px;">We have everything we need for '+
+        esc(d.child_name||"your child")+'. Our team will take it from here.</p></div>';
+      return;
+    }
+    var slots=d.items.map(function(it,i){
+      return '<div class="slot'+(it.received?" done":"")+'" id="slot-'+it.key+'">'+
+        '<h2><span>'+it.icon+'</span> '+esc(it.label)+'</h2>'+
+        (it.received
+          ? '<div class="tick">✓ Received — thank you!</div>'
+          : '<p>'+esc(it.hint)+'</p>'+
+            '<button class="btn" data-pick="'+it.key+'">Choose or take a photo</button>'+
+            '<input type="file" id="f-'+it.key+'" accept="image/*,application/pdf" />'+
+            '<div class="msg" id="m-'+it.key+'"></div>')+
+        '</div>';
+    }).join("");
+    app.innerHTML='<h1>Documents for '+esc(d.child_name||"your child")+'</h1>'+
+      '<p class="sub">Hi '+esc(d.parent_name||"there")+' — just tap each one below and pick a photo. '+
+      'They go straight into '+esc(d.child_name||"your child")+"'s file, and you can come back to this page any time.</p>"+
+      slots+
+      '<p class="foot">Your documents are sent securely and stored in your child&rsquo;s confidential record.<br/>Spectrum Squad &middot; Compassionate ABA Therapy</p>';
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-pick]"),function(b){
+      var key=b.getAttribute("data-pick");
+      var input=document.getElementById("f-"+key);
+      b.addEventListener("click",function(){input.click();});
+      input.addEventListener("change",function(){
+        var file=input.files&&input.files[0];
+        if(!file)return;
+        var msg=document.getElementById("m-"+key);
+        if(file.size>15*1024*1024){msg.className="msg err";msg.textContent="That file is too large (15MB max). Try a smaller photo.";return;}
+        b.disabled=true;msg.className="msg";msg.textContent="Uploading…";
+        var reader=new FileReader();
+        reader.onerror=function(){b.disabled=false;msg.className="msg err";msg.textContent="Could not read that file. Please try again.";};
+        reader.onload=function(){
+          api("/api/client-forms/public/documents/upload",{method:"POST",body:{
+            token:token,slot:key,filename:file.name,mime_type:file.type||"application/octet-stream",
+            content_base64:String(reader.result).split(",")[1]
+          }}).then(function(){ load(); })
+            .catch(function(e){b.disabled=false;msg.className="msg err";msg.textContent=e.message;});
+        };
+        reader.readAsDataURL(file);
+      });
+    });
+  }
+
+  function load(){
+    if(!token){fail("This upload link looks incomplete.");return;}
+    api("/api/client-forms/public/documents?token="+encodeURIComponent(token))
+      .then(render).catch(function(e){fail(e.message||"This upload link is invalid or has expired.");});
+  }
+  load();
+})();
+</script>
+</body></html>`;
+  }
+
+  return { initTables, handleApi, servePage, createFinancialForm, sendScheduleRequest, staffingEstimate, sendDocumentRequest, documentRequestStatus };
 };

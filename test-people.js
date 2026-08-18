@@ -93,14 +93,17 @@ function check(name, cond, detail) {
   const clients = (await req("/api/clients")).data;
   const clientId = (Array.isArray(clients) ? clients : clients.clients || [])[0].id;
 
-  r = await req("/api/people/emergency-contacts", { method: "POST", body: { owner_type: "client", owner_id: clientId, name: "Nana Ruiz", relationship: "Grandmother", phone: "(702) 555-0134", is_primary: true, can_pick_up: true } });
+  // A client's emergency contact must be someone other than the parent/guardian
+  // who does not live in the child's home, so every client contact below
+  // carries the confirmation.
+  r = await req("/api/people/emergency-contacts", { method: "POST", body: { owner_type: "client", owner_id: clientId, name: "Nana Ruiz", relationship: "Grandmother", phone: "(702) 555-0134", outside_household: true, is_primary: true, can_pick_up: true } });
   check("create client emergency contact", r.status === 201 && r.data.is_primary === true, r.data);
   const contact1 = r.data;
 
-  r = await req("/api/people/emergency-contacts", { method: "POST", body: { owner_type: "client", owner_id: clientId, name: "No Phone Person" } });
+  r = await req("/api/people/emergency-contacts", { method: "POST", body: { owner_type: "client", owner_id: clientId, name: "No Phone Person", outside_household: true } });
   check("contact with no phone number rejected", r.status === 400, r.data);
 
-  r = await req("/api/people/emergency-contacts", { method: "POST", body: { owner_type: "client", owner_id: clientId, name: "Uncle Dave", alt_phone: "(702) 555-0199", is_primary: true } });
+  r = await req("/api/people/emergency-contacts", { method: "POST", body: { owner_type: "client", owner_id: clientId, name: "Uncle Dave", relationship: "Uncle", alt_phone: "(702) 555-0199", outside_household: true, is_primary: true } });
   check("second contact created with alt phone only", r.status === 201, r.data);
   const contact2 = r.data;
 
