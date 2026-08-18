@@ -897,11 +897,29 @@ async function sendEligibilityCheck(client, actor) {
 
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const row = (label, val) => `<tr><td style="padding:6px 12px;color:#555;">${label}</td><td style="padding:6px 12px;font-weight:600;">${esc(val || "—")}</td></tr>`;
+  // The card is the point of this email: billing cannot run a benefits check
+  // without it, and a request that arrives with nothing attached just becomes
+  // a second job for somebody. So this never sends card-less -- not on the
+  // automatic trigger, and not from the manual button either. The caller gets
+  // a "no_card" answer it can act on instead.
+  //
+  // Tested on what actually came out the other end rather than on what is on
+  // the record: a card row whose file has gone missing from disk fails the
+  // read above and leaves attachments empty, and that must block the send too.
+  if (!attachments.length && !linkCards.length) {
+    return {
+      ok: false,
+      code: "no_card",
+      error: cardDocs.length
+        ? "This client's insurance card is on file but could not be read, so the eligibility check was not sent. Re-upload the card and try again."
+        : "No insurance card is on file for this client, so the eligibility check was not sent. Use \u201cRequest documents from parent\u201d to ask the family for the front and back of the card.",
+      attachments: 0,
+    };
+  }
+
   const cardNote = attachments.length
     ? `<p>The insurance card ${attachments.length > 1 ? "images are" : "image is"} attached to this email.</p>`
-    : linkCards.length
-    ? `<p>Insurance card link(s): ${linkCards.map((d) => `<a href="${esc(d.external_url)}">${esc(d.label || d.filename)}</a>`).join(", ")}</p>`
-    : `<p><em>No insurance card image is on file yet. Once it's uploaded to the client's record, you can re-send this from the CRM.</em></p>`;
+    : `<p>Insurance card link(s): ${linkCards.map((d) => `<a href="${esc(d.external_url)}">${esc(d.label || d.filename)}</a>`).join(", ")}</p>`;
 
   const html = `
     <div style="font-family:Arial,Helvetica,sans-serif;color:#222;">
@@ -965,6 +983,107 @@ async function maybeSendEligibilityCheck(clientId, actor) {
       .catch((e) => console.error("Could not stamp eligibility_check_sent_at:", e.message));
   }
   return result;
+}
+
+const MAX_CLIENT_DOC_BYTES = 15 * 1024 * 1024;
+
+// Whether a document is the official diagnosis, so the checklist item stops
+// waiting on someone to tick a box the upload already answered. Kept narrow on
+// purpose -- "progress report" and "session note" must not read as a diagnosis.
+function looksLikeDiagnosis(doc) {
+  const s = `${doc.label || ""} ${doc.filename || ""}`.toLowerCase();
+  return /diagnos|autism|\basd\b|\bdx\b|psych/.test(s);
+}
+
+// ---- One way to put a document on a client's record ----------------------
+// Staff uploads from the client card, the admin bulk import, and the parent's
+// own upload link all land here, so the three of them cannot drift on the
+// things that matter: where the file is written, how big it may be, whether it
+// counts as the insurance card or the diagnosis, which checklist boxes that
+// ticks, and -- the part that was missing -- kicking the eligibility check now
+// that the card it was waiting for has arrived.
+//
+// Before this, only the bulk-import path fired the eligibility check. A card
+// uploaded the normal way, from the client card, never triggered anything,
+// which is why staff fell back to pressing "Send Benefits & Eligibility Check"
+// by hand and billing kept receiving requests with nothing attached.
+async function saveClientDocument(opts) {
+  const clientId = Number(opts.client_id);
+  const client = await dbGet("SELECT id FROM clients WHERE id = ?", [clientId]);
+  if (!client) return { ok: false, status: 404, error: "Client not found." };
+
+  const filename = String(opts.filename || "").trim();
+  const label = String(opts.label || filename || "Document").trim();
+  const mimeType = opts.mime_type || null;
+
+  let row;
+  if (opts.external_url) {
+    row = await dbGet(
+      `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at, is_insurance_card)
+       VALUES (?, ?, ?, ?, NULL, 'link', ?, ?, ?) RETURNING *`,
+      [clientId, label, filename || opts.external_url, mimeType, opts.external_url, nowISO(), opts.is_insurance_card === true]
+    );
+  } else {
+    if (!opts.content_base64 || !filename) {
+      return { ok: false, status: 400, error: "A file (or a link) is required." };
+    }
+    let buffer;
+    try {
+      buffer = Buffer.from(String(opts.content_base64), "base64");
+    } catch (e) {
+      return { ok: false, status: 400, error: "Invalid file data." };
+    }
+    if (!buffer.length) return { ok: false, status: 400, error: "That file came through empty. Please try again." };
+    if (buffer.length > MAX_CLIENT_DOC_BYTES) {
+      return { ok: false, status: 400, error: "File is too large (15MB max)." };
+    }
+    const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const storedName = `${clientId}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
+    try {
+      fs.writeFileSync(path.join(DOCS_DIR, storedName), buffer);
+    } catch (e) {
+      console.error("Could not save client document:", e.message);
+      return { ok: false, status: 500, error: "Could not save file." };
+    }
+    row = await dbGet(
+      `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at, is_insurance_card)
+       VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?, ?) RETURNING *`,
+      [clientId, label, filename, mimeType || "application/octet-stream", storedName, nowISO(), opts.is_insurance_card === true]
+    );
+  }
+
+  // Checklist flags the upload has already answered. An explicit flag from the
+  // caller wins; otherwise the label/filename is read, which is what the
+  // eligibility check has always done.
+  const isCard = opts.is_insurance_card === true || looksLikeInsuranceCard(row);
+  if (isCard) {
+    await dbRun("UPDATE clients SET insurance_card_uploaded = true WHERE id = ?", [clientId])
+      .catch((e) => console.error("Could not flag insurance card uploaded:", e.message));
+  }
+  if (opts.is_diagnosis === true || looksLikeDiagnosis(row)) {
+    await dbRun("UPDATE clients SET diagnosis_uploaded = true WHERE id = ?", [clientId])
+      .catch((e) => console.error("Could not flag diagnosis uploaded:", e.message));
+  }
+
+  // Fired on every upload rather than only on ones we think are a card:
+  // maybeSendEligibilityCheck decides for itself whether a card is on file and
+  // whether the email has already gone, so it is safe to call and it cannot
+  // miss a card that arrived under an unhelpful filename.
+  const eligibility = await maybeSendEligibilityCheck(clientId, opts.actor || "system")
+    .catch((e) => { console.error("eligibility check failed:", e.message); return null; });
+
+  return {
+    ok: true,
+    document: {
+      id: row.id,
+      client_id: clientId,
+      filename: row.filename,
+      label: row.label,
+      doc_type: row.doc_type,
+      insurance_card: isCard,
+    },
+    eligibility,
+  };
 }
 
 // ---- Failed-email retry ("push" failed emails) --------------------------
@@ -4429,51 +4548,24 @@ async function handle(req, res, pathname, method, query = {}) {
       if (!content_base64 && !external_url) {
         return json(res, 400, { error: "content_base64 or external_url is required" });
       }
-      const client = await dbGet("SELECT id FROM clients WHERE id = ?", [client_id]);
-      if (!client) return json(res, 404, { error: "Client not found" });
-
-      if (content_base64) {
-        const safeName = String(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
-        const storedName = `${client_id}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
-        const fullPath = path.join(DOCS_DIR, storedName);
-        let buffer;
-        try {
-          buffer = Buffer.from(content_base64, "base64");
-        } catch (e) {
-          return json(res, 400, { error: "Invalid base64 content" });
-        }
-        fs.writeFileSync(fullPath, buffer);
-
-        // The uploader can say outright that this is the card, which is the
-        // only signal that survives a phone filename like IMG_4821.jpg.
-        const markedCard = body.is_insurance_card === true
+      // Same storage, same card/diagnosis detection and same eligibility
+      // trigger as the client card and the parent's upload link. The importer
+      // keeps its one extra rule: an image with no other signal is treated as
+      // the card, because a bulk import of phone photos is exactly that.
+      const result = await saveClientDocument({
+        client_id,
+        label,
+        filename,
+        mime_type,
+        content_base64,
+        external_url,
+        is_insurance_card: body.is_insurance_card === true
           || looksLikeInsuranceCard({ label, filename })
-          || /^image\//i.test(String(mime_type || ""));
-        const row = await dbGet(
-          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at, is_insurance_card)
-           VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?, ?) RETURNING id`,
-          [client_id, label || filename, filename, mime_type || "application/octet-stream", storedName, nowISO(),
-           body.is_insurance_card === true]
-        );
-        // Uploading the card is what "insurance card uploaded" means, so the
-        // checklist stops waiting on a human to tick a box that the upload
-        // already answered.
-        if (markedCard) {
-          await dbRun("UPDATE clients SET insurance_card_uploaded = true WHERE id = ?", [client_id])
-            .catch((e) => console.error("Could not flag insurance card uploaded:", e.message));
-          // The card is what the eligibility check was waiting for.
-          maybeSendEligibilityCheck(Number(client_id), (user && user.email) || "system")
-            .catch((e) => console.error("eligibility check failed:", e.message));
-        }
-        return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "hosted", insurance_card: markedCard });
-      } else {
-        const row = await dbGet(
-          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-           VALUES (?, ?, ?, ?, NULL, 'link', ?, ?) RETURNING id`,
-          [client_id, label || filename, filename, mime_type || null, external_url, nowISO()]
-        );
-        return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "link" });
-      }
+          || (!!content_base64 && /^image\//i.test(String(mime_type || ""))),
+        actor: (user && user.email) || "import",
+      });
+      if (!result.ok) return json(res, result.status || 400, { error: result.error });
+      return json(res, 201, result.document);
     }
 
     // Removes a single document row (and its file on disk, if hosted).
@@ -4743,7 +4835,7 @@ async function handle(req, res, pathname, method, query = {}) {
         ? await dbAll("SELECT * FROM notifications_log WHERE client_id = ? ORDER BY sent_at DESC", [id])
         : [];
       const documents = await dbAll(
-        "SELECT id, label, filename, mime_type, doc_type, external_url, uploaded_at FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
+        "SELECT id, label, filename, mime_type, doc_type, external_url, uploaded_at, is_insurance_card FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
         [id]
       );
       const enrollmentPacket = await dbGet(
@@ -5069,38 +5161,19 @@ async function handle(req, res, pathname, method, query = {}) {
       const client = await dbGet("SELECT id FROM clients WHERE id = ?", [id]);
       if (!client) return json(res, 404, { error: "Not found" });
       const body = await readBody(req);
-      const label = (body.label || body.filename || "Document").trim();
-      if (body.external_url) {
-        const row = await dbGet(
-          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-           VALUES (?, ?, ?, ?, NULL, 'link', ?, ?) RETURNING id`,
-          [id, label, body.filename || body.external_url, body.mime_type || null, body.external_url, nowISO()]
-        );
-        return json(res, 201, { id: row.id, doc_type: "link" });
-      }
-      if (!body.content_base64 || !body.filename) {
-        return json(res, 400, { error: "A file (or a link) is required." });
-      }
-      let buffer;
-      try {
-        buffer = Buffer.from(body.content_base64, "base64");
-      } catch (e) {
-        return json(res, 400, { error: "Invalid file data." });
-      }
-      if (buffer.length > 15 * 1024 * 1024) return json(res, 400, { error: "File is too large (15MB max)." });
-      const safeName = String(body.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
-      const storedName = `${id}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
-      try {
-        fs.writeFileSync(path.join(DOCS_DIR, storedName), buffer);
-      } catch (e) {
-        return json(res, 500, { error: "Could not save file." });
-      }
-      const row = await dbGet(
-        `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-         VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?) RETURNING id`,
-        [id, label, body.filename, body.mime_type || "application/octet-stream", storedName, nowISO()]
-      );
-      return json(res, 201, { id: row.id, doc_type: "hosted" });
+      const result = await saveClientDocument({
+        client_id: id,
+        label: body.label,
+        filename: body.filename,
+        mime_type: body.mime_type,
+        content_base64: body.content_base64,
+        external_url: body.external_url,
+        is_insurance_card: body.is_insurance_card === true,
+        is_diagnosis: body.is_diagnosis === true,
+        actor: user.email,
+      });
+      if (!result.ok) return json(res, result.status || 400, { error: result.error });
+      return json(res, 201, result.document);
     }
 
     const docItemMatch = pathname.match(/^\/api\/clients\/(\d+)\/documents\/(\d+)$/);
@@ -5798,11 +5871,14 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [eligibilityMatch[1]]);
       if (!client) return json(res, 404, { error: "Not found" });
       const result = await sendEligibilityCheck(client, user.email);
-      // Stamped so the automatic trigger cannot send it a second time.
+      // Only a send that actually happened is stamped. Stamping a refused send
+      // would be the worst of both worlds: billing never gets the request, and
+      // the automatic card-triggered send is permanently switched off for this
+      // family because the CRM thinks it already went.
       if (result && result.ok) {
         await dbRun("UPDATE clients SET eligibility_check_sent_at = ? WHERE id = ?", [nowISO(), client.id]).catch(() => {});
       }
-      if (!result.ok && result.error) return json(res, 400, result);
+      if (!result.ok) return json(res, 400, result);
       return json(res, 200, result);
     }
 
@@ -6783,6 +6859,9 @@ const hr = require("./hr")({
 const clientForms = require("./client-forms")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
   onCompletion: (...a) => completions.record(...a),
+  // The parent document-request link uploads through the one shared writer, so
+  // a file a parent sends is filed exactly like one staff uploads by hand.
+  saveClientDocument: (opts) => saveClientDocument(opts),
 });
 const ot = require("./ot")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
@@ -6989,7 +7068,8 @@ const server = http.createServer(async (req, res) => {
   // Client-facing form pages (financial responsibility, schedule picker, etc.)
   if (
     pathname === "/financial-form" || pathname.startsWith("/financial-form/") ||
-    pathname === "/schedule-request" || pathname.startsWith("/schedule-request/")
+    pathname === "/schedule-request" || pathname.startsWith("/schedule-request/") ||
+    pathname === "/client-documents" || pathname.startsWith("/client-documents/")
   ) {
     if (await clientForms.servePage(req, res, pathname)) return;
   }

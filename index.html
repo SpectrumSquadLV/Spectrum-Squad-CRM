@@ -1770,6 +1770,70 @@ async function wireScheduleRequest(backdrop, clientId, client) {
   await load();
 }
 
+// "Documents Requested from Parent" -- the tokenized link that asks the family
+// for the official autism diagnosis and both sides of the insurance card, and
+// files what they send straight onto this record. Reuses the client-forms
+// module that already owns every other parent-facing form.
+async function renderDocRequestSection(backdrop, clientId) {
+  const section = backdrop.querySelector("#doc-request-section");
+  if (!section) return;
+  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+  const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(); } catch (e) { return iso || ""; } };
+
+  let d;
+  try { d = await api(`/api/client-forms/documents/${clientId}`); }
+  catch (e) { section.innerHTML = `<div class="empty-state">Couldn't load: ${esc(e.message)}</div>`; return; }
+
+  const itemRow = (it) => `<div class="task-row">
+      <div class="info">
+        <span class="status-dot ${it.received ? "completed" : "pending"}"></span><strong>${esc(it.label)}</strong>
+        <div class="due">${it.received ? `Received ${fmtWhen(it.received_at)}${it.filename ? ` · ${esc(it.filename)}` : ""}` : "Not received yet"}</div>
+      </div>
+      ${it.received && it.document_id
+        ? `<a class="btn small secondary" href="/api/documents/${it.document_id}/download" target="_blank" rel="noopener">View</a>`
+        : ""}
+    </div>`;
+
+  const outstanding = (d.items || []).filter((it) => !it.received).length;
+  const header = !d.requested
+    ? `<div style="font-size:13px; color:var(--text-muted); margin-bottom:8px;">Email the parent a private upload link for the official autism diagnosis and the front and back of the insurance card. Whatever they send lands on this record automatically — and the benefits check goes out to billing the moment the card arrives.</div>`
+    : `<div style="font-size:13px; color:var(--text-muted); margin-bottom:8px;">
+         Sent ${fmtWhen(d.sent_at)}${d.send_count > 1 ? ` · asked ${d.send_count} times` : ""}${d.viewed_at ? ` · opened ${fmtWhen(d.viewed_at)}` : " · not opened yet"}.
+         ${d.status === "complete" ? `<span style="color:#166534; font-weight:700;">All documents received ✓</span>` : `${outstanding} still outstanding.`}
+       </div>`;
+
+  section.innerHTML = `
+    ${header}
+    ${(d.items || []).map(itemRow).join("")}
+    <div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <button class="btn small" id="doc-req-send"${d.status === "complete" ? " disabled" : ""}>${d.requested ? "✉ Resend request to parent" : "✉ Request documents from parent"}</button>
+      ${d.link ? `<button class="btn small secondary" id="doc-req-copy">🔗 Copy parent link</button>` : ""}
+      <span id="doc-req-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+    </div>
+    ${d.link ? `<div id="doc-req-link" style="display:none; font-size:12px; margin-top:6px; background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:8px 10px;"><code style="user-select:all;">${esc(d.link)}</code></div>` : ""}`;
+
+  const statusEl = section.querySelector("#doc-req-status");
+  const sendBtn = section.querySelector("#doc-req-send");
+  if (sendBtn) sendBtn.addEventListener("click", async () => {
+    sendBtn.disabled = true;
+    statusEl.textContent = "Sending…";
+    try {
+      const r = await api("/api/client-forms/documents", { method: "POST", body: { client_id: clientId } });
+      statusEl.textContent = `Sent to ${r.sent_to}${r.delivered === "simulated" ? " (simulated)" : ""} ✓`;
+      setTimeout(() => renderDocRequestSection(backdrop, clientId), 1200);
+    } catch (e) {
+      sendBtn.disabled = false;
+      statusEl.textContent = e.message || "Could not send.";
+    }
+  });
+  const copyBtn = section.querySelector("#doc-req-copy");
+  if (copyBtn) copyBtn.addEventListener("click", () => {
+    const box = section.querySelector("#doc-req-link");
+    if (box) box.style.display = "block";
+    if (navigator.clipboard && d.link) navigator.clipboard.writeText(d.link).catch(() => {});
+  });
+}
+
 async function wireFinancialForm(backdrop, clientId) {
   const section = backdrop.querySelector("#financial-form-section");
   if (!section) return;
@@ -1948,6 +2012,13 @@ async function openClientModal(id) {
   const stage = sMap[client.stage] || {};
   // A closed-out record swaps the close-out buttons for the Reactivate panel.
   const isClosedOut = client.stage === "not_moving_forward" || client.stage === "discharged";
+  // Mirrors insuranceCardDocs() on the server: a document explicitly marked as
+  // the card or named like one, and failing that any image on the record (which
+  // is what a photographed card looks like). The server is the copy that
+  // decides -- this only chooses whether to grey the button out and explain.
+  const hasInsuranceCard = (documents || []).some(
+    (d) => d.is_insurance_card === true || /insur|card|member|benefit|policy/i.test(`${d.label || ""} ${d.filename || ""}`)
+  ) || (documents || []).some((d) => d.doc_type === "hosted" && /^image\//i.test(String(d.mime_type || "")));
   const escapeHtml = (v) => { const d = document.createElement("div"); d.textContent = v == null ? "" : String(v); return d.innerHTML; };
 
   const backdrop = document.createElement("div");
@@ -2078,14 +2149,27 @@ async function openClientModal(id) {
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         <input type="file" id="doc-file-input" style="font-size:12.5px;" />
         <input type="text" id="doc-label-input" placeholder="Label (optional)" style="width:180px;" />
+        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text-muted); cursor:pointer;">
+          <input type="checkbox" id="doc-is-card" style="width:auto;" /> This is the insurance card
+        </label>
         <button class="btn small" id="upload-doc-btn">Upload document</button>
         <span id="upload-doc-status" style="font-size:12.5px; color:var(--text-muted);"></span>
       </div>
 
-      <div style="margin-top:10px;">
-        <button class="btn small secondary" id="send-eligibility-btn">✉ Send Benefits &amp; Eligibility Check</button>
+      <div class="section-title">Documents Requested from Parent</div>
+      <div id="doc-request-section"><div class="empty-state">Loading…</div></div>
+
+      <div style="margin-top:14px;">
+        <button class="btn small secondary" id="send-eligibility-btn"${hasInsuranceCard ? "" : " disabled"}>✉ Send Benefits &amp; Eligibility Check</button>
         <span id="eligibility-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
-        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Emails the patient's name, DOB, insurance details, and any insurance card on file to your billing/verification contact. Sent automatically at enrollment — use this to re-send once the card is uploaded.</div>
+        ${client.eligibility_check_sent_at
+          ? `<div style="font-size:12px; color:#166534; margin-top:4px;">✓ Sent ${fmtDate(client.eligibility_check_sent_at)}. Sending again replaces nothing — it just re-notifies billing.</div>`
+          : ""}
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+          ${hasInsuranceCard
+            ? "Emails the patient's name, DOB, insurance details and the insurance card to your billing/verification contact. This also sends by itself the moment a card is uploaded."
+            : "<span style=\"color:#946213;\">⚠ No insurance card is on file, so this can't be sent yet — a benefits check without the card is not actionable. Use <strong>Request documents from parent</strong> above to ask the family for the front and back. The check then sends itself the moment the card arrives.</span>"}
+        </div>
       </div>
 
       <div class="section-title">Financial Obligation Form</div>
@@ -2218,6 +2302,8 @@ async function openClientModal(id) {
 
   const emergencyMount = backdrop.querySelector("#emergency-mount");
   if (emergencyMount && window.PeopleUI) window.PeopleUI.renderEmergencyContacts(emergencyMount, "client", id);
+
+  renderDocRequestSection(backdrop, id);
 
   const close = () => {
     clientDetailsEditing = false;
@@ -2464,9 +2550,19 @@ async function openClientModal(id) {
           reader.readAsDataURL(file);
         });
         const base64 = String(dataUrl).split(",")[1];
+        const cardBox = backdrop.querySelector("#doc-is-card");
         await api(`/api/clients/${id}/documents`, {
           method: "POST",
-          body: { filename: file.name, mime_type: file.type || "application/octet-stream", label: labelInput.value.trim() || file.name, content_base64: base64 },
+          body: {
+            filename: file.name,
+            mime_type: file.type || "application/octet-stream",
+            label: labelInput.value.trim() || file.name,
+            content_base64: base64,
+            // Ticking the box is the only signal that survives a phone
+            // filename like IMG_4821.jpg, and it is what lets the eligibility
+            // check fire off this upload.
+            is_insurance_card: !!(cardBox && cardBox.checked),
+          },
         });
         close();
         await loadClients();
