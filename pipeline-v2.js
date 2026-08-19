@@ -1,5 +1,7 @@
-// pipeline-v2.js -- Milestone dashboard (New Lead -> Intake & Eligibility ->
-// Clinical Assessment -> Authorization -> Ready to Start -> Active Services).
+// pipeline-v2.js -- Milestone dashboard. Five phases:
+//   Intake & Eligibility -> Assessment -> Authorization -> Ready to Start -> Active.
+// "New Lead" was retired as a standalone phase (folded into Intake &
+// Eligibility server-side); labels match server.js MILESTONES exactly.
 // Progressive-enhancement plugin: injects its own nav button and renders
 // into the existing #view-mount container on hashchange, without touching
 // the app's own router/state (which are module-scoped, not global).
@@ -7,12 +9,11 @@
   const HASH = "#/pipeline-v2";
 
   const MILESTONES = [
-    { key: 1, label: "New Lead", color: "#6b7280" },
     { key: 2, label: "Intake & Eligibility", color: "#3f56b5" },
-    { key: 3, label: "Clinical Assessment", color: "#3f8f89" },
+    { key: 3, label: "Assessment", color: "#3f8f89" },
     { key: 4, label: "Authorization", color: "#c98a1b" },
     { key: 5, label: "Ready to Start", color: "#e0a430" },
-    { key: 6, label: "Active Services", color: "#22c55e" },
+    { key: 6, label: "Active", color: "#22c55e" },
   ];
 
   const BLOCKERS = {

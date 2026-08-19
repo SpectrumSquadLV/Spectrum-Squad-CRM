@@ -117,7 +117,10 @@ CREATE TABLE IF NOT EXISTS stage_tasks (
   department_id INTEGER NOT NULL,
   sla_days INTEGER NOT NULL,
   sort_order INTEGER NOT NULL,
-  next_stage_key TEXT
+  next_stage_key TEXT,
+  -- Whether this stage task may be assigned to a staff member. The automated,
+  -- parent-driven Clinical Screener is seeded false (see seedStageTasks).
+  assignable BOOLEAN NOT NULL DEFAULT true
 );
 
 CREATE TABLE IF NOT EXISTS client_tasks (
@@ -347,6 +350,7 @@ const MIGRATIONS_SQL = `
 ALTER TABLE client_documents ALTER COLUMN file_path DROP NOT NULL;
 ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS doc_type TEXT NOT NULL DEFAULT 'hosted';
 ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS external_url TEXT;
+ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS is_insurance_card BOOLEAN NOT NULL DEFAULT false;
 
 -- Enrollment packet reliability: record failed/blocked attempts (not just successes)
 -- so nothing fails silently, and allow a null document id for a failed attempt.
@@ -388,6 +392,7 @@ CREATE TABLE IF NOT EXISTS sms_opt_outs (
 );
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS diagnosis_uploaded BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_card_uploaded BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS eligibility_check_sent_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS clinical_screener_completed BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_verification_completed BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_packet_sent BOOLEAN NOT NULL DEFAULT false;
@@ -412,6 +417,26 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS assigned_intake_coordinator_name TE
 -- A task can be assigned to someone who works here but has no CRM login, so
 -- their address is stored on the task rather than resolved through users.
 ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS assigned_email TEXT;
+-- Reopening a task that was ticked by accident. The task itself is reused --
+-- never duplicated -- so these columns are what is left to show that it WAS
+-- completed and was later put back: when it was last completed, who reopened
+-- it, when, and how many times. Additive; every existing row reads as
+-- "never reopened".
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS last_completed_at TEXT;
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS reopened_at TEXT;
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS reopened_by TEXT;
+ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS reopen_count INTEGER NOT NULL DEFAULT 0;
+-- The same, for the per-client stage tasks on the client record.
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS last_completed_at TEXT;
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS reopened_at TEXT;
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS reopened_by TEXT;
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS reopen_count INTEGER NOT NULL DEFAULT 0;
+-- Backfill: a task that is already completed has its completion date copied
+-- across, so a task ticked before this change still shows its original
+-- completion date if it is reopened later. Runs once; the WHERE clause makes
+-- it a no-op afterwards.
+UPDATE client_tasks SET last_completed_at = completed_at WHERE completed_at IS NOT NULL AND last_completed_at IS NULL;
+UPDATE staff_tasks SET last_completed_at = completed_at WHERE completed_at IS NOT NULL AND last_completed_at IS NULL;
 -- Task priority for the personal Task Center: low | normal | high | urgent.
 ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal';
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS waitlisted BOOLEAN NOT NULL DEFAULT false;
@@ -441,6 +466,12 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_services BOOLEAN NOT
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_notes TEXT;
 -- Rename the old Vineland stage task to the In-Clinic Assessment.
 UPDATE stage_tasks SET label = 'Schedule In-Clinic Assessment' WHERE stage_key = 'assessment_scheduling' AND label = 'Schedule Vineland / Intake Assessment';
+-- The Clinical Screener is auto-triggered when a family starts intake and is
+-- driven entirely by the screener module (invite, remind, host, mark complete).
+-- It must NEVER be handed to a staff member, so it is flagged non-assignable.
+-- Other stage tasks default to assignable = true.
+ALTER TABLE stage_tasks ADD COLUMN IF NOT EXISTS assignable BOOLEAN NOT NULL DEFAULT true;
+UPDATE stage_tasks SET assignable = false WHERE stage_key = 'clinical_screener';
 -- "Intake Packet" was retired as a phase. Anyone parked in it moves to the
 -- next stage along. This is a plain UPDATE rather than enterStage() on
 -- purpose: enterStage fires the department alert and the parent milestone
@@ -804,9 +835,36 @@ async function sendSms({ to, body, clientId = null, type = "sms", consented = fa
 // they need to run an eligibility check: child name, DOB, insurance details,
 // and the insurance card itself (attached when a card image is on file). The
 // recipient address is owner-configurable in Admin Settings.
+// Whether a document is the insurance card.
+//
+// This used to test the label and filename alone, which is why cards kept
+// reading as "not uploaded": a parent photographs their card on a phone and it
+// arrives as IMG_4821.jpg or image.jpg. Nothing in that says "insurance", so a
+// card that was plainly on file was invisible to the eligibility check.
+//
+// An explicit marker set at upload time now wins. The keyword test stays as a
+// fallback for everything already in the database, and an image sitting on a
+// client with no other card is treated as one -- a phone photo is exactly what
+// gets uploaded here, and missing a real card costs more than an extra
+// attachment on an internal billing email.
 function looksLikeInsuranceCard(doc) {
+  if (doc.is_insurance_card === true || doc.is_insurance_card === "t") return true;
   const s = `${doc.label || ""} ${doc.filename || ""}`.toLowerCase();
   return /insur|card|member|benefit|policy/.test(s);
+}
+
+// Photographed cards, for when nothing is explicitly marked or named.
+function looksLikePhotographedCard(doc) {
+  return doc.doc_type === "hosted" && /^image\//i.test(String(doc.mime_type || ""));
+}
+
+// The cards to attach to an eligibility check: the marked and named ones, or --
+// if there are none -- any images on the record, which is what a phone upload
+// looks like.
+function insuranceCardDocs(docs) {
+  const named = (docs || []).filter(looksLikeInsuranceCard);
+  if (named.length) return named;
+  return (docs || []).filter(looksLikePhotographedCard);
 }
 
 async function sendEligibilityCheck(client, actor) {
@@ -817,7 +875,7 @@ async function sendEligibilityCheck(client, actor) {
   }
 
   const docs = await dbAll("SELECT * FROM client_documents WHERE client_id = ?", [client.id]);
-  const cardDocs = docs.filter(looksLikeInsuranceCard);
+  const cardDocs = insuranceCardDocs(docs);
   const attachments = [];
   const linkCards = [];
   for (const d of cardDocs) {
@@ -839,11 +897,29 @@ async function sendEligibilityCheck(client, actor) {
 
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const row = (label, val) => `<tr><td style="padding:6px 12px;color:#555;">${label}</td><td style="padding:6px 12px;font-weight:600;">${esc(val || "—")}</td></tr>`;
+  // The card is the point of this email: billing cannot run a benefits check
+  // without it, and a request that arrives with nothing attached just becomes
+  // a second job for somebody. So this never sends card-less -- not on the
+  // automatic trigger, and not from the manual button either. The caller gets
+  // a "no_card" answer it can act on instead.
+  //
+  // Tested on what actually came out the other end rather than on what is on
+  // the record: a card row whose file has gone missing from disk fails the
+  // read above and leaves attachments empty, and that must block the send too.
+  if (!attachments.length && !linkCards.length) {
+    return {
+      ok: false,
+      code: "no_card",
+      error: cardDocs.length
+        ? "This client's insurance card is on file but could not be read, so the eligibility check was not sent. Re-upload the card and try again."
+        : "No insurance card is on file for this client, so the eligibility check was not sent. Use \u201cRequest documents from parent\u201d to ask the family for the front and back of the card.",
+      attachments: 0,
+    };
+  }
+
   const cardNote = attachments.length
     ? `<p>The insurance card ${attachments.length > 1 ? "images are" : "image is"} attached to this email.</p>`
-    : linkCards.length
-    ? `<p>Insurance card link(s): ${linkCards.map((d) => `<a href="${esc(d.external_url)}">${esc(d.label || d.filename)}</a>`).join(", ")}</p>`
-    : `<p><em>No insurance card image is on file yet. Once it's uploaded to the client's record, you can re-send this from the CRM.</em></p>`;
+    : `<p>Insurance card link(s): ${linkCards.map((d) => `<a href="${esc(d.external_url)}">${esc(d.label || d.filename)}</a>`).join(", ")}</p>`;
 
   const html = `
     <div style="font-family:Arial,Helvetica,sans-serif;color:#222;">
@@ -877,6 +953,137 @@ async function sendEligibilityCheck(client, actor) {
     `client=${client.id} to=${to} attachments=${attachments.length} result=${result.delivered}`
   ).catch(() => {});
   return { ok: result.delivered !== "failed", ...result, attachments: attachments.length };
+}
+
+// Send the eligibility check only once, and only when the card is actually on
+// file.
+//
+// It used to fire the moment an intake form was submitted, before any card
+// could exist, so billing routinely received a request with nothing attached
+// and somebody re-sent it by hand later. Now the trigger is the card, not the
+// form: whichever happens last -- the intake arriving or the card being
+// uploaded -- is what sends it, exactly once.
+//
+// A client with no card never silently loses the email; it stays pending until
+// a card appears, and the manual re-send is still there for the cases where
+// billing needs it before then.
+async function maybeSendEligibilityCheck(clientId, actor) {
+  const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]).catch(() => null);
+  if (!client) return { ok: false, skipped: "no such client" };
+  if (client.eligibility_check_sent_at) return { ok: true, skipped: "already sent" };
+
+  const docs = await dbAll("SELECT * FROM client_documents WHERE client_id = ?", [clientId]).catch(() => []);
+  if (!insuranceCardDocs(docs).length) {
+    return { ok: false, skipped: "no insurance card on file yet" };
+  }
+
+  const result = await sendEligibilityCheck(client, actor || "system");
+  if (result && result.ok) {
+    await dbRun("UPDATE clients SET eligibility_check_sent_at = ? WHERE id = ?", [nowISO(), clientId])
+      .catch((e) => console.error("Could not stamp eligibility_check_sent_at:", e.message));
+  }
+  return result;
+}
+
+const MAX_CLIENT_DOC_BYTES = 15 * 1024 * 1024;
+
+// Whether a document is the official diagnosis, so the checklist item stops
+// waiting on someone to tick a box the upload already answered. Kept narrow on
+// purpose -- "progress report" and "session note" must not read as a diagnosis.
+function looksLikeDiagnosis(doc) {
+  const s = `${doc.label || ""} ${doc.filename || ""}`.toLowerCase();
+  return /diagnos|autism|\basd\b|\bdx\b|psych/.test(s);
+}
+
+// ---- One way to put a document on a client's record ----------------------
+// Staff uploads from the client card, the admin bulk import, and the parent's
+// own upload link all land here, so the three of them cannot drift on the
+// things that matter: where the file is written, how big it may be, whether it
+// counts as the insurance card or the diagnosis, which checklist boxes that
+// ticks, and -- the part that was missing -- kicking the eligibility check now
+// that the card it was waiting for has arrived.
+//
+// Before this, only the bulk-import path fired the eligibility check. A card
+// uploaded the normal way, from the client card, never triggered anything,
+// which is why staff fell back to pressing "Send Benefits & Eligibility Check"
+// by hand and billing kept receiving requests with nothing attached.
+async function saveClientDocument(opts) {
+  const clientId = Number(opts.client_id);
+  const client = await dbGet("SELECT id FROM clients WHERE id = ?", [clientId]);
+  if (!client) return { ok: false, status: 404, error: "Client not found." };
+
+  const filename = String(opts.filename || "").trim();
+  const label = String(opts.label || filename || "Document").trim();
+  const mimeType = opts.mime_type || null;
+
+  let row;
+  if (opts.external_url) {
+    row = await dbGet(
+      `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at, is_insurance_card)
+       VALUES (?, ?, ?, ?, NULL, 'link', ?, ?, ?) RETURNING *`,
+      [clientId, label, filename || opts.external_url, mimeType, opts.external_url, nowISO(), opts.is_insurance_card === true]
+    );
+  } else {
+    if (!opts.content_base64 || !filename) {
+      return { ok: false, status: 400, error: "A file (or a link) is required." };
+    }
+    let buffer;
+    try {
+      buffer = Buffer.from(String(opts.content_base64), "base64");
+    } catch (e) {
+      return { ok: false, status: 400, error: "Invalid file data." };
+    }
+    if (!buffer.length) return { ok: false, status: 400, error: "That file came through empty. Please try again." };
+    if (buffer.length > MAX_CLIENT_DOC_BYTES) {
+      return { ok: false, status: 400, error: "File is too large (15MB max)." };
+    }
+    const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const storedName = `${clientId}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
+    try {
+      fs.writeFileSync(path.join(DOCS_DIR, storedName), buffer);
+    } catch (e) {
+      console.error("Could not save client document:", e.message);
+      return { ok: false, status: 500, error: "Could not save file." };
+    }
+    row = await dbGet(
+      `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at, is_insurance_card)
+       VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?, ?) RETURNING *`,
+      [clientId, label, filename, mimeType || "application/octet-stream", storedName, nowISO(), opts.is_insurance_card === true]
+    );
+  }
+
+  // Checklist flags the upload has already answered. An explicit flag from the
+  // caller wins; otherwise the label/filename is read, which is what the
+  // eligibility check has always done.
+  const isCard = opts.is_insurance_card === true || looksLikeInsuranceCard(row);
+  if (isCard) {
+    await dbRun("UPDATE clients SET insurance_card_uploaded = true WHERE id = ?", [clientId])
+      .catch((e) => console.error("Could not flag insurance card uploaded:", e.message));
+  }
+  if (opts.is_diagnosis === true || looksLikeDiagnosis(row)) {
+    await dbRun("UPDATE clients SET diagnosis_uploaded = true WHERE id = ?", [clientId])
+      .catch((e) => console.error("Could not flag diagnosis uploaded:", e.message));
+  }
+
+  // Fired on every upload rather than only on ones we think are a card:
+  // maybeSendEligibilityCheck decides for itself whether a card is on file and
+  // whether the email has already gone, so it is safe to call and it cannot
+  // miss a card that arrived under an unhelpful filename.
+  const eligibility = await maybeSendEligibilityCheck(clientId, opts.actor || "system")
+    .catch((e) => { console.error("eligibility check failed:", e.message); return null; });
+
+  return {
+    ok: true,
+    document: {
+      id: row.id,
+      client_id: clientId,
+      filename: row.filename,
+      label: row.label,
+      doc_type: row.doc_type,
+      insurance_card: isCard,
+    },
+    eligibility,
+  };
 }
 
 // ---- Failed-email retry ("push" failed emails) --------------------------
@@ -1150,6 +1357,24 @@ const EMAIL_TEMPLATE_DEFS = [
     description: "Sent daily to the parent while the New Patient Enrollment Packet is still unsigned.",
     fields: ["parent_name", "child_name"],
   },
+  // The Clinical Screener emails. These were built as hardcoded strings inside
+  // screener.js, so they never appeared in this editor and the wording could
+  // not be changed without a deploy. Registered here so they are edited like
+  // every other parent email; screener.js renders from these rows.
+  {
+    key: "screener_invite",
+    label: "Clinical Screener — Invitation",
+    category: "Clinical Screener Emails",
+    description: "Sent to the parent when the clinical screener goes out — automatically once the enrollment packet is signed, or by hand from the Send Screener button on the client card. Must contain {{screener_link}}: it is the parent's private link to the screener, and the CRM will append it if you remove it.",
+    fields: ["parent_name", "child_name", "screener_link"],
+  },
+  {
+    key: "screener_reminder",
+    label: "Clinical Screener — Reminder",
+    category: "Clinical Screener Emails",
+    description: "Sent to the parent once a day while the clinical screener is still outstanding, and used for a deliberate resend. Must contain {{screener_link}}.",
+    fields: ["parent_name", "child_name", "screener_link"],
+  },
   {
     key: "assessment_reminder",
     label: "Assessment Scheduling Reminder",
@@ -1178,6 +1403,9 @@ const EMAIL_TEMPLATE_DEFS = [
   { key: "hr_welcome_docs_rbt", label: "New Hire — Welcome + Required Documents (RBT)", category: "HR / Onboarding Emails",
     description: "Sent to an RBT the moment their offer is accepted. Points them at HomeBase for the background check and payroll.",
     fields: ["first_name", "credentialing_form_link", "upload_portal_link"] },
+  { key: "hr_welcome_docs_cota", label: "New Hire — Welcome + Required Documents (COTA)", category: "HR / Onboarding Emails",
+    description: "Sent to a COTA the moment their offer is accepted. Carries the 72-hour document deadline and OT credentialing link.",
+    fields: ["first_name", "credentialing_form_link", "upload_portal_link"] },
   { key: "hr_first_day", label: "New Hire — Your First Day", category: "HR / Onboarding Emails",
     description: "Sent ahead of their first day, once a start date has been entered. The dress code and shirt count only appear if they are set.",
     fields: ["first_name", "first_day_date", "dress_code", "shirt_count", "supervisor_name", "scheduling_lead_name"] },
@@ -1202,6 +1430,9 @@ const EMAIL_TEMPLATE_DEFS = [
   { key: "post_assessment_next_steps", label: "Post-Assessment / Next Steps (Parent)", category: "Parent Milestone Emails",
     description: "Sent to the family after they complete their in-clinic assessment. Congratulates them, thanks them for coming in, and sets clear, realistic expectations for the next steps in intake. Sent manually from the client profile, with a preview first.",
     fields: ["parent_name", "child_name", "today", "assigned_bcba_name"] },
+  { key: "lead_checkin_7", label: "Relationship Check-in — 1 Week", category: "Lead / Contract Emails",
+    description: "A friendly 1-week relationship check-in you can send to a contracted organization's contact from the Lead profile (preview first). The 7/30/60/90 automation creates a follow-up task reminding the assigned team member to reach out; this is the email they can send.",
+    fields: ["org_name", "contact_name", "assigned_to", "weekly_hours"] },
   { key: "lead_checkin_30", label: "Relationship Check-in — 30 Days", category: "Lead / Contract Emails",
     description: "A warm 30-day relationship check-in you can send to a contracted organization's contact from the Lead profile (preview first). The 30/60/90 automation creates a follow-up task reminding the assigned team member to reach out; this is the email they can send.",
     fields: ["org_name", "contact_name", "assigned_to", "weekly_hours"] },
@@ -1216,6 +1447,10 @@ const EMAIL_TEMPLATE_DEFS = [
 // The CRM's original built-in copy -- used both as the seed data and as a
 // last-resort fallback if a template row is somehow missing.
 const EMAIL_TEMPLATE_DEFAULTS = {
+  lead_checkin_7: {
+    subject: "Checking in after your first week — {{org_name}}",
+    body: "<p>Hi {{contact_name}},</p><p>It's been about a week since we started working together and I wanted to check in personally. How are the first few days going on your end? If anything came up or you have questions as {{org_name}} gets settled in, I'm just an email away.</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>",
+  },
   lead_checkin_30: {
     subject: "Checking in on our first month together — {{org_name}}",
     body: "<p>Hi {{contact_name}},</p><p>We're about a month into working together and I wanted to check in personally. How are things going from your side? Is the current level of support meeting {{org_name}}'s needs, and is there anything we could be doing better?</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>",
@@ -1365,6 +1600,24 @@ const EMAIL_TEMPLATE_DEFAULTS = {
     <p>Please also be on the lookout for a document from Sign Now, it is your new hire packet.</p>
     <p>Please also be on the lookout for an email from HomeBase our Payroll processor for your background check and to enroll in Payroll!</p>`,
   },
+  hr_welcome_docs_cota: {
+    subject: "Welcome to Spectrum Squad, {{first_name}}!",
+    body: `<p>Hi {{first_name}},</p>
+    <p>Welcome to the Spectrum Squad family! We are so excited to have you join us as our newest Certified Occupational Therapy Assistant. Your energy and dedication are exactly what we look for in our team, and we can't wait for you to start making an impact with our kiddos.</p>
+    <p>As we get everything set up for your onboarding, please send the following documents at your earliest convenience so we can complete your HR file. These documents are required within 72 hours otherwise we will unfortunately have to rescind our offer. If you need time to get a certain document please let me know and we can work around that:</p>
+    <p><strong>Required Documents:</strong></p>
+    <ul>
+      <li>Copy of your NBCOT certification</li>
+      <li>Copy of your Nevada Occupational Therapy Assistant (OTA) license</li>
+      <li>Proof of CPR/BLS certification</li>
+      <li>Updated copy of your resume</li>
+      <li>Copy of your government-issued ID</li>
+      <li>Please also complete the link below for our credentialing company &mdash; PLEASE LET ME KNOW ONCE YOU HAVE COMPLETED IT<br/><a href="{{credentialing_form_link}}">{{credentialing_form_link}}</a></li>
+    </ul>
+    <p>You can upload everything in one place here: <a href="{{upload_portal_link}}">{{upload_portal_link}}</a></p>
+    <p>Please also be on the lookout for a document from Sign Now, it is your new hire packet.</p>
+    <p>Please also be on the lookout for an email from HomeBase our Payroll processor for your background check and to enroll in Payroll!</p>`,
+  },
   hr_first_day: {
     subject: "Welcome to your first day at Spectrum Squad, {{first_name}}!",
     body: `<p>Hi {{first_name}},</p>
@@ -1423,6 +1676,26 @@ const EMAIL_TEMPLATE_DEFAULTS = {
     <p>Your start date is <strong>{{hire_date}}</strong>. Reach out any time with questions.</p>
     <p>Warmly,<br/>The Spectrum Squad Team</p>`,
   },
+  // Deliberately the same words screener.js has been sending, so registering
+  // these changes nothing about what families receive until somebody edits
+  // them. The button markup is part of the body so it stays editable too.
+  screener_invite: {
+    subject: "One more step for {{child_name}} 🌈 — Spectrum Squad",
+    body:
+      "<p>Hi {{parent_name}},</p>" +
+      "<p>Thank you for completing {{child_name}}'s enrollment packet! 🎉</p>" +
+      "<p>The last step to get started is a short clinical screener so our clinical team can build the perfect care plan. It's quick (about 10 minutes), phone-friendly, and there are no wrong answers.</p>" +
+      '<p style="text-align:center;margin:26px 0;"><a href="{{screener_link}}" style="background:#e0a430;color:#3a2c05;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:12px;display:inline-block;">Start the Screener →</a></p>' +
+      '<p style="font-size:12px;color:#7a7796;">Or paste this link into your browser:<br/>{{screener_link}}</p>',
+  },
+  screener_reminder: {
+    subject: "Reminder: {{child_name}}'s clinical screener — Spectrum Squad",
+    body:
+      "<p>Hi {{parent_name}},</p>" +
+      "<p>Just a gentle reminder — we're still waiting on {{child_name}}'s clinical screener. It takes about 10 minutes and works great on your phone. Whenever you have a moment! 💜</p>" +
+      '<p style="text-align:center;margin:26px 0;"><a href="{{screener_link}}" style="background:#e0a430;color:#3a2c05;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:12px;display:inline-block;">Start the Screener →</a></p>' +
+      '<p style="font-size:12px;color:#7a7796;">Or paste this link into your browser:<br/>{{screener_link}}</p>',
+  },
   hr_rethink_creds: {
     subject: "Your Rethink login",
     body: `<p>Hi {{first_name}},</p>
@@ -1476,7 +1749,7 @@ async function seedEmailTemplates() {
 // later corrected. This brings forward only the copies still marked as
 // system-owned; the moment someone saves an edit, updated_by stops being
 // 'system' and the CRM never touches their wording again.
-const TEMPLATES_TO_KEEP_CURRENT = ["hr_welcome_docs_bcba", "hr_welcome_docs_rbt", "hr_first_day", "hr_docs_complete_internal"];
+const TEMPLATES_TO_KEEP_CURRENT = ["hr_welcome_docs_bcba", "hr_welcome_docs_rbt", "hr_welcome_docs_cota", "hr_first_day", "hr_docs_complete_internal"];
 
 async function refreshSystemTemplates() {
   for (const key of TEMPLATES_TO_KEEP_CURRENT) {
@@ -1793,7 +2066,9 @@ async function completeTask(taskId, completedByUserId, opts = {}) {
   const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [taskId]);
   if (!task) return { ok: false, error: "Task not found" };
 
-  await dbRun("UPDATE client_tasks SET status = 'completed', completed_at = ? WHERE id = ?", [nowISO(), taskId]);
+  // last_completed_at mirrors completed_at and is deliberately never cleared,
+  // so a task that is reopened still shows when it had been ticked.
+  await dbRun("UPDATE client_tasks SET status = 'completed', completed_at = ?, last_completed_at = ? WHERE id = ?", [nowISO(), nowISO(), taskId]);
 
   const taskLabel = await dbGet("SELECT label, stage_key FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
 
@@ -1869,7 +2144,12 @@ async function checkOverdueTasks() {
      JOIN stage_tasks st ON st.id = ct.stage_task_id
      JOIN clients c ON c.id = ct.client_id
      WHERE ct.status = 'pending' AND ct.due_date < ? AND ct.overdue_notified_at IS NULL
-       AND st.stage_key <> 'clinical_screener'`,
+       AND st.stage_key <> 'clinical_screener'
+       -- Nobody is working a waitlisted or closed client, so flagging their
+       -- tasks overdue only emails staff about work they are not meant to do.
+       -- The task stays pending; it is simply not chased.
+       AND COALESCE(c.waitlisted, false) = false
+       AND c.stage NOT IN ('discharged','not_moving_forward')`,
     [now]
   );
 
@@ -1940,6 +2220,54 @@ async function processAssessmentReminders() {
 }
 
 const pipeline = { STAGES, STAGE_ORDER, nextStageKey, getStage, enterStage, completeTask, checkOverdueTasks, sendParentMilestone, processAssessmentReminders };
+
+// The live pipeline stages a closed-out client may be restored into. Derived
+// from STAGES so a stage added later is automatically offered, minus the two
+// terminal ones (restoring a client INTO "not moving forward" is a no-op) and
+// minus "active", which is a clinical state reached by finishing the pipeline
+// rather than something to be dropped into by hand.
+const REACTIVATABLE_STAGES = STAGE_ORDER.filter(
+  (k) => !["discharged", "not_moving_forward", "active"].includes(k)
+);
+
+// A note written by the app on the user's behalf, in the client's existing
+// note trail. Used for record-level events (closed out, reactivated) that
+// staff need to still see months later.
+async function addSystemClientNote(clientId, user, body) {
+  await dbRun(
+    `INSERT INTO client_notes (client_id, author_id, author_name, body, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [clientId, (user && user.id) || null, (user && (user.name || user.email)) || "System", body, nowISO()]
+  ).catch((e) => console.error("addSystemClientNote failed:", e.message));
+}
+
+// Put a completed client stage task back on the open list. The SAME task row
+// is reused -- reopening never creates a second copy of the task, and its due
+// date, department and stage are all untouched. What changes is only its
+// status, plus the small history trail (who reopened it, when, how many times,
+// and the completion date it is being rolled back from) that lets the card say
+// "completed 3 Aug, reopened by Quiana 5 Aug".
+//
+// Deliberately does NOT rewind the client's stage: the stage change already
+// fired its department alert and its parent milestone email, and walking those
+// back would either re-send them or leave the record claiming something that
+// never un-happened.
+async function reopenClientTask(taskId, user) {
+  const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [taskId]);
+  if (!task) return { ok: false, error: "Task not found" };
+  if (task.status !== "completed") return { ok: true, already_open: true };
+  await dbRun(
+    `UPDATE client_tasks
+        SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL,
+            last_completed_at = COALESCE(last_completed_at, ?),
+            reopened_at = ?, reopened_by = ?, reopen_count = COALESCE(reopen_count, 0) + 1
+      WHERE id = ?`,
+    [task.completed_at, nowISO(), (user && (user.name || user.email)) || "staff", taskId]
+  );
+  const label = await dbGet("SELECT label FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
+  console.log(`[client ${task.client_id}] task ${taskId} (${(label && label.label) || "?"}) reopened by ${(user && user.email) || "unknown"} at ${nowISO()}`);
+  return { ok: true, reopened: true };
+}
 
 // ---- Staff to-do tasks (assignable, with due dates + email reminders) ----
 const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
@@ -2130,38 +2458,47 @@ async function processTreatmentPlanReminders() {
 }
 
 // ============================== PIPELINE V2 (MILESTONE DASHBOARD) ==============================
-// Computes the 6-milestone view (New Lead, Intake & Eligibility, Clinical
-// Assessment, Authorization, Ready to Start, Active Services) on top of the
-// existing 10-value `stage` column, plus per-client progress %, missing
+// Computes the 5-phase view (Intake & Eligibility, Assessment, Authorization,
+// Ready to Start, Active) on top of the existing 10-value `stage` column, plus
+// per-client progress %, missing
 // checklist items, blocker category, owner, and next action. Read-only --
 // does not change how `stage` itself is stored or advanced.
 "use strict";
 
+// The primary pipeline is five phases:
+//   Intake & Eligibility -> Assessment -> Authorization -> Ready to Start -> Active
+// "New Lead" was retired as a standalone phase at Quiana's request: a brand-new
+// submission now lives inside Intake & Eligibility (its first sub-step) instead
+// of a column of its own. new_submission is folded into the key-2 stage list,
+// and milestoneForStage() falls back to Intake & Eligibility. The key NUMBERS
+// (2..6) are deliberately preserved so the checklist map and the milestone<=2 /
+// milestone>=6 logic in computeMilestoneView keep working unchanged. This is a
+// display/grouping change only -- no client's `stage` is altered, and nothing
+// here sends email.
+// "intake_packet" stays listed so any client still carrying that retired stage
+// key -- an old row, a stale browser tab mid-save -- still resolves to a
+// milestone instead of falling through.
 const MILESTONES = [
-  { key: 1, label: "New Lead", stages: ["new_submission"] },
-  // "intake_packet" stays listed here so any client still carrying the retired
-  // stage key -- an old row, a stale browser tab mid-save -- still resolves to
-  // a milestone instead of silently falling back to "New Lead".
-  { key: 2, label: "Intake & Eligibility", stages: ["clinical_screener", "insurance_verification", "intake_packet"] },
-  { key: 3, label: "Clinical Assessment", stages: ["assessment_scheduling"] },
+  { key: 2, label: "Intake & Eligibility", stages: ["new_submission", "clinical_screener", "insurance_verification", "intake_packet"] },
+  { key: 3, label: "Assessment", stages: ["assessment_scheduling"] },
   { key: 4, label: "Authorization", stages: ["authorization"] },
   { key: 5, label: "Ready to Start", stages: ["first_day_scheduled"] },
-  { key: 6, label: "Active Services", stages: ["active"] },
+  { key: 6, label: "Active", stages: ["active"] },
 ];
 
 function milestoneForStage(stageKey) {
   if (stageKey === "discharged" || stageKey === "not_moving_forward") return null;
   const m = MILESTONES.find((m) => m.stages.includes(stageKey));
-  return m ? m.key : 1;
+  return m ? m.key : 2;
 }
 
 const MILESTONE_CHECKLISTS = {
-  1: [
+  // Intake & Eligibility now also carries the two items that used to live under
+  // "New Lead" (diagnosis + insurance card), so nothing that was tracked there
+  // is lost -- it just lives under the merged phase now.
+  2: [
     { key: "diagnosis_uploaded", label: "Diagnosis uploaded", blocker: "parent" },
     { key: "insurance_card_uploaded", label: "Insurance card uploaded", blocker: "parent" },
-    { key: "clinical_screener_completed", label: "Clinical screener", blocker: "clinical" },
-  ],
-  2: [
     { key: "clinical_screener_completed", label: "Clinical screener completed", blocker: "clinical" },
     { key: "insurance_verification_completed", label: "Insurance verification completed", blocker: "insurance" },
     { key: "intake_packet_sent", label: "Intake packet sent", blocker: "clinical" },
@@ -2452,11 +2789,20 @@ const SIGNNOW_BASIC_TOKEN = process.env.SIGNNOW_BASIC_TOKEN || "";
 const SIGNNOW_USERNAME = process.env.SIGNNOW_USERNAME || "";
 const SIGNNOW_PASSWORD = process.env.SIGNNOW_PASSWORD || "";
 
-// True if SignNow can send at all: either the auto-refresh credentials OR a
-// static API key is present, AND we have a template to send.
+// True if we can authenticate against SignNow at all -- either the
+// auto-refresh credentials or the legacy static API key. Reading a document's
+// status only needs this; sending additionally needs a template (below).
+// One helper rather than the same expression copied into five places, because
+// the copies had already drifted: checkEnrollmentPackets tested SIGNNOW_API_KEY
+// alone and so did nothing on installs using the auto-refresh credentials.
+function signNowAuthConfigured() {
+  return !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY);
+}
+
+// True if SignNow can send at all: authentication is available AND we have a
+// template to send.
 function signNowConfigured() {
-  const hasAuth = (SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY;
-  return !!(hasAuth && SIGNNOW_ENROLLMENT_TEMPLATE_ID);
+  return !!(signNowAuthConfigured() && SIGNNOW_ENROLLMENT_TEMPLATE_ID);
 }
 
 // Cached access token so we don't re-auth on every call.
@@ -2669,7 +3015,7 @@ async function sendNewHirePacket(employee, { actor = "automation", force = false
   }
 
   const templateId = await newHireTemplateId();
-  const hasAuth = (SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY;
+  const hasAuth = signNowAuthConfigured();
   if (!hasAuth || !templateId) {
     const msg = !hasAuth
       ? "SignNow is not connected on the server (needs SIGNNOW_BASIC_TOKEN / SIGNNOW_USERNAME / SIGNNOW_PASSWORD, or SIGNNOW_API_KEY)."
@@ -2712,7 +3058,7 @@ async function sendNewHirePacket(employee, { actor = "automation", force = false
 async function getNewHirePacket(employeeId) {
   const row = await dbGet("SELECT * FROM newhire_packets WHERE employee_id = ?", [employeeId]);
   const templateId = await newHireTemplateId();
-  const hasAuth = !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY);
+  const hasAuth = signNowAuthConfigured();
   return { packet: row || null, configured: hasAuth && !!templateId, signnow_connected: hasAuth, template_set: !!templateId };
 }
 
@@ -2741,7 +3087,13 @@ async function retryFailedEnrollmentPackets() {
 }
 
 async function checkEnrollmentPackets() {
-  if (!SIGNNOW_API_KEY) return;
+  // Polling a document's status needs authentication, not a template. This
+  // used to test SIGNNOW_API_KEY, which is empty on every install using the
+  // preferred auto-refresh credentials -- so the sweep returned immediately,
+  // packets were never marked 'completed', the daily reminders never went out,
+  // and (because the Clinical Screener invite is triggered by packet
+  // completion) no screener was ever sent automatically.
+  if (!signNowAuthConfigured()) return;
   const pending = await dbAll("SELECT * FROM enrollment_packets WHERE status = 'sent'");
   const now = Date.now();
 
@@ -3545,6 +3897,21 @@ const PUBLIC_ROUTES = new Set([
 
 const CLIENT_COLOR_PALETTE = ["#5fa8a0", "#e0a430", "#3f56b5", "#3f8f89", "#c98a1b", "#8d85c8"];
 
+// Returns the first existing client whose child_name AND parent_email both
+// match (case-insensitive, trim-insensitive) the given values, or undefined.
+// Used to dedupe re-imports so we never create duplicates or revive
+// discharged/not-moving-forward clients. An empty parent_email never matches.
+async function findExistingClientKey(child_name, parent_email) {
+  if (!child_name || !parent_email) return undefined;
+  return dbGet(
+    `SELECT id, stage, child_name FROM clients
+     WHERE lower(trim(child_name)) = lower(trim(?))
+       AND lower(trim(parent_email)) = lower(trim(?))
+     LIMIT 1`,
+    [child_name, parent_email]
+  );
+}
+
 async function createClientFromPayload(c) {
   const color = CLIENT_COLOR_PALETTE[Math.floor(Math.random() * CLIENT_COLOR_PALETTE.length)];
   const submittedAt = nowISO();
@@ -3567,7 +3934,9 @@ async function createClientFromPayload(c) {
   await pipeline.enterStage(row.id, "new_submission");
   const client = await dbGet("SELECT * FROM clients WHERE id = ?", [row.id]);
   sendEnrollmentPacket(client).catch((e) => console.error("sendEnrollmentPacket failed:", e));
-  sendEligibilityCheck(client, "system").catch((e) => console.error("sendEligibilityCheck failed:", e));
+  // Sends only if a card came in with the intake; otherwise it waits for the
+  // upload, which triggers it below.
+  maybeSendEligibilityCheck(client.id, "system").catch((e) => console.error("eligibility check failed:", e));
   return client;
 }
 
@@ -3692,11 +4061,11 @@ async function handle(req, res, pathname, method, query = {}) {
         pathname.startsWith("/api/policies") ? "policies" :
         pathname.startsWith("/api/geo") ? "map" :
         pathname.startsWith("/api/supply") ? "supply" :
-        // NOTE: this is mapped to "staff" only because that is what the
-        // Access editor currently ships. It is the wrong label (see punch
-        // list item 14) and should get its own "attendance" key -- left as-is
-        // here so this security batch does not change existing behaviour.
-        pathname.startsWith("/api/attendance") ? "staff" :
+        // Staff attendance is its own section now that it has its own page in
+        // the nav, so it gets its own access key instead of borrowing the
+        // staff directory's. A grant or a block on "staff" no longer silently
+        // decides who can see attendance points and discipline levels.
+        pathname.startsWith("/api/attendance") ? "attendance" :
         // The sections below were listed in the Access editor but never
         // enforced server-side, so switching them off only hid the sidebar
         // button -- the data was still reachable by URL.
@@ -3796,6 +4165,12 @@ async function handle(req, res, pathname, method, query = {}) {
   // internally, so it is dispatched before the global 401 gate below).
   if (pathname.startsWith("/api/supervision")) {
     const handled = await supervision.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  // Rethink integration status, filter confirmation and manual sync.
+  if (pathname.startsWith("/api/rethink")) {
+    const handled = await rethink.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -3948,8 +4323,12 @@ async function handle(req, res, pathname, method, query = {}) {
     // ---------- DASHBOARD ----------
     if (pathname === "/api/dashboard" && method === "GET") {
       const byStage = await dbAll("SELECT stage, COUNT(*) AS n FROM clients GROUP BY stage");
-      const overdue = (await dbGet("SELECT COUNT(*) AS n FROM client_tasks WHERE status = 'overdue'")).n;
-      const pending = (await dbGet("SELECT COUNT(*) AS n FROM client_tasks WHERE status = 'pending'")).n;
+      // Counted over the same population the Tasks & Alerts page shows, so the
+      // dashboard number and the list cannot disagree.
+      const workedTasks = `FROM client_tasks ct JOIN clients c ON c.id = ct.client_id
+         WHERE COALESCE(c.waitlisted, false) = false AND c.stage NOT IN ('discharged','not_moving_forward')`;
+      const overdue = (await dbGet(`SELECT COUNT(*) AS n ${workedTasks} AND ct.status = 'overdue'`)).n;
+      const pending = (await dbGet(`SELECT COUNT(*) AS n ${workedTasks} AND ct.status = 'pending'`)).n;
       const today = new Date().toISOString().slice(0, 10);
       const upcomingFirstDays = await dbAll(
         "SELECT id, child_name, first_day_date FROM clients WHERE first_day_date IS NOT NULL AND first_day_date >= ? ORDER BY first_day_date LIMIT 5",
@@ -4122,6 +4501,17 @@ async function handle(req, res, pathname, method, query = {}) {
       if (!c.child_name || !c.parent_email) {
         return json(res, 400, { error: "child_name and parent_email are required" });
       }
+      // Dedupe: never re-create or revive an existing client (any stage,
+      // including discharged / not_moving_forward). No emails are sent.
+      const existing = await findExistingClientKey(c.child_name, c.parent_email);
+      if (existing) {
+        return json(res, 200, {
+          skipped: true,
+          reason: "duplicate",
+          existing_id: existing.id,
+          existing_stage: existing.stage,
+        });
+      }
       const client = await createClientFromPayload(c);
       return json(res, 201, client);
     }
@@ -4138,12 +4528,20 @@ async function handle(req, res, pathname, method, query = {}) {
       const body = await readBody(req);
       const list = Array.isArray(body.clients) ? body.clients : [];
       const results = [];
+      let skippedDuplicates = 0;
       for (const c of list) {
         if (!c.child_name) continue;
+        // Dedupe: skip records that already exist (any stage). Existing rows
+        // are left untouched -- never revived or modified.
+        const existing = await findExistingClientKey(c.child_name, c.parent_email);
+        if (existing) {
+          skippedDuplicates++;
+          continue;
+        }
         const client = await createClientBackfill(c);
         results.push({ id: client.id, child_name: client.child_name, stage: client.stage });
       }
-      return json(res, 201, { imported: results.length, results });
+      return json(res, 201, { imported: results.length, skipped_duplicates: skippedDuplicates, results });
     }
 
     // One-time cleanup helper: removes synthetic demo/test clients
@@ -4188,35 +4586,24 @@ async function handle(req, res, pathname, method, query = {}) {
       if (!content_base64 && !external_url) {
         return json(res, 400, { error: "content_base64 or external_url is required" });
       }
-      const client = await dbGet("SELECT id FROM clients WHERE id = ?", [client_id]);
-      if (!client) return json(res, 404, { error: "Client not found" });
-
-      if (content_base64) {
-        const safeName = String(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
-        const storedName = `${client_id}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
-        const fullPath = path.join(DOCS_DIR, storedName);
-        let buffer;
-        try {
-          buffer = Buffer.from(content_base64, "base64");
-        } catch (e) {
-          return json(res, 400, { error: "Invalid base64 content" });
-        }
-        fs.writeFileSync(fullPath, buffer);
-
-        const row = await dbGet(
-          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-           VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?) RETURNING id`,
-          [client_id, label || filename, filename, mime_type || "application/octet-stream", storedName, nowISO()]
-        );
-        return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "hosted" });
-      } else {
-        const row = await dbGet(
-          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-           VALUES (?, ?, ?, ?, NULL, 'link', ?, ?) RETURNING id`,
-          [client_id, label || filename, filename, mime_type || null, external_url, nowISO()]
-        );
-        return json(res, 201, { id: row.id, client_id: Number(client_id), filename, label: label || filename, doc_type: "link" });
-      }
+      // Same storage, same card/diagnosis detection and same eligibility
+      // trigger as the client card and the parent's upload link. The importer
+      // keeps its one extra rule: an image with no other signal is treated as
+      // the card, because a bulk import of phone photos is exactly that.
+      const result = await saveClientDocument({
+        client_id,
+        label,
+        filename,
+        mime_type,
+        content_base64,
+        external_url,
+        is_insurance_card: body.is_insurance_card === true
+          || looksLikeInsuranceCard({ label, filename })
+          || (!!content_base64 && /^image\//i.test(String(mime_type || ""))),
+        actor: (user && user.email) || "import",
+      });
+      if (!result.ok) return json(res, result.status || 400, { error: result.error });
+      return json(res, 201, result.document);
     }
 
     // Removes a single document row (and its file on disk, if hosted).
@@ -4466,7 +4853,7 @@ async function handle(req, res, pathname, method, query = {}) {
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
       if (!client) return json(res, 404, { error: "Not found" });
       const tasks = await dbAll(
-        `SELECT ct.*, st.label, st.stage_key, d.name AS department_name, d.color AS department_color
+        `SELECT ct.*, st.label, st.stage_key, st.assignable, d.name AS department_name, d.color AS department_color
          FROM client_tasks ct
          JOIN stage_tasks st ON st.id = ct.stage_task_id
          JOIN departments d ON d.id = st.department_id
@@ -4486,7 +4873,7 @@ async function handle(req, res, pathname, method, query = {}) {
         ? await dbAll("SELECT * FROM notifications_log WHERE client_id = ? ORDER BY sent_at DESC", [id])
         : [];
       const documents = await dbAll(
-        "SELECT id, label, filename, mime_type, doc_type, external_url, uploaded_at FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
+        "SELECT id, label, filename, mime_type, doc_type, external_url, uploaded_at, is_insurance_card FROM client_documents WHERE client_id = ? ORDER BY uploaded_at",
         [id]
       );
       const enrollmentPacket = await dbGet(
@@ -4625,11 +5012,95 @@ async function handle(req, res, pathname, method, query = {}) {
     if (dischargeMatch && method === "POST") {
       const id = dischargeMatch[1];
       const { reason, stage } = await readBody(req);
+      const before = await dbGet("SELECT stage FROM clients WHERE id = ?", [id]);
+      const target = stage || "discharged";
       await dbRun(
         "UPDATE clients SET stage = ?, discharge_reason = ?, updated_at = ? WHERE id = ?",
-        [stage || "discharged", reason || null, nowISO(), id]
+        [target, reason || null, nowISO(), id]
       );
+      // Closing a record out is written into the client's own note history, so
+      // that when it is later reopened the timeline still shows it happened,
+      // who did it and why. Uses the existing client_notes trail rather than a
+      // second audit store.
+      if (!before || before.stage !== target) {
+        await addSystemClientNote(
+          id, user,
+          `Marked ${target === "not_moving_forward" ? "Not Moving Forward" : "Discharged"}` +
+          (reason ? ` — ${reason}` : "") + "."
+        );
+      }
       return json(res, 200, await dbGet("SELECT * FROM clients WHERE id = ?", [id]));
+    }
+
+    // Bring a client back from "Not Moving Forward" (or Discharged) into the
+    // live pipeline. Deliberately NOT pipeline.enterStage(): that fires the
+    // department alert and the parent milestone email, and a family being put
+    // back on the board should not receive "great news, time for your
+    // assessment" as a side effect of an office correction.
+    //
+    // The same record is reused throughout -- no new client row, nothing
+    // deleted, notes/documents/tasks/communications all stay attached -- and
+    // the closure it is coming back from is written into the client's note
+    // history first, so the fact that they were once marked Not Moving Forward
+    // survives the restore.
+    const reactivateMatch = pathname.match(/^\/api\/clients\/(\d+)\/reactivate$/);
+    if (reactivateMatch && method === "POST") {
+      const id = reactivateMatch[1];
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      if (client.stage !== "not_moving_forward" && client.stage !== "discharged") {
+        return json(res, 409, { error: "This client is already in the active pipeline." });
+      }
+      const body = await readBody(req).catch(() => ({}));
+      const requested = (body && body.stage) || "new_submission";
+      if (!REACTIVATABLE_STAGES.includes(requested)) {
+        return json(res, 400, { error: "Choose a stage in the active pipeline to move this client back into." });
+      }
+      const closedAs = client.stage === "not_moving_forward" ? "Not Moving Forward" : "Discharged";
+      const stageDef = pipeline.getStage(requested);
+      const note = (body && String(body.note || "").trim()) || "";
+
+      await addSystemClientNote(
+        id, user,
+        `Reactivated — moved back into the ${(stageDef && stageDef.label) || requested} stage. ` +
+        `Previously marked ${closedAs}${client.discharge_reason ? ` (reason on file: ${client.discharge_reason})` : ""}.` +
+        (note ? ` Note: ${note}` : "")
+      );
+
+      // discharge_reason is cleared because it now describes a closure that has
+      // been undone -- it would otherwise keep showing on the live record as if
+      // still current. Its text is preserved verbatim in the note above.
+      await dbRun(
+        "UPDATE clients SET stage = ?, discharge_reason = NULL, stage_entered_at = ?, updated_at = ? WHERE id = ?",
+        [requested, nowISO(), nowISO(), id]
+      );
+
+      // Give the stage its checklist back, but only the tasks that are actually
+      // missing: a client who already has a row for one of these tasks keeps
+      // that row (and its completion history) rather than gaining a duplicate.
+      const stageTasks = await dbAll("SELECT * FROM stage_tasks WHERE stage_key = ?", [requested]);
+      let tasksCreated = 0;
+      for (const task of stageTasks) {
+        const existing = await dbGet(
+          "SELECT id FROM client_tasks WHERE client_id = ? AND stage_task_id = ?",
+          [id, task.id]
+        );
+        if (existing) continue;
+        await dbRun(
+          `INSERT INTO client_tasks (client_id, stage_task_id, status, due_date, created_at)
+           VALUES (?, ?, 'pending', ?, ?)`,
+          [id, task.id, addBusinessDays(new Date(), task.sla_days).toISOString(), nowISO()]
+        );
+        tasksCreated++;
+      }
+
+      console.log(`[client ${id}] reactivated from ${closedAs} into ${requested} by ${user.email} at ${nowISO()}`);
+      const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      return json(res, 200, {
+        ...authAlerts.sanitizeClientForRole(user, updated),
+        reactivated_from: closedAs,
+        tasks_created: tasksCreated,
+      });
     }
 
     // Place a client on (or take them off) the waitlist. Placing sends the
@@ -4728,38 +5199,19 @@ async function handle(req, res, pathname, method, query = {}) {
       const client = await dbGet("SELECT id FROM clients WHERE id = ?", [id]);
       if (!client) return json(res, 404, { error: "Not found" });
       const body = await readBody(req);
-      const label = (body.label || body.filename || "Document").trim();
-      if (body.external_url) {
-        const row = await dbGet(
-          `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-           VALUES (?, ?, ?, ?, NULL, 'link', ?, ?) RETURNING id`,
-          [id, label, body.filename || body.external_url, body.mime_type || null, body.external_url, nowISO()]
-        );
-        return json(res, 201, { id: row.id, doc_type: "link" });
-      }
-      if (!body.content_base64 || !body.filename) {
-        return json(res, 400, { error: "A file (or a link) is required." });
-      }
-      let buffer;
-      try {
-        buffer = Buffer.from(body.content_base64, "base64");
-      } catch (e) {
-        return json(res, 400, { error: "Invalid file data." });
-      }
-      if (buffer.length > 15 * 1024 * 1024) return json(res, 400, { error: "File is too large (15MB max)." });
-      const safeName = String(body.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
-      const storedName = `${id}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
-      try {
-        fs.writeFileSync(path.join(DOCS_DIR, storedName), buffer);
-      } catch (e) {
-        return json(res, 500, { error: "Could not save file." });
-      }
-      const row = await dbGet(
-        `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-         VALUES (?, ?, ?, ?, ?, 'hosted', NULL, ?) RETURNING id`,
-        [id, label, body.filename, body.mime_type || "application/octet-stream", storedName, nowISO()]
-      );
-      return json(res, 201, { id: row.id, doc_type: "hosted" });
+      const result = await saveClientDocument({
+        client_id: id,
+        label: body.label,
+        filename: body.filename,
+        mime_type: body.mime_type,
+        content_base64: body.content_base64,
+        external_url: body.external_url,
+        is_insurance_card: body.is_insurance_card === true,
+        is_diagnosis: body.is_diagnosis === true,
+        actor: user.email,
+      });
+      if (!result.ok) return json(res, result.status || 400, { error: result.error });
+      return json(res, 201, result.document);
     }
 
     const docItemMatch = pathname.match(/^\/api\/clients\/(\d+)\/documents\/(\d+)$/);
@@ -5071,13 +5523,69 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     // ---------- Staff to-do tasks (assignable, due dates, reminders) ----------
     // Supervisory roles (owner / super_admin / admin) may see the whole
-    // organization's task list. Everyone else is scoped to their OWN tasks at
-    // the query level -- enforced here on the server, not merely hidden in the
-    // UI -- so a normal staffer can never browse another employee's task list.
-    // "Mine" = tasks whose assigned_user_id is me, or whose assigned_email
-    // matches my login (covers tasks assigned to staff who have no CRM user id).
+    // organization's task list. Everyone else is scoped at the QUERY level --
+    // enforced here on the server, not merely hidden in the UI -- so a normal
+    // staffer can never browse another employee's task list.
+    //
+    // What a non-supervisory staff member may see is exactly three things:
+    //   1. tasks assigned to them (by user id, or by email for staff with no
+    //      CRM login),
+    //   2. tasks they created themselves,
+    //   3. tasks attached to a client they are assigned to (their own
+    //      caseload -- the same "assigned to this client" test the message
+    //      history already uses).
+    // Anything else -- another staffer's personal to-do list, a client task on
+    // a family they have nothing to do with -- is invisible to them, and stays
+    // invisible however the request is crafted.
     const canSeeAllTasks = (u) => !!u && ["owner", "super_admin", "admin"].includes(u.role);
+    // "Mine" = tasks whose assigned_user_id is me, or whose assigned_email
+    // matches my login (which covers staff who have no CRM user id).
     const mineClause = "(st.assigned_user_id = ? OR (st.assigned_email IS NOT NULL AND lower(st.assigned_email) = lower(?)))";
+    // 15 placeholders, filled by visibleParams() below in this order:
+    // my user id, my email (assignee), my email (creator), then my email twice
+    // for each of the two assigned-*-email columns and my name twice for each
+    // of the four assigned-*-name columns.
+    const visibleClause =
+      "(" + mineClause +
+      " OR (st.created_by IS NOT NULL AND lower(st.created_by) = lower(?))" +
+      " OR (st.client_id IS NOT NULL AND EXISTS (" +
+      "      SELECT 1 FROM clients vc WHERE vc.id = st.client_id AND (" +
+      "        (? <> '' AND lower(COALESCE(vc.assigned_bcba_email, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_billing_email, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_bcba_name, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_rbt_name, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_billing_name, '')) = lower(?))" +
+      "     OR (? <> '' AND lower(COALESCE(vc.assigned_intake_coordinator_name, '')) = lower(?))" +
+      "      )))" +
+      ")";
+    const visibleParams = (u) => {
+      const email = String((u && u.email) || "").trim();
+      const name = String((u && u.name) || "").trim();
+      return [
+        u.id, email,                                    // assigned to me
+        email,                                          // created by me
+        email, email,                                   // caseload: assigned_bcba_email
+        email, email,                                   // caseload: assigned_billing_email
+        name, name,                                     // caseload: assigned_bcba_name
+        name, name,                                     // caseload: assigned_rbt_name
+        name, name,                                     // caseload: assigned_billing_name
+        name, name,                                     // caseload: assigned_intake_coordinator_name
+      ];
+    };
+    // Only a task's assignee, its creator, or a supervisor may change or delete
+    // it. Without this, a staffer who knows a task id could tick off or delete
+    // work belonging to someone whose list they cannot even read.
+    async function canEditStaffTask(u, taskId) {
+      if (canSeeAllTasks(u)) return true;
+      const t = await dbGet("SELECT assigned_user_id, assigned_email, created_by FROM staff_tasks WHERE id = ?", [taskId]);
+      if (!t) return false;
+      const email = String((u && u.email) || "").trim().toLowerCase();
+      return (
+        (t.assigned_user_id != null && Number(t.assigned_user_id) === Number(u.id)) ||
+        (!!t.assigned_email && String(t.assigned_email).trim().toLowerCase() === email) ||
+        (!!t.created_by && String(t.created_by).trim().toLowerCase() === email)
+      );
+    }
 
     if (pathname === "/api/staff-tasks/summary" && method === "GET") {
       // Counts for the logged-in user's OWN incomplete tasks -- powers the
@@ -5100,13 +5608,20 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     }
 
     if (pathname === "/api/staff-tasks" && method === "GET") {
-      // Non-supervisory users are forced to their own tasks no matter what
-      // scope they ask for. Supervisors default to everything but can still
-      // request scope=mine for their personal view.
-      const wantMine = query.scope === "mine" || !canSeeAllTasks(user);
+      // scope=mine   -> only tasks assigned to me (the personal Task Center).
+      // default      -> everything a supervisor may see, or the three-way
+      //                 visible set above for everyone else.
+      // A non-supervisory user CANNOT widen this by asking: the else-branch
+      // applies visibleClause unconditionally.
       const clauses = [];
       const params = [];
-      if (wantMine) { clauses.push(mineClause); params.push(user.id, user.email || ""); }
+      if (query.scope === "mine") {
+        clauses.push(mineClause);
+        params.push(user.id, user.email || "");
+      } else if (!canSeeAllTasks(user)) {
+        clauses.push(visibleClause);
+        params.push(...visibleParams(user));
+      }
       if (query.status === "open" || query.status === "done") { clauses.push("st.status = ?"); params.push(query.status); }
       const where = clauses.length ? "WHERE " + clauses.join(" AND ") : "";
       const rows = await dbAll(
@@ -5116,19 +5631,54 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
          ORDER BY (st.status = 'done'), st.due_date NULLS LAST, st.id DESC`,
         params
       );
-      return json(res, 200, rows);
+      // So the UI can render the right buttons without guessing at the rules.
+      const email = String(user.email || "").trim().toLowerCase();
+      return json(res, 200, rows.map((r) => ({
+        ...r,
+        can_edit: canSeeAllTasks(user) ||
+          (r.assigned_user_id != null && Number(r.assigned_user_id) === Number(user.id)) ||
+          (!!r.assigned_email && String(r.assigned_email).trim().toLowerCase() === email) ||
+          (!!r.created_by && String(r.created_by).trim().toLowerCase() === email),
+      })));
     }
     if (pathname === "/api/staff-tasks" && method === "POST") {
       const body = await readBody(req);
       const title = (body.title || "").trim();
       if (!title) return json(res, 400, { error: "A task title is required." });
+
+      // Any signed-in staff member may raise a task -- for themselves, or for
+      // a colleague. Assigning is not a supervisory privilege; SEEING someone
+      // else's list still is (the GET above), so handing work over never opens
+      // up the rest of that person's to-do list.
+      let assignedUserId = body.assigned_user_id ? Number(body.assigned_user_id) : null;
+      let assignedName = body.assigned_name || null;
+      let assignedEmail = body.assigned_email || null;
+      // No assignee given = a task for myself. This is what makes "create a
+      // task for myself" a single click rather than picking your own name.
+      if (!assignedUserId && !assignedName && !assignedEmail) {
+        assignedUserId = user.id;
+        assignedName = user.name || null;
+        assignedEmail = user.email || null;
+      }
+
+      // Attaching a task to a client is client-record access, so it is checked
+      // as such rather than trusted from the body.
+      let clientId = body.client_id ? Number(body.client_id) : null;
+      if (clientId) {
+        if (!canAccessClients(user) && !moduleGranted(user, "pipeline")) {
+          return json(res, 403, { error: "You don't have access to client records, so this task can't be linked to a client." });
+        }
+        const exists = await dbGet("SELECT id FROM clients WHERE id = ?", [clientId]);
+        if (!exists) return json(res, 400, { error: "That client no longer exists." });
+      }
+
       const row = await createStaffTask({
         title,
         description: body.description,
-        assigned_user_id: body.assigned_user_id ? Number(body.assigned_user_id) : null,
-        assigned_name: body.assigned_name,
-        assigned_email: body.assigned_email,
-        client_id: body.client_id ? Number(body.client_id) : null,
+        assigned_user_id: assignedUserId,
+        assigned_name: assignedName,
+        assigned_email: assignedEmail,
+        client_id: clientId,
         due_date: body.due_date || null,
         priority: body.priority,
         created_by: user.email,
@@ -5138,6 +5688,11 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     const staffTaskMatch = pathname.match(/^\/api\/staff-tasks\/(\d+)$/);
     if (staffTaskMatch && method === "PATCH") {
       const id = Number(staffTaskMatch[1]);
+      // Backend, not just the UI: a task may only be changed by the person it
+      // is assigned to, the person who raised it, or a supervisor.
+      if (!(await canEditStaffTask(user, id))) {
+        return json(res, 403, { error: "This task belongs to someone else." });
+      }
       const body = await readBody(req);
       const sets = [];
       const params = [];
@@ -5156,6 +5711,23 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         const done = body.status === "done";
         sets.push("status = ?", "completed_at = ?");
         params.push(done ? "done" : "open", done ? nowISO() : null);
+        if (done) {
+          // Kept even after a later reopen, so the task can still say when it
+          // had been completed.
+          sets.push("last_completed_at = ?");
+          params.push(nowISO());
+        } else {
+          // Reopening: the SAME task goes back on the open list -- title, due
+          // date, assignee, client link and description all untouched -- with
+          // a trail of who put it back and how many times.
+          sets.push(
+            "last_completed_at = COALESCE(last_completed_at, completed_at)",
+            "reminder_sent_at = NULL",
+            "reopened_at = ?", "reopened_by = ?",
+            "reopen_count = COALESCE(reopen_count, 0) + 1"
+          );
+          params.push(nowISO(), user.name || user.email || "staff");
+        }
       }
       if (!sets.length) return json(res, 400, { error: "Nothing to update." });
       params.push(id);
@@ -5175,19 +5747,28 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       return json(res, 200, afterTask);
     }
     if (staffTaskMatch && method === "DELETE") {
-      await dbRun("DELETE FROM staff_tasks WHERE id = ?", [Number(staffTaskMatch[1])]);
+      const id = Number(staffTaskMatch[1]);
+      if (!(await canEditStaffTask(user, id))) {
+        return json(res, 403, { error: "This task belongs to someone else." });
+      }
+      await dbRun("DELETE FROM staff_tasks WHERE id = ?", [id]);
       return json(res, 200, { ok: true });
     }
 
     if (pathname === "/api/tasks" && method === "GET") {
       const showAll = query.status === "all";
+      // Waitlisted and closed clients are not being worked, so their tasks are
+      // noise on this page -- an overdue count nobody can act on, sitting next
+      // to real work. The tasks themselves are untouched and still show on the
+      // client's own card; only this list stops carrying them.
+      const notWorked = `COALESCE(c.waitlisted, false) = false AND c.stage NOT IN ('discharged','not_moving_forward')`;
       const tasks = await dbAll(
         `SELECT ct.*, st.label, st.stage_key, c.child_name, d.name AS department_name, d.color AS department_color
          FROM client_tasks ct
          JOIN stage_tasks st ON st.id = ct.stage_task_id
          JOIN clients c ON c.id = ct.client_id
          JOIN departments d ON d.id = st.department_id
-         ${showAll ? "" : "WHERE ct.status != 'completed'"}
+         WHERE ${notWorked}${showAll ? "" : " AND ct.status != 'completed'"}
          ORDER BY ct.due_date ASC`
       );
       return json(res, 200, tasks);
@@ -5206,14 +5787,8 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
 
     const reopenTaskMatch = pathname.match(/^\/api\/tasks\/(\d+)\/reopen$/);
     if (reopenTaskMatch && method === "POST") {
-      const id = reopenTaskMatch[1];
-      const task = await dbGet("SELECT * FROM client_tasks WHERE id = ?", [id]);
-      if (!task) return json(res, 404, { error: "Not found" });
-      await dbRun(
-        "UPDATE client_tasks SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL WHERE id = ?",
-        [id]
-      );
-      return json(res, 200, { ok: true });
+      const r = await reopenClientTask(reopenTaskMatch[1], user);
+      return json(res, r.ok ? 200 : 404, r);
     }
 
     if (pathname === "/api/tasks/bulk-update" && method === "POST") {
@@ -5229,11 +5804,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         if (status === "completed") {
           results.push(await pipeline.completeTask(id, user.id));
         } else {
-          await dbRun(
-            "UPDATE client_tasks SET status = 'pending', completed_at = NULL, overdue_notified_at = NULL WHERE id = ?",
-            [id]
-          );
-          results.push({ ok: true });
+          results.push(await reopenClientTask(id, user));
         }
       }
       return json(res, 200, { ok: true, results });
@@ -5338,7 +5909,14 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [eligibilityMatch[1]]);
       if (!client) return json(res, 404, { error: "Not found" });
       const result = await sendEligibilityCheck(client, user.email);
-      if (!result.ok && result.error) return json(res, 400, result);
+      // Only a send that actually happened is stamped. Stamping a refused send
+      // would be the worst of both worlds: billing never gets the request, and
+      // the automatic card-triggered send is permanently switched off for this
+      // family because the CRM thinks it already went.
+      if (result && result.ok) {
+        await dbRun("UPDATE clients SET eligibility_check_sent_at = ? WHERE id = ?", [nowISO(), client.id]).catch(() => {});
+      }
+      if (!result.ok) return json(res, 400, result);
       return json(res, 200, result);
     }
 
@@ -5617,6 +6195,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         owner_notification_email: await getAppSetting("owner_notification_email", ""),
         clinical_director_email: await getAppSetting("clinical_director_email", ""),
         completion_digest_recipients: await getAppSetting("completion_digest_recipients", ""),
+        attendance_review_recipients: await getAppSetting("attendance_review_recipients", ""),
         completion_digest_hour: await getAppSetting("completion_digest_hour", "18"),
         schedule_request_recipients: await getAppSetting("schedule_request_recipients", ""),
         signnow_newhire_template_id: await getAppSetting("signnow_newhire_template_id", ""),
@@ -5627,7 +6206,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         shirt_count_full_time: await getAppSetting("shirt_count_full_time", DEFAULT_SETTINGS.shirt_count_full_time),
         shirt_count_part_time: await getAppSetting("shirt_count_part_time", DEFAULT_SETTINGS.shirt_count_part_time),
         signnow_newhire_env_default: SIGNNOW_NEWHIRE_TEMPLATE_ID_ENV ? "set" : "",
-        signnow_connected: !!((SIGNNOW_BASIC_TOKEN && SIGNNOW_USERNAME && SIGNNOW_PASSWORD) || SIGNNOW_API_KEY),
+        signnow_connected: signNowAuthConfigured(),
       });
     }
     if (pathname === "/api/admin/settings" && method === "PATCH") {
@@ -5638,6 +6217,17 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         const email = (body.eligibility_check_email || "").trim();
         if (!validEmail(email)) return json(res, 400, { error: "Please enter a valid email address." });
         await setAppSetting("eligibility_check_email", email);
+      }
+      // Who gets the monthly attendance roster summary. Blank falls back to the
+      // owner notification address, then to a real owner/admin mailbox, so the
+      // review cannot quietly go nowhere.
+      if ("attendance_review_recipients" in body) {
+        const raw = String(body.attendance_review_recipients || "").trim();
+        const list = raw ? raw.split(/[,;]/).map((x) => x.trim()).filter(Boolean) : [];
+        for (const addr of list) {
+          if (!validEmail(addr)) return json(res, 400, { error: `"${addr}" is not a valid email address.` });
+        }
+        await setAppSetting("attendance_review_recipients", list.join(", "));
       }
       if ("clinical_director_email" in body) {
         // Who receives BIP questions and review requests. Never hard-coded.
@@ -5916,20 +6506,22 @@ async function deptId(key) {
 async function seedStageTasks() {
   const existing = await dbGet("SELECT COUNT(*) AS n FROM stage_tasks");
   if (Number(existing.n) > 0) return;
+  // Last field = assignable. The Clinical Screener is automated (parent-driven,
+  // system-managed) and must never be assigned to staff, so it seeds as false.
   const rows = [
-    ["new_submission", "Welcome call / initial contact", "intake", 1, 1],
-    ["clinical_screener", "Complete Clinical Screener", "clinical", 2, 1],
-    ["insurance_verification", "Verify Insurance Benefits", "billing", 3, 1],
-    ["assessment_scheduling", "Schedule Vineland / Intake Assessment", "clinical", 5, 1],
-    ["authorization", "Submit Authorization Request", "billing", 3, 1],
-    ["first_day_scheduled", "Schedule First Day of ABA", "scheduling", 5, 1],
+    ["new_submission", "Welcome call / initial contact", "intake", 1, 1, true],
+    ["clinical_screener", "Complete Clinical Screener", "clinical", 2, 1, false],
+    ["insurance_verification", "Verify Insurance Benefits", "billing", 3, 1, true],
+    ["assessment_scheduling", "Schedule Vineland / Intake Assessment", "clinical", 5, 1, true],
+    ["authorization", "Submit Authorization Request", "billing", 3, 1, true],
+    ["first_day_scheduled", "Schedule First Day of ABA", "scheduling", 5, 1, true],
   ];
-  for (const [stage_key, label, deptKey, sla_days, sort_order] of rows) {
+  for (const [stage_key, label, deptKey, sla_days, sort_order, assignable] of rows) {
     const did = await deptId(deptKey);
     await dbRun(
-      `INSERT INTO stage_tasks (stage_key, label, department_id, sla_days, sort_order)
-       VALUES (?, ?, ?, ?, ?)`,
-      [stage_key, label, did, sla_days, sort_order]
+      `INSERT INTO stage_tasks (stage_key, label, department_id, sla_days, sort_order, assignable)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [stage_key, label, did, sla_days, sort_order, assignable]
     );
   }
 }
@@ -5949,7 +6541,13 @@ async function seedUsers() {
   // The owner sets real passwords from Admin Settings > Users. Nothing is
   // ever printed to the deploy log.
   const rnd = () => crypto.randomBytes(24).toString("base64url");
-  await createUser({ name: "Quiana Blake", email: "admin@spectrumsquadlv.com", password: rnd(), role: "admin", department_id: null });
+  // Seeded as the Owner outright. A migration in MIGRATIONS_SQL promotes this
+  // account from 'admin' to 'owner', but migrations run before seeding, so on
+  // a brand-new install the account sat on 'admin' until the NEXT restart --
+  // and owner-only features (the full supply-request queue, owner financials)
+  // quietly did nothing in the meantime. The migration is still there for
+  // installs that were seeded before this change.
+  await createUser({ name: "Quiana Blake", email: "admin@spectrumsquadlv.com", password: rnd(), role: "owner", department_id: null });
   await createUser({ name: "Intake Staff", email: "intake@spectrumsquadlv.com", password: rnd(), role: "intake", department_id: await deptId("intake") });
   await createUser({ name: "Clinical Staff", email: "clinical@spectrumsquadlv.com", password: rnd(), role: "clinical", department_id: await deptId("clinical") });
   await createUser({ name: "Billing Staff", email: "billing@spectrumsquadlv.com", password: rnd(), role: "billing", department_id: await deptId("billing") });
@@ -6231,6 +6829,10 @@ const PUBLIC_FILES = new Set([
   "/signnow-import-frontend.js",
   "/new-hire.html",
   "/scheduling-frontend.js",
+  // Rethink client matching screen. Without this entry the file 404s, the
+  // window.__renderRethinkMatch global never defines, and #/rethink-clients
+  // silently falls back to the dashboard -- which is exactly what happened.
+  "/rethink-match-frontend.js",
 ]);
 
 function serveStatic(req, res, pathname) {
@@ -6287,6 +6889,10 @@ function moduleGranted(user, key) {
 const screener = require("./screener")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, PUBLIC_DIR, moduleGranted,
   onCompletion: (...a) => completions.record(...a),
+  // The screener's parent emails are editable templates like every other
+  // parent email, rather than strings baked into the module.
+  getEmailTemplate: (key) => emailTemplates.getEmailTemplate(key),
+  renderMergeFields: (str, fields) => emailTemplates.renderMergeFields(str, fields),
 });
 // ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
 const hr = require("./hr")({
@@ -6307,6 +6913,9 @@ const hr = require("./hr")({
 const clientForms = require("./client-forms")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
   onCompletion: (...a) => completions.record(...a),
+  // The parent document-request link uploads through the one shared writer, so
+  // a file a parent sends is filed exactly like one staff uploads by hand.
+  saveClientDocument: (opts) => saveClientDocument(opts),
 });
 const ot = require("./ot")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
@@ -6318,6 +6927,8 @@ let attendance;
 try {
   attendance = require("./hr-attendance")({
     dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
+    // Recipients for the monthly attendance roster summary.
+    getAppSetting, setAppSetting,
   });
 } catch (e) {
   // The hr-attendance module file isn't present yet. Keep the app booting with a
@@ -6341,6 +6952,22 @@ const geoMap = require("./geo-map")({
 const supervision = require("./supervision")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
   onCompletion: (...args) => completions.record(...args),
+  // Verified completed hours from Rethink, when the filter has been confirmed.
+  // Returns {} until then, so the tracker keeps using the uploaded figure.
+  rethinkVerifiedHours: (month) => rethink.verifiedHoursByEmployee(month),
+});
+// ===== RETHINK INTEGRATION: the one place that talks to the Rethink API.
+// Owns /api/rethink/*. Supplies verified monthly service hours to the
+// supervision tracker and 97153 authorization dates to the existing
+// authorization-expiration alert engine. =====
+const rethink = require("./rethink")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json,
+  // "Rethink Provider Match Needed" is a supervision-page warning, so it must
+  // use the supervision tracker's own population rule rather than a second
+  // copy of it. Without this the warning names every staff member without a
+  // Rethink ID -- BCBAs, the clinical director, the owner -- none of whom are
+  // supervisees. Passed lazily so there is no construction-order coupling.
+  isSupervisionTracked: (emp) => supervision.isTracked(emp),
 });
 // ===== COMPLETIONS: one recorder for every "X finished" event, a dashboard
 // feed, and a single daily digest email. Constructed early so every module
@@ -6497,7 +7124,8 @@ const server = http.createServer(async (req, res) => {
   // Client-facing form pages (financial responsibility, schedule picker, etc.)
   if (
     pathname === "/financial-form" || pathname.startsWith("/financial-form/") ||
-    pathname === "/schedule-request" || pathname.startsWith("/schedule-request/")
+    pathname === "/schedule-request" || pathname.startsWith("/schedule-request/") ||
+    pathname === "/client-documents" || pathname.startsWith("/client-documents/")
   ) {
     if (await clientForms.servePage(req, res, pathname)) return;
   }
@@ -6581,6 +7209,59 @@ async function start() {
     if (!existing) await setAppSetting(key, url).catch(() => {});
   }
   await authorizations.initTables().catch((e) => console.error("Authorizations initTables failed:", e));
+  await rethink.initTables().catch((e) => console.error("Rethink initTables failed:", e));
+
+  // One-time backfill: every client that existed before the eligibility check
+  // became card-triggered is stamped as already sent.
+  //
+  // Without this, uploading a card to a client enrolled months ago would fire a
+  // fresh benefits request at billing for somebody whose eligibility was
+  // settled long ago -- the old code already sent theirs at enrollment. The
+  // stamp records that enrollment date rather than today, because that is when
+  // the email actually went.
+  //
+  // Guarded by a setting so it runs exactly once. Clients created afterwards
+  // keep a NULL stamp and are handled by the normal card trigger.
+  if (!(await getAppSetting("eligibility_backfill_done", ""))) {
+    const done = await dbRun(
+      `UPDATE clients SET eligibility_check_sent_at = COALESCE(submitted_at, updated_at, ?)
+        WHERE eligibility_check_sent_at IS NULL`,
+      [nowISO()]
+    ).catch((e) => { console.error("Eligibility backfill failed:", e.message); return null; });
+    if (done) {
+      await setAppSetting("eligibility_backfill_done", nowISO()).catch(() => {});
+      console.log("Eligibility check backfill: existing clients stamped as already sent.");
+    }
+  }
+
+  // One-time grace for the enrollment-packet sweep.
+  //
+  // checkEnrollmentPackets() used to bail out unless a static SIGNNOW_API_KEY
+  // was set, so on an install using the auto-refresh credentials it had never
+  // actually run. Now that it does, every packet still sitting at 'sent' would
+  // be measured against its ORIGINAL send date on the very first sweep -- and
+  // anything older than seven days would be marked "Not Moving Forward" and
+  // chased with a reminder in the same minute, for a deadline that was never
+  // being enforced against those families.
+  //
+  // So the elapsed time is banked into paused_ms (the field the waitlist pause
+  // already uses) and the reminder clock is stamped as of now: every
+  // outstanding family gets a clean seven days and their first nudge tomorrow,
+  // rather than being closed out retroactively. Guarded by a setting so it
+  // happens exactly once; packets sent from here on are timed normally.
+  if (!(await getAppSetting("packet_sweep_grace_done", ""))) {
+    const graced = await dbRun(
+      `UPDATE enrollment_packets
+          SET paused_ms = GREATEST(0, EXTRACT(EPOCH FROM (now() - sent_at::timestamptz)) * 1000)::bigint,
+              last_reminder_at = ?
+        WHERE status = 'sent' AND sent_at IS NOT NULL`,
+      [nowISO()]
+    ).catch((e) => { console.error("Packet sweep grace failed:", e.message); return null; });
+    if (graced) {
+      await setAppSetting("packet_sweep_grace_done", nowISO()).catch(() => {});
+      console.log(`Enrollment packet sweep: ${graced.rowCount} outstanding packet(s) given a fresh 7-day window (the sweep had not been running).`);
+    }
+  }
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
@@ -6589,6 +7270,18 @@ async function start() {
   await ensureSeeded();
   await retireDefaultPasswords().catch((e) => console.error("Default-password retirement failed:", e.message));
   await pipeline.checkOverdueTasks();
+
+  // Rethink sync runs BEFORE the expiration sweep so the alert engine reads
+  // freshly synced 97153 dates rather than yesterday's. Both are no-ops with a
+  // recorded reason when credentials are absent, so a CRM without the
+  // integration configured boots exactly as it did before.
+  const rethinkSweep = () => {
+    rethink.syncSupervisionHours("scheduled").catch((e) => console.error("Rethink hours sync failed:", e.message));
+    rethink.syncAuthorizations("scheduled").catch((e) => console.error("Rethink authorization sync failed:", e.message));
+  };
+  await rethink.syncAuthorizations("boot").catch((e) => console.error("Rethink authorization sync failed:", e.message));
+  await rethink.syncSupervisionHours("boot").catch((e) => console.error("Rethink hours sync failed:", e.message));
+
   await authAlerts.checkAuthExpirations().catch((e) => console.error("Auth expiration sweep failed:", e));
   await clickupIntegration.syncNow("scheduled").catch((e) => console.error("ClickUp sync failed:", e));
 
@@ -6649,6 +7342,11 @@ async function start() {
   setInterval(() => {
     onboarding.deadlineSweep().catch((e) => console.error("Onboarding sweep failed:", e));
   }, 60 * 60 * 1000);
+
+  // Rethink refresh. Every 4 hours -- six passes a day, which keeps the
+  // month-to-date figure live without hammering an API whose rate limits we
+  // have not been told. Both syncs are cheap when nothing has changed.
+  setInterval(rethinkSweep, 4 * 60 * 60 * 1000);
 
   // Daily authorization-expiration check (also runs once on boot above).
   setInterval(() => {

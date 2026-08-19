@@ -44,9 +44,13 @@ async function attRenderDashboardCard() {
 
 // ---------------- self-healing sync loop ----------------
 function attSyncView() {
-  // Remove any stale nav button from earlier versions of this module.
-  const oldNav = document.querySelector('.sidebar nav [data-nav="attendance"]');
-  if (oldNav) oldNav.remove();
+  // NOTE: this used to strip any nav button with data-nav="attendance", to clean
+  // up after an earlier version of *this* module that had its own nav page. That
+  // key now belongs to the Staff Attendance module (hr-attendance*.js), so the
+  // cleanup was silently deleting a live nav entry on every DOM mutation. The
+  // legacy button hasn't been rendered by any build in a long time, so the
+  // cleanup is simply gone -- client attendance alerts still live on the client
+  // card and in the dashboard summary below.
   attRenderDashboardCard();
 }
 

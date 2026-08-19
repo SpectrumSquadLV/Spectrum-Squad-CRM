@@ -28,6 +28,11 @@ module.exports = function initScreener(ctx) {
   // Optional so this module still loads standalone; a missing recorder must
   // never break a parent's submission.
   const onCompletion = ctx.onCompletion || (() => {});
+  // Editable wording for the two parent-facing screener emails. Optional for
+  // the same reason: without them the module falls back to its built-in copy
+  // rather than failing to send.
+  const getEmailTemplate = ctx.getEmailTemplate || null;
+  const renderMergeFields = ctx.renderMergeFields || null;
 
   // --- Config (override via Railway env vars; sensible defaults otherwise) ---
   // Comma-separated list supported, e.g. "owner@x.com, clinical@x.com"
@@ -56,6 +61,13 @@ module.exports = function initScreener(ctx) {
       data TEXT NOT NULL,
       submitted_at TEXT NOT NULL
     )`);
+    // Manual sends live on the SAME invite row as the automated ones -- one
+    // screener, one token, one history. These three columns only record who
+    // pressed the button and when, so staff can tell a hand-sent screener from
+    // an automatic one without a second table.
+    await dbRun("ALTER TABLE screener_invites ADD COLUMN IF NOT EXISTS last_manual_sent_at TEXT").catch(() => {});
+    await dbRun("ALTER TABLE screener_invites ADD COLUMN IF NOT EXISTS last_manual_sent_by TEXT").catch(() => {});
+    await dbRun("ALTER TABLE screener_invites ADD COLUMN IF NOT EXISTS manual_send_count INTEGER NOT NULL DEFAULT 0").catch(() => {});
   }
 
   // --- Emails ---------------------------------------------------------------
@@ -78,17 +90,53 @@ module.exports = function initScreener(ctx) {
     <p style="font-size:12px;color:#7a7796;">Or paste this link into your browser:<br>${link}</p>`;
   }
 
-  async function sendScreenerEmail(client, token, isReminder) {
-    const link = `${APP_BASE_URL}/screener/${token}`;
+  // The wording comes from the editable templates (Settings -> Email Templates
+  // -> Clinical Screener Emails), not from this file. The inline copy below is
+  // only a fallback for the case where the template row is somehow missing --
+  // a family must never go without their screener because a row vanished.
+  async function renderScreenerEmail(client, link, isReminder) {
     const parent = client.parent_name || "there";
     const child = client.child_name || "your child";
-    const subject = isReminder
-      ? `Reminder: ${child}'s clinical screener — Spectrum Squad`
-      : `One more step for ${child} 🌈 — Spectrum Squad`;
-    const intro = isReminder
-      ? `<p>Hi ${parent},</p><p>Just a gentle reminder — we're still waiting on ${child}'s clinical screener. It takes about 10 minutes and works great on your phone. Whenever you have a moment! 💜</p>`
-      : `<p>Hi ${parent},</p><p>Thank you for completing ${child}'s enrollment packet! 🎉</p><p>The last step to get started is a short clinical screener so our clinical team can build the perfect care plan. It's quick (about 10 minutes), phone-friendly, and there are no wrong answers.</p>`;
-    const html = emailShell(intro + ctaButton(link, "Start the Screener →"));
+    const key = isReminder ? "screener_reminder" : "screener_invite";
+
+    let subject = null, body = null;
+    if (getEmailTemplate && renderMergeFields) {
+      const tpl = await getEmailTemplate(key).catch(() => null);
+      if (tpl && tpl.body_template) {
+        const fields = { parent_name: parent, child_name: child, screener_link: link };
+        subject = renderMergeFields(tpl.subject_template, fields);
+        body = renderMergeFields(tpl.body_template, fields);
+      }
+    }
+
+    if (body == null) {
+      console.error(`[screener] no ${key} template found -- falling back to the built-in wording`);
+      subject = isReminder
+        ? `Reminder: ${child}'s clinical screener — Spectrum Squad`
+        : `One more step for ${child} 🌈 — Spectrum Squad`;
+      const intro = isReminder
+        ? `<p>Hi ${parent},</p><p>Just a gentle reminder — we're still waiting on ${child}'s clinical screener. It takes about 10 minutes and works great on your phone. Whenever you have a moment! 💜</p>`
+        : `<p>Hi ${parent},</p><p>Thank you for completing ${child}'s enrollment packet! 🎉</p><p>The last step to get started is a short clinical screener so our clinical team can build the perfect care plan. It's quick (about 10 minutes), phone-friendly, and there are no wrong answers.</p>`;
+      body = intro + ctaButton(link, "Start the Screener →");
+    }
+
+    // The link is the entire point of this email. If an edit dropped
+    // {{screener_link}}, the parent would get a friendly note asking them to
+    // complete a screener with no way to reach it -- so the button is put back
+    // rather than sending something useless. Noisy in the log on purpose.
+    if (!body.includes(link)) {
+      console.error(`[screener] the ${key} template has no {{screener_link}} in it -- appending the link so the email still works`);
+      body += ctaButton(link, "Start the Screener →");
+    }
+    if (!String(subject || "").trim()) {
+      subject = isReminder ? `Reminder: ${child}'s clinical screener` : `One more step for ${child} — Spectrum Squad`;
+    }
+    return { subject, html: body };
+  }
+
+  async function sendScreenerEmail(client, token, isReminder) {
+    const link = `${APP_BASE_URL}/screener/${token}`;
+    const { subject, html } = await renderScreenerEmail(client, link, isReminder);
     await sendEmail({
       to: client.parent_email,
       subject,
@@ -194,6 +242,119 @@ module.exports = function initScreener(ctx) {
     setInterval(() => { tick().catch((e) => console.error("[screener] tick failed:", e.message)); }, 60 * 60 * 1000);
   }
 
+  // --- Manual send (staff button on the client record) ----------------------
+  // Deliberately reuses createAndSend()'s invite row and token: a hand-sent
+  // screener is the SAME screener, so a family never ends up with two links,
+  // and anything they already filled in against that token still counts.
+  //
+  // The automation sends only once the SignNow enrollment packet comes back
+  // completed. When that packet stalls -- or SignNow is down, or the family
+  // signed on paper -- nothing ever reaches the parent. This is the manual
+  // override for exactly that case.
+  const MANUAL_RESEND_COOLDOWN_HOURS = 12;
+
+  async function screenerStatus(clientId) {
+    const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+    if (!client) return null;
+    const inv = await dbGet("SELECT * FROM screener_invites WHERE client_id = ?", [clientId]);
+    const packet = await dbGet("SELECT status, sent_at, completed_at FROM enrollment_packets WHERE client_id = ?", [clientId]).catch(() => null);
+    const lastSentAt = inv ? (inv.last_manual_sent_at || inv.last_reminder_at || inv.sent_at) : null;
+    const hoursSince = lastSentAt ? (Date.now() - new Date(lastSentAt).getTime()) / 3600000 : null;
+    // Why hasn't it gone out by itself? Said plainly, so nobody has to guess.
+    let autoBlockedReason = null;
+    if (!client.parent_email) autoBlockedReason = "No parent email is on file for this family.";
+    else if (client.clinical_screener_completed) autoBlockedReason = null;
+    else if (client.waitlisted === true || client.waitlisted === "t") autoBlockedReason = "This family is on the waitlist, so automatic screener emails are paused.";
+    else if (!inv && (!packet || packet.status !== "completed")) {
+      autoBlockedReason = packet
+        ? `The screener sends automatically once the enrollment packet is signed. That packet is currently "${packet.status}".`
+        : "The screener sends automatically once the enrollment packet is signed. No enrollment packet has been sent yet.";
+    }
+    return {
+      client_id: Number(clientId),
+      has_parent_email: !!client.parent_email,
+      parent_email: client.parent_email || null,
+      completed: !!client.clinical_screener_completed,
+      completed_at: inv && inv.completed_at ? inv.completed_at : null,
+      invited: !!inv,
+      first_sent_at: inv ? inv.sent_at : null,
+      last_sent_at: lastSentAt,
+      last_manual_sent_at: inv ? inv.last_manual_sent_at || null : null,
+      last_manual_sent_by: inv ? inv.last_manual_sent_by || null : null,
+      manual_send_count: inv ? Number(inv.manual_send_count || 0) : 0,
+      reminder_count: inv ? Number(inv.reminder_count || 0) : 0,
+      packet_status: packet ? packet.status : null,
+      auto_blocked_reason: autoBlockedReason,
+      // The button asks for confirmation rather than refusing outright: a
+      // resend is sometimes exactly what is wanted (wrong address, lost email).
+      resend_cooldown_hours: MANUAL_RESEND_COOLDOWN_HOURS,
+      recently_sent: hoursSince != null && hoursSince < MANUAL_RESEND_COOLDOWN_HOURS,
+    };
+  }
+
+  // force=false is the accident guard: a second press inside the cooldown, or a
+  // press on an already-completed screener, comes back as a question instead of
+  // a duplicate email. force=true is the deliberate resend.
+  async function sendManual(clientId, actor, force) {
+    const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+    if (!client) return { ok: false, status: 404, error: "Client not found." };
+    if (!client.parent_email) {
+      return { ok: false, status: 400, error: "This family has no parent email on file, so the screener can't be sent." };
+    }
+    const existing = await dbGet("SELECT * FROM screener_invites WHERE client_id = ?", [clientId]);
+
+    if (client.clinical_screener_completed && !force) {
+      return {
+        ok: false, status: 409, code: "already_completed",
+        error: "This family already completed their clinical screener. Send it again anyway?",
+      };
+    }
+    if (existing && !force) {
+      const lastAt = existing.last_manual_sent_at || existing.last_reminder_at || existing.sent_at;
+      const hours = lastAt ? (Date.now() - new Date(lastAt).getTime()) / 3600000 : Infinity;
+      if (hours < MANUAL_RESEND_COOLDOWN_HOURS) {
+        return {
+          ok: false, status: 409, code: "recently_sent",
+          error: `The screener was already sent to this family ${hours < 1 ? "less than an hour" : Math.floor(hours) + " hours"} ago. Send it again anyway?`,
+          last_sent_at: lastAt,
+        };
+      }
+    }
+
+    // Same token if one exists; a fresh invite only when there is none.
+    if (!existing) {
+      const token = crypto.randomBytes(24).toString("hex");
+      await dbRun(
+        `INSERT INTO screener_invites (client_id, token, status, sent_at)
+         VALUES (?, ?, 'sent', ?) ON CONFLICT (client_id) DO NOTHING`,
+        [clientId, token, nowISO()]
+      );
+    }
+    const inv = await dbGet("SELECT * FROM screener_invites WHERE client_id = ?", [clientId]);
+    if (!inv) return { ok: false, status: 500, error: "Could not create the screener invite." };
+
+    // A resend reads as a reminder to the parent; a first send reads as the
+    // original invitation. Both use the existing screener email templates.
+    const isReminder = !!(existing && (existing.reminder_count > 0 || existing.last_manual_sent_at || existing.completed_at));
+    await sendScreenerEmail(client, inv.token, isReminder);
+
+    // Reopen a completed invite only on a deliberate resend, so the reminder
+    // sweep starts chasing it again.
+    await dbRun(
+      `UPDATE screener_invites
+          SET last_manual_sent_at = ?, last_manual_sent_by = ?,
+              manual_send_count = COALESCE(manual_send_count, 0) + 1,
+              last_reminder_at = ?,
+              status = CASE WHEN ? THEN 'sent' ELSE status END,
+              completed_at = CASE WHEN ? THEN NULL ELSE completed_at END
+        WHERE id = ?`,
+      [nowISO(), actor || "staff", nowISO(),
+       !client.clinical_screener_completed, !client.clinical_screener_completed, inv.id]
+    );
+
+    return { ok: true, status: 200, sent_to: client.parent_email, sent_at: nowISO(), sent_by: actor || "staff", resend: !!existing };
+  }
+
   // --- Public form hosting: GET /screener/:token ---------------------------
   async function servePage(req, res, pathname) {
     const parts = pathname.split("/").filter(Boolean); // ["screener", "<token>"]
@@ -222,6 +383,15 @@ module.exports = function initScreener(ctx) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(html);
     return true;
+  }
+
+  // A screener holds diagnoses, self-injury history and medical background.
+  // "Logged in" is not enough -- HR-side and OT-only accounts must not read it
+  // or send it. One list, used by every screener route, so read access and
+  // send access can never drift apart.
+  const SCREENER_ROLES = ["owner", "super_admin", "admin", "intake", "clinical", "billing", "scheduling"];
+  function canSendScreener(user) {
+    return !!user && (SCREENER_ROLES.includes(user.role) || (ctx.moduleGranted && ctx.moduleGranted(user, "pipeline")));
   }
 
   // --- API: submit (public) + staff view (auth) ----------------------------
@@ -254,13 +424,40 @@ module.exports = function initScreener(ctx) {
       return true;
     }
 
+    // Clinical-screener status for one client: has it been sent, when, by
+    // whom, and -- if it has not gone out on its own -- why not.
+    const statusMatch = pathname.match(/^\/api\/screener\/status\/(\d+)$/);
+    if (statusMatch && method === "GET") {
+      if (!user) { json(res, 401, { error: "Not authenticated" }); return true; }
+      if (!canSendScreener(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const st = await screenerStatus(Number(statusMatch[1]));
+      if (!st) { json(res, 404, { error: "Client not found" }); return true; }
+      json(res, 200, st);
+      return true;
+    }
+
+    // Manual send. Enforced here on the server, not merely by hiding a button.
+    const sendMatch = pathname.match(/^\/api\/screener\/send\/(\d+)$/);
+    if (sendMatch && method === "POST") {
+      if (!user) { json(res, 401, { error: "Not authenticated" }); return true; }
+      if (!canSendScreener(user)) { json(res, 403, { error: "Not permitted to send the clinical screener." }); return true; }
+      let body = {};
+      try { body = (await readBody(req)) || {}; } catch (e) { body = {}; }
+      const actor = user.email || user.name || "staff";
+      const r = await sendManual(Number(sendMatch[1]), actor, body.force === true);
+      if (!r.ok) {
+        json(res, r.status || 400, { error: r.error, code: r.code || null, last_sent_at: r.last_sent_at || null });
+        return true;
+      }
+      console.log(`[screener] manually sent for client ${sendMatch[1]} by ${actor}`);
+      json(res, 200, { ok: true, sent_to: r.sent_to, sent_at: r.sent_at, sent_by: r.sent_by, resend: r.resend });
+      return true;
+    }
+
     // Staff view of a client's submission (auth required).
     if (pathname.startsWith("/api/screener/submission/") && method === "GET") {
       if (!user) { json(res, 401, { error: "Not authenticated" }); return true; }
-      // A screener holds diagnoses, self-injury history and medical background.
-      // "Logged in" is not enough -- HR-side and OT-only accounts must not read it.
-      const SCREENER_ROLES = ["owner", "super_admin", "admin", "intake", "clinical", "billing", "scheduling"];
-      if (!SCREENER_ROLES.includes(user.role)) { json(res, 403, { error: "Not permitted" }); return true; }
+      if (!canSendScreener(user)) { json(res, 403, { error: "Not permitted" }); return true; }
       const clientId = pathname.split("/").pop();
       const row = await dbGet(
         "SELECT * FROM screener_submissions WHERE client_id = ? ORDER BY submitted_at DESC LIMIT 1",
@@ -281,5 +478,5 @@ module.exports = function initScreener(ctx) {
     .then(startScheduler)
     .catch((e) => console.error("[screener] init failed:", e.message));
 
-  return { handleApi, servePage, tick, initTables };
+  return { handleApi, servePage, tick, initTables, sendManual, screenerStatus, canSendScreener };
 };

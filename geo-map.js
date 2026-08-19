@@ -118,6 +118,24 @@ module.exports = function initGeo(ctx) {
     return null;
   }
 
+  // Classify why an address can't be placed yet, so the UI can list the exact
+  // employees (not just a count). Returns one of:
+  //   'no_address'      -- nothing on file to geocode
+  //   'geocode_failed'  -- Nominatim couldn't locate the address
+  //   'not_geocoded'    -- valid address, just not looked up yet (run Geocode)
+  async function placeReason(rawAddress) {
+    const n = norm(rawAddress);
+    if (!n) return "no_address";
+    const c = await dbGet("SELECT status FROM geo_cache WHERE norm_address = ?", [n]);
+    if (!c) return "not_geocoded";
+    return c.status === "failed" ? "geocode_failed" : "not_geocoded";
+  }
+  const REASON_LABEL = {
+    no_address: "No home address on file",
+    geocode_failed: "Address couldn't be located — check spelling",
+    not_geocoded: "Not geocoded yet — click Geocode addresses",
+  };
+
   function haversineMiles(a, b) {
     const R = 3958.8;
     const toRad = (d) => (d * Math.PI) / 180;
@@ -128,9 +146,14 @@ module.exports = function initGeo(ctx) {
 
   async function buildMap() {
     const clientRows = await dbAll("SELECT id, child_name, address FROM clients WHERE address IS NOT NULL AND address <> '' ORDER BY child_name");
-    const empRows = await dbAll("SELECT id, name, role_title, address FROM hr_employees WHERE address IS NOT NULL AND address <> '' AND (status IS NULL OR status <> 'terminated') ORDER BY name");
+    // Pull EVERY active employee (not just ones with an address) so the map can
+    // account for all of them -- those it can't place are surfaced explicitly in
+    // `unmappedClinicians` rather than silently dropped. This fixes "the map
+    // isn't showing all employees": previously anyone without geocoded coords
+    // (no address, not-yet-geocoded, or a failed lookup) just vanished.
+    const empRows = await dbAll("SELECT id, name, role_title, address FROM hr_employees WHERE (status IS NULL OR status <> 'terminated') ORDER BY name");
 
-    const clients = [], clinicians = [];
+    const clients = [], clinicians = [], unmappedClinicians = [];
     let pending = 0;
     for (const c of clientRows) {
       const co = await coordFor(c.address);
@@ -139,8 +162,13 @@ module.exports = function initGeo(ctx) {
     }
     for (const e of empRows) {
       const co = await coordFor(e.address);
-      if (co) clinicians.push({ id: e.id, name: e.name, role_title: e.role_title || "", lat: co.lat, lng: co.lng });
-      else pending++;
+      if (co) {
+        clinicians.push({ id: e.id, name: e.name, role_title: e.role_title || "", lat: co.lat, lng: co.lng });
+      } else {
+        const reason = await placeReason(e.address);
+        if (reason === "not_geocoded") pending++;
+        unmappedClinicians.push({ id: e.id, name: e.name, role_title: e.role_title || "", reason, reason_label: REASON_LABEL[reason] });
+      }
     }
 
     // Pairings: nearest clinicians to each client (straight-line miles).
@@ -153,7 +181,7 @@ module.exports = function initGeo(ctx) {
       pairings[cl.id] = ranked;
     }
 
-    return { center: CENTER, clients, clinicians, pairings, pending, totalClients: clientRows.length, totalClinicians: empRows.length };
+    return { center: CENTER, clients, clinicians, unmappedClinicians, pairings, pending, totalClients: clientRows.length, totalClinicians: empRows.length };
   }
 
   async function handleApi(req, res, pathname, method, query, user) {
