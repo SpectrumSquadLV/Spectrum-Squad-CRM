@@ -566,6 +566,7 @@ async function route() {
   else if (hash.startsWith("#/tasks")) await renderTasks(mount);
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
+  else if (hash.startsWith("#/attendance")) { if (window.__renderAttendance) await window.__renderAttendance(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/rethink-clients")) { if (window.__renderRethinkMatch) await window.__renderRethinkMatch(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
@@ -601,6 +602,7 @@ const MODULE_CATALOG = {
   pipeline: { label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" },
   tasks: { label: "Tasks & Alerts", icon: "✓" },
   staff: { label: "Staff", icon: "🧑‍⚕️" },
+  attendance: { label: "Staff Attendance", icon: "🕒" },
   supervision: { label: "RBT Supervision", icon: "📋" },
   "rethink-clients": { label: "Rethink Client Matching", icon: "🔗", hash: "#/rethink-clients" },
   leads: { label: "Lead Management", icon: "🎯" },
@@ -676,6 +678,11 @@ function renderShell(active) {
     navItems.push({ key: "hr", label: "HR & Recruiting", icon: "👥" });
   if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
     navItems.push({ key: "staff", label: "Staff", icon: "🧑‍⚕️" });
+  // Staff attendance points, discipline levels and bonus eligibility. Same
+  // roles the /api/attendance routes accept -- the nav entry hides it, the
+  // module's own canManage() is what enforces it.
+  if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
+    navItems.push({ key: "attendance", label: "Staff Attendance", icon: "🕒" });
   if (["owner", "admin", "super_admin", "hr_admin", "clinical"].includes(state.user.role))
     navItems.push({ key: "supervision", label: "RBT Supervision", icon: "📋" });
   // Rethink client matching. Owner/admin only, matching the server-side role
@@ -4621,6 +4628,16 @@ async function renderAdmin(mount) {
       </div>
       <div class="task-row">
         <div class="info">
+          <strong>Monthly staff attendance review</strong>
+          <div class="due">Who receives the monthly attendance roster — each staff member's points, their monthly review level, discipline step and bonus standing. It goes out on the 1st for the month just ended. Comma-separate for more than one person. Leave blank to use the owner notification email above.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="att-review-to" type="text" placeholder="qblake@spectrumsquadlv.com" style="width:260px;" />
+          <button class="btn small secondary" id="save-att-review-to">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
           <strong>What time it sends</strong>
           <div class="due">Hour of the day, 0–23, on the server's clock. Anything that finishes after it goes out is carried to the next day's email — nothing is dropped.</div>
         </div>
@@ -4735,6 +4752,8 @@ async function renderAdmin(mount) {
     if (cdInput) cdInput.value = settings.clinical_director_email || "";
     const digestTo = mount.querySelector("#digest-to");
     if (digestTo) digestTo.value = settings.completion_digest_recipients || "";
+    const attReviewTo = mount.querySelector("#att-review-to");
+    if (attReviewTo) attReviewTo.value = settings.attendance_review_recipients || "";
     const schedReqTo = mount.querySelector("#sched-req-to");
     if (schedReqTo) schedReqTo.value = settings.schedule_request_recipients || "";
     const digestHour = mount.querySelector("#digest-hour");
@@ -4780,6 +4799,7 @@ async function renderAdmin(mount) {
   wireSetting("save-owner-email", "owner-email", "owner_notification_email");
   wireSetting("save-cd-email", "cd-email", "clinical_director_email");
   wireSetting("save-digest-to", "digest-to", "completion_digest_recipients");
+  wireSetting("save-att-review-to", "att-review-to", "attendance_review_recipients");
   wireSetting("save-sched-req-to", "sched-req-to", "schedule_request_recipients");
   wireSetting("save-digest-hour", "digest-hour", "completion_digest_hour");
   wireSetting("save-newhire-template", "newhire-template", "signnow_newhire_template_id");
