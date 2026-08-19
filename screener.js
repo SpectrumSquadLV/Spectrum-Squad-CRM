@@ -28,6 +28,11 @@ module.exports = function initScreener(ctx) {
   // Optional so this module still loads standalone; a missing recorder must
   // never break a parent's submission.
   const onCompletion = ctx.onCompletion || (() => {});
+  // Editable wording for the two parent-facing screener emails. Optional for
+  // the same reason: without them the module falls back to its built-in copy
+  // rather than failing to send.
+  const getEmailTemplate = ctx.getEmailTemplate || null;
+  const renderMergeFields = ctx.renderMergeFields || null;
 
   // --- Config (override via Railway env vars; sensible defaults otherwise) ---
   // Comma-separated list supported, e.g. "owner@x.com, clinical@x.com"
@@ -85,17 +90,53 @@ module.exports = function initScreener(ctx) {
     <p style="font-size:12px;color:#7a7796;">Or paste this link into your browser:<br>${link}</p>`;
   }
 
-  async function sendScreenerEmail(client, token, isReminder) {
-    const link = `${APP_BASE_URL}/screener/${token}`;
+  // The wording comes from the editable templates (Settings -> Email Templates
+  // -> Clinical Screener Emails), not from this file. The inline copy below is
+  // only a fallback for the case where the template row is somehow missing --
+  // a family must never go without their screener because a row vanished.
+  async function renderScreenerEmail(client, link, isReminder) {
     const parent = client.parent_name || "there";
     const child = client.child_name || "your child";
-    const subject = isReminder
-      ? `Reminder: ${child}'s clinical screener — Spectrum Squad`
-      : `One more step for ${child} 🌈 — Spectrum Squad`;
-    const intro = isReminder
-      ? `<p>Hi ${parent},</p><p>Just a gentle reminder — we're still waiting on ${child}'s clinical screener. It takes about 10 minutes and works great on your phone. Whenever you have a moment! 💜</p>`
-      : `<p>Hi ${parent},</p><p>Thank you for completing ${child}'s enrollment packet! 🎉</p><p>The last step to get started is a short clinical screener so our clinical team can build the perfect care plan. It's quick (about 10 minutes), phone-friendly, and there are no wrong answers.</p>`;
-    const html = emailShell(intro + ctaButton(link, "Start the Screener →"));
+    const key = isReminder ? "screener_reminder" : "screener_invite";
+
+    let subject = null, body = null;
+    if (getEmailTemplate && renderMergeFields) {
+      const tpl = await getEmailTemplate(key).catch(() => null);
+      if (tpl && tpl.body_template) {
+        const fields = { parent_name: parent, child_name: child, screener_link: link };
+        subject = renderMergeFields(tpl.subject_template, fields);
+        body = renderMergeFields(tpl.body_template, fields);
+      }
+    }
+
+    if (body == null) {
+      console.error(`[screener] no ${key} template found -- falling back to the built-in wording`);
+      subject = isReminder
+        ? `Reminder: ${child}'s clinical screener — Spectrum Squad`
+        : `One more step for ${child} 🌈 — Spectrum Squad`;
+      const intro = isReminder
+        ? `<p>Hi ${parent},</p><p>Just a gentle reminder — we're still waiting on ${child}'s clinical screener. It takes about 10 minutes and works great on your phone. Whenever you have a moment! 💜</p>`
+        : `<p>Hi ${parent},</p><p>Thank you for completing ${child}'s enrollment packet! 🎉</p><p>The last step to get started is a short clinical screener so our clinical team can build the perfect care plan. It's quick (about 10 minutes), phone-friendly, and there are no wrong answers.</p>`;
+      body = intro + ctaButton(link, "Start the Screener →");
+    }
+
+    // The link is the entire point of this email. If an edit dropped
+    // {{screener_link}}, the parent would get a friendly note asking them to
+    // complete a screener with no way to reach it -- so the button is put back
+    // rather than sending something useless. Noisy in the log on purpose.
+    if (!body.includes(link)) {
+      console.error(`[screener] the ${key} template has no {{screener_link}} in it -- appending the link so the email still works`);
+      body += ctaButton(link, "Start the Screener →");
+    }
+    if (!String(subject || "").trim()) {
+      subject = isReminder ? `Reminder: ${child}'s clinical screener` : `One more step for ${child} — Spectrum Squad`;
+    }
+    return { subject, html: body };
+  }
+
+  async function sendScreenerEmail(client, token, isReminder) {
+    const link = `${APP_BASE_URL}/screener/${token}`;
+    const { subject, html } = await renderScreenerEmail(client, link, isReminder);
     await sendEmail({
       to: client.parent_email,
       subject,

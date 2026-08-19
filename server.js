@@ -1357,6 +1357,24 @@ const EMAIL_TEMPLATE_DEFS = [
     description: "Sent daily to the parent while the New Patient Enrollment Packet is still unsigned.",
     fields: ["parent_name", "child_name"],
   },
+  // The Clinical Screener emails. These were built as hardcoded strings inside
+  // screener.js, so they never appeared in this editor and the wording could
+  // not be changed without a deploy. Registered here so they are edited like
+  // every other parent email; screener.js renders from these rows.
+  {
+    key: "screener_invite",
+    label: "Clinical Screener — Invitation",
+    category: "Clinical Screener Emails",
+    description: "Sent to the parent when the clinical screener goes out — automatically once the enrollment packet is signed, or by hand from the Send Screener button on the client card. Must contain {{screener_link}}: it is the parent's private link to the screener, and the CRM will append it if you remove it.",
+    fields: ["parent_name", "child_name", "screener_link"],
+  },
+  {
+    key: "screener_reminder",
+    label: "Clinical Screener — Reminder",
+    category: "Clinical Screener Emails",
+    description: "Sent to the parent once a day while the clinical screener is still outstanding, and used for a deliberate resend. Must contain {{screener_link}}.",
+    fields: ["parent_name", "child_name", "screener_link"],
+  },
   {
     key: "assessment_reminder",
     label: "Assessment Scheduling Reminder",
@@ -1657,6 +1675,26 @@ const EMAIL_TEMPLATE_DEFAULTS = {
     <p>We're so glad to have you! Your first step is joining our <strong>Class Dojo</strong>, where our team communicates day to day: <a href="{{class_dojo_link}}">{{class_dojo_link}}</a></p>
     <p>Your start date is <strong>{{hire_date}}</strong>. Reach out any time with questions.</p>
     <p>Warmly,<br/>The Spectrum Squad Team</p>`,
+  },
+  // Deliberately the same words screener.js has been sending, so registering
+  // these changes nothing about what families receive until somebody edits
+  // them. The button markup is part of the body so it stays editable too.
+  screener_invite: {
+    subject: "One more step for {{child_name}} 🌈 — Spectrum Squad",
+    body:
+      "<p>Hi {{parent_name}},</p>" +
+      "<p>Thank you for completing {{child_name}}'s enrollment packet! 🎉</p>" +
+      "<p>The last step to get started is a short clinical screener so our clinical team can build the perfect care plan. It's quick (about 10 minutes), phone-friendly, and there are no wrong answers.</p>" +
+      '<p style="text-align:center;margin:26px 0;"><a href="{{screener_link}}" style="background:#e0a430;color:#3a2c05;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:12px;display:inline-block;">Start the Screener →</a></p>' +
+      '<p style="font-size:12px;color:#7a7796;">Or paste this link into your browser:<br/>{{screener_link}}</p>',
+  },
+  screener_reminder: {
+    subject: "Reminder: {{child_name}}'s clinical screener — Spectrum Squad",
+    body:
+      "<p>Hi {{parent_name}},</p>" +
+      "<p>Just a gentle reminder — we're still waiting on {{child_name}}'s clinical screener. It takes about 10 minutes and works great on your phone. Whenever you have a moment! 💜</p>" +
+      '<p style="text-align:center;margin:26px 0;"><a href="{{screener_link}}" style="background:#e0a430;color:#3a2c05;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:12px;display:inline-block;">Start the Screener →</a></p>' +
+      '<p style="font-size:12px;color:#7a7796;">Or paste this link into your browser:<br/>{{screener_link}}</p>',
   },
   hr_rethink_creds: {
     subject: "Your Rethink login",
@@ -6839,6 +6877,10 @@ function moduleGranted(user, key) {
 const screener = require("./screener")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, PUBLIC_DIR, moduleGranted,
   onCompletion: (...a) => completions.record(...a),
+  // The screener's parent emails are editable templates like every other
+  // parent email, rather than strings baked into the module.
+  getEmailTemplate: (key) => emailTemplates.getEmailTemplate(key),
+  renderMergeFields: (str, fields) => emailTemplates.renderMergeFields(str, fields),
 });
 // ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
 const hr = require("./hr")({
