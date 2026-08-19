@@ -4,7 +4,7 @@
 const { chromium } = require("playwright");
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" });
+  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
   const page = await browser.newPage({ viewport: { width: 1400, height: 950 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push("pageerror: " + e.message));

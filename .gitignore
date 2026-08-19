@@ -12,3 +12,6 @@ package-lock.json
 data/
 *.log
 .DS_Store
+
+# Per-suite output from run-tests.js
+test-logs/
