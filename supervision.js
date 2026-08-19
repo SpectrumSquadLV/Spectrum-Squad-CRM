@@ -18,6 +18,10 @@ const zlib = require("zlib");
 module.exports = function initSupervision(ctx) {
   const { dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json } = ctx;
   const onCompletion = ctx.onCompletion || (() => {});
+  // Verified completed service hours from the Rethink API. Returns {} until an
+  // admin has confirmed the completed/verified filter, so the payroll-upload
+  // denominator stays in force until the API figure is trustworthy.
+  const rethinkVerifiedHours = ctx.rethinkVerifiedHours || (async () => ({}));
 
   const DATA_DIR = path.join(__dirname, "data");
   const SUP_DIR = path.join(DATA_DIR, "supervision");
@@ -83,6 +87,13 @@ module.exports = function initSupervision(ctx) {
     await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS supervision_required BOOLEAN")
       .catch((e) => console.error("supervision_required column:", e.message));
 
+    // The date through which uploaded worked-hours are current for this
+    // employee/month. Captured on every hours upload so BCBAs can see, per
+    // staff and globally, when the hours data was last refreshed and when a
+    // new upload is due. Additive; NULL for pre-existing rows.
+    await dbRun("ALTER TABLE hr_supervision_logs ADD COLUMN IF NOT EXISTS hours_current_through DATE")
+      .catch((e) => console.error("hours_current_through column:", e.message));
+
     // Amendments to an already-signed month. A signed month is a compliance
     // record: it can still be corrected -- people do log the wrong date, or a
     // session that never happened -- but not quietly. Every change after
@@ -100,6 +111,18 @@ module.exports = function initSupervision(ctx) {
       previous_signed_by TEXT,
       previous_signed_at TEXT
     )`).catch((e) => console.error("supervision amendments initTables:", e.message));
+
+    // Deleting a month reuses this same table rather than adding a second
+    // history store: the row keeps the entries, the worked hours and the
+    // signature exactly as they were, so a deleted record is still auditable.
+    // `action` distinguishes the two kinds of entry; existing rows are all
+    // amendments, which is what the default says.
+    await dbRun("ALTER TABLE hr_supervision_amendments ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'amendment'")
+      .catch((e) => console.error("supervision amendments action column:", e.message));
+    // The signed PDF is never unlinked from disk on delete -- this records
+    // which file the deleted month's signature lives in.
+    await dbRun("ALTER TABLE hr_supervision_amendments ADD COLUMN IF NOT EXISTS previous_pdf_stored TEXT")
+      .catch((e) => console.error("supervision amendments pdf column:", e.message));
   }
 
   function role(u) { return (u && (u.role || u.role_key || "")) || ""; }
@@ -109,8 +132,21 @@ module.exports = function initSupervision(ctx) {
   // role-gated.
   const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
   function canManage(u) { return ["owner", "super_admin", "admin", "hr_admin", "clinical"].includes(role(u)) || granted(u, "supervision"); }
+  // Deleting a supervision month is destructive and is deliberately NOT part of
+  // the ordinary manage tier: a BCBA or clinical lead can correct a month (which
+  // is recorded and withdraws the signature), but only the practice owner or an
+  // administrator can remove one outright. A module grant from the Access editor
+  // does not unlock it.
+  function canDelete(u) { return ["owner", "super_admin", "admin"].includes(role(u)); }
 
   function num(v) { const n = parseFloat(v); return isFinite(n) ? n : 0; }
+  // Normalize a DATE value (which the pg driver may return as a Date object or
+  // string) to a plain 'YYYY-MM-DD', or null.
+  function dstr(v) {
+    if (!v) return null;
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    return String(v).slice(0, 10);
+  }
   function supHours(entries) {
     return Math.round((entries || []).reduce((s, e) => s + num(e.duration), 0) * 100) / 100;
   }
@@ -121,6 +157,17 @@ module.exports = function initSupervision(ctx) {
   function thisMonth() {
     // Derived from nowISO() so it stays resume-safe (no Date.now()).
     return nowISO().slice(0, 7);
+  }
+  // The date an hours upload for month 'YYYY-MM' is current through. Uses an
+  // explicit through-date if provided; otherwise the last day of that month,
+  // but never past today (so an in-progress month reads "through today").
+  function throughDateFor(month, explicit) {
+    if (explicit && /^\d{4}-\d{2}-\d{2}$/.test(explicit)) return explicit;
+    const [y, m] = month.split("-").map(Number);
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate(); // day 0 of next month
+    const eom = `${month}-${String(lastDay).padStart(2, "0")}`;
+    const today = nowISO().slice(0, 10);
+    return eom > today ? today : eom;
   }
 
   async function logActivity(employeeId, text) {
@@ -209,24 +256,48 @@ module.exports = function initSupervision(ctx) {
     }));
     const logs = await dbAll("SELECT * FROM hr_supervision_logs WHERE month = ?", [month]);
     const byEmp = {}; logs.forEach((l) => { byEmp[l.employee_id] = l; });
+    // Rethink is authoritative for the denominator once its filter is
+    // confirmed. Until then this map is empty and nothing below changes. A
+    // failed sync also leaves it holding the last good values rather than
+    // zeroes, so a bad API response can never drop a percentage to 0%.
+    const rethinkHours = await rethinkVerifiedHours(month).catch(() => ({}));
     let totSup = 0, totWorked = 0, needUpload = 0, signed = 0;
+    let fromRethink = 0, fromUpload = 0;
+    let monthThrough = null; // latest through-date among this month's uploads
     const list = emps.map((e) => {
       const l = byEmp[e.id];
       let entries = []; try { entries = l && l.entries ? JSON.parse(l.entries) : []; } catch (x) {}
       const sup = supHours(entries);
-      const worked = l ? num(l.hours_worked) : 0;
+      // Denominator precedence: Rethink verified completed hours, else the
+      // uploaded payroll figure. Only a positive Rethink value takes over --
+      // a provider with no synced hours keeps whatever was already there.
+      const uploaded = l ? num(l.hours_worked) : 0;
+      const verified = num(rethinkHours[e.id]);
+      const useRethink = verified > 0;
+      const worked = useRethink ? verified : uploaded;
       const p = pct(sup, worked);
+      const through = l ? dstr(l.hours_current_through) : null;
+      if (through && (!monthThrough || through > monthThrough)) monthThrough = through;
       totSup += sup; totWorked += worked;
+      if (useRethink) fromRethink++; else if (uploaded) fromUpload++;
       if (!worked) needUpload++;
       if (l && l.signed_off) signed++;
       return {
         employee_id: e.id, name: e.name, role_title: e.role_title || "",
         sup_hours: sup, hours_worked: worked, pct: p,
+        hours_source: useRethink ? "rethink" : (uploaded ? "upload" : "none"),
+        rethink_verified_hours: useRethink ? verified : null,
+        rethink_synced_at: (l && l.rethink_synced_at) || null,
         meets: p != null ? p >= BACB_MIN_PCT : false,
         signed_off: !!(l && l.signed_off), signed_by: l && l.signed_by, signed_at: l && l.signed_at,
         entry_count: entries.length,
+        hours_current_through: through,
       };
     });
+    // The latest date any uploaded hours are current through, across ALL months
+    // -- so the "upload again?" banner is meaningful regardless of the month
+    // being viewed.
+    const gRow = await dbGet("SELECT MAX(hours_current_through) AS m FROM hr_supervision_logs").catch(() => null);
     return {
       month, min_pct: BACB_MIN_PCT,
       employees: list,
@@ -237,6 +308,16 @@ module.exports = function initSupervision(ctx) {
       need_hours_upload: needUpload,
       signed_count: signed,
       staff_count: list.length,
+      hours_current_through: monthThrough,                        // latest for the viewed month
+      global_hours_current_through: gRow ? dstr(gRow.m) : null,   // latest across all months
+      // Where the denominator came from this month. Drives the page's whole
+      // posture: once Rethink is supplying hours, the upload path and its
+      // "you must upload the export" nagging are no longer the workflow, and
+      // the button becomes an emergency fallback rather than a monthly chore.
+      // Reporting only -- the precedence that produced `hours_worked` above is
+      // unchanged, and the sign-off logic is untouched.
+      hours_source_counts: { rethink: fromRethink, upload: fromUpload, none: needUpload },
+      rethink_hours_active: fromRethink > 0,
     };
   }
 
@@ -303,6 +384,7 @@ module.exports = function initSupervision(ctx) {
         let buf; try { let s = String(b.content_base64); const ci = s.indexOf(","); if (s.startsWith("data:") && ci >= 0) s = s.slice(ci + 1); buf = Buffer.from(s, "base64"); }
         catch (e) { return json(res, 400, { error: "Could not read the file." }); }
         let maps; try { maps = parseRethinkHours(buf); } catch (e) { return json(res, 400, { error: "Could not parse export: " + e.message }); }
+        const through = throughDateFor(mo, b.through_date);
         const emps = await dbAll("SELECT id, name, rethink_id FROM hr_employees");
         let updated = 0; const unmatched = [];
         for (const e of emps) {
@@ -311,14 +393,14 @@ module.exports = function initSupervision(ctx) {
           else if (e.name && maps.byName[e.name.trim().toLowerCase()] != null) worked = maps.byName[e.name.trim().toLowerCase()];
           if (worked == null) continue;
           await dbRun(
-            `INSERT INTO hr_supervision_logs (employee_id, month, entries, hours_worked, created_at, updated_at)
-             VALUES (?, ?, '[]', ?, ?, ?)
-             ON CONFLICT (employee_id, month) DO UPDATE SET hours_worked = EXCLUDED.hours_worked, updated_at = EXCLUDED.updated_at`,
-            [e.id, mo, worked, nowISO(), nowISO()]
+            `INSERT INTO hr_supervision_logs (employee_id, month, entries, hours_worked, hours_current_through, created_at, updated_at)
+             VALUES (?, ?, '[]', ?, ?, ?, ?)
+             ON CONFLICT (employee_id, month) DO UPDATE SET hours_worked = EXCLUDED.hours_worked, hours_current_through = EXCLUDED.hours_current_through, updated_at = EXCLUDED.updated_at`,
+            [e.id, mo, worked, through, nowISO(), nowISO()]
           );
           updated++;
         }
-        return json(res, 200, { ok: true, month: mo, updated });
+        return json(res, 200, { ok: true, month: mo, updated, hours_current_through: through });
       }
 
       const empMatch = pathname.match(/^\/api\/supervision\/employee\/(\d+)$/);
@@ -333,10 +415,13 @@ module.exports = function initSupervision(ctx) {
         const hist = await dbAll("SELECT month, entries, hours_worked, signed_off FROM hr_supervision_logs WHERE employee_id = ? ORDER BY month DESC LIMIT 12", [empId]);
         return json(res, 200, {
           employee: emp, month, entries, hours_worked: worked, sup_hours: sup, pct: pct(sup, worked),
+          hours_current_through: dstr(log && log.hours_current_through),
           min_pct: BACB_MIN_PCT, signed_off: !!(log && log.signed_off), signed_by: log && log.signed_by, signed_at: log && log.signed_at,
           has_pdf: !!(log && log.pdf_stored),
+          can_delete: canDelete(user),
+          has_record: !!log,
           amendments: await dbAll(
-            "SELECT reason, changed_by, changed_at, previous_signed_by FROM hr_supervision_amendments WHERE employee_id = ? AND month = ? ORDER BY id DESC",
+            "SELECT action, reason, changed_by, changed_at, previous_signed_by FROM hr_supervision_amendments WHERE employee_id = ? AND month = ? ORDER BY id DESC",
             [empId, month]
           ).catch(() => []),
           history: hist.map((h) => { let en = []; try { en = JSON.parse(h.entries || "[]"); } catch (x) {} const s = supHours(en); return { month: h.month, sup_hours: s, hours_worked: num(h.hours_worked), pct: pct(s, num(h.hours_worked)), signed_off: !!h.signed_off }; }),
@@ -402,6 +487,54 @@ module.exports = function initSupervision(ctx) {
           [empId, mo, JSON.stringify(entries), worked, nowISO(), nowISO()]
         );
         return json(res, 200, { ok: true, amended, sup_hours: supHours(entries), pct: pct(supHours(entries), worked) });
+      }
+
+      // Delete one employee's supervision record for one month. Owner/admin
+      // only, and never silent: the entries, the worked hours and any signature
+      // are copied into hr_supervision_amendments first (action = 'deleted'),
+      // along with who deleted it and why, so the deletion itself is part of
+      // the compliance history rather than a gap in it.
+      //
+      // Nothing else depends on the row existing. monthSummary() already treats
+      // a missing log as "no supervision recorded, worked hours not uploaded",
+      // which is exactly what is true once it is gone -- the percentages, the
+      // "meeting the minimum" count and the missing-hours count all recompute
+      // from what is left. Any signed PDF stays on disk.
+      if (empMatch && method === "DELETE") {
+        if (!canDelete(user)) {
+          return json(res, 403, { error: "Only the practice owner or an administrator can delete a supervision record." });
+        }
+        const empId = Number(empMatch[1]);
+        let b = {};
+        try { b = (await readBody(req)) || {}; } catch (e) { b = {}; }
+        const mo = (b.month && /^\d{4}-\d{2}$/.test(b.month)) ? b.month : month;
+        const reason = String(b.reason || query.reason || "").trim();
+        if (!reason) {
+          return json(res, 400, {
+            error: "Say why this record is being deleted — it is kept in the supervision history.",
+            code: "delete_needs_reason",
+          });
+        }
+        const log = await dbGet("SELECT * FROM hr_supervision_logs WHERE employee_id = ? AND month = ?", [empId, mo]);
+        if (!log) return json(res, 404, { error: "There is no supervision record for that month." });
+        const emp = await dbGet("SELECT id, name FROM hr_employees WHERE id = ?", [empId]).catch(() => null);
+
+        await dbRun(
+          `INSERT INTO hr_supervision_amendments
+             (employee_id, month, action, reason, changed_by, changed_at,
+              previous_entries, previous_hours_worked, previous_signed_by, previous_signed_at, previous_pdf_stored)
+           VALUES (?, ?, 'deleted', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [empId, mo, reason, user.name || user.email || "unknown", nowISO(),
+           log.entries || "[]", num(log.hours_worked), log.signed_by, log.signed_at, log.pdf_stored]
+        );
+        await dbRun("DELETE FROM hr_supervision_logs WHERE id = ?", [log.id]);
+
+        let deletedEntries = []; try { deletedEntries = JSON.parse(log.entries || "[]"); } catch (x) {}
+        await logActivity(empId, `Supervision record for ${mo} deleted by ${user.name || user.email}: ${reason}. ` +
+          `(${deletedEntries.length} session${deletedEntries.length === 1 ? "" : "s"}, ${supHours(deletedEntries)} supervision hrs, ` +
+          `${num(log.hours_worked)} worked hrs${log.signed_by ? `, signed by ${log.signed_by}` : ""} — kept in the supervision history.)`);
+        console.log(`[supervision] ${(emp && emp.name) || "employee " + empId} ${mo} deleted by ${user.email || user.name} at ${nowISO()}`);
+        return json(res, 200, { ok: true, employee_id: empId, month: mo, deleted_sessions: deletedEntries.length });
       }
 
       // BCBA sign-off → PDF + auto-email staff + BCBA.
@@ -498,8 +631,18 @@ module.exports = function initSupervision(ctx) {
       month: s.month, overall_pct: s.overall_pct, min_pct: s.min_pct,
       need_hours_upload: s.need_hours_upload, signed_count: s.signed_count, staff_count: s.staff_count,
       meeting: s.employees.filter((e) => e.meets).length,
+      // So the dashboard stops telling people to upload an export once the
+      // API is supplying the hours.
+      rethink_hours_active: s.rethink_hours_active,
     };
   }
 
-  return { initTables, handleApi, widget, _internal: { parseRethinkHours, monthSummary, buildPdf } };
+  // Exported so nothing else has to re-implement "who is on this tracker".
+  // The rule is subtle -- job title, not login role, with student analysts
+  // deliberately kept on and an explicit per-person override winning over both
+  // -- and a second copy of it somewhere else would drift.
+  return {
+    initTables, handleApi, widget, isTracked,
+    _internal: { parseRethinkHours, monthSummary, buildPdf, supervisionDefault },
+  };
 };

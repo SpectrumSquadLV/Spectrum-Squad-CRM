@@ -58,8 +58,12 @@ module.exports = function initHr(ctx) {
   // credentialing link and the hire's own portal link.
   async function sendWelcomeDocumentsEmail(employee, record) {
     if (!employee || !employee.email || !record) return { ok: false, reason: "no email or no onboarding record" };
-    const kind = record.role_kind === "bcba" ? "bcba" : "rbt";
-    const key = kind === "bcba" ? "hr_welcome_docs_bcba" : "hr_welcome_docs_rbt";
+    const kind = record.role_kind === "bcba" ? "bcba"
+      : record.role_kind === "cota" ? "cota"
+      : "rbt";
+    const key = kind === "bcba" ? "hr_welcome_docs_bcba"
+      : kind === "cota" ? "hr_welcome_docs_cota"
+      : "hr_welcome_docs_rbt";
     const credLink = (await ctx.getAppSetting?.(`credentialing_link_${kind}`, "")) || "";
     const t = await renderHrEmail(key, {
       first_name: firstNameOf(employee.name),
@@ -614,6 +618,31 @@ module.exports = function initHr(ctx) {
     "Clinic, in-home, and school-based experience",
   ];
 
+  const COTA_SCREENING_QUESTIONS = [
+    { id: "cota_certified", label: "Are you currently certified by NBCOT as a COTA?", type: "yesno" },
+    { id: "nevada_ota_license", label: "Do you currently hold a Nevada Occupational Therapy Assistant (OTA) license?", type: "yesno" },
+    { id: "willing_ota_license", label: "If not, are you eligible and willing to obtain a Nevada OTA license?", type: "yesno" },
+    { id: "pediatric_experience", label: "Do you have experience providing OT services to children?", type: "yesno" },
+    { id: "supervision_ok", label: "Are you comfortable practicing under the supervision of a licensed OT, as required?", type: "yesno" },
+    { id: "settings_comfort", label: "Are you comfortable working across clinic, home and school settings?", type: "yesno" },
+    { id: "availability", label: "What days and hours are you available?", type: "text" },
+    { id: "earliest_start", label: "What is your earliest available start date?", type: "text" },
+    { id: "comp_range", label: "What compensation range are you seeking?", type: "text", sensitive: true },
+  ];
+  const COTA_MIN_QUALS = [
+    "Active NBCOT certification as a COTA",
+    "Nevada OTA license, or eligibility and willingness to obtain Nevada licensure",
+    "Practice under the supervision of a licensed Occupational Therapist",
+  ];
+  const COTA_PREFERRED_QUALS = [
+    "Pediatric occupational therapy experience",
+    "Experience with sensory-integration approaches",
+    "Experience collaborating with ABA / behavior-analytic teams",
+    "CPR / BLS certification",
+    "Clinic, in-home, and school-based experience",
+    "Experience with insurance-funded and Medicaid OT services",
+  ];
+
   const ADMIN_SCREENING_QUESTIONS = [
     { id: "admin_experience", label: "Tell us about your admin or front-office experience.", type: "text" },
     { id: "tools_comfort", label: "Are you comfortable learning new scheduling / CRM software?", type: "yesno" },
@@ -725,6 +754,38 @@ module.exports = function initHr(ctx) {
       ]
     );
 
+    // COTA (Certified Occupational Therapy Assistant). role_type 'other' keeps
+    // the existing role_type CHECK/allowed set intact; onboarding maps the
+    // title to a dedicated "cota" role kind for the right document checklist.
+    await dbRun(
+      `INSERT INTO hr_positions
+        (slug, title, role_type, employment_types, location_type, locations, description,
+         highlights, openings_count, status, priority, comp_unit,
+         min_qualifications, preferred_qualifications, screening_questions, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (slug) DO NOTHING`,
+      [
+        "cota",
+        "Certified Occupational Therapy Assistant (COTA)",
+        "other",
+        JSON.stringify(["full_time", "part_time", "contract"]),
+        "hybrid",
+        "Las Vegas & Henderson, NV",
+        "Spectrum Squad is hiring a Certified Occupational Therapy Assistant (COTA) to support pediatric occupational therapy across clinic, home, and school settings. Working under the supervision of a licensed Occupational Therapist, you'll help implement treatment plans, run engaging sensory and motor activities, and partner closely with our ABA team to help children thrive.",
+        "Supportive OT + ABA team • Flexible hybrid schedule • Meaningful pediatric work • Competitive compensation",
+        1,
+        "open",
+        "high",
+        "hour",
+        JSON.stringify(COTA_MIN_QUALS),
+        JSON.stringify(COTA_PREFERRED_QUALS),
+        JSON.stringify(COTA_SCREENING_QUESTIONS),
+        "system",
+        now,
+        now,
+      ]
+    );
+
     await dbRun(
       `INSERT INTO hr_positions
         (slug, title, role_type, employment_types, location_type, locations, description,
@@ -770,7 +831,7 @@ module.exports = function initHr(ctx) {
       }
     }
 
-    console.log("HR & Recruiting seed complete (BCBA + RBT).");
+    console.log("HR & Recruiting seed complete (BCBA + RBT + BCaBA + COTA).");
   }
 
   // ============================ HELPERS ============================

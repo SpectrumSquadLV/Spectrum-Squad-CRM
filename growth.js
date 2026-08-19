@@ -84,6 +84,7 @@ module.exports = function initGrowth(ctx) {
   // Fallback copy (used if the editable email templates aren't wired). These are
   // relationship check-ins, deliberately warm and specific -- not sales blasts.
   const DEFAULT_CHECKIN = {
+    "7": { subject: "Checking in after your first week — {{org_name}}", body: "<p>Hi {{contact_name}},</p><p>It's been about a week since we started working together and I wanted to check in personally. How are the first few days going on your end? If anything came up or you have questions as {{org_name}} gets settled in, I'm just an email away.</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
     "30": { subject: "Checking in on our first month together — {{org_name}}", body: "<p>Hi {{contact_name}},</p><p>We're about a month into working together and I wanted to check in personally. How are things going from your side? Is the current level of support meeting {{org_name}}'s needs, and is there anything we could be doing better?</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
     "60": { subject: "Two months in — how are we doing, {{contact_name}}?", body: "<p>Hi {{contact_name}},</p><p>As we pass the two-month mark, I'd love your honest read on how the partnership is working. Are there upcoming needs, staffing changes, or additional services we should be planning for together?</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
     "90": { subject: "Our first quarter together — a quick check-in", body: "<p>Hi {{contact_name}},</p><p>We've reached our first quarter with {{org_name}} and I'd love to hear how you feel it's going. This is a great moment to talk through satisfaction, any changes on the horizon, and whether it makes sense to revisit the scope of our work together.</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>" },
@@ -116,7 +117,7 @@ module.exports = function initGrowth(ctx) {
     }).catch((e) => console.error("lead follow-up task failed:", e.message));
   }
 
-  // 30 / 60 / 90-day relationship nurturing. For active partners/contracts, at
+  // 7 / 30 / 60 / 90-day relationship nurturing. For active partners/contracts, at
   // each milestone (once) it drops a follow-up task on the assigned team member
   // and notes it on the timeline, so no check-in is ever forgotten.
   async function nurtureSweep() {
@@ -133,7 +134,7 @@ module.exports = function initGrowth(ctx) {
       const days = daysBetween(anchor, today);
       if (days == null || days < 0) continue;
       let sent; try { sent = JSON.parse(lead.nurture_sent || "[]"); } catch (e) { sent = []; }
-      for (const m of [30, 60, 90]) {
+      for (const m of [7, 30, 60, 90]) {
         if (days >= m && !sent.includes(String(m))) {
           await makeFollowupTask({
             title: `${m}-day check-in: ${lead.name}`,
@@ -202,17 +203,87 @@ module.exports = function initGrowth(ctx) {
     const e = await dbGet("SELECT email FROM hr_employees WHERE lower(name) = lower(?) AND email IS NOT NULL AND email <> '' LIMIT 1", [name]).catch(() => null);
     return e ? e.email : null;
   }
-  const POLICY_CATEGORIES = ["HR", "Clinical", "Safety", "Billing", "Operations", "Compliance", "Other"];
+  // The policy library's categories. This replaced a seven-entry list, so the
+  // old values are kept VALID rather than deleted -- policies filed under them
+  // keep working and keep displaying, and are recategorised by hand rather than
+  // guessed at by a migration. LEGACY_CATEGORIES is only offered in the picker
+  // when something is still filed there.
+  const POLICY_CATEGORIES = [
+    "Employee Handbook",
+    // Work authorisation, I-9, employment classification (exempt / non-exempt /
+    // full-time / per diem), employment verifications. Added after reading the
+    // handbook: these were scattering across Payroll, Administrative SOPs and
+    // Other, none of which is where anyone would look for them.
+    "Conditions of Employment",
+    "Attendance & Timekeeping",
+    "Scheduling & Call-Outs",
+    "Payroll & Compensation",
+    "Benefits",
+    // Split out of Professional Conduct, which was absorbing about a dozen
+    // policies and mixing general workplace ethics with federally-mandated
+    // anti-harassment law. Nobody looks under "Professional Conduct" for the
+    // harassment reporting procedure.
+    "Equal Opportunity & Harassment",
+    "Professional Conduct",
+    "Dress Code & Appearance",
+    "Client Care & Clinical",
+    "Session Notes & Documentation",
+    "HIPAA, Privacy & Confidentiality",
+    "Safety & Emergency Procedures",
+    "Mandated Reporting",
+    "RBT / BCBA Compliance",
+    "Supervision",
+    "Technology & Company Equipment",
+    "Communication",
+    "Social Media",
+    "Transportation / Community Services",
+    "Training & Professional Development",
+    "Leave & Time Off",
+    "Corrective Action / Discipline",
+    "Separation / Termination",
+    "Administrative SOPs",
+    "Clinical SOPs",
+    "Other",
+  ];
+  const LEGACY_CATEGORIES = ["HR", "Clinical", "Safety", "Billing", "Operations", "Compliance"];
+  const ALL_CATEGORIES = POLICY_CATEGORIES.concat(LEGACY_CATEGORIES);
   // One colour per category, so the cards read at a glance and stay consistent
   // between the staff view and the public QR page.
   const CATEGORY_COLORS = {
+    "Employee Handbook": "#1b2a6b",
+    "Conditions of Employment": "#25376f",
+    "Equal Opportunity & Harassment": "#9d2449",
+    "Attendance & Timekeeping": "#3f56b5",
+    "Scheduling & Call-Outs": "#4a6fd4",
+    "Payroll & Compensation": "#c98a1b",
+    "Benefits": "#b8791f",
+    "Professional Conduct": "#6a5acd",
+    "Dress Code & Appearance": "#8b5cf6",
+    "Client Care & Clinical": "#3f8f89",
+    "Session Notes & Documentation": "#2f7d78",
+    "HIPAA, Privacy & Confidentiality": "#217a5b",
+    "Safety & Emergency Procedures": "#d94f4f",
+    "Mandated Reporting": "#b91c1c",
+    "RBT / BCBA Compliance": "#0f766e",
+    "Supervision": "#0e7490",
+    "Technology & Company Equipment": "#475569",
+    "Communication": "#5b7bd5",
+    "Social Media": "#7c3aed",
+    "Transportation / Community Services": "#a16207",
+    "Training & Professional Development": "#2563eb",
+    "Leave & Time Off": "#0891b2",
+    "Corrective Action / Discipline": "#9a3412",
+    "Separation / Termination": "#7f1d1d",
+    "Administrative SOPs": "#525252",
+    "Clinical SOPs": "#166534",
+    "Other": "#6b7280",
+    // Retained so existing rows keep their colour until recategorised.
     HR: "#3f56b5",
     Clinical: "#3f8f89",
     Safety: "#d94f4f",
     Billing: "#c98a1b",
     Operations: "#6a5acd",
     Compliance: "#217a5b",
-    Other: "#6b7280",
   };
   function colorFor(category, explicit) {
     if (explicit && /^#[0-9a-fA-F]{6}$/.test(explicit)) return explicit;
@@ -295,7 +366,134 @@ module.exports = function initGrowth(ctx) {
     await dbRun(`ALTER TABLE crm_policies ADD COLUMN IF NOT EXISTS color TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE crm_policies ADD COLUMN IF NOT EXISTS source_file TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE crm_policies ADD COLUMN IF NOT EXISTS summary TEXT`).catch(() => {});
+
+    // ---- Policy library ------------------------------------------------
+    // A source document is uploaded ONCE and can contain many policy records.
+    // The Employee Handbook is the case that forced this: it stays readable in
+    // full, while the Attendance Policy, the Dress Code and everything else
+    // inside it become separately searchable rows pointing back at it. Nobody
+    // uploads the handbook twenty times.
+    await dbRun(`CREATE TABLE IF NOT EXISTS crm_policy_documents (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      doc_type TEXT,                 -- Employee Handbook | Policy Document | SOP | Other
+      filename TEXT,
+      body TEXT,                     -- extracted full text, kept verbatim
+      version TEXT,
+      effective_date TEXT,
+      status TEXT DEFAULT 'Active',  -- Active | Draft | Archived
+      uploaded_by TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    )`).catch((e) => console.error("crm_policy_documents:", e.message));
+
+    // Policies become records within a library rather than standalone cards.
+    // Every column is additive and nullable, so existing policy rows keep
+    // working untouched and simply carry no document, no version and no
+    // acknowledgment requirement until someone sets one.
+    for (const [col, type] of [
+      ["document_id", "INTEGER"],           // NULL = standalone policy, not from a source document
+      ["section_ref", "TEXT"],              // where it sits in the source, e.g. "Section 4.2"
+      ["status", "TEXT"],                   // Active | Draft | Archived
+      ["version", "TEXT"],
+      ["effective_date", "TEXT"],
+      ["requires_acknowledgment", "BOOLEAN DEFAULT FALSE"],
+      ["ack_required_since", "TEXT"],       // when the CURRENT version's requirement began
+      ["last_distributed_at", "TEXT"],      // pushing a policy out is separate from requiring a signature
+      ["last_distributed_by", "TEXT"],
+    ]) {
+      await dbRun(`ALTER TABLE crm_policies ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
+    }
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_crm_policies_document ON crm_policies(document_id)`).catch(() => {});
+    // Existing rows predate `status`; published/unpublished is the only signal
+    // they carry, so it decides their starting status. Done once -- the guard
+    // means a later edit to status is never overwritten.
+    await dbRun(`UPDATE crm_policies SET status = CASE WHEN published = FALSE THEN 'Draft' ELSE 'Active' END WHERE status IS NULL`).catch(() => {});
+
+    // Acknowledgments are tied to a POLICY VERSION, not just a policy. That is
+    // the whole point: when a policy is materially updated and re-issued, the
+    // old acknowledgment stays in the record as historical proof of what was
+    // acknowledged and when, and the employee owes a fresh one. Nothing is ever
+    // overwritten or deleted on re-issue.
+    await dbRun(`CREATE TABLE IF NOT EXISTS crm_policy_acknowledgments (
+      id SERIAL PRIMARY KEY,
+      policy_id INTEGER NOT NULL,
+      policy_version TEXT NOT NULL,
+      employee_id INTEGER,
+      employee_name TEXT,
+      employee_email TEXT,
+      acknowledged_at TEXT NOT NULL,
+      UNIQUE (policy_id, policy_version, employee_id)
+    )`).catch((e) => console.error("crm_policy_acknowledgments:", e.message));
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_policy_ack_policy ON crm_policy_acknowledgments(policy_id)`).catch(() => {});
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_policy_ack_employee ON crm_policy_acknowledgments(employee_id)`).catch(() => {});
   }
+
+  // Postgres text columns cannot hold a NUL byte, and a failed PDF extraction
+  // is full of them -- the insert dies with `invalid byte sequence for encoding
+  // "UTF8": 0x00`, which is a database error leaking into a user's face. Strip
+  // NUL and the other control characters that cannot legally appear in text.
+  // This removes bytes, never words: no policy language is altered.
+  function stripUnstorable(s) {
+    return String(s == null ? "" : s).replace(new RegExp("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]", "g"), "");
+  }
+
+  // Whether an extraction actually produced prose. A PDF whose embedded fonts
+  // use a custom encoding extracts as glyph codes -- symbols, one per line --
+  // and storing that would fill the library with 60 policies of gibberish that
+  // look real until somebody opens one. Real prose contains common words in
+  // quantity; glyph soup does not.
+  function looksLikeProse(t) {
+    const hits = (String(t || "").match(/\b(the|and|of|to|for|is|in|that|will|not|any|with|employee)\b/gi) || []).length;
+    return hits >= 25;
+  }
+
+  // Where a document divides into policies. Structural only -- numbering, an
+  // all-caps line, or a short line with no closing punctuation. The text
+  // between headings is carried across byte for byte, so approved language is
+  // never touched. A proposal for a human to confirm, never an import.
+  function splitIntoSections(text) {
+    const lines = String(text || "").split("\n");
+    const isHeading = (raw) => {
+      const l = raw.trim();
+      if (l.length < 3 || l.length > 90) return false;
+      if (/[.,;:]$/.test(l)) return false;
+      if (/^(section|article|policy|appendix)\b/i.test(l)) return true;
+      if (/^\d+(\.\d+)*[.)]?\s+\S/.test(l)) return true;                 // 1. / 1.2 / 3)
+      if (/^[A-Z][A-Z0-9 &'’(),./-]{4,}$/.test(l)) return true;          // ALL CAPS
+      // Title Case line of a few words, no sentence punctuation.
+      const words = l.split(/\s+/);
+      if (words.length <= 8 && words.filter((w) => /^[A-Z]/.test(w)).length >= Math.ceil(words.length * 0.6)) return true;
+      return false;
+    };
+
+    const out = [];
+    let cur = null;
+    for (const raw of lines) {
+      if (isHeading(raw)) {
+        if (cur && cur.body.join("\n").trim()) out.push(cur);
+        cur = { title: raw.trim().replace(/^\d+(\.\d+)*[.)]?\s*/, "").trim() || raw.trim(), section_ref: (raw.trim().match(/^\d+(\.\d+)*/) || [null])[0], body: [] };
+      } else if (cur) {
+        cur.body.push(raw);
+      }
+    }
+    if (cur && cur.body.join("\n").trim()) out.push(cur);
+
+    // Fragments below a few sentences are page furniture -- headers, footers,
+    // a stray line -- far more often than they are policies.
+    return out
+      .map((s) => ({ title: s.title, section_ref: s.section_ref, body: s.body.join("\n").trim() }))
+      .filter((s) => s.body.replace(/\s/g, "").length >= 120)
+      .map((s) => ({ ...s, characters: s.body.length, preview: s.body.slice(0, 200) }));
+  }
+
+  // A policy's current version. Unversioned policies are treated as "v1" so an
+  // acknowledgment can still be tied to something stable.
+  const versionOf = (p) => String((p && p.version) || "1").trim() || "1";
+  const POLICY_STATUSES = ["Active", "Draft", "Archived"];
+  const DOC_TYPES = ["Employee Handbook", "Policy Document", "SOP", "Other"];
+  // How long a pending acknowledgment may sit before it reads as overdue.
+  const ACK_OVERDUE_DAYS = Number(process.env.POLICY_ACK_OVERDUE_DAYS || 14);
 
   function role(u) { return (u && (u.role || u.role_key || "")) || ""; }
 
@@ -427,14 +625,14 @@ module.exports = function initGrowth(ctx) {
 
         // Preview / send a relationship check-in email to the contact, using an
         // editable template. Logs the send to the timeline.
-        const checkinPrev = pathname.match(/^\/api\/leads\/(\d+)\/checkin\/(30|60|90)\/preview$/);
+        const checkinPrev = pathname.match(/^\/api\/leads\/(\d+)\/checkin\/(7|30|60|90)\/preview$/);
         if (checkinPrev && method === "POST") {
           const lead = await dbGet("SELECT * FROM crm_leads WHERE id = ?", [Number(checkinPrev[1])]);
           if (!lead) return json(res, 404, { error: "Not found" });
           const r = await renderCheckin(lead, checkinPrev[2]);
           return json(res, r.ok ? 200 : 400, r);
         }
-        const checkinSend = pathname.match(/^\/api\/leads\/(\d+)\/checkin\/(30|60|90)\/send$/);
+        const checkinSend = pathname.match(/^\/api\/leads\/(\d+)\/checkin\/(7|30|60|90)\/send$/);
         if (checkinSend && method === "POST") {
           const lead = await dbGet("SELECT * FROM crm_leads WHERE id = ?", [Number(checkinSend[1])]);
           if (!lead) return json(res, 404, { error: "Not found" });
@@ -486,6 +684,352 @@ module.exports = function initGrowth(ctx) {
       }
 
       // ================= POLICIES (authed management) =================
+      // ---- POLICY LIBRARY ------------------------------------------------
+      // Search + filter over policy records, with each row carrying everything
+      // the library needs to display: category, status, version, dates, its
+      // source document, and this user's acknowledgment position.
+      if (pathname === "/api/policies/library" && method === "GET") {
+        const q = String((query && query.q) || "").trim().toLowerCase();
+        const cat = String((query && query.category) || "").trim();
+        const st = String((query && query.status) || "").trim();
+
+        const policies = await dbAll(
+          `SELECT p.*, d.title AS document_title, d.doc_type AS document_type, d.filename AS document_filename
+             FROM crm_policies p LEFT JOIN crm_policy_documents d ON d.id = p.document_id
+            ORDER BY p.category, p.title`
+        ).catch(() => []);
+
+        const myAcks = user ? await dbAll(
+          "SELECT policy_id, policy_version, acknowledged_at FROM crm_policy_acknowledgments WHERE employee_id = ?",
+          [user.id || null]
+        ).catch(() => []) : [];
+        const ackKey = (id, v) => `${id}::${v}`;
+        const mine = new Map(myAcks.map((a) => [ackKey(a.policy_id, a.policy_version), a.acknowledged_at]));
+
+        const filtered = policies.filter((p) => {
+          const status = p.status || "Active";
+          if (cat && p.category !== cat) return false;
+          if (st && status !== st) return false;
+          if (!q) return true;
+          return [p.title, p.category, p.summary, p.body, p.document_title]
+            .some((f) => String(f || "").toLowerCase().includes(q));
+        }).map((p) => {
+          const v = versionOf(p);
+          const acknowledgedAt = mine.get(ackKey(p.id, v)) || null;
+          return {
+            id: p.id, title: p.title, category: p.category, slug: p.slug,
+            summary: p.summary, body: p.body, color: colorFor(p.category, p.color),
+            status: p.status || "Active", version: v,
+            effective_date: p.effective_date, updated_at: p.updated_at, created_at: p.created_at,
+            section_ref: p.section_ref,
+            document: p.document_id
+              ? { id: p.document_id, title: p.document_title, type: p.document_type, filename: p.document_filename }
+              : null,
+            requires_acknowledgment: p.requires_acknowledgment === true || p.requires_acknowledgment === "t",
+            my_acknowledgment: acknowledgedAt ? { version: v, acknowledged_at: acknowledgedAt } : null,
+          };
+        });
+
+        // Legacy categories are only offered once something is still filed
+        // under them, so the picker does not carry dead options forever.
+        const inUse = new Set(policies.map((p) => p.category).filter(Boolean));
+        // Source documents, so a policy record can be attached to one without
+        // a second round trip.
+        const documents = await dbAll(
+          "SELECT id, title, doc_type FROM crm_policy_documents ORDER BY title"
+        ).catch(() => []);
+        return json(res, 200, {
+          policies: filtered,
+          documents,
+          total: policies.length,
+          categories: POLICY_CATEGORIES.concat(LEGACY_CATEGORIES.filter((c) => inUse.has(c))),
+          statuses: POLICY_STATUSES,
+          category_colors: CATEGORY_COLORS,
+          can_manage: canPolicyManage(user),
+        });
+      }
+
+      // ---- SOURCE DOCUMENTS ----------------------------------------------
+      if (pathname === "/api/policies/documents" && method === "GET") {
+        const rows = await dbAll(
+          `SELECT d.id, d.title, d.doc_type, d.filename, d.version, d.effective_date, d.status,
+                  d.uploaded_by, d.created_at, d.updated_at,
+                  (SELECT COUNT(*) FROM crm_policies p WHERE p.document_id = d.id)::int AS policy_count
+             FROM crm_policy_documents d ORDER BY d.created_at DESC`
+        ).catch(() => []);
+        return json(res, 200, { documents: rows, doc_types: DOC_TYPES });
+      }
+
+      const docOne = pathname.match(/^\/api\/policies\/documents\/(\d+)$/);
+      if (docOne && method === "GET") {
+        const d = await dbGet("SELECT * FROM crm_policy_documents WHERE id = ?", [Number(docOne[1])]);
+        if (!d) return json(res, 404, { error: "Document not found." });
+        const policies = await dbAll(
+          "SELECT id, title, category, status, version, section_ref FROM crm_policies WHERE document_id = ? ORDER BY title",
+          [d.id]
+        ).catch(() => []);
+        return json(res, 200, { document: d, policies });
+      }
+
+      // Upload a source document. Text is extracted and stored verbatim -- no
+      // rewriting, no summarising, no AI touching the approved language. It is
+      // the operator who later decides which policies live inside it.
+      if (pathname === "/api/policies/documents" && method === "POST") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        if (!b.content_base64) return json(res, 400, { error: "No file provided." });
+        const name = String(b.filename || "document");
+        let buf;
+        try {
+          let raw = String(b.content_base64);
+          const ci = raw.indexOf(",");
+          if (raw.startsWith("data:") && ci >= 0) raw = raw.slice(ci + 1);
+          buf = Buffer.from(raw, "base64");
+        } catch (e) { return json(res, 400, { error: "Could not read that file." }); }
+
+        let text = "";
+        try {
+          if (/\.pdf$/i.test(name) || buf.slice(0, 5).toString("latin1") === "%PDF-") text = extractPdfLines(buf).join("\n");
+          else if (/\.docx$/i.test(name)) text = docxToText(buf);
+          else if (/\.(txt|md)$/i.test(name)) text = buf.toString("utf8");
+          else return json(res, 400, { error: "Upload a PDF, a Word .docx, or a plain text file. (Old .doc files need to be saved as .docx first.)" });
+        } catch (e) { return json(res, 400, { error: e.message || "Could not read that file." }); }
+
+        text = stripUnstorable(text).replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
+        if (text.replace(/\s/g, "").length < 40) {
+          return json(res, 400, { error: "That file didn't have readable text in it. If it's a scan or a photo, it needs to be a text document." });
+        }
+        // A PDF whose embedded fonts use a custom encoding extracts as glyph
+        // codes rather than words. Refusing it here is the point: storing it
+        // would fill the library with policies that look real until somebody
+        // opens one, and no amount of careful importing recovers from that.
+        if (!looksLikeProse(text)) {
+          return json(res, 400, {
+            error: "This file's text could not be decoded — it came out as symbols rather than words, which happens with PDFs whose fonts use a custom encoding. Save it as .docx or .txt and upload that instead.",
+          });
+        }
+
+        const fileTitle = name.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ").trim();
+        const row = await dbGet(
+          `INSERT INTO crm_policy_documents (title, doc_type, filename, body, version, effective_date, status, uploaded_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+          [String(b.title || fileTitle || "Untitled document").slice(0, 200),
+           DOC_TYPES.includes(b.doc_type) ? b.doc_type : "Policy Document",
+           name, text, b.version ? String(b.version) : null, b.effective_date || null,
+           POLICY_STATUSES.includes(b.status) ? b.status : "Active",
+           (user && user.name) || null, nowISO(), nowISO()]
+        );
+        return json(res, 201, { ok: true, document: row, characters: text.length });
+      }
+
+      if (docOne && method === "PATCH") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const allowed = ["title", "doc_type", "version", "effective_date", "status"];
+        const fields = Object.keys(b).filter((k) => allowed.includes(k));
+        if (!fields.length) return json(res, 400, { error: "Nothing to update." });
+        await dbRun(
+          `UPDATE crm_policy_documents SET ${fields.map((f) => `${f} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
+          [...fields.map((f) => b[f]), nowISO(), Number(docOne[1])]
+        );
+        return json(res, 200, { ok: true });
+      }
+
+      // ---- SPLIT A SOURCE DOCUMENT INTO POLICY SECTIONS -------------------
+      // Proposes where a document divides. Read-only: it writes nothing and
+      // decides nothing. Headings are detected structurally -- numbering, an
+      // all-caps line, a short line with no closing punctuation -- and the text
+      // between them is carried across BYTE FOR BYTE. No summarising, no
+      // rewriting, no model anywhere near the approved language.
+      const secMatch = pathname.match(/^\/api\/policies\/documents\/(\d+)\/sections$/);
+      if (secMatch && method === "GET") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const d = await dbGet("SELECT * FROM crm_policy_documents WHERE id = ?", [Number(secMatch[1])]);
+        if (!d) return json(res, 404, { error: "Document not found." });
+        const existing = await dbAll(
+          "SELECT title, section_ref FROM crm_policies WHERE document_id = ?", [d.id]
+        ).catch(() => []);
+        const already = new Set(existing.map((e) => String(e.title || "").trim().toLowerCase()));
+        const sections = splitIntoSections(String(d.body || ""))
+          .map((s) => ({ ...s, already_imported: already.has(s.title.trim().toLowerCase()) }));
+        return json(res, 200, {
+          document: { id: d.id, title: d.title, doc_type: d.doc_type },
+          sections, categories: POLICY_CATEGORIES,
+        });
+      }
+
+      // Create policy records from confirmed sections. The caller supplies the
+      // title, category and body for each -- the operator has reviewed them --
+      // and every one points back at the source document rather than copying it.
+      const impMatch = pathname.match(/^\/api\/policies\/documents\/(\d+)\/import$/);
+      if (impMatch && method === "POST") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const d = await dbGet("SELECT * FROM crm_policy_documents WHERE id = ?", [Number(impMatch[1])]);
+        if (!d) return json(res, 404, { error: "Document not found." });
+        const b = await readBody(req);
+        const items = Array.isArray(b.sections) ? b.sections : [];
+        if (!items.length) return json(res, 400, { error: "No sections selected." });
+
+        const created = [], skipped = [];
+        for (const s of items) {
+          const title = String(s.title || "").trim();
+          if (!title) { skipped.push({ title: "(untitled)", reason: "no title" }); continue; }
+          if (s.category && !ALL_CATEGORIES.includes(s.category)) {
+            skipped.push({ title, reason: "unknown category" }); continue;
+          }
+          // Re-importing the same document must not duplicate policies.
+          const dupe = await dbGet(
+            "SELECT id FROM crm_policies WHERE document_id = ? AND LOWER(title) = LOWER(?)", [d.id, title]
+          ).catch(() => null);
+          if (dupe) { skipped.push({ title, reason: "already imported" }); continue; }
+
+          let slug = slugify(title);
+          if (await dbGet("SELECT id FROM crm_policies WHERE slug = ?", [slug])) {
+            slug = slug + "-" + crypto.randomBytes(3).toString("hex");
+          }
+          const body = String(s.body == null ? "" : s.body);
+          const requiresAck = s.requires_acknowledgment === true;
+          const row = await dbGet(
+            `INSERT INTO crm_policies
+               (title, category, body, slug, published, summary, updated_by, created_at, updated_at,
+                document_id, section_ref, status, version, effective_date, requires_acknowledgment, ack_required_since)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, title, slug`,
+            [title, s.category || "Other", body, slug, b.published !== false,
+             body.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 2).join(" ").slice(0, 220),
+             (user && user.name) || null, nowISO(), nowISO(),
+             d.id, s.section_ref || null,
+             POLICY_STATUSES.includes(b.status) ? b.status : "Active",
+             String(b.version || d.version || "1"), b.effective_date || d.effective_date || null,
+             requiresAck, requiresAck ? nowISO() : null]
+          );
+          created.push(row);
+        }
+        return json(res, 200, { ok: true, created: created.length, skipped, policies: created });
+      }
+
+      // ---- PUSH A POLICY OUT TO STAFF ------------------------------------
+      // Distribution is separate from acknowledgment on purpose: telling people
+      // a policy exists and requiring them to sign for it are different acts,
+      // and most policies only need the first.
+      const distMatch = pathname.match(/^\/api\/policies\/(\d+)\/distribute$/);
+      if (distMatch && method === "POST") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const p = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [Number(distMatch[1])]);
+        if (!p) return json(res, 404, { error: "Policy not found." });
+        if ((p.status || "Active") !== "Active") {
+          return json(res, 400, { error: "Only an active policy can be sent to staff." });
+        }
+        const b = await readBody(req);
+        const staff = await dbAll(
+          "SELECT id, name, email FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated' AND email IS NOT NULL AND TRIM(email) <> ''"
+        ).catch(() => []);
+        const targets = Array.isArray(b.employee_ids) && b.employee_ids.length
+          ? staff.filter((s) => b.employee_ids.map(Number).includes(s.id))
+          : staff;
+        if (!targets.length) return json(res, 400, { error: "No staff with an email address to send to." });
+
+        const base = String(APP_BASE_URL || "").replace(/\/+$/, "");
+        const link = base ? `${base}/policies/${p.slug}` : `/policies/${p.slug}`;
+        const note = String(b.message || "").trim();
+        const needsAck = p.requires_acknowledgment === true || p.requires_acknowledgment === "t";
+        let sent = 0; const failed = [];
+        for (const s of targets) {
+          const html =
+            `<p>Hi ${esc(s.name || "there")},</p>` +
+            `<p>A policy has been shared with you: <strong>${esc(p.title)}</strong>${p.version ? ` (version ${esc(p.version)})` : ""}.</p>` +
+            (note ? `<p>${esc(note)}</p>` : "") +
+            `<p><a href="${esc(link)}">Read the policy</a></p>` +
+            (needsAck ? `<p>This policy asks you to confirm you have read it. Please open it in the CRM and acknowledge it.</p>` : "") +
+            `<p>— Spectrum Squad</p>`;
+          const r = await sendEmail({
+            to: s.email, subject: `Policy: ${p.title}`, html, type: "policy_distribution",
+          }).catch((e) => ({ ok: false, error: e.message }));
+          if (r && r.ok === false) failed.push({ name: s.name, error: r.error }); else sent++;
+        }
+        await dbRun(
+          "UPDATE crm_policies SET last_distributed_at = ?, last_distributed_by = ? WHERE id = ?",
+          [nowISO(), (user && user.name) || null, p.id]
+        ).catch(() => {});
+        return json(res, 200, { ok: true, sent, recipients: targets.length, failed, requires_acknowledgment: needsAck });
+      }
+
+      // ---- ACKNOWLEDGMENTS -----------------------------------------------
+      const ackMatch = pathname.match(/^\/api\/policies\/(\d+)\/acknowledge$/);
+      if (ackMatch && method === "POST") {
+        if (!user) return json(res, 401, { error: "Sign in to acknowledge a policy." });
+        const p = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [Number(ackMatch[1])]);
+        if (!p) return json(res, 404, { error: "Policy not found." });
+        if (!(p.requires_acknowledgment === true || p.requires_acknowledgment === "t")) {
+          return json(res, 400, { error: "This policy does not require acknowledgment." });
+        }
+        if ((p.status || "Active") !== "Active") {
+          return json(res, 400, { error: "Only an active policy can be acknowledged." });
+        }
+        const v = versionOf(p);
+        // Version is part of the key, so re-acknowledging the same version is a
+        // no-op and a NEW version creates a new row beside the old one.
+        await dbRun(
+          `INSERT INTO crm_policy_acknowledgments (policy_id, policy_version, employee_id, employee_name, employee_email, acknowledged_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (policy_id, policy_version, employee_id) DO NOTHING`,
+          [p.id, v, user.id || null, user.name || null, user.email || null, nowISO()]
+        );
+        return json(res, 200, { ok: true, policy_id: p.id, version: v });
+      }
+
+      // Admin report: acknowledged / pending / overdue, by policy and by person.
+      if (pathname === "/api/policies/acknowledgments" && method === "GET") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const policies = await dbAll(
+          "SELECT * FROM crm_policies WHERE requires_acknowledgment = TRUE AND COALESCE(status,'Active') = 'Active' ORDER BY category, title"
+        ).catch(() => []);
+        const staff = await dbAll(
+          "SELECT id, name, email FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated' ORDER BY name"
+        ).catch(() => []);
+        const acks = await dbAll("SELECT * FROM crm_policy_acknowledgments").catch(() => []);
+
+        const have = new Set(acks.map((a) => `${a.policy_id}::${a.policy_version}::${a.employee_id}`));
+        const today = nowISO().slice(0, 10);
+        const overdueAfter = (since) => {
+          if (!since) return false;
+          const d = new Date(String(since).slice(0, 10));
+          if (isNaN(d.getTime())) return false;
+          return (new Date(today) - d) / 86400000 > ACK_OVERDUE_DAYS;
+        };
+
+        const byPolicy = policies.map((p) => {
+          const v = versionOf(p);
+          const rows = staff.map((s) => {
+            const done = have.has(`${p.id}::${v}::${s.id}`);
+            return {
+              employee_id: s.id, name: s.name,
+              state: done ? "acknowledged" : (overdueAfter(p.ack_required_since || p.updated_at) ? "overdue" : "pending"),
+            };
+          });
+          return {
+            policy_id: p.id, title: p.title, category: p.category, version: v,
+            effective_date: p.effective_date, ack_required_since: p.ack_required_since,
+            acknowledged: rows.filter((r) => r.state === "acknowledged").length,
+            pending: rows.filter((r) => r.state === "pending").length,
+            overdue: rows.filter((r) => r.state === "overdue").length,
+            staff_count: rows.length,
+            employees: rows,
+          };
+        });
+
+        // Superseded acknowledgments are kept and reported separately -- they
+        // are the historical record of what was acknowledged and when.
+        const currentKeys = new Set(policies.map((p) => `${p.id}::${versionOf(p)}`));
+        const historical = acks
+          .filter((a) => !currentKeys.has(`${a.policy_id}::${a.policy_version}`))
+          .map((a) => ({
+            policy_id: a.policy_id, version: a.policy_version,
+            employee_id: a.employee_id, name: a.employee_name, acknowledged_at: a.acknowledged_at,
+          }));
+
+        return json(res, 200, { by_policy: byPolicy, historical, overdue_after_days: ACK_OVERDUE_DAYS });
+      }
+
       if (pathname === "/api/policies" && method === "GET") {
         const rows = await dbAll("SELECT * FROM crm_policies ORDER BY category, title");
         return json(res, 200, { policies: rows, categories: POLICY_CATEGORIES, category_colors: CATEGORY_COLORS });
@@ -516,9 +1060,12 @@ module.exports = function initGrowth(ctx) {
           }
         } catch (e) { return json(res, 400, { error: e.message || "Could not read that file." }); }
 
-        text = text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
+        text = stripUnstorable(text).replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
         if (text.replace(/\s/g, "").length < 40) {
           return json(res, 400, { error: "That file didn't have readable text in it. If it's a scan or a photo, it needs to be a text document to become a policy card." });
+        }
+        if (!looksLikeProse(text)) {
+          return json(res, 400, { error: "This file's text could not be decoded — it came out as symbols rather than words. Save it as .docx or .txt and upload that instead." });
         }
 
         const fileTitle = name.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ").trim();
@@ -547,10 +1094,26 @@ module.exports = function initGrowth(ctx) {
         // Ensure unique slug.
         const exists = await dbGet("SELECT id FROM crm_policies WHERE slug = ?", [slug]);
         if (exists) slug = slug + "-" + crypto.randomBytes(2).toString("hex");
+        if (b.category !== undefined && b.category && !ALL_CATEGORIES.includes(b.category)) {
+          return json(res, 400, { error: "Unknown category." });
+        }
+        if (b.status !== undefined && !POLICY_STATUSES.includes(b.status)) {
+          return json(res, 400, { error: "Status must be Active, Draft or Archived." });
+        }
+        // A policy record may point at a source document -- that is how one
+        // uploaded handbook yields many separately findable policies.
+        const requiresAck = b.requires_acknowledgment === true;
         const row = await dbRun(
-          `INSERT INTO crm_policies (title, category, body, slug, published, updated_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-          [b.title, b.category || "Other", b.body || "", slug, b.published === false ? false : true, user.name || null, nowISO(), nowISO()]
+          `INSERT INTO crm_policies
+             (title, category, body, slug, published, updated_by, created_at, updated_at,
+              document_id, section_ref, status, version, effective_date, requires_acknowledgment, ack_required_since)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          [b.title, b.category || "Other", b.body || "", slug, b.published === false ? false : true,
+           user.name || null, nowISO(), nowISO(),
+           b.document_id ? Number(b.document_id) : null, b.section_ref || null,
+           POLICY_STATUSES.includes(b.status) ? b.status : "Active",
+           b.version ? String(b.version) : "1", b.effective_date || null,
+           requiresAck, requiresAck ? nowISO() : null]
         );
         return json(res, 201, { ok: true, id: row.rows[0].id, slug });
       }
@@ -558,11 +1121,44 @@ module.exports = function initGrowth(ctx) {
       if (polMatch && method === "PATCH") {
         if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
-        const allowed = ["title", "category", "body", "published", "color", "summary"];
+        const allowed = [
+          "title", "category", "body", "published", "color", "summary",
+          "document_id", "section_ref", "status", "version", "effective_date", "requires_acknowledgment",
+        ];
         const fields = Object.keys(b).filter((k) => allowed.includes(k));
         if (!fields.length) return json(res, 400, { error: "Nothing to update." });
-        await dbRun(`UPDATE crm_policies SET ${fields.map((f) => `${f} = ?`).join(", ")}, updated_by = ?, updated_at = ? WHERE id = ?`, [...fields.map((f) => b[f]), user.name || null, nowISO(), Number(polMatch[1])]);
-        return json(res, 200, { ok: true });
+        if (b.category !== undefined && !ALL_CATEGORIES.includes(b.category)) {
+          return json(res, 400, { error: "Unknown category." });
+        }
+        if (b.status !== undefined && !POLICY_STATUSES.includes(b.status)) {
+          return json(res, 400, { error: "Status must be Active, Draft or Archived." });
+        }
+
+        const id = Number(polMatch[1]);
+        const before = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [id]);
+        if (!before) return json(res, 404, { error: "Policy not found." });
+
+        // Re-issuing a policy: a new version, or switching acknowledgment on,
+        // restarts the acknowledgment clock. Existing acknowledgments are NOT
+        // touched -- they stay against the version they were given for, and
+        // everyone owes a fresh one against the new version.
+        const versionChanged = b.version !== undefined && String(b.version).trim() !== versionOf(before);
+        const ackTurnedOn = b.requires_acknowledgment === true
+          && !(before.requires_acknowledgment === true || before.requires_acknowledgment === "t");
+        const extra = [];
+        if (versionChanged || ackTurnedOn) extra.push(["ack_required_since", nowISO()]);
+
+        await dbRun(
+          `UPDATE crm_policies SET ${fields.map((f) => `${f} = ?`).join(", ")}${
+            extra.map(([k]) => `, ${k} = ?`).join("")
+          }, updated_by = ?, updated_at = ? WHERE id = ?`,
+          [...fields.map((f) => b[f]), ...extra.map(([, v]) => v), user.name || null, nowISO(), id]
+        );
+        return json(res, 200, {
+          ok: true,
+          reissued: versionChanged || ackTurnedOn,
+          previous_version: versionChanged ? versionOf(before) : null,
+        });
       }
       if (polMatch && method === "DELETE") {
         if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
@@ -704,5 +1300,11 @@ module.exports = function initGrowth(ctx) {
     return { ok: true, lead_id: lead.id, applied: type };
   }
 
-  return { initTables, handleApi, servePage, nurtureSweep, contractAlertSweep, applyStripeEvent };
+  return {
+    initTables, handleApi, servePage, nurtureSweep, contractAlertSweep, applyStripeEvent,
+    // Exposed so the section splitter can be run against a real document
+    // outside the request path, which is how its output gets reviewed before
+    // anyone imports 50-odd policy records from it.
+    _internal: { splitIntoSections, POLICY_CATEGORIES },
+  };
 };

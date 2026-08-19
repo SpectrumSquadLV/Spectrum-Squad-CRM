@@ -31,10 +31,20 @@
 
   function pretty(k){ return LABELS[k] || k.replace(/_/g," ").replace(/\b\w/g,function(c){return c.toUpperCase();}); }
 
-  function currentClientId(){
+  // The client card carries its own id (data-client-id). The hash is the
+  // fallback, because the card is only reachable by URL from the pipeline
+  // board -- everywhere else opens it directly.
+  function clientIdOf(modal){
+    if (modal) {
+      var el = modal.closest ? modal.closest("[data-client-id]") : null;
+      if (el && el.getAttribute("data-client-id")) return el.getAttribute("data-client-id");
+      var inner = modal.querySelector ? modal.querySelector("[data-client-id]") : null;
+      if (inner && inner.getAttribute("data-client-id")) return inner.getAttribute("data-client-id");
+    }
     var m = (location.hash || "").match(/#\/pipeline\/(\d+)/);
     return m ? m[1] : null;
   }
+  function currentClientId(){ return clientIdOf(null); }
 
   function renderPanel(payload){
     var d = payload.data || {};
@@ -61,8 +71,8 @@
     var c = bd.querySelector("#scr-close"); if(c) c.addEventListener("click", close);
   }
 
-  function onClick(){
-    var id = currentClientId();
+  function onClick(ev){
+    var id = clientIdOf(ev && ev.target);
     if(!id){ alert("Open a client first."); return; }
     fetch("/api/screener/submission/"+id, { credentials:"same-origin" })
       .then(function(r){ if(r.status===404) throw new Error("notdone"); if(!r.ok) throw new Error("err"); return r.json(); })
@@ -73,20 +83,134 @@
       });
   }
 
+  // ---- Manual send -------------------------------------------------------
+  // The screener normally goes out by itself once the SignNow enrollment
+  // packet comes back signed. When that never happens -- a stalled packet, a
+  // family who signed on paper, a bounced address -- this is the way to send
+  // the SAME screener by hand. It reuses the client's existing invite token,
+  // so a family never gets two different links, and it records the send so the
+  // strip below can say when it last went out and who sent it.
+  function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+  function when(s){ if(!s) return ""; try { return new Date(s).toLocaleString(); } catch(e){ return s; } }
+
+  function getJson(url, opts){
+    opts = opts || {};
+    return fetch(url, {
+      method: opts.method || "GET",
+      credentials: "same-origin",
+      headers: opts.body ? { "Content-Type": "application/json" } : undefined,
+      body: opts.body ? JSON.stringify(opts.body) : undefined
+    }).then(function(r){
+      return r.json().catch(function(){ return {}; }).then(function(d){
+        if(!r.ok) { var e = new Error(d.error || "Request failed"); e.status = r.status; e.code = d.code; throw e; }
+        return d;
+      });
+    });
+  }
+
+  function renderStrip(strip, st){
+    if(!st){ strip.innerHTML = ""; return; }
+    var bits = [];
+    if(st.completed){
+      bits.push('<span style="background:#dcfce7;color:#166534;font-weight:700;padding:2px 9px;border-radius:20px;">✓ Screener completed</span>');
+    } else if(st.last_sent_at){
+      bits.push('<span style="background:#e7effb;color:#1b3a7b;font-weight:700;padding:2px 9px;border-radius:20px;">Sent ' + esc(when(st.last_sent_at)) + '</span>');
+    } else {
+      bits.push('<span style="background:#fef3c7;color:#92400e;font-weight:700;padding:2px 9px;border-radius:20px;">Not sent yet</span>');
+    }
+    if(st.last_manual_sent_at){
+      bits.push('<span style="color:#7a7796;">Last sent by hand by ' + esc(st.last_manual_sent_by || "staff") + ' &middot; ' + esc(when(st.last_manual_sent_at)) + (st.manual_send_count > 1 ? " (" + st.manual_send_count + " manual sends)" : "") + '</span>');
+    }
+    if(st.reminder_count){
+      bits.push('<span style="color:#7a7796;">' + st.reminder_count + ' automatic reminder' + (st.reminder_count === 1 ? "" : "s") + '</span>');
+    }
+    if(st.auto_blocked_reason){
+      bits.push('<span style="color:#946213;">⚠ ' + esc(st.auto_blocked_reason) + '</span>');
+    }
+    strip.innerHTML = bits.join(' <span style="color:#d6d3e6;">|</span> ');
+  }
+
+  function wireSend(sendBtn, strip, id){
+    var busy = false;
+    function refresh(){
+      return getJson("/api/screener/status/" + id)
+        .then(function(st){
+          renderStrip(strip, st);
+          sendBtn.textContent = st.completed ? "📨 Send Screener again"
+            : (st.last_sent_at ? "📨 Resend Screener" : "📨 Send Screener");
+          sendBtn.disabled = !st.has_parent_email;
+          sendBtn.title = st.has_parent_email
+            ? "Email the clinical screener to " + (st.parent_email || "the parent/guardian")
+            : "No parent email on file for this family.";
+          return st;
+        })
+        .catch(function(){ strip.innerHTML = ""; });
+    }
+    function send(force){
+      busy = true; sendBtn.disabled = true;
+      var was = sendBtn.textContent;
+      sendBtn.textContent = "Sending…";
+      return getJson("/api/screener/send/" + id, { method: "POST", body: { force: !!force } })
+        .then(function(r){
+          strip.innerHTML = '<span style="background:#dcfce7;color:#166534;font-weight:700;padding:2px 9px;border-radius:20px;">✓ Screener sent to ' + esc(r.sent_to) + '</span>';
+          busy = false;
+          setTimeout(refresh, 1200);
+        })
+        .catch(function(e){
+          busy = false; sendBtn.disabled = false; sendBtn.textContent = was;
+          // 409 = the accident guard (already completed, or sent very
+          // recently). Ask, then let a deliberate resend through.
+          if(e.status === 409 && !force){
+            if(confirm(e.message)) return send(true);
+            return;
+          }
+          alert(e.message || "Could not send the screener.");
+        });
+    }
+    sendBtn.addEventListener("click", function(){ if(!busy) send(false); });
+    refresh();
+  }
+
   function injectInto(modal){
     if(!modal || modal.querySelector("#screener-view-btn")) return;
-    if(!currentClientId()) return; // only on the client detail modal
+    // Strictly the client card: the id has to come from the card's own markup,
+    // not from the hash. Otherwise any dialog opened while a client URL is in
+    // the address bar (the "reason" prompt, the screener panel itself) would
+    // pick up a Send Screener button of its own.
+    var id = modal.getAttribute && modal.getAttribute("data-client-id");
+    if(!id) return;
     var header = modal.querySelector(".modal-header");
     if(!header) return;
+
+    var bar = document.createElement("div");
+    bar.id = "screener-bar";
+    bar.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 14px;";
+
     var btn = document.createElement("button");
     btn.id = "screener-view-btn";
     btn.type = "button";
     btn.textContent = "🌈 View Screener";
-    btn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#edecf8;color:#1b2a6b;padding:8px 14px;border-radius:10px;cursor:pointer;margin:0 0 14px;";
+    btn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#edecf8;color:#1b2a6b;padding:8px 14px;border-radius:10px;cursor:pointer;";
     btn.addEventListener("click", onClick);
+    bar.appendChild(btn);
+
+    var sendBtn = document.createElement("button");
+    sendBtn.id = "screener-send-btn";
+    sendBtn.type = "button";
+    sendBtn.textContent = "📨 Send Screener";
+    sendBtn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#1b2a6b;color:#fff;padding:8px 14px;border-radius:10px;cursor:pointer;";
+    bar.appendChild(sendBtn);
+
+    var strip = document.createElement("div");
+    strip.id = "screener-status-strip";
+    strip.style.cssText = "flex-basis:100%;font-size:12px;color:#5b5876;display:flex;flex-wrap:wrap;gap:8px;align-items:center;";
+    bar.appendChild(strip);
+
     // place just under the header
-    if(header.nextSibling) header.parentNode.insertBefore(btn, header.nextSibling);
-    else header.parentNode.appendChild(btn);
+    if(header.nextSibling) header.parentNode.insertBefore(bar, header.nextSibling);
+    else header.parentNode.appendChild(bar);
+
+    wireSend(sendBtn, strip, id);
   }
 
   var obs = new MutationObserver(function(muts){

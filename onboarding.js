@@ -69,12 +69,24 @@ module.exports = function initOnboarding(ctx) {
       { key: "cpr",         label: "CPR / First Aid certification", expires: true, stored: true,  cert_name: "CPR / First Aid" },
       { key: "resume",      label: "Resume showing Spectrum Squad as a present employer", expires: false, stored: true },
     ],
+    cota: [
+      { key: "nbcot_cert",  label: "NBCOT certification",           expires: true,  stored: true,  cert_name: "NBCOT" },
+      { key: "ota_license", label: "Nevada OTA license",            expires: true,  stored: true,  cert_name: "Nevada OTA" },
+      { key: "cpr",         label: "CPR / BLS certification",       expires: true,  stored: true,  cert_name: "CPR / BLS" },
+      { key: "resume",      label: "Resume",                        expires: false, stored: true },
+      { key: "photo_id",    label: "Government ID",                 expires: true,  stored: true,  cert_name: "Government ID" },
+    ],
   };
   // The credentialing form is completed on ClickUp, so the portal only tracks
   // that the hire says they have done it.
   const ATTESTATIONS = [{ key: "credentialing", label: "Credentialing form completed" }];
 
-  const roleKindFor = (title) => (/bcba|bcaba|analyst/i.test(clean(title)) ? "bcba" : "rbt");
+  const roleKindFor = (title) => {
+    const t = clean(title);
+    if (/\bcota\b|occupational therapy assistant/i.test(t)) return "cota";
+    if (/bcba|bcaba|analyst/i.test(t)) return "bcba";
+    return "rbt";
+  };
   const DEADLINE_HOURS = 72;
 
   // ======================= SCHEMA ============================

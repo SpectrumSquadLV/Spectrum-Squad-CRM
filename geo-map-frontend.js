@@ -80,10 +80,16 @@
     try { await loadLeaflet(); } catch (e) { document.getElementById("map-status").innerHTML = '<span style="color:#a3282e;">' + esc(e.message) + "</span>"; return; }
     try { data = await api("/api/geo/map"); } catch (e) { document.getElementById("map-status").innerHTML = '<span style="color:#a3282e;">' + esc(e.message) + "</span>"; return; }
 
+    const unmapped = data.unmappedClinicians || [];
     const statusEl = document.getElementById("map-status");
     statusEl.innerHTML =
       "Showing <b>" + data.clients.length + "</b> of " + data.totalClients + " clients and <b>" + data.clinicians.length + "</b> of " + data.totalClinicians + " clinicians." +
-      (data.pending > 0 ? ' <span style="color:#b45309;">' + data.pending + " address(es) not mapped yet — click <b>Geocode addresses</b>.</span>" : "");
+      (unmapped.length ? ' <span style="color:#b45309;">' + unmapped.length + " employee(s) not on the map — see the list on the right.</span>" : "") +
+      (data.pending > 0 ? ' <span style="color:#b45309;">Click <b>Geocode addresses</b> to place pending ones.</span>' : "");
+
+    // Default side-panel content: list every employee the map couldn't place,
+    // with the exact reason, so no active employee is silently missing.
+    renderUnmappedPanel(unmapped);
 
     // init map
     const L = window.L;
@@ -124,6 +130,27 @@
     if (selectedClientId) selectClient(selectedClientId);
   }
 
+  // Renders the "Unmapped employees" list into the side panel. Shown by default
+  // (no client selected) so the user can see exactly who is missing and why.
+  function renderUnmappedPanel(unmapped) {
+    const side = document.getElementById("map-side");
+    if (!side) return;
+    unmapped = unmapped || (data && data.unmappedClinicians) || [];
+    let html = '<div style="color:#8a8797;font-size:13px;margin-bottom:12px;">Tap a client pin to see the nearest clinicians for an in-home match.</div>';
+    if (unmapped.length) {
+      html +=
+        '<div style="font-weight:800;font-size:14px;margin-bottom:2px;">Unmapped employees (' + unmapped.length + ")</div>" +
+        '<div style="font-size:11.5px;color:#8a8797;margin-bottom:10px;">These active employees aren\'t on the map yet.</div>' +
+        unmapped.map((u) =>
+          '<div style="padding:8px 10px;border:1px solid #f1e4c9;background:#fffaf0;border-radius:9px;margin-bottom:7px;">' +
+            '<div style="font-weight:700;font-size:13.5px;">' + esc(u.name) + "</div>" +
+            '<div style="font-size:11.5px;color:#8a8797;">' + esc(u.role_title || "Clinician") + "</div>" +
+            '<div style="font-size:11.5px;color:#b45309;margin-top:2px;">' + esc(u.reason_label || u.reason || "") + "</div>" +
+          "</div>").join("");
+    }
+    side.innerHTML = html;
+  }
+
   function selectClient(clientId) {
     selectedClientId = clientId;
     const L = window.L;
@@ -158,7 +185,7 @@
       if (cn) { map.setView([cn.lat, cn.lng], 14, { animate: true }); const mm = markerIndex.clinicians[cn.id]; if (mm) mm.openPopup(); }
     }));
     const clr = document.getElementById("map-clear");
-    if (clr) clr.addEventListener("click", () => { selectedClientId = null; linkLines.clearLayers(); side.innerHTML = '<div style="color:#8a8797;font-size:13px;">Tap a client pin to see the nearest clinicians for an in-home match.</div>'; });
+    if (clr) clr.addEventListener("click", () => { selectedClientId = null; linkLines.clearLayers(); renderUnmappedPanel(); });
   }
 
   // The native router in index.html owns the #/map route + sidebar button now;

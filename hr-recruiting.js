@@ -485,6 +485,7 @@ function hrOpenPositionModal(pos) {
       <div class="hr-field"><label>Role type</label><select id="p-role">
         <option value="bcba"${p.role_type === "bcba" ? " selected" : ""}>BCBA</option>
         <option value="rbt"${p.role_type === "rbt" ? " selected" : ""}>RBT</option>
+        <option value="cota"${p.role_type === "cota" ? " selected" : ""}>COTA</option>
         <option value="other"${p.role_type === "other" ? " selected" : ""}>Other</option>
       </select></div>
       <div class="hr-field"><label>Location type</label><select id="p-loc">

@@ -112,12 +112,13 @@
       <div class="section-title">Relationship nurturing</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         <span style="font-size:12.5px; color:var(--text-muted);">Send a check-in email:</span>
+        <button class="btn small secondary" data-checkin="7">1-week</button>
         <button class="btn small secondary" data-checkin="30">30-day</button>
         <button class="btn small secondary" data-checkin="60">60-day</button>
         <button class="btn small secondary" data-checkin="90">90-day</button>
         <span id="checkin-status" style="font-size:12px; color:var(--text-muted);"></span>
       </div>
-      <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">The 30/60/90 automation also drops a reminder task on the assigned team member. Templates are editable under Email Templates.</div>
+      <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">The 7/30/60/90 automation also drops a reminder task on the assigned team member. Templates are editable under Email Templates.</div>
 
       <div class="section-title">Timeline</div>
       <div style="display:flex; gap:8px; margin-bottom:10px;">
@@ -244,9 +245,17 @@
   }
 
   // ============================ POLICIES ============================
+  // Library filters. Module-level so they survive a re-render after an edit or
+  // an acknowledgment, rather than snapping back to "everything".
+  let polQ = "", polCat = "", polStatus = "";
+
   async function renderPolicies(mount) {
     let d;
-    try { d = await api("/api/policies"); }
+    const qs = new URLSearchParams();
+    if (polQ) qs.set("q", polQ);
+    if (polCat) qs.set("category", polCat);
+    if (polStatus) qs.set("status", polStatus);
+    try { d = await api("/api/policies/library" + (qs.toString() ? "?" + qs.toString() : "")); }
     catch (e) { mount.innerHTML = `<div class="page-header"><div><h1>Policies &amp; SOPs</h1></div></div><div class="empty-state">${esc(e.message)}</div>`; return; }
     const publicUrl = location.origin + "/policies";
     const qr = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=" + encodeURIComponent(publicUrl);
@@ -257,14 +266,32 @@
       const t = p.summary || String(p.body || "").split("\n").filter((l) => l.trim()).slice(1, 3).join(" ");
       return t ? esc(t.slice(0, 130)) + (t.length > 130 ? "…" : "") : "";
     };
+    const STATUS_STYLE = {
+      Active: "background:#dcfce7; color:#166534;",
+      Draft: "background:#fef3c7; color:#92400e;",
+      Archived: "background:#e5e7eb; color:#4b5563;",
+    };
     const card = (p) => {
       const c = colorOf(p);
+      const st = p.status || "Active";
+      // Acknowledgment state is per VERSION, so a policy re-issued since you
+      // last signed reads as outstanding again rather than quietly done.
+      const ack = !p.requires_acknowledgment ? ""
+        : p.my_acknowledgment
+          ? `<span class="pol-badge" style="background:#dcfce7; color:#166534;">✓ acknowledged v${esc(p.my_acknowledgment.version)}</span>`
+          : `<span class="pol-badge" style="background:#fee2e2; color:#991b1b;">acknowledgment needed</span>`;
       return `<button class="pol-card" data-pol-open="${p.id}" style="--pc:${c};">
         <span class="pol-stripe"></span>
         <span class="pol-cat">${esc(p.category || "Other")}</span>
-        <span class="pol-title">${esc(p.title)}${p.published ? "" : ` <span class="pol-draft">draft</span>`}</span>
+        <span class="pol-title">${esc(p.title)}</span>
+        <span class="pol-badges">
+          <span class="pol-badge" style="${STATUS_STYLE[st] || STATUS_STYLE.Archived}">${esc(st)}</span>
+          <span class="pol-badge" style="background:#eef0f5; color:#4b5563;">v${esc(p.version || "1")}</span>
+          ${ack}
+        </span>
         <span class="pol-snip">${snippet(p)}</span>
-        <span class="pol-foot">${p.source_file ? "📎 " + esc(p.source_file) : "/policies/" + esc(p.slug)}</span>
+        <span class="pol-foot">${p.document ? "📘 " + esc(p.document.title) : "/policies/" + esc(p.slug)}${
+          p.effective_date ? " · eff. " + esc(String(p.effective_date).slice(0, 10)) : ""}</span>
       </button>`;
     };
     const list = Object.keys(byCat).sort().map((cat) => `
@@ -275,9 +302,25 @@
       <div class="page-header">
         <div><h1>Policies, SOPs &amp; Procedures</h1><p>Staff can scan the QR code to read any policy. Print it and post it around the clinic.</p></div>
         <div style="display:flex; gap:8px; align-items:center;">
-          <button class="btn" id="pol-upload">⬆ Upload PDF / Word</button>
+          ${d.can_manage ? `<button class="btn" id="pol-doc-upload">⬆ Upload source document</button>
           <button class="btn secondary" id="pol-add">+ Write one</button>
+          <button class="btn secondary" id="pol-import">📥 Import policies</button>
+          <button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
         </div>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
+        <input id="pol-q" placeholder="Search policies…" value="${esc(polQ)}"
+          style="flex:1; min-width:200px; padding:8px 11px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;" />
+        <select id="pol-cat" style="padding:8px 10px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;">
+          <option value="">All categories</option>
+          ${(d.categories || []).map((c) => `<option value="${esc(c)}"${c === polCat ? " selected" : ""}>${esc(c)}</option>`).join("")}
+        </select>
+        <select id="pol-status" style="padding:8px 10px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;">
+          <option value="">All statuses</option>
+          ${(d.statuses || []).map((s) => `<option value="${esc(s)}"${s === polStatus ? " selected" : ""}>${esc(s)}</option>`).join("")}
+        </select>
+        ${polQ || polCat || polStatus ? `<button class="btn small secondary" id="pol-clear">Clear</button>` : ""}
+        <span style="font-size:12px; color:var(--text-muted);">${d.policies.length} of ${d.total}</span>
       </div>
       <style>
         .pol-cat-head { display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px; letter-spacing:.02em; text-transform:uppercase; color:var(--text-muted,#6b7280); margin:18px 0 10px; }
@@ -294,6 +337,8 @@
         .pol-snip { font-size:12px; color:#6b7280; line-height:1.45; }
         .pol-foot { font-size:11px; color:#9aa0ad; margin-top:auto; word-break:break-all; }
         .pol-read { white-space:pre-wrap; font-size:13.5px; line-height:1.62; color:#2b2f3a; max-height:56vh; overflow:auto; padding-right:6px; }
+        .pol-badges { display:flex; flex-wrap:wrap; gap:4px; }
+        .pol-badge { border-radius:5px; padding:1px 6px; font-size:10px; font-weight:700; }
       </style>
       <div style="display:grid; grid-template-columns: 1.6fr 1fr; gap:20px;">
         <div class="card" style="margin:0;"><div id="pol-upload-status" style="font-size:12.5px; color:var(--text-muted); margin-bottom:8px;"></div>${list}</div>
@@ -304,10 +349,25 @@
           <button class="btn small secondary" id="pol-print" style="margin-top:10px;">🖨 Print QR</button>
         </div>
       </div>`;
-    mount.querySelector("#pol-add").addEventListener("click", () => policyModal(null, d, mount));
+    const on = (sel, ev, fn) => { const el = mount.querySelector(sel); if (el) el.addEventListener(ev, fn); };
+
+    // ---- library filters ----
+    let qTimer = null;
+    on("#pol-q", "input", (e) => {
+      clearTimeout(qTimer);
+      const v = e.target.value;
+      qTimer = setTimeout(() => { polQ = v; renderPolicies(mount); }, 250);
+    });
+    on("#pol-cat", "change", (e) => { polCat = e.target.value; renderPolicies(mount); });
+    on("#pol-status", "change", (e) => { polStatus = e.target.value; renderPolicies(mount); });
+    on("#pol-clear", "click", () => { polQ = polCat = polStatus = ""; renderPolicies(mount); });
+    on("#pol-acks", "click", () => ackReport(mount));
+    on("#pol-import", "click", () => importModal(d, mount));
+
+    on("#pol-add", "click", () => policyModal(null, d, mount));
     mount.querySelectorAll("[data-pol-open]").forEach((b) =>
       b.addEventListener("click", () => policyReader(d.policies.find((x) => String(x.id) === b.dataset.polOpen), d, mount, colorOf)));
-    mount.querySelector("#pol-upload").addEventListener("click", () => {
+    on("#pol-doc-upload", "click", () => {
       const inp = document.createElement("input");
       inp.type = "file";
       inp.accept = ".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -326,7 +386,16 @@
               r.onerror = () => reject(new Error("Could not read " + f.name));
               r.readAsDataURL(f);
             });
-            await api("/api/policies/upload", { method: "POST", body: { filename: f.name, content_base64: b64 } });
+            // Uploads a SOURCE DOCUMENT, not a policy. The handbook lands once
+            // and policy records are created against it afterwards; the text is
+            // stored verbatim and nothing is extracted or rewritten.
+            await api("/api/policies/documents", {
+              method: "POST",
+              body: {
+                filename: f.name, content_base64: b64,
+                doc_type: /handbook/i.test(f.name) ? "Employee Handbook" : "Policy Document",
+              },
+            });
             done++;
           } catch (e) { failed.push(`${f.name}: ${e.message}`); }
         }
@@ -353,11 +422,24 @@
         <button class="close-btn">✕</button>
       </div>
       <div style="font-size:12px; color:var(--text-muted); margin:-6px 0 12px;">
-        ${esc(pol.category || "Other")}${pol.source_file ? " · 📎 " + esc(pol.source_file) : ""}${pol.published ? "" : " · draft"}
+        ${esc(pol.category || "Other")} · ${esc(pol.status || "Active")} · v${esc(pol.version || "1")}${
+          pol.effective_date ? " · effective " + esc(String(pol.effective_date).slice(0, 10)) : ""}${
+          pol.updated_at ? " · updated " + esc(new Date(pol.updated_at).toLocaleDateString()) : ""}
+        ${pol.document ? `<div style="margin-top:3px;">📘 From <strong>${esc(pol.document.title)}</strong>${pol.section_ref ? " · " + esc(pol.section_ref) : ""}</div>` : ""}
       </div>
       <div class="pol-read">${esc(pol.body || "")}</div>
-      <div style="margin-top:14px; display:flex; gap:8px;">
-        <button class="btn secondary" id="pol-r-edit">Edit</button>
+      ${pol.requires_acknowledgment ? `<div id="pol-ack-box" style="margin-top:14px; padding:11px 13px; border-radius:9px; ${
+        pol.my_acknowledgment
+          ? `background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46;`
+          : `background:#fff4dd; border:1px solid #f1d9a0; color:#a56b00;`}">
+        ${pol.my_acknowledgment
+          ? `✓ You acknowledged version ${esc(pol.my_acknowledgment.version)} on ${esc(new Date(pol.my_acknowledgment.acknowledged_at).toLocaleString())}.`
+          : `<div style="margin-bottom:8px;">This policy requires your acknowledgment${pol.version ? ` (version ${esc(pol.version)})` : ""}.</div>
+             <button class="btn small" id="pol-ack-btn">I have read and acknowledge this policy</button>`}
+      </div>` : ""}
+      <div style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;">
+        ${d.can_manage ? `<button class="btn secondary" id="pol-r-edit">Edit</button>` : ""}
+        ${pol.document ? `<button class="btn secondary" id="pol-r-doc">View full source document</button>` : ""}
         <a class="btn secondary" href="/policies/${esc(pol.slug)}" target="_blank" rel="noopener">Open public page</a>
       </div>
     </div>`;
@@ -365,7 +447,160 @@
     const close = () => bd.remove();
     bd.querySelector(".close-btn").addEventListener("click", close);
     bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
-    bd.querySelector("#pol-r-edit").addEventListener("click", () => { close(); policyModal(pol, d, mount); });
+    const rOn = (sel, fn) => { const el = bd.querySelector(sel); if (el) el.addEventListener("click", fn); };
+    rOn("#pol-r-edit", () => { close(); policyModal(pol, d, mount); });
+
+    // Acknowledgment is recorded against the version being read, so a later
+    // re-issue asks again rather than counting this one.
+    rOn("#pol-ack-btn", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true; btn.textContent = "Recording…";
+      try {
+        await api("/api/policies/" + pol.id + "/acknowledge", { method: "POST", body: {} });
+        close();
+        await renderPolicies(mount);
+      } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "I have read and acknowledge this policy"; }
+    });
+
+    rOn("#pol-r-doc", async () => {
+      try {
+        const doc = await api("/api/policies/documents/" + pol.document.id);
+        const b2 = document.createElement("div"); b2.className = "modal-backdrop";
+        b2.innerHTML = `<div class="modal" style="width:820px; max-width:94vw;">
+          <div class="modal-header"><h2>${esc(doc.document.title)}</h2><button class="close-btn">✕</button></div>
+          <div style="font-size:12px; color:var(--text-muted); margin:-6px 0 12px;">
+            ${esc(doc.document.doc_type || "")}${doc.document.filename ? " · " + esc(doc.document.filename) : ""}
+            · ${doc.policies.length} policy record(s) reference this document
+          </div>
+          <div class="pol-read">${esc(doc.document.body || "")}</div>
+        </div>`;
+        document.body.appendChild(b2);
+        b2.querySelector(".close-btn").addEventListener("click", () => b2.remove());
+        b2.addEventListener("click", (ev) => { if (ev.target === b2) b2.remove(); });
+      } catch (err) { alert(err.message); }
+    });
+  }
+
+  // Create many policy records against one uploaded source document.
+  //
+  // Two ways in. "Detect sections" asks the server where the document appears
+  // to divide -- fine for a numbered SOP. "Paste an import map" takes a
+  // reviewed list of boundaries, which is what a handbook needs: title-case
+  // prose defeats automatic detection badly enough that it mistitles sections
+  // and lets one swallow the next.
+  //
+  // Either way the policy TEXT is whatever the map carries -- verbatim from the
+  // document. Nothing here rewrites, summarises or shortens it.
+  function importModal(d, mount) {
+    const docs = d.documents || [];
+    const bd = document.createElement("div"); bd.className = "modal-backdrop";
+    bd.innerHTML = `<div class="modal" style="width:760px; max-width:95vw;">
+      <div class="modal-header"><h2>Import policies from a document</h2><button class="close-btn">✕</button></div>
+      ${docs.length ? `
+        <div class="field"><label>Source document</label><select id="imp-doc">
+          ${docs.map((x) => `<option value="${x.id}">${esc(x.title)}${x.doc_type ? " — " + esc(x.doc_type) : ""}</option>`).join("")}
+        </select></div>
+        <div style="display:flex; gap:8px; margin:10px 0;">
+          <button class="btn small secondary" id="imp-detect">Detect sections automatically</button>
+          <span style="font-size:12px; color:var(--text-muted); align-self:center;">or paste a reviewed import map below</span>
+        </div>
+        <div class="field"><label>Import map (JSON)</label>
+          <textarea id="imp-json" rows="10" placeholder='{"sections":[{"title":"Overtime Policy","category":"Payroll &amp; Compensation","body":"..."}]}'
+            style="width:100%; font-family:ui-monospace,Menlo,monospace; font-size:11.5px;"></textarea></div>
+        <div id="imp-note" style="font-size:12px; color:var(--text-muted); margin-bottom:8px;"></div>
+        <div style="margin-top:6px; display:flex; gap:8px; align-items:center;">
+          <button class="btn" id="imp-go">Import</button>
+          <span id="imp-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+        </div>
+        <div style="font-size:11.5px; color:var(--text-muted); margin-top:8px;">
+          Imported policies are created Active, version 1, with no acknowledgment required.
+          Re-importing the same document will not duplicate a policy that is already there.</div>`
+        : `<div class="empty-state">Upload a source document first.</div>`}
+    </div>`;
+    document.body.appendChild(bd);
+    const close = () => bd.remove();
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+    if (!docs.length) return;
+
+    const note = bd.querySelector("#imp-note");
+    const status = bd.querySelector("#imp-status");
+
+    bd.querySelector("#imp-detect").addEventListener("click", async () => {
+      const id = bd.querySelector("#imp-doc").value;
+      note.textContent = "Reading document…";
+      try {
+        const r = await api("/api/policies/documents/" + id + "/sections");
+        bd.querySelector("#imp-json").value = JSON.stringify({ sections: r.sections.map((s) => ({
+          title: s.title, category: "Other", section_ref: s.section_ref || null, body: s.body,
+        })) }, null, 1);
+        note.textContent = `${r.sections.length} section(s) detected. Review the titles and set a category on each before importing — automatic detection is a starting point, not an answer.`;
+      } catch (e) { note.textContent = e.message; }
+    });
+
+    bd.querySelector("#imp-go").addEventListener("click", async () => {
+      const id = bd.querySelector("#imp-doc").value;
+      let payload;
+      try { payload = JSON.parse(bd.querySelector("#imp-json").value); }
+      catch (e) { status.textContent = "That isn't valid JSON."; return; }
+      const sections = payload && Array.isArray(payload.sections) ? payload.sections : null;
+      if (!sections || !sections.length) { status.textContent = "No sections found in that map."; return; }
+      if (!confirm(`Create ${sections.length} policy record(s) from this document?`)) return;
+      status.textContent = `Importing ${sections.length}…`;
+      try {
+        const r = await api("/api/policies/documents/" + id + "/import", { method: "POST", body: { sections } });
+        close();
+        await renderPolicies(mount);
+        const skipped = (r.skipped || []).length;
+        alert(`Imported ${r.created} policy record(s).` + (skipped ? `\n${skipped} skipped:\n` + r.skipped.map((s) => `• ${s.title} — ${s.reason}`).join("\n") : ""));
+      } catch (e) { status.textContent = e.message; }
+    });
+  }
+
+  // Admin: who has acknowledged what, per policy version.
+  async function ackReport(mount) {
+    let d;
+    try { d = await api("/api/policies/acknowledgments"); }
+    catch (e) { alert(e.message); return; }
+    const bd = document.createElement("div"); bd.className = "modal-backdrop";
+    const chip = (n, style) => `<span class="pol-badge" style="${style}">${n}</span>`;
+    bd.innerHTML = `<div class="modal" style="width:860px; max-width:95vw;">
+      <div class="modal-header"><h2>Policy acknowledgments</h2><button class="close-btn">✕</button></div>
+      <div style="font-size:12px; color:var(--text-muted); margin:-6px 0 12px;">
+        Counted against each policy's current version. Anything outstanding for more than
+        ${d.overdue_after_days} days reads as overdue.</div>
+      ${d.by_policy.length ? d.by_policy.map((p) => `
+        <div class="card" style="margin:0 0 10px;">
+          <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+            <div><strong>${esc(p.title)}</strong>
+              <div style="font-size:11.5px; color:var(--text-muted);">${esc(p.category || "")} · v${esc(p.version)}</div></div>
+            <div style="display:flex; gap:5px;">
+              ${chip(p.acknowledged + " acknowledged", "background:#dcfce7; color:#166534;")}
+              ${chip(p.pending + " pending", "background:#fef3c7; color:#92400e;")}
+              ${chip(p.overdue + " overdue", "background:#fee2e2; color:#991b1b;")}
+            </div>
+          </div>
+          <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12px;">By employee</summary>
+            <div style="display:flex; flex-wrap:wrap; gap:5px; margin-top:6px;">
+              ${p.employees.map((e) => `<span class="pol-badge" style="${
+                e.state === "acknowledged" ? "background:#dcfce7; color:#166534;"
+                : e.state === "overdue" ? "background:#fee2e2; color:#991b1b;"
+                : "background:#fef3c7; color:#92400e;"}">${esc(e.name || "—")}</span>`).join("")}
+            </div>
+          </details>
+        </div>`).join("")
+        : `<div class="empty-state">No policy currently requires acknowledgment.</div>`}
+      ${d.historical.length ? `<details style="margin-top:6px;">
+        <summary style="cursor:pointer; font-size:12.5px; font-weight:600;">Superseded acknowledgments (${d.historical.length})</summary>
+        <div style="font-size:11.5px; color:var(--text-muted); margin-top:6px;">
+          Kept as the historical record of what each person acknowledged, and when, before the policy was re-issued.</div>
+        <ul style="font-size:12px; margin:6px 0 0 16px;">
+          ${d.historical.map((h) => `<li>${esc(h.name || "—")} — v${esc(h.version)} on ${esc(new Date(h.acknowledged_at).toLocaleDateString())}</li>`).join("")}
+        </ul></details>` : ""}
+    </div>`;
+    document.body.appendChild(bd);
+    bd.querySelector(".close-btn").addEventListener("click", () => bd.remove());
+    bd.addEventListener("click", (e) => { if (e.target === bd) bd.remove(); });
   }
 
   function policyModal(pol, d, mount) {
@@ -382,6 +617,20 @@
         </div>
       </div>
       <div class="field"><label>Body (the policy text)</label><textarea data-f="body" rows="12" style="width:100%; font-family:inherit;">${esc(pol.body || "")}</textarea></div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:6px;">
+        <div class="field"><label>Status</label><select data-f="status">
+          ${(d.statuses || ["Active", "Draft", "Archived"]).map((s) => `<option ${(pol.status || "Active") === s ? "selected" : ""}>${esc(s)}</option>`).join("")}
+        </select></div>
+        <div class="field"><label>Version</label><input data-f="version" value="${esc(pol.version || "1")}" placeholder="1" /></div>
+        <div class="field"><label>Effective date</label><input type="date" data-f="effective_date" value="${esc(String(pol.effective_date || "").slice(0, 10))}" /></div>
+        <div class="field"><label>Section in source</label><input data-f="section_ref" value="${esc(pol.section_ref || "")}" placeholder="e.g. Section 4.2" /></div>
+      </div>
+      <div class="field"><label>Source document</label><select data-f="document_id">
+        <option value="">— none (standalone policy) —</option>
+        ${(d.documents || []).map((doc) => `<option value="${doc.id}" ${String(pol.document && pol.document.id) === String(doc.id) ? "selected" : ""}>${esc(doc.title)}</option>`).join("")}
+      </select></div>
+      <label style="display:flex; gap:8px; align-items:center; font-size:13px; margin-top:6px;"><input type="checkbox" data-f="requires_acknowledgment" ${pol.requires_acknowledgment ? "checked" : ""} /> Require employee acknowledgment</label>
+      <div style="font-size:11.5px; color:var(--text-muted); margin:2px 0 0 24px;">Changing the version re-issues the policy: past acknowledgments are kept as history and everyone is asked again.</div>
       <label style="display:flex; gap:8px; align-items:center; font-size:13px; margin-top:6px;"><input type="checkbox" data-f="published" ${pol.published === false ? "" : "checked"} /> Published (visible on the public QR page)</label>
       <div style="margin-top:14px; display:flex; gap:8px;">
         <button class="btn" id="pol-save">${pol.id ? "Save" : "Add"}</button>
@@ -400,6 +649,12 @@
         body: bd.querySelector('[data-f="body"]').value,
         color: bd.querySelector('[data-f="color"]').value,
         published: bd.querySelector('[data-f="published"]').checked,
+        status: bd.querySelector('[data-f="status"]').value,
+        version: bd.querySelector('[data-f="version"]').value.trim() || "1",
+        effective_date: bd.querySelector('[data-f="effective_date"]').value || null,
+        section_ref: bd.querySelector('[data-f="section_ref"]').value.trim() || null,
+        document_id: bd.querySelector('[data-f="document_id"]').value || null,
+        requires_acknowledgment: bd.querySelector('[data-f="requires_acknowledgment"]').checked,
       };
       if (!body.title) { bd.querySelector("#pol-status").textContent = "Title is required."; return; }
       try {

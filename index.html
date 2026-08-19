@@ -566,7 +566,9 @@ async function route() {
   else if (hash.startsWith("#/tasks")) await renderTasks(mount);
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
+  else if (hash.startsWith("#/attendance")) { if (window.__renderAttendance) await window.__renderAttendance(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/rethink-clients")) { if (window.__renderRethinkMatch) await window.__renderRethinkMatch(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/policies")) { if (window.__renderPolicies) await window.__renderPolicies(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/map")) { if (window.__renderMap) await window.__renderMap(mount); else await renderDashboard(mount); }
@@ -600,7 +602,9 @@ const MODULE_CATALOG = {
   pipeline: { label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" },
   tasks: { label: "Tasks & Alerts", icon: "✓" },
   staff: { label: "Staff", icon: "🧑‍⚕️" },
+  attendance: { label: "Staff Attendance", icon: "🕒" },
   supervision: { label: "RBT Supervision", icon: "📋" },
+  "rethink-clients": { label: "Rethink Client Matching", icon: "🔗", hash: "#/rethink-clients" },
   leads: { label: "Lead Management", icon: "🎯" },
   policies: { label: "Policies & SOPs", icon: "📚" },
   map: { label: "Map", icon: "🗺️" },
@@ -674,8 +678,18 @@ function renderShell(active) {
     navItems.push({ key: "hr", label: "HR & Recruiting", icon: "👥" });
   if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
     navItems.push({ key: "staff", label: "Staff", icon: "🧑‍⚕️" });
+  // Staff attendance points, discipline levels and bonus eligibility. Same
+  // roles the /api/attendance routes accept -- the nav entry hides it, the
+  // module's own canManage() is what enforces it.
+  if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
+    navItems.push({ key: "attendance", label: "Staff Attendance", icon: "🕒" });
   if (["owner", "admin", "super_admin", "hr_admin", "clinical"].includes(state.user.role))
     navItems.push({ key: "supervision", label: "RBT Supervision", icon: "📋" });
+  // Rethink client matching. Owner/admin only, matching the server-side role
+  // check on /api/rethink/client-match -- the nav entry hides it, the route
+  // guard is what actually enforces it.
+  if (["owner", "admin", "super_admin"].includes(state.user.role))
+    navItems.push({ key: "rethink-clients", label: "Rethink Client Matching", icon: "🔗", hash: "#/rethink-clients" });
   if (["owner", "super_admin", "admin", "intake", "scheduling"].includes(state.user.role))
     navItems.push({ key: "leads", label: "Lead Management", icon: "🎯" });
   navItems.push({ key: "policies", label: "Policies & SOPs", icon: "📚" });
@@ -893,6 +907,15 @@ const TC_PRIORITY = {
 };
 let _tcTasks = [];
 let _tcFilter = "today";
+// "Completed 3 Aug, reopened by Quiana 5 Aug" -- the trail a task keeps when it
+// is ticked by mistake and put back. Shared by the Task Center and the Tasks &
+// Alerts table so both read the same way.
+function taskHistoryLine(t) {
+  if (!t || !t.reopened_at) return "";
+  const was = t.last_completed_at ? `Completed ${fmtDate(t.last_completed_at)} · ` : "";
+  const times = t.reopen_count > 1 ? ` (reopened ${t.reopen_count}×)` : "";
+  return `<div style="font-size:11.5px; color:#946213; margin-top:3px;">↩ ${was}reopened by ${staffEsc(t.reopened_by || "staff")} ${fmtDate(t.reopened_at)}${times}</div>`;
+}
 function _tcBucket(t) {
   const today = new Date().toLocaleDateString("en-CA");
   if (t.status === "done") return "completed";
@@ -958,7 +981,9 @@ function _tcRenderList(body) {
           ${t.reminder_sent_at ? `<span class="tc-reminded" title="A reminder was emailed to you">🔔 reminded</span>` : ""}
         </div>
         ${t.description ? `<div class="tc-desc">${staffEsc(t.description)}</div>` : ""}
+        ${taskHistoryLine(t)}
       </div>
+      ${done ? `<button class="btn small secondary" data-tc-reopen="${t.id}" title="Ticked by mistake? Put it back on your open list">Reopen</button>` : ""}
     </div>`;
   }).join("");
   body.querySelectorAll("[data-tc-complete]").forEach((btn) => {
@@ -972,6 +997,28 @@ function _tcRenderList(body) {
         _tcRenderList(body);
         refreshTaskBadge();
       } catch (e) { btn.disabled = false; alert(e.message || "Could not complete the task."); }
+    });
+  });
+  // Undo an accidental tick. The same task goes back on the open list -- it is
+  // never re-created -- and keeps a note of having been completed and reopened.
+  body.querySelectorAll("[data-tc-reopen]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const updated = await api(`/api/staff-tasks/${btn.dataset.tcReopen}`, { method: "PATCH", body: { status: "open" } });
+        const t = _tcTasks.find((x) => String(x.id) === String(btn.dataset.tcReopen));
+        if (t) {
+          t.status = "open";
+          t.completed_at = null;
+          t.last_completed_at = (updated && updated.last_completed_at) || t.last_completed_at;
+          t.reopened_at = (updated && updated.reopened_at) || new Date().toISOString();
+          t.reopened_by = (updated && updated.reopened_by) || (state.user && (state.user.name || state.user.email));
+          t.reopen_count = (updated && updated.reopen_count) || (t.reopen_count || 0) + 1;
+        }
+        _tcUpdateCounts();
+        _tcRenderList(body);
+        refreshTaskBadge();
+      } catch (e) { btn.disabled = false; alert(e.message || "Could not reopen the task."); }
     });
   });
   body.querySelectorAll("[data-tc-client]").forEach((a) => {
@@ -991,7 +1038,8 @@ function renderSupervisionWidget(s) {
       ${tile(`${s.signed_count}/${s.staff_count}`, "Signed off")}
       ${tile(s.need_hours_upload, "Missing worked hours", s.need_hours_upload ? "#b45309" : "var(--brand-navy,#1b2a6b)")}
     </div>
-    ${s.need_hours_upload ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">⬆ Upload this month's Rethink hours export on the <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a> page to calculate percentages.</div>` : ""}
+    ${s.need_hours_upload && !s.rethink_hours_active ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">⬆ Upload this month's Rethink hours export on the <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a> page to calculate percentages.</div>` : ""}
+    ${s.need_hours_upload && s.rethink_hours_active ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">${s.need_hours_upload} staff member(s) have no live Rethink hours this month — check <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a>.</div>` : ""}
     <div style="margin-top:10px;"><a href="#/supervision" class="btn small secondary">Open supervision tracker</a></div>`;
 }
 
@@ -1146,17 +1194,62 @@ function renderAuthDashboardCard(counts) {
 }
 
 // ---------------- Pipeline (Kanban) ----------------
+// The five primary pipeline phases the board displays. Each phase groups one
+// or more of the underlying `stage` keys (which are unchanged -- every task,
+// email, reminder, due date and automation still keys off those raw stages).
+// `entry` is the stage a card moves INTO when dropped onto that phase column.
+// This is display + grouping only; it does not alter how `stage` is stored.
+const PIPELINE_PHASES = [
+  {
+    key: "intake_eligibility",
+    label: "Intake & Eligibility",
+    color: "#3f56b5",
+    stages: ["new_submission", "clinical_screener", "insurance_verification", "intake_packet"],
+    entry: "new_submission",
+  },
+  { key: "assessment", label: "Assessment", color: "#1b2a6b", stages: ["assessment_scheduling"], entry: "assessment_scheduling" },
+  { key: "authorization", label: "Authorization", color: "#c98a1b", stages: ["authorization"], entry: "authorization" },
+  { key: "ready_to_start", label: "Ready to Start", color: "#e0a430", stages: ["first_day_scheduled"], entry: "first_day_scheduled" },
+  { key: "active", label: "Active", color: "#22c55e", stages: ["active"], entry: "active" },
+];
+
+// Terminal states -- kept OFF the primary board and reached via the Discharged
+// toggle, so the main pipeline reads cleanly.
+const TERMINAL_COLUMNS = [
+  { key: "discharged", label: "Discharged", color: "#64748b", stages: ["discharged"], entry: "discharged" },
+  { key: "not_moving_forward", label: "Not Moving Forward", color: "#ef4444", stages: ["not_moving_forward"], entry: "not_moving_forward" },
+];
+
+// Stages a closed-out client can be restored into. Mirrors REACTIVATABLE_STAGES
+// in server.js, which is the copy that is actually enforced -- this one only
+// decides what the dropdown offers.
+const REACTIVATABLE_STAGES = [
+  "new_submission", "clinical_screener", "insurance_verification",
+  "assessment_scheduling", "authorization", "first_day_scheduled",
+];
+
+function stageLabelOf(key) {
+  const s = (state.stages || []).find((x) => x.key === key);
+  return s ? s.label : key;
+}
+
 async function renderPipeline(mount) {
-  const waitlistCount = state.clients.filter((c) => c.waitlisted).length;
-  const showWaitlistOnly = state.pipelineWaitlistOnly === true;
+  const TERMINAL_KEYS = ["discharged", "not_moving_forward"];
+  const waitlistCount = state.clients.filter((c) => c.waitlisted && !TERMINAL_KEYS.includes(c.stage)).length;
+  const dischargedCount = state.clients.filter((c) => TERMINAL_KEYS.includes(c.stage)).length;
+  const view = state.pipelineView || "active"; // "active" | "waitlist" | "discharged"
+  const waitlistOnly = view === "waitlist";
+  const columns = view === "discharged" ? TERMINAL_COLUMNS : PIPELINE_PHASES;
+
   mount.innerHTML = `
     <div class="page-header">
-      <div><h1>Client Pipeline</h1><p>Color-coded by stage. Click any card for full details and tasks, or drag a card to move it between stages.</p></div>
+      <div><h1>Client Pipeline</h1><p>Where every client sits, at a glance: Intake &amp; Eligibility → Assessment → Authorization → Ready to Start → Active. Click a card for full details and tasks, or drag it to move it to another phase.</p></div>
       <button class="btn" id="new-client-btn">+ New Enrollment</button>
     </div>
     <div style="display:flex; gap:8px; margin-bottom:14px;">
-      <button class="btn ${showWaitlistOnly ? "secondary" : ""} small" id="filter-all-btn">All clients</button>
-      <button class="btn ${showWaitlistOnly ? "" : "secondary"} small" id="filter-waitlist-btn">⏳ Waitlist (${waitlistCount})</button>
+      <button class="btn ${view === "active" ? "" : "secondary"} small" id="filter-all-btn">All clients</button>
+      <button class="btn ${view === "waitlist" ? "" : "secondary"} small" id="filter-waitlist-btn">⏳ Waitlist (${waitlistCount})</button>
+      <button class="btn ${view === "discharged" ? "" : "secondary"} small" id="filter-discharged-btn">🗂 Discharged (${dischargedCount})</button>
     </div>
     <div class="kanban" id="kanban"></div>
   `;
@@ -1167,34 +1260,39 @@ async function renderPipeline(mount) {
   const newClientBtn = mount.querySelector("#new-client-btn") || document.getElementById("new-client-btn");
   if (newClientBtn) newClientBtn.addEventListener("click", openNewClientModal);
   document.getElementById("filter-all-btn").addEventListener("click", () => {
-    state.pipelineWaitlistOnly = false;
+    state.pipelineView = "active";
     renderPipeline(mount);
   });
   document.getElementById("filter-waitlist-btn").addEventListener("click", () => {
-    state.pipelineWaitlistOnly = true;
+    state.pipelineView = "waitlist";
+    renderPipeline(mount);
+  });
+  document.getElementById("filter-discharged-btn").addEventListener("click", () => {
+    state.pipelineView = "discharged";
     renderPipeline(mount);
   });
 
   const kanban = document.getElementById("kanban");
-  const visibleStages = state.stages.filter((s) => s.key !== "not_moving_forward");
 
-  kanban.innerHTML = visibleStages
-    .map((stage) => {
+  kanban.innerHTML = columns
+    .map((phase) => {
       const clients = state.clients.filter(
-        (c) => c.stage === stage.key && (!showWaitlistOnly || c.waitlisted)
+        (c) => phase.stages.includes(c.stage) && (!waitlistOnly || c.waitlisted)
       );
+      const multi = phase.stages.length > 1;
       return `
-      <div class="kanban-col" data-stage="${stage.key}">
+      <div class="kanban-col" data-phase="${phase.key}">
         <div class="kanban-col-header">
-          <div class="kanban-col-title"><span class="dot" style="background:${stage.color}"></span>${stage.label}</div>
+          <div class="kanban-col-title"><span class="dot" style="background:${phase.color}"></span>${phase.label}</div>
           <span class="count-pill">${clients.length}</span>
         </div>
         ${clients
           .map(
-            (c) => `<div class="client-card" draggable="true" style="border-left-color:${stage.color}" data-client="${c.id}">
+            (c) => `<div class="client-card" draggable="true" style="border-left-color:${phase.color}" data-client="${c.id}">
               <div class="name">${c.child_name} ${c.waitlisted ? `<span class="tag" style="background:#fef3c7; color:#92400e;">⏳ Waitlist</span>` : ""}</div>
               <div class="meta">${c.parent_name || "—"} · ${c.service_location || "—"}</div>
               <div class="tags">
+                ${multi ? `<span class="tag" style="background:#eef2ff; color:#3f56b5;">${stageLabelOf(c.stage)}</span>` : ""}
                 ${c.desired_schedule ? `<span class="tag">${c.desired_schedule}</span>` : ""}
                 ${c.insurance_provider ? `<span class="tag">${c.insurance_provider.split(",")[0]}</span>` : ""}
               </div>
@@ -1237,12 +1335,16 @@ async function renderPipeline(mount) {
       e.preventDefault();
       col.classList.remove("drag-over");
       const clientId = e.dataTransfer.getData("text/plain") || draggedClientId;
-      const targetStage = col.dataset.stage;
-      if (!clientId || !targetStage) return;
+      const targetPhase = columns.find((p) => p.key === col.dataset.phase);
+      if (!clientId || !targetPhase) return;
       const client = state.clients.find((c) => String(c.id) === String(clientId));
-      if (!client || client.stage === targetStage) return;
+      if (!client) return;
+      // Already somewhere inside this phase -> no-op. This prevents a card
+      // sitting in (e.g.) Insurance Verification from being reset back to the
+      // phase's entry stage and re-firing that stage's milestone email.
+      if (targetPhase.stages.includes(client.stage)) return;
       try {
-        await api(`/api/clients/${clientId}/advance`, { method: "POST", body: { stage: targetStage } });
+        await api(`/api/clients/${clientId}/advance`, { method: "POST", body: { stage: targetPhase.entry } });
         await loadClients();
         route();
       } catch (err) {
@@ -1675,6 +1777,70 @@ async function wireScheduleRequest(backdrop, clientId, client) {
   await load();
 }
 
+// "Documents Requested from Parent" -- the tokenized link that asks the family
+// for the official autism diagnosis and both sides of the insurance card, and
+// files what they send straight onto this record. Reuses the client-forms
+// module that already owns every other parent-facing form.
+async function renderDocRequestSection(backdrop, clientId) {
+  const section = backdrop.querySelector("#doc-request-section");
+  if (!section) return;
+  const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+  const fmtWhen = (iso) => { try { return new Date(iso).toLocaleString(); } catch (e) { return iso || ""; } };
+
+  let d;
+  try { d = await api(`/api/client-forms/documents/${clientId}`); }
+  catch (e) { section.innerHTML = `<div class="empty-state">Couldn't load: ${esc(e.message)}</div>`; return; }
+
+  const itemRow = (it) => `<div class="task-row">
+      <div class="info">
+        <span class="status-dot ${it.received ? "completed" : "pending"}"></span><strong>${esc(it.label)}</strong>
+        <div class="due">${it.received ? `Received ${fmtWhen(it.received_at)}${it.filename ? ` · ${esc(it.filename)}` : ""}` : "Not received yet"}</div>
+      </div>
+      ${it.received && it.document_id
+        ? `<a class="btn small secondary" href="/api/documents/${it.document_id}/download" target="_blank" rel="noopener">View</a>`
+        : ""}
+    </div>`;
+
+  const outstanding = (d.items || []).filter((it) => !it.received).length;
+  const header = !d.requested
+    ? `<div style="font-size:13px; color:var(--text-muted); margin-bottom:8px;">Email the parent a private upload link for the official autism diagnosis and the front and back of the insurance card. Whatever they send lands on this record automatically — and the benefits check goes out to billing the moment the card arrives.</div>`
+    : `<div style="font-size:13px; color:var(--text-muted); margin-bottom:8px;">
+         Sent ${fmtWhen(d.sent_at)}${d.send_count > 1 ? ` · asked ${d.send_count} times` : ""}${d.viewed_at ? ` · opened ${fmtWhen(d.viewed_at)}` : " · not opened yet"}.
+         ${d.status === "complete" ? `<span style="color:#166534; font-weight:700;">All documents received ✓</span>` : `${outstanding} still outstanding.`}
+       </div>`;
+
+  section.innerHTML = `
+    ${header}
+    ${(d.items || []).map(itemRow).join("")}
+    <div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <button class="btn small" id="doc-req-send"${d.status === "complete" ? " disabled" : ""}>${d.requested ? "✉ Resend request to parent" : "✉ Request documents from parent"}</button>
+      ${d.link ? `<button class="btn small secondary" id="doc-req-copy">🔗 Copy parent link</button>` : ""}
+      <span id="doc-req-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+    </div>
+    ${d.link ? `<div id="doc-req-link" style="display:none; font-size:12px; margin-top:6px; background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:8px 10px;"><code style="user-select:all;">${esc(d.link)}</code></div>` : ""}`;
+
+  const statusEl = section.querySelector("#doc-req-status");
+  const sendBtn = section.querySelector("#doc-req-send");
+  if (sendBtn) sendBtn.addEventListener("click", async () => {
+    sendBtn.disabled = true;
+    statusEl.textContent = "Sending…";
+    try {
+      const r = await api("/api/client-forms/documents", { method: "POST", body: { client_id: clientId } });
+      statusEl.textContent = `Sent to ${r.sent_to}${r.delivered === "simulated" ? " (simulated)" : ""} ✓`;
+      setTimeout(() => renderDocRequestSection(backdrop, clientId), 1200);
+    } catch (e) {
+      sendBtn.disabled = false;
+      statusEl.textContent = e.message || "Could not send.";
+    }
+  });
+  const copyBtn = section.querySelector("#doc-req-copy");
+  if (copyBtn) copyBtn.addEventListener("click", () => {
+    const box = section.querySelector("#doc-req-link");
+    if (box) box.style.display = "block";
+    if (navigator.clipboard && d.link) navigator.clipboard.writeText(d.link).catch(() => {});
+  });
+}
+
 async function wireFinancialForm(backdrop, clientId) {
   const section = backdrop.querySelector("#financial-form-section");
   if (!section) return;
@@ -1853,11 +2019,27 @@ async function openClientModal(id) {
   const parentSmsOptedOut = !!data.parentSmsOptedOut;
   const sMap = stageMap();
   const stage = sMap[client.stage] || {};
+  // A closed-out record swaps the close-out buttons for the Reactivate panel.
+  const isClosedOut = client.stage === "not_moving_forward" || client.stage === "discharged";
+  // Mirrors insuranceCardDocs() on the server: a document explicitly marked as
+  // the card or named like one, and failing that any image on the record (which
+  // is what a photographed card looks like). The server is the copy that
+  // decides -- this only chooses whether to grey the button out and explain.
+  const hasInsuranceCard = (documents || []).some(
+    (d) => d.is_insurance_card === true || /insur|card|member|benefit|policy/i.test(`${d.label || ""} ${d.filename || ""}`)
+  ) || (documents || []).some((d) => d.doc_type === "hosted" && /^image\//i.test(String(d.mime_type || "")));
+  const escapeHtml = (v) => { const d = document.createElement("div"); d.textContent = v == null ? "" : String(v); return d.innerHTML; };
 
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
+  // Which client this card is for, readable from the DOM. The add-ons that
+  // inject buttons into this card (screener-admin.js) used to work this out
+  // from the URL hash alone, which only gets set when the card is opened from
+  // the pipeline board -- so their buttons silently went missing when the same
+  // card was opened from the Task Center, the tasks table or an auth alert.
+  backdrop.dataset.clientId = String(id);
   backdrop.innerHTML = `
-    <div class="modal">
+    <div class="modal" data-client-id="${id}">
       <div class="modal-header">
         <div>
           <h2>${client.child_name}</h2>
@@ -1976,14 +2158,27 @@ async function openClientModal(id) {
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         <input type="file" id="doc-file-input" style="font-size:12.5px;" />
         <input type="text" id="doc-label-input" placeholder="Label (optional)" style="width:180px;" />
+        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text-muted); cursor:pointer;">
+          <input type="checkbox" id="doc-is-card" style="width:auto;" /> This is the insurance card
+        </label>
         <button class="btn small" id="upload-doc-btn">Upload document</button>
         <span id="upload-doc-status" style="font-size:12.5px; color:var(--text-muted);"></span>
       </div>
 
-      <div style="margin-top:10px;">
-        <button class="btn small secondary" id="send-eligibility-btn">✉ Send Benefits &amp; Eligibility Check</button>
+      <div class="section-title">Documents Requested from Parent</div>
+      <div id="doc-request-section"><div class="empty-state">Loading…</div></div>
+
+      <div style="margin-top:14px;">
+        <button class="btn small secondary" id="send-eligibility-btn"${hasInsuranceCard ? "" : " disabled"}>✉ Send Benefits &amp; Eligibility Check</button>
         <span id="eligibility-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
-        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Emails the patient's name, DOB, insurance details, and any insurance card on file to your billing/verification contact. Sent automatically at enrollment — use this to re-send once the card is uploaded.</div>
+        ${client.eligibility_check_sent_at
+          ? `<div style="font-size:12px; color:#166534; margin-top:4px;">✓ Sent ${fmtDate(client.eligibility_check_sent_at)}. Sending again replaces nothing — it just re-notifies billing.</div>`
+          : ""}
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+          ${hasInsuranceCard
+            ? "Emails the patient's name, DOB, insurance details and the insurance card to your billing/verification contact. This also sends by itself the moment a card is uploaded."
+            : "<span style=\"color:#946213;\">⚠ No insurance card is on file, so this can't be sent yet — a benefits check without the card is not actionable. Use <strong>Request documents from parent</strong> above to ask the family for the front and back. The check then sends itself the moment the card arrives.</span>"}
+        </div>
       </div>
 
       <div class="section-title">Financial Obligation Form</div>
@@ -2019,8 +2214,9 @@ async function openClientModal(id) {
               .map(
                 (t) => `<div class="task-row">
                   <div class="info">
-                    <span class="status-dot ${t.status}"></span><strong>${t.label}</strong>
+                    <span class="status-dot ${t.status}"></span><strong>${t.label}</strong>${t.assignable === false ? ` <span class="tag" style="background:#e7effb; color:#1b3a7b;" title="This step runs automatically — the screener is sent, reminded, and marked complete by the system. It is never assigned to staff.">Automated · not assignable</span>` : ""}
                     <div class="due">${t.department_name} · due ${fmtDate(t.due_date)} ${t.status === "overdue" ? "· <span style='color:#b91c1c;font-weight:700;'>OVERDUE</span>" : ""}</div>
+                    ${taskHistoryLine(t)}
                   </div>
                   ${
                     t.status !== "completed"
@@ -2062,10 +2258,24 @@ async function openClientModal(id) {
       }
 
       <div class="section-title">Advance / Close Out</div>
+      ${isClosedOut ? `
+      <div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:12px 14px; margin-bottom:10px;">
+        <div style="font-weight:700; color:#9a3412; font-size:13.5px;">${client.stage === "not_moving_forward" ? "Marked Not Moving Forward" : "Discharged"}${client.discharge_reason ? ` — ${escapeHtml(client.discharge_reason)}` : ""}</div>
+        <div style="font-size:12.5px; color:#7c2d12; margin-top:4px;">Bringing this family back keeps this same record — every note, document, task and message stays exactly where it is, and the closure above is written into their notes so it is never lost.</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+          <label style="font-size:12.5px; color:#7c2d12;">Move back into
+            <select id="reactivate-stage" style="margin-left:6px;">
+              ${REACTIVATABLE_STAGES.map((k) => `<option value="${k}">${escapeHtml(stageLabelOf(k))}</option>`).join("")}
+            </select>
+          </label>
+          <button class="btn small" id="reactivate-btn" style="background:#16a34a; border-color:#16a34a;">↩ Reactivate / Move Back to Active</button>
+          <span id="reactivate-status" style="font-size:12.5px; color:#7c2d12;"></span>
+        </div>
+      </div>` : ""}
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button class="btn secondary small" id="advance-btn">Advance to next stage manually</button>
+        ${isClosedOut ? "" : `<button class="btn secondary small" id="advance-btn">Advance to next stage manually</button>
         <button class="btn secondary small" id="discharge-btn">Mark discharged</button>
-        <button class="btn secondary small" id="not-moving-btn" style="color:#b91c1c;">Not moving forward</button>
+        <button class="btn secondary small" id="not-moving-btn" style="color:#b91c1c;">Not moving forward</button>`}
       <button class="btn secondary small" id="delete-lead-btn" style="color:#fff; background:#b91c1c; border-color:#b91c1c;">Delete Lead</button>
       </div>
 
@@ -2134,6 +2344,8 @@ async function openClientModal(id) {
 
   const emergencyMount = backdrop.querySelector("#emergency-mount");
   if (emergencyMount && window.PeopleUI) window.PeopleUI.renderEmergencyContacts(emergencyMount, "client", id);
+
+  renderDocRequestSection(backdrop, id);
 
   const close = () => {
     clientDetailsEditing = false;
@@ -2430,9 +2642,19 @@ async function openClientModal(id) {
           reader.readAsDataURL(file);
         });
         const base64 = String(dataUrl).split(",")[1];
+        const cardBox = backdrop.querySelector("#doc-is-card");
         await api(`/api/clients/${id}/documents`, {
           method: "POST",
-          body: { filename: file.name, mime_type: file.type || "application/octet-stream", label: labelInput.value.trim() || file.name, content_base64: base64 },
+          body: {
+            filename: file.name,
+            mime_type: file.type || "application/octet-stream",
+            label: labelInput.value.trim() || file.name,
+            content_base64: base64,
+            // Ticking the box is the only signal that survives a phone
+            // filename like IMG_4821.jpg, and it is what lets the eligibility
+            // check fire off this upload.
+            is_insurance_card: !!(cardBox && cardBox.checked),
+          },
         });
         close();
         await loadClients();
@@ -2561,13 +2783,17 @@ async function openClientModal(id) {
     });
   }
 
-  backdrop.querySelector("#advance-btn").addEventListener("click", async () => {
+  // The advance / close-out trio is only rendered while a client is live; a
+  // closed-out record shows the Reactivate panel in its place.
+  const advanceBtn = backdrop.querySelector("#advance-btn");
+  if (advanceBtn) advanceBtn.addEventListener("click", async () => {
     await api(`/api/clients/${id}/advance`, { method: "POST", body: {} });
     close();
     await loadClients();
     route();
   });
-  backdrop.querySelector("#discharge-btn").addEventListener("click", async () => {
+  const dischargeBtn = backdrop.querySelector("#discharge-btn");
+  if (dischargeBtn) dischargeBtn.addEventListener("click", async () => {
     const reason = await askReason("Discharge reason");
     if (reason === null) return;
     await api(`/api/clients/${id}/discharge`, { method: "POST", body: { reason, stage: "discharged" } });
@@ -2575,13 +2801,36 @@ async function openClientModal(id) {
     await loadClients();
     route();
   });
-  backdrop.querySelector("#not-moving-btn").addEventListener("click", async () => {
+  const notMovingBtn = backdrop.querySelector("#not-moving-btn");
+  if (notMovingBtn) notMovingBtn.addEventListener("click", async () => {
     const reason = await askReason("Reason client is not moving forward");
     if (reason === null) return;
     await api(`/api/clients/${id}/discharge`, { method: "POST", body: { reason, stage: "not_moving_forward" } });
     close();
     await loadClients();
     route();
+  });
+
+  const reactivateBtn = backdrop.querySelector("#reactivate-btn");
+  if (reactivateBtn) reactivateBtn.addEventListener("click", async () => {
+    const stage = backdrop.querySelector("#reactivate-stage").value;
+    const statusEl = backdrop.querySelector("#reactivate-status");
+    const label = stageLabelOf(stage);
+    if (!confirm(`Bring ${client.child_name} back into ${label}?\n\nTheir existing record is kept as-is — nothing is duplicated or deleted — and the note history will show they were previously ${client.stage === "not_moving_forward" ? "marked Not Moving Forward" : "discharged"}.`)) return;
+    reactivateBtn.disabled = true;
+    statusEl.textContent = "Reactivating…";
+    try {
+      const note = await askReason("Anything to record about bringing them back? (optional)");
+      if (note === null) { reactivateBtn.disabled = false; statusEl.textContent = ""; return; }
+      await api(`/api/clients/${id}/reactivate`, { method: "POST", body: { stage, note: note || null } });
+      close();
+      state.pipelineView = "active";
+      await loadClients();
+      route();
+    } catch (e) {
+      reactivateBtn.disabled = false;
+      statusEl.textContent = e.message || "Could not reactivate.";
+    }
   });
   backdrop.querySelector("#delete-lead-btn").addEventListener("click", async () => {
    const password = await askPassword(`This will permanently delete ${client.child_name}'s record, including all tasks, notes, documents, and notification history. Enter your own password to confirm.`);
@@ -2683,23 +2932,27 @@ async function renderStaffTasks(mount) {
     : optionsFor(withLogin);
   const clientOpts = (state.clients || []).map((c) => `<option value="${c.id}">${esc(c.child_name)}</option>`).join("");
   const overdue = (t) => t.status !== "done" && t.due_date && new Date(t.due_date) < new Date(new Date().toDateString());
-  // Only supervisory roles may assign tasks to other people. Everyone else sees
-  // just their own tasks (the server scopes the list to them regardless), so
-  // the assign-to-anyone form is hidden for them.
-  const canAssign = ["owner", "super_admin", "admin"].includes(state.user.role);
+  // Every staff member can raise a task -- for themselves ("Myself" is the
+  // default) or for a colleague. Being able to hand work over is not the same
+  // as being able to read someone's list: the server still only returns tasks
+  // assigned to you, raised by you, or sitting on a client you're assigned to.
+  const canSeeAll = ["owner", "super_admin", "admin"].includes(state.user.role);
   const prioOpts = `<option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option><option value="low">Low</option>`;
+  const canLinkClient = CLIENT_ACCESS_ROLES.includes(state.user.role);
 
   body.innerHTML = `
-    ${canAssign ? `<div class="form-grid" style="gap:10px;">
+    <div class="form-grid" style="gap:10px;">
       <div class="field"><label>Task</label><input id="stask-title" placeholder="e.g. Call insurance about auth" /></div>
-      <div class="field"><label>Assign to</label><select id="stask-assignee"><option value="">— Choose staff —</option>${staffOpts}</select></div>
+      <div class="field"><label>Assign to</label><select id="stask-assignee"><option value="">Myself (${esc(state.user.name || state.user.email)})</option>${staffOpts}</select></div>
       <div class="field"><label>Priority</label><select id="stask-priority">${prioOpts}</select></div>
       <div class="field"><label>Due date</label><input id="stask-due" type="date" /></div>
-      <div class="field"><label>Related client (optional)</label><select id="stask-client"><option value="">— None —</option>${clientOpts}</select></div>
+      ${canLinkClient ? `<div class="field"><label>Related client (optional)</label><select id="stask-client"><option value="">— None —</option>${clientOpts}</select></div>` : ""}
     </div>
     <div class="field full" style="margin-top:8px;"><label>Details (optional)</label><textarea id="stask-desc" rows="2" placeholder="Any details or context..."></textarea></div>
-    <div style="margin-top:8px;"><button class="btn small" id="stask-add">+ Assign task</button> <span id="stask-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span></div>`
-    : `<div style="font-size:13px; color:var(--text-muted); margin-bottom:6px;">These are the tasks assigned to you. Your personal <strong>Task Center</strong> on the Dashboard has quick filters and one-tap complete.</div>`}
+    <div style="margin-top:8px;"><button class="btn small" id="stask-add">+ Add task</button> <span id="stask-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span></div>
+    <div style="font-size:12px; color:var(--text-muted); margin-top:8px;">${canSeeAll
+      ? "As an administrator you can see every staff task here."
+      : "You see tasks assigned to you, tasks you created, and tasks on clients you're assigned to. Other staff members' personal task lists stay private."}</div>
 
     <div style="margin-top:16px; overflow-x:auto;">
       <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:620px;">
@@ -2709,17 +2962,17 @@ async function renderStaffTasks(mount) {
         <tbody>
           ${
             tasks.length
-              ? tasks.map((t) => { const pr = TC_PRIORITY[(t.priority || "normal")] || TC_PRIORITY.normal; return `<tr style="${t.status === "done" ? "opacity:.55;" : ""}">
-                  <td style="padding:7px 8px;"><strong>${esc(t.title)}</strong>${t.description ? `<div style="color:var(--text-muted); font-size:12px;">${esc(t.description)}</div>` : ""}</td>
+              ? tasks.map((t) => { const pr = TC_PRIORITY[(t.priority || "normal")] || TC_PRIORITY.normal; const mine = t.can_edit !== false; return `<tr style="${t.status === "done" ? "opacity:.55;" : ""}">
+                  <td style="padding:7px 8px;"><strong>${esc(t.title)}</strong>${t.description ? `<div style="color:var(--text-muted); font-size:12px;">${esc(t.description)}</div>` : ""}${taskHistoryLine(t)}</td>
                   <td style="padding:7px 8px;"><span class="tc-pill" style="background:${pr.bg}; color:${pr.fg};">${pr.label}</span></td>
                   <td style="padding:7px 8px;">${esc(t.assigned_name || "—")}</td>
                   <td style="padding:7px 8px;">${esc(t.child_name || "—")}</td>
                   <td style="padding:7px 8px; ${overdue(t) ? "color:#b91c1c; font-weight:700;" : ""}">${t.due_date ? fmtDate(t.due_date) : "—"}${overdue(t) ? " ⚠" : ""}</td>
                   <td style="padding:7px 8px; white-space:nowrap;">
-                    ${t.status === "done"
-                      ? `<button class="btn small secondary" data-stask-reopen="${t.id}">Reopen</button>`
-                      : `<button class="btn small" data-stask-done="${t.id}">Done</button>`}
-                    <button class="btn small secondary" data-stask-del="${t.id}" style="color:#b91c1c;">Delete</button>
+                    ${!mine ? `<span style="font-size:12px; color:var(--text-muted);">—</span>` : (t.status === "done"
+                      ? `<button class="btn small secondary" data-stask-reopen="${t.id}" title="Put this task back on the open list">Reopen</button>`
+                      : `<button class="btn small" data-stask-done="${t.id}">Done</button>`)}
+                    ${mine ? `<button class="btn small secondary" data-stask-del="${t.id}" style="color:#b91c1c;">Delete</button>` : ""}
                   </td>
                 </tr>`; }).join("")
               : `<tr><td colspan="6"><div class="empty-state">No staff tasks yet.</div></td></tr>`
@@ -2736,11 +2989,14 @@ async function renderStaffTasks(mount) {
     addBtn.disabled = true;
     statusEl.textContent = "Saving…";
     try {
+      const clientSel = body.querySelector("#stask-client");
       await api("/api/staff-tasks", { method: "POST", body: {
         title,
         ...(() => {
+          // Blank assignee = "Myself"; the server fills in the current user
+          // rather than the browser guessing at its own identity.
           const raw = body.querySelector("#stask-assignee").value;
-          if (!raw) return { assigned_user_id: null };
+          if (!raw) return {};
           try {
             const a = JSON.parse(raw);
             return { assigned_user_id: a.user_id || null, assigned_name: a.name || null, assigned_email: a.email || null };
@@ -2752,9 +3008,11 @@ async function renderStaffTasks(mount) {
         })(),
         priority: (body.querySelector("#stask-priority") || {}).value || "normal",
         due_date: body.querySelector("#stask-due").value || null,
-        client_id: body.querySelector("#stask-client").value || null,
+        client_id: clientSel ? clientSel.value || null : null,
         description: body.querySelector("#stask-desc").value || null,
       } });
+      body.querySelector("#stask-title").value = "";
+      body.querySelector("#stask-desc").value = "";
       refreshTaskBadge();
       await renderStaffTasks(mount);
     } catch (e) {
@@ -2763,14 +3021,20 @@ async function renderStaffTasks(mount) {
     }
   });
   body.querySelectorAll("[data-stask-done]").forEach((b) => b.addEventListener("click", async () => {
-    await api(`/api/staff-tasks/${b.dataset.staskDone}`, { method: "PATCH", body: { status: "done" } }); refreshTaskBadge(); renderStaffTasks(mount);
+    try { await api(`/api/staff-tasks/${b.dataset.staskDone}`, { method: "PATCH", body: { status: "done" } }); }
+    catch (e) { alert(e.message || "Could not complete the task."); return; }
+    refreshTaskBadge(); renderStaffTasks(mount);
   }));
   body.querySelectorAll("[data-stask-reopen]").forEach((b) => b.addEventListener("click", async () => {
-    await api(`/api/staff-tasks/${b.dataset.staskReopen}`, { method: "PATCH", body: { status: "open" } }); refreshTaskBadge(); renderStaffTasks(mount);
+    try { await api(`/api/staff-tasks/${b.dataset.staskReopen}`, { method: "PATCH", body: { status: "open" } }); }
+    catch (e) { alert(e.message || "Could not reopen the task."); return; }
+    refreshTaskBadge(); renderStaffTasks(mount);
   }));
   body.querySelectorAll("[data-stask-del]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("Delete this task?")) return;
-    await api(`/api/staff-tasks/${b.dataset.staskDel}`, { method: "DELETE" }); refreshTaskBadge(); renderStaffTasks(mount);
+    try { await api(`/api/staff-tasks/${b.dataset.staskDel}`, { method: "DELETE" }); }
+    catch (e) { alert(e.message || "Could not delete the task."); return; }
+    refreshTaskBadge(); renderStaffTasks(mount);
   }));
 }
 
@@ -2805,7 +3069,7 @@ async function renderTasks(mount) {
                     <td><input type="checkbox" class="tasks-row-check" data-id="${t.id}" /></td>
                     <td><span class="status-dot ${t.status}"></span>${t.status}</td>
                     <td>${t.child_name}</td>
-                    <td>${t.label}</td>
+                    <td>${t.label}${taskHistoryLine(t)}</td>
                     <td><span class="badge" style="background:${t.department_color}">${t.department_name}</span></td>
                     <td>${fmtDate(t.due_date)}</td>
                     <td>${
@@ -4449,6 +4713,16 @@ async function renderAdmin(mount) {
       </div>
       <div class="task-row">
         <div class="info">
+          <strong>Monthly staff attendance review</strong>
+          <div class="due">Who receives the monthly attendance roster — each staff member's points, their monthly review level, discipline step and bonus standing. It goes out on the 1st for the month just ended. Comma-separate for more than one person. Leave blank to use the owner notification email above.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="att-review-to" type="text" placeholder="qblake@spectrumsquadlv.com" style="width:260px;" />
+          <button class="btn small secondary" id="save-att-review-to">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
           <strong>What time it sends</strong>
           <div class="due">Hour of the day, 0–23, on the server's clock. Anything that finishes after it goes out is carried to the next day's email — nothing is dropped.</div>
         </div>
@@ -4563,6 +4837,8 @@ async function renderAdmin(mount) {
     if (cdInput) cdInput.value = settings.clinical_director_email || "";
     const digestTo = mount.querySelector("#digest-to");
     if (digestTo) digestTo.value = settings.completion_digest_recipients || "";
+    const attReviewTo = mount.querySelector("#att-review-to");
+    if (attReviewTo) attReviewTo.value = settings.attendance_review_recipients || "";
     const schedReqTo = mount.querySelector("#sched-req-to");
     if (schedReqTo) schedReqTo.value = settings.schedule_request_recipients || "";
     const digestHour = mount.querySelector("#digest-hour");
@@ -4608,6 +4884,7 @@ async function renderAdmin(mount) {
   wireSetting("save-owner-email", "owner-email", "owner_notification_email");
   wireSetting("save-cd-email", "cd-email", "clinical_director_email");
   wireSetting("save-digest-to", "digest-to", "completion_digest_recipients");
+  wireSetting("save-att-review-to", "att-review-to", "attendance_review_recipients");
   wireSetting("save-sched-req-to", "sched-req-to", "schedule_request_recipients");
   wireSetting("save-digest-hour", "digest-hour", "completion_digest_hour");
   wireSetting("save-newhire-template", "newhire-template", "signnow_newhire_template_id");
@@ -4981,6 +5258,7 @@ function openAccessModal(u, onDone) {
   <script src="ot-frontend.js"></script>
   <script src="hr-attendance-frontend.js"></script>
   <script src="supervision-frontend.js"></script>
+  <script src="rethink-match-frontend.js"></script>
   <script src="growth-frontend.js"></script>
   <script src="supply-requests-frontend.js"></script>
   <script src="geo-map-frontend.js"></script>
