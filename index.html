@@ -2015,6 +2015,8 @@ async function openClientModal(id) {
   const commsRestricted = !!data.communications_restricted;
   const enrollmentPacket = data.enrollmentPacket || null;
   const signnowConfigured = data.signnowConfigured;
+  const smsConfigured = !!data.smsConfigured;
+  const parentSmsOptedOut = !!data.parentSmsOptedOut;
   const sMap = stageMap();
   const stage = sMap[client.stage] || {};
   // A closed-out record swaps the close-out buttons for the Reactivate panel.
@@ -2284,6 +2286,39 @@ async function openClientModal(id) {
            gone, so restoring it is deleting this comment and putting the
            template back. -->
 
+      <div class="section-title">Text Parent</div>
+      ${(() => {
+        const consented = !!client.parent_sms_consent;
+        const phone = client.parent_phone || "";
+        const textable = !!(consented && phone && !parentSmsOptedOut);
+        const note = !phone
+          ? "No parent phone number on file. Add one in Client Details to text this family."
+          : parentSmsOptedOut
+          ? "This parent replied STOP and is opted out of texts. They must text START to re-subscribe."
+          : !consented
+          ? "This parent hasn't consented to text messages yet. Confirm they've agreed, then record consent below."
+          : !smsConfigured
+          ? "Texting isn't connected yet — messages will be simulated (logged, not delivered) until Twilio is configured."
+          : "";
+        return `
+      <div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:12px 14px; margin-bottom:12px;">
+        <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:8px;">
+          Send a quick text to <strong>${ea(client.parent_name || "the parent")}</strong>${phone ? ` at <strong>${ea(phone)}</strong>` : ""}. Every text is logged in the family's communication history below.
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; cursor:pointer; margin-bottom:8px;">
+          <input type="checkbox" id="parent-sms-consent" ${consented ? "checked" : ""} />
+          Parent has consented to receive text messages${client.parent_sms_consent_at ? ` <span style="font-weight:400; color:var(--text-muted);">(recorded ${fmtDate(client.parent_sms_consent_at)})</span>` : ""}
+        </label>
+        <span id="parent-sms-consent-status" style="font-size:12px; color:var(--text-muted);"></span>
+        ${note ? `<div style="font-size:12px; color:#946213; background:#fef3e0; border-radius:8px; padding:8px 10px; margin:8px 0;">${note}</div>` : ""}
+        <textarea id="parent-sms-body" maxlength="1000" rows="3" placeholder="Write a short text to the parent…" style="width:100%; margin-top:4px;"${textable ? "" : " disabled"}></textarea>
+        <div style="margin-top:8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <button class="btn small" id="send-parent-sms-btn"${textable ? "" : " disabled"}>Send text</button>
+          <span id="parent-sms-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+        </div>
+      </div>`;
+      })()}
+
       <div class="section-title">Communications &amp; Forms Sent to Parents</div>
       ${commsRestricted
         ? `<div class="empty-state" style="text-align:left;">🔒 You can only see communications for clients assigned to you. This family isn't assigned to you, so their message history is hidden. An owner or administrator can see it.</div>`
@@ -2534,6 +2569,56 @@ async function openClientModal(id) {
         statusEl.textContent = e.message || "Could not save.";
       } finally {
         saveTransportBtn.disabled = false;
+      }
+    });
+  }
+
+  // Text Parent: record consent, then send a manual text. Consent is saved via
+  // the same PATCH used elsewhere; toggling it re-renders the card so the send
+  // box unlocks (or re-locks) to match. Sends go through /send-sms, which
+  // re-enforces consent + opt-out server-side.
+  const parentSmsConsent = backdrop.querySelector("#parent-sms-consent");
+  if (parentSmsConsent) {
+    parentSmsConsent.addEventListener("change", async () => {
+      const statusEl = backdrop.querySelector("#parent-sms-consent-status");
+      const on = parentSmsConsent.checked;
+      parentSmsConsent.disabled = true;
+      if (statusEl) statusEl.textContent = "Saving…";
+      try {
+        await api(`/api/clients/${id}`, { method: "PATCH", body: { parent_sms_consent: on } });
+        // Re-render so the send box reflects the new consent state.
+        close();
+        openClientModal(id);
+      } catch (e) {
+        parentSmsConsent.checked = !on;
+        parentSmsConsent.disabled = false;
+        if (statusEl) statusEl.textContent = e.message || "Could not save consent.";
+      }
+    });
+  }
+
+  const sendParentSmsBtn = backdrop.querySelector("#send-parent-sms-btn");
+  if (sendParentSmsBtn) {
+    sendParentSmsBtn.addEventListener("click", async () => {
+      const bodyEl = backdrop.querySelector("#parent-sms-body");
+      const statusEl = backdrop.querySelector("#parent-sms-status");
+      const text = (bodyEl && bodyEl.value || "").trim();
+      if (!text) { statusEl.textContent = "Type a message first."; return; }
+      sendParentSmsBtn.disabled = true;
+      statusEl.textContent = "Sending…";
+      try {
+        const result = await api(`/api/clients/${id}/send-sms`, { method: "POST", body: { body: text } });
+        if (result.ok) {
+          // Reopen so the new text shows in the communication history.
+          close();
+          openClientModal(id);
+        } else {
+          statusEl.textContent = "Not sent: " + (result.error || result.delivered || "unknown");
+          sendParentSmsBtn.disabled = false;
+        }
+      } catch (e) {
+        statusEl.textContent = e.message || "Could not send.";
+        sendParentSmsBtn.disabled = false;
       }
     });
   }

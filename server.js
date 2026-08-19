@@ -464,6 +464,12 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS tp_reminders_sent TEXT NOT NULL DEF
 -- Transportation services provided by Spectrum Squad (surfaced to schedulers).
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_services BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_notes TEXT;
+-- Parent/guardian express consent to receive text messages (TCPA). A staffer
+-- records this after the family has agreed to be texted; sendSms enforces it on
+-- every manual text from the client card, and STOP replies land on the shared
+-- opt-out list just like every other channel.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS parent_sms_consent BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS parent_sms_consent_at TEXT;
 -- Rename the old Vineland stage task to the In-Clinic Assessment.
 UPDATE stage_tasks SET label = 'Schedule In-Clinic Assessment' WHERE stage_key = 'assessment_scheduling' AND label = 'Schedule Vineland / Intake Assessment';
 -- The Clinical Screener is auto-triggered when a family starts intake and is
@@ -4880,6 +4886,9 @@ async function handle(req, res, pathname, method, query = {}) {
         "SELECT status, error_detail, attempts, sent_at, last_attempt_at, completed_at FROM enrollment_packets WHERE client_id = ?",
         [id]
       );
+      // Text-a-parent card state: whether texting is wired up server-side, and
+      // whether this parent's number has landed on the shared STOP list.
+      const parentSmsOptedOut = client.parent_phone ? await smsOptedOut(client.parent_phone) : false;
       return json(res, 200, {
         client: authAlerts.sanitizeClientForRole(user, client),
         tasks,
@@ -4889,6 +4898,8 @@ async function handle(req, res, pathname, method, query = {}) {
         documents,
         enrollmentPacket: enrollmentPacket || null,
         signnowConfigured: signNowConfigured(),
+        smsConfigured: smsClient.configured(),
+        parentSmsOptedOut,
       });
     }
 
@@ -4902,6 +4913,44 @@ async function handle(req, res, pathname, method, query = {}) {
       if (!client) return json(res, 404, { error: "Not found" });
       const result = await sendEnrollmentPacket(client);
       return json(res, result.ok ? 200 : 400, result);
+    }
+
+    // Text a parent/guardian directly from the client card. Same compliance
+    // gate as every other outbound text: a valid number, recorded consent, and
+    // not on the STOP list -- all re-checked centrally in sendSms too. Only
+    // staff assigned to the client (or an owner/admin) may text the family, so
+    // the permission mirrors who can see the family's message history.
+    const clientSmsMatch = pathname.match(/^\/api\/clients\/(\d+)\/send-sms$/);
+    if (clientSmsMatch && method === "POST") {
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientSmsMatch[1]]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      if (!userAssignedToClient(user, client)) {
+        return json(res, 403, { error: "You can only text families assigned to you." });
+      }
+      if (!client.parent_phone) return json(res, 400, { error: "No parent phone number on file." });
+      if (!(client.parent_sms_consent === true || client.parent_sms_consent === "t" || client.parent_sms_consent === "true")) {
+        return json(res, 400, { error: "This parent hasn't consented to text messages yet. Record consent first." });
+      }
+      if (await smsOptedOut(client.parent_phone)) {
+        return json(res, 400, { error: "This parent has opted out of texts (replied STOP)." });
+      }
+      const body = await readBody(req);
+      const text = String(body.body || "").trim();
+      if (!text) return json(res, 400, { error: "Message body is required." });
+      if (text.length > 1000) return json(res, 400, { error: "Message is too long (max 1000 characters)." });
+      const result = await sendSms({
+        to: client.parent_phone,
+        body: text,
+        clientId: client.id,
+        type: "parent_manual_sms",
+        consented: true,
+      });
+      const failed = result.delivered === "failed" || String(result.delivered || "").startsWith("skipped");
+      return json(res, failed ? 502 : 200, {
+        ok: !failed,
+        delivered: result.delivered,
+        error: failed ? result.errorMsg : undefined,
+      });
     }
 
     if (clientMatch && method === "PATCH") {
@@ -4918,7 +4967,17 @@ async function handle(req, res, pathname, method, query = {}) {
         "psi_completed", "psi_date", "vineland_tricare_completed", "vineland_tricare_date",
         // Transportation services provided by Spectrum Squad
         "transportation_services", "transportation_notes",
+        // Parent consent to be texted (TCPA); gate for manual texts from the card.
+        "parent_sms_consent",
       ];
+      // Stamp when consent is switched on so the audit trail shows the moment a
+      // family agreed to be texted (and clear it when consent is withdrawn).
+      if (Object.prototype.hasOwnProperty.call(updates, "parent_sms_consent")) {
+        const consented = updates.parent_sms_consent === true || updates.parent_sms_consent === "true";
+        updates.parent_sms_consent = consented;
+        updates.parent_sms_consent_at = consented ? nowISO() : null;
+        allowed.push("parent_sms_consent_at");
+      }
       const fields = Object.keys(updates).filter((k) => allowed.includes(k));
       if (fields.length) {
         const setClause = fields.map((f) => `${f} = ?`).join(", ");
