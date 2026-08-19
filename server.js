@@ -24,8 +24,18 @@ if (!DATABASE_URL) {
 }
 
 // Railway's internal networking (host ending in .railway.internal) does not
-// use/need TLS. Any other host (e.g. the public proxy) does.
-const needsSSL = DATABASE_URL && !DATABASE_URL.includes("railway.internal");
+// use/need TLS, and neither does a Postgres on this machine: a local or
+// containerised server has no TLS at all unless somebody configures it, and
+// the connection never leaves the host. Demanding it anyway is not a stricter
+// posture, it is a refusal to start -- "The server does not support SSL
+// connections" is what CI got from the stock postgres:16 image, and what
+// anyone gets running the app against a plain local Postgres.
+// Any other host (e.g. Railway's public proxy) still gets TLS.
+const dbHost = (() => {
+  try { return new URL(DATABASE_URL).hostname; } catch (e) { return ""; }
+})();
+const DB_HOST_IS_LOCAL = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(dbHost);
+const needsSSL = DATABASE_URL && !DATABASE_URL.includes("railway.internal") && !DB_HOST_IS_LOCAL;
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
