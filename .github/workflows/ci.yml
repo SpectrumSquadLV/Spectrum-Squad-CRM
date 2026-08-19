@@ -13,7 +13,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     services:
       postgres:
@@ -47,11 +47,29 @@ jobs:
         run: npm install --no-audit --no-fund
 
       # Thirteen suites drive the app in a real browser. CHROMIUM_PATH is left
-      # unset so Playwright uses the build it just downloaded.
+      # unset so Playwright uses the build it downloads here.
+      #
+      # Deliberately NOT --with-deps: that shells out to apt-get, and the first
+      # run of this workflow sat on it for 20 minutes -- an apt/dpkg lock on the
+      # hosted runner, which is a known way for that flag to hang. The
+      # ubuntu-latest image already ships the system libraries Chromium needs,
+      # so the flag bought nothing and cost the entire job.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          # Keyed on the exact pinned version, so a version bump misses the
+          # cache and downloads the browser that version expects.
+          key: ms-playwright-${{ runner.os }}-${{ hashFiles('package.json') }}
+
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5 # fail fast rather than eat the job's budget
+        run: npx playwright install chromium
 
       - name: Run tests
+        timeout-minutes: 25
         run: node run-tests.js
 
       # The per-suite logs say which assertion went red and what the server was
