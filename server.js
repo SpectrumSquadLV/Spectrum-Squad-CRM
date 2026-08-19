@@ -4061,11 +4061,11 @@ async function handle(req, res, pathname, method, query = {}) {
         pathname.startsWith("/api/policies") ? "policies" :
         pathname.startsWith("/api/geo") ? "map" :
         pathname.startsWith("/api/supply") ? "supply" :
-        // NOTE: this is mapped to "staff" only because that is what the
-        // Access editor currently ships. It is the wrong label (see punch
-        // list item 14) and should get its own "attendance" key -- left as-is
-        // here so this security batch does not change existing behaviour.
-        pathname.startsWith("/api/attendance") ? "staff" :
+        // Staff attendance is its own section now that it has its own page in
+        // the nav, so it gets its own access key instead of borrowing the
+        // staff directory's. A grant or a block on "staff" no longer silently
+        // decides who can see attendance points and discipline levels.
+        pathname.startsWith("/api/attendance") ? "attendance" :
         // The sections below were listed in the Access editor but never
         // enforced server-side, so switching them off only hid the sidebar
         // button -- the data was still reachable by URL.
@@ -6195,6 +6195,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         owner_notification_email: await getAppSetting("owner_notification_email", ""),
         clinical_director_email: await getAppSetting("clinical_director_email", ""),
         completion_digest_recipients: await getAppSetting("completion_digest_recipients", ""),
+        attendance_review_recipients: await getAppSetting("attendance_review_recipients", ""),
         completion_digest_hour: await getAppSetting("completion_digest_hour", "18"),
         schedule_request_recipients: await getAppSetting("schedule_request_recipients", ""),
         signnow_newhire_template_id: await getAppSetting("signnow_newhire_template_id", ""),
@@ -6216,6 +6217,17 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         const email = (body.eligibility_check_email || "").trim();
         if (!validEmail(email)) return json(res, 400, { error: "Please enter a valid email address." });
         await setAppSetting("eligibility_check_email", email);
+      }
+      // Who gets the monthly attendance roster summary. Blank falls back to the
+      // owner notification address, then to a real owner/admin mailbox, so the
+      // review cannot quietly go nowhere.
+      if ("attendance_review_recipients" in body) {
+        const raw = String(body.attendance_review_recipients || "").trim();
+        const list = raw ? raw.split(/[,;]/).map((x) => x.trim()).filter(Boolean) : [];
+        for (const addr of list) {
+          if (!validEmail(addr)) return json(res, 400, { error: `"${addr}" is not a valid email address.` });
+        }
+        await setAppSetting("attendance_review_recipients", list.join(", "));
       }
       if ("clinical_director_email" in body) {
         // Who receives BIP questions and review requests. Never hard-coded.
@@ -6915,6 +6927,8 @@ let attendance;
 try {
   attendance = require("./hr-attendance")({
     dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
+    // Recipients for the monthly attendance roster summary.
+    getAppSetting, setAppSetting,
   });
 } catch (e) {
   // The hr-attendance module file isn't present yet. Keep the app booting with a
