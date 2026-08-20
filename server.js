@@ -4461,20 +4461,31 @@ async function handle(req, res, pathname, method, query = {}) {
     // Inbound SMS webhook (public, Twilio-signature-verified). Point your Twilio
     // number's "A message comes in" webhook here. Handles carrier keywords
     // (STOP/START/HELP) for opt-out compliance and hands real replies to the HR
-    // module so they land on the candidate's timeline. Always answers 200 with
-    // empty TwiML so Twilio doesn't retry or auto-send a second message.
+    // module so they land on the candidate's timeline. A verified request always
+    // answers 200 with empty TwiML so Twilio doesn't retry or auto-send a second
+    // message; an unverified one gets 403 and is not processed at all.
     if (pathname === "/api/sms/inbound" && method === "POST") {
       const raw = await readRawBody(req);
       const params = {};
       for (const [k, v] of new URLSearchParams(raw)) params[k] = v;
-      // Verify the request really came from Twilio. When an auth token is set we
-      // require a valid signature; without one (dev/simulated) we accept it.
-      if (process.env.TWILIO_AUTH_TOKEN) {
-        const fullUrl = `${APP_BASE_URL}/api/sms/inbound`;
-        const sig = req.headers["x-twilio-signature"];
-        const v = smsClient.verifyInboundSignature(fullUrl, params, sig);
-        if (!v.ok) { res.writeHead(403, { "Content-Type": "text/plain" }); return res.end("Invalid signature"); }
+      // Verify the request really came from Twilio, and fail CLOSED if we
+      // cannot. This used to skip verification entirely when no auth token was
+      // set, which reads as "dev convenience" but is the wrong way round: with
+      // no token there is no way to tell Twilio from anyone who found the URL,
+      // and an install without Twilio credentials has no legitimate inbound
+      // traffic to accept anyway. What it accepted was not harmless -- a forged
+      // STOP lands a number on the shared opt-out list, and every later send to
+      // that family is refused.
+      const inboundToken = process.env.TWILIO_AUTH_TOKEN || "";
+      if (!inboundToken) {
+        console.warn("[sms] inbound request refused: TWILIO_AUTH_TOKEN is not set, so no signature can be verified");
+        res.writeHead(403, { "Content-Type": "text/plain" });
+        return res.end("Inbound SMS is not configured");
       }
+      const fullUrl = `${APP_BASE_URL}/api/sms/inbound`;
+      const sig = req.headers["x-twilio-signature"];
+      const v = smsClient.verifyInboundSignature(fullUrl, params, sig);
+      if (!v.ok) { res.writeHead(403, { "Content-Type": "text/plain" }); return res.end("Invalid signature"); }
       const from = params.From || "";
       const body = params.Body || "";
       const kind = smsClient.classifyInbound(body);
