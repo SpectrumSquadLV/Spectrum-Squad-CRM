@@ -10,7 +10,7 @@ const PNG_1PX =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" });
+  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
   let pass = 0, fail = 0;
   const check = (name, cond, detail) => {
     if (cond) { pass++; console.log("  PASS  " + name); }

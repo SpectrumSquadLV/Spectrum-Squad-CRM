@@ -1,5 +1,5 @@
 // Exercises the scheduling engine against a live local server.
-const BASE = "http://localhost:3009";
+const BASE = process.env.BASE || "http://localhost:3009";
 let cookie = "";
 let pass = 0, fail = 0;
 

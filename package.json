@@ -4,10 +4,14 @@
   "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node run-tests.js"
   },
   "dependencies": {
     "pdfkit": "^0.15.0",
     "pg": "^8.11.5"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
   }
 }
