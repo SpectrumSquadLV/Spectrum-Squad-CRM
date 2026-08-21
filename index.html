@@ -96,6 +96,14 @@ button { font-family: inherit; cursor: pointer; }
 }
 .nav-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
 .nav-item.active { background: rgba(255,255,255,0.18); color: #fff; }
+/* Admin group. Five separate top-level entries (Settings plus four tools) now
+   sit under one collapsible parent. The children are ordinary .nav-item
+   buttons inside .sidebar nav, so everything that queries, restyles or
+   removes nav items keeps working on them. */
+.nav-chevron { margin-left: auto; font-size: 11px; opacity: .7; }
+.nav-group.has-active { color: #fff; }
+.nav-sub { margin: 0 0 4px 11px; padding-left: 7px; border-left: 2px solid rgba(255,255,255,0.14); }
+.nav-sub .nav-item { font-size: 13.5px; padding: 8px 10px; }
 .nav-count { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
   background: #5fa8a0; color: #fff; font-size: 11.5px; font-weight: 800; line-height: 20px; text-align: center;
   box-shadow: 0 1px 3px rgba(0,0,0,.25); }
@@ -714,17 +722,45 @@ function renderShell(active) {
     });
   }
 
+  // Admin Settings and its four tools used to sit as five separate entries at
+  // the top level of the sidebar. They are one collapsible group now.
+  //
+  // Grouping happens here, at render time, and nowhere else: navItems is built
+  // exactly as before, so role checks and the per-user module-access overrides
+  // above still decide membership, and each child keeps its own key, hash and
+  // label. Nothing about the pages, the routes or Admin Settings changes -- a
+  // child that a user cannot see simply is not in navItems, and if none of them
+  // are, no group is drawn at all.
+  const ADMIN_GROUP_KEYS = ["admin", "rethink-clients", "signnow-import", "email-templates", "failed-emails"];
+  const adminChildren = ADMIN_GROUP_KEYS.map((k) => navItems.find((n) => n.key === k)).filter(Boolean);
+  const topItems = navItems.filter((n) => !ADMIN_GROUP_KEYS.includes(n.key));
+  const adminHasActive = adminChildren.some((n) => n.key === active);
+  // Open when you are on one of its pages, otherwise whatever you left it as.
+  // Storage is a convenience only: if it is unavailable the group still works,
+  // it just starts closed.
+  let adminOpen = adminHasActive;
+  if (!adminOpen) {
+    try { adminOpen = localStorage.getItem("ss-nav-admin-open") === "1"; } catch (e) { /* private mode */ }
+  }
+  const navItemHtml = (n, cls) =>
+    `<button class="nav-item ${cls} ${active === n.key ? "active" : ""}" data-nav="${n.key}"${n.hash ? ` data-nav-hash="${n.hash}"` : ""}>
+              <span>${n.icon}</span> ${n.label}${n.key === "tasks" ? `<span class="nav-count" id="nav-task-count" style="display:none;"></span>` : ""}</button>`;
+  const adminGroupHtml = adminChildren.length
+    ? `<button class="nav-item nav-group ${adminHasActive ? "has-active" : ""}" id="nav-admin-toggle"
+              aria-expanded="${adminOpen ? "true" : "false"}" aria-controls="nav-admin-sub">
+              <span>⚙</span> Admin<span class="nav-chevron">${adminOpen ? "▾" : "▸"}</span></button>
+            <div class="nav-sub" id="nav-admin-sub"${adminOpen ? "" : " hidden"}>
+              ${adminChildren.map((n) => navItemHtml(n, "")).join("")}
+            </div>`
+    : "";
+
   root.innerHTML = `
     <div class="app-shell">
       <div class="sidebar">
         <div class="brand"><img src="/logo.png" alt="Spectrum Squad" style="max-width:170px; width:100%; height:auto;" /></div>
         <nav>
-          ${navItems
-            .map(
-              (n) => `<button class="nav-item ${active === n.key ? "active" : ""}" data-nav="${n.key}"${n.hash ? ` data-nav-hash="${n.hash}"` : ""}>
-              <span>${n.icon}</span> ${n.label}${n.key === "tasks" ? `<span class="nav-count" id="nav-task-count" style="display:none;"></span>` : ""}</button>`
-            )
-            .join("")}
+          ${topItems.map((n) => navItemHtml(n, "")).join("")}
+          ${adminGroupHtml}
         </nav>
         <div class="sidebar-footer">
           <div class="sidebar-user"><strong>${state.user.name}</strong>${state.user.role}</div>
@@ -740,6 +776,22 @@ function renderShell(active) {
   root.querySelectorAll("[data-nav]").forEach((btn) => {
     btn.addEventListener("click", () => (location.hash = btn.dataset.navHash || "#/" + btn.dataset.nav));
   });
+  // The Admin parent opens and closes the group; it is not a page of its own,
+  // so it deliberately has no data-nav and never navigates.
+  const adminToggle = document.getElementById("nav-admin-toggle");
+  if (adminToggle) {
+    adminToggle.addEventListener("click", () => {
+      const sub = document.getElementById("nav-admin-sub");
+      if (!sub) return;
+      const open = sub.hasAttribute("hidden");
+      if (open) sub.removeAttribute("hidden");
+      else sub.setAttribute("hidden", "");
+      adminToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      const chev = adminToggle.querySelector(".nav-chevron");
+      if (chev) chev.textContent = open ? "▾" : "▸";
+      try { localStorage.setItem("ss-nav-admin-open", open ? "1" : "0"); } catch (e) { /* private mode */ }
+    });
+  }
   refreshTaskBadge();
   document.getElementById("logout-btn").addEventListener("click", async () => {
     await api("/api/auth/logout", { method: "POST" });
