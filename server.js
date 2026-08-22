@@ -884,9 +884,14 @@ function insuranceCardDocs(docs) {
 }
 
 async function sendEligibilityCheck(client, actor) {
+  // Every outcome below says so in the log. This path used to be silent on both
+  // success and refusal, so "did billing ever get it?" could not be answered
+  // from the logs at all -- two checks went out in one afternoon without
+  // leaving a trace. Client id and the billing recipient only: no patient name,
+  // no parent contact details, since these lines are kept for a long time.
   const to = await getAppSetting("eligibility_check_email", "");
   if (!to) {
-    console.log("Eligibility check email skipped: no recipient configured.");
+    console.log(`[eligibility] client=${client.id} not sent: no recipient configured in Admin Settings`);
     return { ok: false, error: "No recipient configured" };
   }
 
@@ -904,7 +909,7 @@ async function sendEligibilityCheck(client, actor) {
           contentType: d.mime_type || "application/octet-stream",
         });
       } catch (e) {
-        console.error("Could not attach insurance card:", e.message);
+        console.error(`[eligibility] client=${client.id} could not read card file ${d.file_path}: ${e.message}`);
       }
     } else if (d.doc_type === "link" && d.external_url) {
       linkCards.push(d);
@@ -923,6 +928,9 @@ async function sendEligibilityCheck(client, actor) {
   // the record: a card row whose file has gone missing from disk fails the
   // read above and leaves attachments empty, and that must block the send too.
   if (!attachments.length && !linkCards.length) {
+    console.log(
+      `[eligibility] client=${client.id} not sent: no readable insurance card (card rows=${cardDocs.length})`
+    );
     return {
       ok: false,
       code: "no_card",
@@ -963,6 +971,10 @@ async function sendEligibilityCheck(client, actor) {
     type: "eligibility_check",
     attachments,
   });
+  console.log(
+    `[eligibility] client=${client.id} to=${to} attachments=${attachments.length} links=${linkCards.length} ` +
+    `result=${result.delivered}${result.errorMsg ? ` error=${result.errorMsg}` : ""}`
+  );
   await logFinancialAudit(
     actor || "system",
     "eligibility_check_sent",
@@ -986,10 +998,14 @@ async function sendEligibilityCheck(client, actor) {
 async function maybeSendEligibilityCheck(clientId, actor) {
   const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]).catch(() => null);
   if (!client) return { ok: false, skipped: "no such client" };
-  if (client.eligibility_check_sent_at) return { ok: true, skipped: "already sent" };
+  if (client.eligibility_check_sent_at) {
+    console.log(`[eligibility] client=${clientId} not re-sent: already sent at ${client.eligibility_check_sent_at}`);
+    return { ok: true, skipped: "already sent" };
+  }
 
   const docs = await dbAll("SELECT * FROM client_documents WHERE client_id = ?", [clientId]).catch(() => []);
   if (!insuranceCardDocs(docs).length) {
+    console.log(`[eligibility] client=${clientId} pending: waiting for an insurance card before sending`);
     return { ok: false, skipped: "no insurance card on file yet" };
   }
 

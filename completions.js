@@ -37,6 +37,7 @@ module.exports = function initCompletions(ctx) {
     schedule_request_submitted:{ label: "Parent submitted their schedule",        group: "Families" },
     screener_completed:        { label: "Clinical screener completed",            group: "Families" },
     enrollment_packet_completed:{ label: "Enrollment packet signed",              group: "Families" },
+    client_documents_received: { label: "Insurance card and diagnosis received",  group: "Families" },
     eligibility_returned:      { label: "Eligibility check returned",             group: "Families" },
     client_stage_advanced:     { label: "Client moved to a new stage",            group: "Families" },
     client_active:             { label: "Client started therapy",                 group: "Families" },
