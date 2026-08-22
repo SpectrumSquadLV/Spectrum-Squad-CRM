@@ -4220,6 +4220,11 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  if (pathname.startsWith("/api/grants/")) {
+    const handled = await grants.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/people/")) {
     const handled = await people.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -6929,6 +6934,9 @@ const PUBLIC_FILES = new Set([
   // window.__renderRethinkMatch global never defines, and #/rethink-clients
   // silently falls back to the dashboard -- which is exactly what happened.
   "/rethink-match-frontend.js",
+  // Grant Finder. Same trap as the line above: leave it off and #/grants falls
+  // back to the dashboard with no error anywhere.
+  "/grants-frontend.js",
 ]);
 
 function serveStatic(req, res, pathname) {
@@ -7133,6 +7141,13 @@ const people = require("./people")({
   sendEmail, APP_BASE_URL, getAppSetting, canAccessClients,
 });
 
+// ===== GRANT FINDER add-on: funding opportunities, the Spectrum Squad
+// organisation profile they are matched against, eligibility analysis and
+// match scoring. Owns /api/grants/*. =====
+const grants = require("./grants")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json,
+});
+
 // ===== SCHEDULING CENTER add-on: dated sessions on the real staff directory,
 // recurrence series, conflict detection, availability and time off, and the
 // day operations board. Replaces the old weekly-pattern Therapy Schedule; the
@@ -7292,6 +7307,7 @@ async function start() {
   await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
   await bip.initTables().catch((e) => console.error("BIP initTables failed:", e));
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
+  await grants.initTables().catch((e) => console.error("Grants initTables failed:", e));
   await scheduling.initTables().catch((e) => console.error("Scheduling initTables failed:", e));
   await onboarding.initTables().catch((e) => console.error("Onboarding initTables failed:", e));
   await completions.initTables().catch((e) => console.error("Completions initTables failed:", e));

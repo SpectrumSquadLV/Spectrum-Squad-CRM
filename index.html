@@ -578,6 +578,7 @@ async function route() {
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/rethink-clients")) { if (window.__renderRethinkMatch) await window.__renderRethinkMatch(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/grants")) { if (window.__renderGrants) await window.__renderGrants(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/policies")) { if (window.__renderPolicies) await window.__renderPolicies(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/map")) { if (window.__renderMap) await window.__renderMap(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/financial-center")) { if (window.__renderFinancialCenter) await window.__renderFinancialCenter(mount); else await renderDashboard(mount); }
@@ -622,6 +623,7 @@ const MODULE_CATALOG = {
   "signnow-import": { label: "SignNow Import", icon: "⇩" },
   "email-templates": { label: "Email Templates", icon: "✎" },
   "failed-emails": { label: "Failed Emails", icon: "⚠" },
+  grants: { label: "Grant Finder", icon: "💵" },
   "auth-alerts": { label: "Authorization Alerts", icon: "⏰" },
   admin: { label: "Admin Settings", icon: "⚙" },
 };
@@ -705,6 +707,10 @@ function renderShell(active) {
     navItems.push({ key: "map", label: "Map", icon: "🗺️" });
   if (["owner", "super_admin"].includes(state.user.role))
     navItems.push({ key: "financial-center", label: "Financial Center", icon: "💰" });
+  // Grant Finder. Same roles the /api/grants/* routes accept -- the nav entry
+  // hides it, the route guard is what actually enforces it.
+  if (["owner", "super_admin", "admin"].includes(state.user.role))
+    navItems.push({ key: "grants", label: "Grant Finder", icon: "💵" });
   if (["owner", "admin", "super_admin"].includes(state.user.role)) {
     navItems.push({ key: "signnow-import", label: "SignNow Import", icon: "⇩" });
     navItems.push({ key: "email-templates", label: "Email Templates", icon: "✎" });
@@ -5310,6 +5316,7 @@ function openAccessModal(u, onDone) {
   <script src="ot-frontend.js"></script>
   <script src="hr-attendance-frontend.js"></script>
   <script src="supervision-frontend.js"></script>
+  <script src="grants-frontend.js"></script>
   <script src="rethink-match-frontend.js"></script>
   <script src="growth-frontend.js"></script>
   <script src="supply-requests-frontend.js"></script>
