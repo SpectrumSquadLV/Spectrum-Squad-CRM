@@ -578,6 +578,27 @@ if (!fs.existsSync(DOCS_DIR)) fs.mkdirSync(DOCS_DIR, { recursive: true });
 const IMAGES_DIR = path.join(DATA_DIR, "email-images");
 if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
 
+
+// Save an uploaded file (base64 in a JSON body, the way client documents
+// arrive) onto the volume and hand back the stored name. Shared so modules
+// that need to keep a file do not each invent their own path handling.
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+function saveDocumentFile({ prefix = "doc", filename, contentBase64 }) {
+  if (!contentBase64 || !filename) return { ok: false, status: 400, error: "A file is required." };
+  let buffer;
+  try { buffer = Buffer.from(String(contentBase64), "base64"); }
+  catch (e) { return { ok: false, status: 400, error: "Invalid file data." }; }
+  if (!buffer.length) return { ok: false, status: 400, error: "That file came through empty. Please try again." };
+  if (buffer.length > MAX_UPLOAD_BYTES) return { ok: false, status: 400, error: "File is too large (15MB max)." };
+  const safeName = String(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const storedName = `${prefix}_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
+  try { fs.writeFileSync(path.join(DOCS_DIR, storedName), buffer); }
+  catch (e) {
+    console.error("Could not save document:", e.message);
+    return { ok: false, status: 500, error: "Could not save file." };
+  }
+  return { ok: true, stored_name: storedName, bytes: buffer.length };
+}
 // ============================== AUTH ==============================
 // server/auth.js
 // scrypt password hashing + random session tokens (cookie-based).
@@ -2307,7 +2328,7 @@ function normalizePriority(p) {
   const v = String(p || "").trim().toLowerCase();
   return TASK_PRIORITIES.includes(v) ? v : "normal";
 }
-async function createStaffTask({ title, description, assigned_user_id, assigned_name, assigned_email, client_id, due_date, created_by, priority }) {
+async function createStaffTask({ title, description, assigned_user_id, assigned_name, assigned_email, client_id, due_date, created_by, priority, grant_id }) {
   // If assigned by name only, try to resolve to a user for reminders.
   let uid = assigned_user_id || null;
   let uname = assigned_name || null;
@@ -2331,9 +2352,9 @@ async function createStaffTask({ title, description, assigned_user_id, assigned_
     if (e) uemail = e.email;
   }
   const row = await dbGet(
-    `INSERT INTO staff_tasks (title, description, assigned_user_id, assigned_name, assigned_email, client_id, due_date, priority, status, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING *`,
-    [title, description || null, uid, uname, uemail, client_id || null, due_date || null, normalizePriority(priority), created_by || "system", nowISO()]
+    `INSERT INTO staff_tasks (title, description, assigned_user_id, assigned_name, assigned_email, client_id, grant_id, due_date, priority, status, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING *`,
+    [title, description || null, uid, uname, uemail, client_id || null, grant_id || null, due_date || null, normalizePriority(priority), created_by || "system", nowISO()]
   );
   // Notify the assignee immediately that a task was assigned to them.
   {
@@ -7146,6 +7167,12 @@ const people = require("./people")({
 // match scoring. Owns /api/grants/*. =====
 const grants = require("./grants")({
   dbGet, dbAll, dbRun, nowISO, readBody, json,
+  // Phase 2: deadline alerts email through the same gate everything else does,
+  // application tasks are ordinary staff tasks, and uploaded grant documents
+  // land on the same volume as every other document.
+  getAppSetting, sendEmail,
+  createStaffTask: (t) => createStaffTask(t),
+  saveDocument: (o) => saveDocumentFile(o),
 });
 
 // ===== SCHEDULING CENTER add-on: dated sessions on the real staff directory,
@@ -7433,6 +7460,14 @@ async function start() {
   // Staff certification expiry -- staged notices to the staff member and the
   // Clinical Director. Runs on boot and then daily. Each stage sends at most
   // once per certification per expiration date, so a restart cannot re-send.
+  // Grant submission-deadline notices (30/14/7/3/1/day-of). Runs on boot and
+  // then daily; each stage fires at most once per grant, and anything we are
+  // likely ineligible for is never chased.
+  grants.deadlineSweep().catch((e) => console.error("Grant deadline sweep failed:", e));
+  setInterval(() => {
+    grants.deadlineSweep().catch((e) => console.error("Grant deadline sweep failed:", e));
+  }, 24 * 60 * 60 * 1000);
+
   people.certificationSweep().catch((e) => console.error("Certification sweep failed:", e));
   setInterval(() => {
     people.certificationSweep().catch((e) => console.error("Certification sweep failed:", e));

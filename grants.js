@@ -561,6 +561,111 @@ module.exports = function initGrants(ctx) {
       created_at TEXT
     )`).catch((e) => console.error("grants saved searches initTables:", e.message));
 
+    // ---------------------------------------------------------- phase 2
+    // One workspace per grant. The deadline is copied from the grant when the
+    // workspace opens but kept separately: funders move dates, and an internal
+    // target ahead of the real one is a normal way to work.
+    await dbRun(`CREATE TABLE IF NOT EXISTS grant_applications (
+      id SERIAL PRIMARY KEY,
+      grant_id INTEGER NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'Preparing',
+      owner_email TEXT,
+      amount_requested NUMERIC,
+      loi_deadline TEXT,
+      submission_deadline TEXT,
+      award_announcement_date TEXT,
+      reporting_deadline TEXT,
+      follow_up_date TEXT,
+      budget_notes TEXT,
+      notes TEXT,
+      submitted_at TEXT,
+      submitted_by TEXT,
+      confirmation_ref TEXT,
+      created_by TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    )`).catch((e) => console.error("grant_applications initTables:", e.message));
+
+    await dbRun(`CREATE TABLE IF NOT EXISTS grant_application_questions (
+      id SERIAL PRIMARY KEY,
+      application_id INTEGER NOT NULL,
+      question TEXT NOT NULL,
+      answer TEXT,
+      sort INTEGER DEFAULT 0,
+      updated_at TEXT
+    )`).catch((e) => console.error("grant_application_questions initTables:", e.message));
+
+    // One row per narrative section, so sections can be written and reviewed
+    // independently. Phase 3 drafts these; phase 2 stores what a human writes.
+    await dbRun(`CREATE TABLE IF NOT EXISTS grant_application_narratives (
+      id SERIAL PRIMARY KEY,
+      application_id INTEGER NOT NULL,
+      section_key TEXT NOT NULL,
+      content TEXT,
+      updated_at TEXT,
+      updated_by TEXT
+    )`).catch((e) => console.error("grant_application_narratives initTables:", e.message));
+    await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS grant_narrative_section
+      ON grant_application_narratives (application_id, section_key)`).catch(() => {});
+
+    await dbRun(`CREATE TABLE IF NOT EXISTS grant_application_checklist (
+      id SERIAL PRIMARY KEY,
+      application_id INTEGER NOT NULL,
+      key TEXT NOT NULL,
+      label TEXT NOT NULL,
+      done BOOLEAN NOT NULL DEFAULT false,
+      done_at TEXT,
+      done_by TEXT,
+      sort INTEGER DEFAULT 0
+    )`).catch((e) => console.error("grant_application_checklist initTables:", e.message));
+    await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS grant_checklist_item
+      ON grant_application_checklist (application_id, key)`).catch(() => {});
+
+    // The reusable document library: W-9, licences, insurance certificates and
+    // the rest. Stored the same way client documents are -- bytes on the
+    // volume, a row pointing at them -- so there is one storage story.
+    await dbRun(`CREATE TABLE IF NOT EXISTS grant_documents (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      category TEXT,
+      filename TEXT,
+      mime_type TEXT,
+      file_path TEXT,
+      external_url TEXT,
+      expires_at TEXT,
+      notes TEXT,
+      uploaded_by TEXT,
+      uploaded_at TEXT
+    )`).catch((e) => console.error("grant_documents initTables:", e.message));
+
+    await dbRun(`CREATE TABLE IF NOT EXISTS grant_application_documents (
+      id SERIAL PRIMARY KEY,
+      application_id INTEGER NOT NULL,
+      document_id INTEGER,
+      requirement TEXT,
+      attached_at TEXT
+    )`).catch((e) => console.error("grant_application_documents initTables:", e.message));
+
+    // Deadline notices are recorded BEFORE the email goes out, so a crash
+    // mid-sweep can never turn into a duplicate blast. Same shape as the
+    // certification sweep in people.js, for the same reason.
+    await dbRun(`CREATE TABLE IF NOT EXISTS grant_deadline_notices (
+      id SERIAL PRIMARY KEY,
+      grant_id INTEGER,
+      application_id INTEGER,
+      kind TEXT NOT NULL,          -- submission | loi | reporting
+      stage TEXT NOT NULL,
+      sent_at TEXT NOT NULL
+    )`).catch((e) => console.error("grant_deadline_notices initTables:", e.message));
+    await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS grant_notice_once
+      ON grant_deadline_notices (grant_id, kind, stage)`).catch(() => {});
+
+    // Grant work is staff work. Rather than a second to-do system nobody
+    // watches, application tasks are ordinary staff_tasks carrying a grant id,
+    // so they land in the assignee's existing Tasks & Alerts queue and inherit
+    // its assignment email and due-date reminders.
+    await dbRun("ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS grant_id INTEGER").catch(() => {});
+
     await seedProfile();
     await seedSources();
   }
@@ -804,6 +909,268 @@ module.exports = function initGrants(ctx) {
   }
 
   // =====================================================================
+  // PHASE 2 -- application workspace, calendar, deadline alerts, documents
+  // =====================================================================
+
+  // The sections a grant narrative is written in. Stored one row each so they
+  // can be worked on and reviewed separately.
+  const NARRATIVE_SECTIONS = [
+    { key: "executive_summary", label: "Executive summary" },
+    { key: "statement_of_need", label: "Statement of need" },
+    { key: "program_description", label: "Program description" },
+    { key: "community_impact", label: "Community impact" },
+    { key: "organizational_background", label: "Organisational background" },
+    { key: "outcomes", label: "Measurable outcomes" },
+    { key: "budget_justification", label: "Budget justification" },
+    { key: "sustainability", label: "Sustainability plan" },
+  ];
+
+  const APPLICATION_STATUSES = ["Preparing", "Ready to submit", "Submitted", "Awarded", "Declined", "Withdrawn"];
+
+  const DOCUMENT_CATEGORIES = [
+    "W-9", "EIN documentation", "Business license", "Professional license",
+    "Insurance certificate", "Organization chart", "Leadership bio", "Resume",
+    "Financial statement", "Profit & loss", "Budget", "Tax return",
+    "Letter of support", "Partnership agreement", "Policy", "Program description",
+    "SAM registration", "UEI documentation", "Other",
+  ];
+
+  // The checklist a workspace opens with. Conditioned on the grant: there is no
+  // point asking somebody to tick "UEI verified" for a funder that never asks
+  // for one, and a checklist full of irrelevant lines is a checklist people
+  // stop reading.
+  function checklistFor(grant) {
+    const items = [
+      { key: "eligibility", label: "Eligibility confirmed" },
+      { key: "budget", label: "Budget completed" },
+      { key: "narrative", label: "Narrative completed" },
+      { key: "attachments", label: "Required attachments uploaded" },
+      { key: "reviewed", label: "Application reviewed" },
+      { key: "owner_approval", label: "Owner approval" },
+      { key: "submitted", label: "Application submitted" },
+      { key: "confirmation", label: "Submission confirmation saved" },
+    ];
+    const conditional = [];
+    if (tri(grant.sam_required) === true) conditional.push({ key: "sam", label: "SAM.gov registration active" });
+    if (tri(grant.uei_required) === true) conditional.push({ key: "uei", label: "UEI verified" });
+    if (tri(grant.partnerships_required) === true) conditional.push({ key: "letters", label: "Letters of support received" });
+    if (tri(grant.matching_funds_required) === true) conditional.push({ key: "match", label: "Matching funds confirmed" });
+    // Registration and partnership work comes before the writing, so it sits
+    // near the top where it can still change the decision to apply at all.
+    const ordered = [items[0], ...conditional, ...items.slice(1)];
+    return ordered.map((it, i) => ({ ...it, sort: i }));
+  }
+
+  async function ensureApplication(grantId, user) {
+    const existing = await dbGet("SELECT * FROM grant_applications WHERE grant_id = ?", [grantId]).catch(() => null);
+    if (existing) return existing;
+    const grant = await dbGet("SELECT * FROM grant_opportunities WHERE id = ?", [grantId]).catch(() => null);
+    if (!grant) return null;
+    const r = await dbRun(
+      `INSERT INTO grant_applications (grant_id, status, owner_email, submission_deadline, amount_requested, created_by, created_at, updated_at)
+       VALUES (?, 'Preparing', ?, ?, ?, ?, ?, ?) RETURNING id`,
+      [grantId, user.email, grant.deadline || null, grant.expected_award || grant.amount_max || null, user.email, nowISO(), nowISO()]
+    );
+    const id = r && r.rows && r.rows[0] ? r.rows[0].id : null;
+    if (!id) return null;
+    for (const it of checklistFor(grant)) {
+      await dbRun(
+        "INSERT INTO grant_application_checklist (application_id, key, label, sort) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        [id, it.key, it.label, it.sort]
+      ).catch(() => {});
+    }
+    // The opportunity's own status follows the workspace, so the dashboard
+    // counts and the pipeline agree without anyone updating two places.
+    await dbRun("UPDATE grant_opportunities SET status = 'Preparing Application', updated_at = ? WHERE id = ?", [nowISO(), grantId]).catch(() => {});
+    return dbGet("SELECT * FROM grant_applications WHERE id = ?", [id]);
+  }
+
+  // Everything the workspace shows, in one read.
+  async function applicationDetail(appId) {
+    const app = await dbGet("SELECT * FROM grant_applications WHERE id = ?", [appId]).catch(() => null);
+    if (!app) return null;
+    const grantRow = await dbGet("SELECT * FROM grant_opportunities WHERE id = ?", [app.grant_id]).catch(() => null);
+    const [grant] = grantRow ? await decorate([grantRow]) : [null];
+    const [questions, narratives, checklist, docs, tasks] = await Promise.all([
+      dbAll("SELECT * FROM grant_application_questions WHERE application_id = ? ORDER BY sort, id", [appId]).catch(() => []),
+      dbAll("SELECT * FROM grant_application_narratives WHERE application_id = ?", [appId]).catch(() => []),
+      dbAll("SELECT * FROM grant_application_checklist WHERE application_id = ? ORDER BY sort, id", [appId]).catch(() => []),
+      dbAll(`SELECT ad.id, ad.requirement, ad.attached_at, d.id AS document_id, d.name, d.category, d.expires_at, d.filename
+               FROM grant_application_documents ad LEFT JOIN grant_documents d ON d.id = ad.document_id
+              WHERE ad.application_id = ? ORDER BY ad.id`, [appId]).catch(() => []),
+      dbAll("SELECT * FROM staff_tasks WHERE grant_id = ? ORDER BY status, due_date NULLS LAST, id", [app.grant_id]).catch(() => []),
+    ]);
+    const byKey = Object.fromEntries(narratives.map((n) => [n.section_key, n]));
+    return {
+      application: app,
+      grant,
+      questions,
+      checklist,
+      documents: docs,
+      tasks,
+      narratives: NARRATIVE_SECTIONS.map((sec) => ({
+        ...sec,
+        content: (byKey[sec.key] || {}).content || "",
+        updated_at: (byKey[sec.key] || {}).updated_at || null,
+      })),
+      progress: {
+        done: checklist.filter((c) => c.done).length,
+        total: checklist.length,
+      },
+    };
+  }
+
+  // ------------------------------------------------------------- calendar
+  // Every date the module knows about, flattened into one list the calendar
+  // and the dashboard can both read.
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  function daysUntil(dateStr) {
+    if (!dateStr) return null;
+    const d = new Date(String(dateStr).slice(0, 10) + "T00:00:00Z");
+    if (isNaN(d.getTime())) return null;
+    const today = new Date(nowISO().slice(0, 10) + "T00:00:00Z");
+    return Math.round((d.getTime() - today.getTime()) / DAY_MS);
+  }
+
+  function eventState(days, submitted) {
+    if (submitted) return "submitted";
+    if (days === null) return "upcoming";
+    if (days < 0) return "closed";
+    if (days <= 14) return "urgent";
+    return "upcoming";
+  }
+
+  async function calendar() {
+    const grants = await decorate(await dbAll("SELECT * FROM grant_opportunities WHERE dismissed_at IS NULL").catch(() => []));
+    const apps = await dbAll("SELECT * FROM grant_applications").catch(() => []);
+    const appByGrant = Object.fromEntries(apps.map((a) => [a.grant_id, a]));
+    const events = [];
+    const push = (g, kind, label, date, extra = {}) => {
+      if (!date) return;
+      const days = daysUntil(date);
+      events.push({
+        grant_id: g.id, grant: g.name, funder: g.funder, kind, label, date, days,
+        eligibility_status: g.eligibility_status, eligibility_label: g.eligibility_label,
+        state: eventState(days, extra.submitted), ...extra,
+      });
+    };
+    for (const g of grants) {
+      const a = appByGrant[g.id];
+      const submitted = !!(a && a.submitted_at);
+      push(g, "opening", "Opens", g.opening_date);
+      push(g, "deadline", "Application deadline", (a && a.submission_deadline) || g.deadline, { submitted, application_id: a && a.id });
+      if (a) {
+        push(g, "loi", "Letter of intent due", a.loi_deadline, { application_id: a.id });
+        push(g, "award", "Award announcement", a.award_announcement_date, { application_id: a.id });
+        push(g, "reporting", "Reporting due", a.reporting_deadline, { application_id: a.id });
+        push(g, "follow_up", "Follow up", a.follow_up_date, { application_id: a.id });
+      }
+    }
+    events.sort((x, y) => String(x.date).localeCompare(String(y.date)));
+    return { events };
+  }
+
+  // -------------------------------------------------------- deadline alerts
+  // Same shape as the certification sweep in people.js: staged notices, the
+  // most urgent crossed stage wins so a sweep that did not run for a week still
+  // sends the right one, and the notice is recorded BEFORE the email goes out
+  // so a crash cannot produce a duplicate blast.
+  const DEADLINE_STAGES = [
+    { key: "30", days: 30, level: "heads up" },
+    { key: "14", days: 14, level: "action needed" },
+    { key: "7", days: 7, level: "urgent" },
+    { key: "3", days: 3, level: "urgent" },
+    { key: "1", days: 1, level: "urgent" },
+    { key: "due", days: 0, level: "due today" },
+  ];
+
+  function dueStage(daysLeft) {
+    if (daysLeft === null || daysLeft < 0) return null;
+    let chosen = null;
+    for (const s of DEADLINE_STAGES) if (daysLeft <= s.days) chosen = s;
+    return chosen;
+  }
+
+  async function alertRecipients() {
+    const configured = clean(await ctx.getAppSetting("grant_alert_recipients", ""));
+    if (configured) return [...new Set(configured.split(/[,;]/).map((x) => x.trim()).filter(Boolean))];
+    const owner = clean(await ctx.getAppSetting("owner_notification_email", ""));
+    if (owner) return [owner];
+    const row = await dbGet(
+      "SELECT email FROM users WHERE role IN ('owner','super_admin') AND email <> 'admin@spectrumsquadlv.com' ORDER BY id LIMIT 1"
+    ).catch(() => null);
+    return row && row.email ? [row.email] : [];
+  }
+
+  // Returns what it did, so the route and the tests can see it rather than
+  // inferring it from an inbox.
+  async function deadlineSweep({ dryRun = false } = {}) {
+    const sent = [];
+    const grants = await dbAll(
+      `SELECT * FROM grant_opportunities
+        WHERE dismissed_at IS NULL AND deadline IS NOT NULL AND deadline <> ''
+          AND status NOT IN ('Submitted','Awarded','Declined','Closed','Not Interested','Not Eligible')`
+    ).catch(() => []);
+    const profile = await getProfile();
+    const priorities = await selectedPriorities();
+    const to = await alertRecipients();
+
+    for (const g of grants) {
+      // Never chase a deadline for something we cannot apply for.
+      const a = assess(g, profile, priorities);
+      if (a.eligibility_status === "likely_ineligible") continue;
+      const app = await dbGet("SELECT * FROM grant_applications WHERE grant_id = ?", [g.id]).catch(() => null);
+      if (app && app.submitted_at) continue;
+      const deadline = (app && app.submission_deadline) || g.deadline;
+      const stage = dueStage(daysUntil(deadline));
+      if (!stage) continue;
+      const already = await dbGet(
+        "SELECT id FROM grant_deadline_notices WHERE grant_id = ? AND kind = 'submission' AND stage = ?",
+        [g.id, stage.key]
+      ).catch(() => null);
+      if (already) continue;
+      if (dryRun) { sent.push({ grant_id: g.id, name: g.name, stage: stage.key, days: daysUntil(deadline), dry_run: true }); continue; }
+      // Recorded first. See the comment on the table.
+      await dbRun(
+        "INSERT INTO grant_deadline_notices (grant_id, application_id, kind, stage, sent_at) VALUES (?, ?, 'submission', ?, ?) ON CONFLICT DO NOTHING",
+        [g.id, app ? app.id : null, stage.key, nowISO()]
+      ).catch(() => {});
+      const days = daysUntil(deadline);
+      if (to.length && ctx.sendEmail) {
+        await ctx.sendEmail({
+          to: to.join(", "),
+          subject: `Grant deadline ${days === 0 ? "today" : `in ${days} day${days === 1 ? "" : "s"}`}: ${g.name}`,
+          html: `<p><strong>${esc(g.name)}</strong>${g.funder ? ` &mdash; ${esc(g.funder)}` : ""}</p>
+                 <p>Closes <strong>${esc(deadline)}</strong> (${days === 0 ? "today" : `${days} day${days === 1 ? "" : "s"} away`}).</p>
+                 <p>Match ${a.match_score}% &middot; ${esc(a.eligibility_label)}.</p>
+                 <p>${esc(a.match_explanation)}</p>
+                 ${app ? "<p>An application workspace is already open for this grant.</p>"
+                       : "<p>No application workspace has been opened for this grant yet.</p>"}`,
+          type: "grant_deadline",
+        }).catch((e) => console.error("[grants] deadline email failed:", e.message));
+      }
+      console.log(`[grants] deadline notice grant=${g.id} stage=${stage.key} days=${days} recipients=${to.length}`);
+      sent.push({ grant_id: g.id, name: g.name, stage: stage.key, days });
+    }
+    return { sent, recipients: to.length };
+  }
+
+  function esc(str) {
+    return String(str == null ? "" : str)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // ------------------------------------------------------------- documents
+  function documentStatus(doc) {
+    const d = daysUntil(doc.expires_at);
+    if (!doc.expires_at) return { key: "no_expiry", label: "No expiry", days: null };
+    if (d < 0) return { key: "expired", label: `Expired ${Math.abs(d)} day${Math.abs(d) === 1 ? "" : "s"} ago`, days: d };
+    if (d <= 30) return { key: "expiring", label: `Expires in ${d} day${d === 1 ? "" : "s"}`, days: d };
+    return { key: "ok", label: `Expires in ${d} days`, days: d };
+  }
+
+  // =====================================================================
   // API
   // =====================================================================
   async function handleApi(req, res, pathname, method, query, user) {
@@ -1030,6 +1397,227 @@ module.exports = function initGrants(ctx) {
         return true;
       }
 
+      // ---------------- phase 2: applications ----------------
+      if (pathname === "/api/grants/applications" && method === "GET") {
+        const rows = await dbAll(
+          `SELECT a.*, g.name AS grant_name, g.funder, g.deadline AS grant_deadline, g.match_score, g.eligibility_status
+             FROM grant_applications a JOIN grant_opportunities g ON g.id = a.grant_id
+            ORDER BY CASE a.status WHEN 'Preparing' THEN 0 WHEN 'Ready to submit' THEN 1 ELSE 2 END,
+                     a.submission_deadline NULLS LAST, a.id`
+        ).catch(() => []);
+        for (const r of rows) {
+          const c = await dbGet(
+            "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE done) AS done FROM grant_application_checklist WHERE application_id = ?",
+            [r.id]
+          ).catch(() => ({ total: 0, done: 0 }));
+          r.progress = { done: Number(c.done || 0), total: Number(c.total || 0) };
+          r.days_left = daysUntil(r.submission_deadline || r.grant_deadline);
+        }
+        json(res, 200, { applications: rows, statuses: APPLICATION_STATUSES });
+        return true;
+      }
+
+      if (pathname === "/api/grants/applications" && method === "POST") {
+        const b = await readBody(req);
+        const app = await ensureApplication(Number(b.grant_id), user);
+        if (!app) { json(res, 404, { error: "No such grant." }); return true; }
+        json(res, 200, { ok: true, application: app, detail: await applicationDetail(app.id) });
+        return true;
+      }
+
+      const appOne = pathname.match(/^\/api\/grants\/applications\/(\d+)$/);
+      if (appOne && method === "GET") {
+        const detail = await applicationDetail(appOne[1]);
+        if (!detail) { json(res, 404, { error: "Not found" }); return true; }
+        json(res, 200, { ...detail, narrative_sections: NARRATIVE_SECTIONS });
+        return true;
+      }
+
+      if (appOne && method === "PATCH") {
+        const b = await readBody(req);
+        const F = ["status", "owner_email", "amount_requested", "loi_deadline", "submission_deadline",
+          "award_announcement_date", "reporting_deadline", "follow_up_date", "budget_notes", "notes", "confirmation_ref"];
+        const fields = F.filter((f) => b[f] !== undefined);
+        if (fields.length) {
+          await dbRun(
+            `UPDATE grant_applications SET ${fields.map((f) => `${f} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
+            [...fields.map((f) => (f === "amount_requested" ? (Number(String(b[f]).replace(/[$,]/g, "")) || null) : clean(b[f]) || null)), nowISO(), appOne[1]]
+          );
+        }
+        json(res, 200, { ok: true, ...(await applicationDetail(appOne[1])) });
+        return true;
+      }
+
+      // Submitting is the one state change with consequences elsewhere: it
+      // stops the deadline chasing and moves the opportunity's own status.
+      const appSubmit = pathname.match(/^\/api\/grants\/applications\/(\d+)\/submit$/);
+      if (appSubmit && method === "POST") {
+        const b = await readBody(req);
+        const app = await dbGet("SELECT * FROM grant_applications WHERE id = ?", [appSubmit[1]]).catch(() => null);
+        if (!app) { json(res, 404, { error: "Not found" }); return true; }
+        await dbRun(
+          "UPDATE grant_applications SET status = 'Submitted', submitted_at = ?, submitted_by = ?, confirmation_ref = COALESCE(?, confirmation_ref), updated_at = ? WHERE id = ?",
+          [nowISO(), user.email, clean(b.confirmation_ref) || null, nowISO(), app.id]
+        );
+        await dbRun("UPDATE grant_opportunities SET status = 'Submitted', updated_at = ? WHERE id = ?", [nowISO(), app.grant_id]);
+        await dbRun("UPDATE grant_application_checklist SET done = true, done_at = ?, done_by = ? WHERE application_id = ? AND key = 'submitted' AND done = false",
+          [nowISO(), user.email, app.id]).catch(() => {});
+        json(res, 200, { ok: true, ...(await applicationDetail(app.id)) });
+        return true;
+      }
+
+      const appCheck = pathname.match(/^\/api\/grants\/applications\/(\d+)\/checklist\/([a-z_]+)$/);
+      if (appCheck && method === "PATCH") {
+        const b = await readBody(req);
+        const done = tri(b.done) === true;
+        await dbRun(
+          "UPDATE grant_application_checklist SET done = ?, done_at = ?, done_by = ? WHERE application_id = ? AND key = ?",
+          [done, done ? nowISO() : null, done ? user.email : null, appCheck[1], appCheck[2]]
+        );
+        json(res, 200, { ok: true, ...(await applicationDetail(appCheck[1])) });
+        return true;
+      }
+
+      const appNarr = pathname.match(/^\/api\/grants\/applications\/(\d+)\/narrative\/([a-z_]+)$/);
+      if (appNarr && method === "PUT") {
+        const b = await readBody(req);
+        if (!NARRATIVE_SECTIONS.some((x) => x.key === appNarr[2])) { json(res, 400, { error: "Unknown section" }); return true; }
+        await dbRun(
+          `INSERT INTO grant_application_narratives (application_id, section_key, content, updated_at, updated_by)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (application_id, section_key) DO UPDATE SET content = EXCLUDED.content, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
+          [appNarr[1], appNarr[2], String(b.content == null ? "" : b.content), nowISO(), user.email]
+        );
+        json(res, 200, { ok: true, ...(await applicationDetail(appNarr[1])) });
+        return true;
+      }
+
+      const appQ = pathname.match(/^\/api\/grants\/applications\/(\d+)\/questions$/);
+      if (appQ && method === "POST") {
+        const b = await readBody(req);
+        const q = clean(b.question);
+        if (!q) { json(res, 400, { error: "Give the question some text." }); return true; }
+        await dbRun("INSERT INTO grant_application_questions (application_id, question, answer, sort, updated_at) VALUES (?, ?, ?, ?, ?)",
+          [appQ[1], q, clean(b.answer) || null, Number(b.sort) || 0, nowISO()]);
+        json(res, 200, { ok: true, ...(await applicationDetail(appQ[1])) });
+        return true;
+      }
+      const appQOne = pathname.match(/^\/api\/grants\/applications\/(\d+)\/questions\/(\d+)$/);
+      if (appQOne && method === "PATCH") {
+        const b = await readBody(req);
+        await dbRun("UPDATE grant_application_questions SET answer = ?, updated_at = ? WHERE id = ? AND application_id = ?",
+          [String(b.answer == null ? "" : b.answer), nowISO(), appQOne[2], appQOne[1]]);
+        json(res, 200, { ok: true, ...(await applicationDetail(appQOne[1])) });
+        return true;
+      }
+      if (appQOne && method === "DELETE") {
+        await dbRun("DELETE FROM grant_application_questions WHERE id = ? AND application_id = ?", [appQOne[2], appQOne[1]]);
+        json(res, 200, { ok: true, ...(await applicationDetail(appQOne[1])) });
+        return true;
+      }
+
+      // Tasks are ordinary staff tasks carrying a grant id, so they show up in
+      // the assignee's normal queue rather than a second place to look.
+      const appTasks = pathname.match(/^\/api\/grants\/applications\/(\d+)\/tasks$/);
+      if (appTasks && method === "POST") {
+        const b = await readBody(req);
+        const title = clean(b.title);
+        if (!title) { json(res, 400, { error: "Give the task a title." }); return true; }
+        const app = await dbGet("SELECT * FROM grant_applications WHERE id = ?", [appTasks[1]]).catch(() => null);
+        if (!app) { json(res, 404, { error: "Not found" }); return true; }
+        if (!ctx.createStaffTask) { json(res, 500, { error: "Task creation is not wired up." }); return true; }
+        await ctx.createStaffTask({
+          title, description: clean(b.description) || null,
+          assigned_user_id: b.assigned_user_id ? Number(b.assigned_user_id) : null,
+          due_date: clean(b.due_date) || null,
+          created_by: user.email,
+          grant_id: app.grant_id,
+        });
+        json(res, 200, { ok: true, ...(await applicationDetail(app.id)) });
+        return true;
+      }
+
+      // ---------------- phase 2: document library ----------------
+      if (pathname === "/api/grants/documents" && method === "GET") {
+        const docs = await dbAll("SELECT * FROM grant_documents ORDER BY category, name").catch(() => []);
+        json(res, 200, {
+          documents: docs.map((d) => ({ ...d, status: documentStatus(d) })),
+          categories: DOCUMENT_CATEGORIES,
+        });
+        return true;
+      }
+
+      if (pathname === "/api/grants/documents" && method === "POST") {
+        const b = await readBody(req);
+        const name = clean(b.name);
+        if (!name) { json(res, 400, { error: "Give the document a name." }); return true; }
+        let filePath = null, filename = null, mime = null;
+        if (b.content_base64) {
+          if (!ctx.saveDocument) { json(res, 500, { error: "File storage is not wired up." }); return true; }
+          const saved = ctx.saveDocument({
+            prefix: "grant",
+            filename: clean(b.filename) || name,
+            contentBase64: String(b.content_base64),
+          });
+          if (!saved.ok) { json(res, saved.status || 400, { error: saved.error }); return true; }
+          filePath = saved.stored_name; filename = clean(b.filename) || name; mime = clean(b.mime_type) || "application/octet-stream";
+        }
+        await dbRun(
+          `INSERT INTO grant_documents (name, category, filename, mime_type, file_path, external_url, expires_at, notes, uploaded_by, uploaded_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [name, clean(b.category) || "Other", filename, mime, filePath, clean(b.external_url) || null,
+           clean(b.expires_at) || null, clean(b.notes) || null, user.email, nowISO()]
+        );
+        json(res, 200, { ok: true });
+        return true;
+      }
+
+      const docOne = pathname.match(/^\/api\/grants\/documents\/(\d+)$/);
+      if (docOne && method === "PATCH") {
+        const b = await readBody(req);
+        const F = ["name", "category", "expires_at", "notes", "external_url"];
+        const fields = F.filter((f) => b[f] !== undefined);
+        if (fields.length) {
+          await dbRun(`UPDATE grant_documents SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`,
+            [...fields.map((f) => clean(b[f]) || null), docOne[1]]);
+        }
+        json(res, 200, { ok: true });
+        return true;
+      }
+      if (docOne && method === "DELETE") {
+        await dbRun("DELETE FROM grant_application_documents WHERE document_id = ?", [docOne[1]]).catch(() => {});
+        await dbRun("DELETE FROM grant_documents WHERE id = ?", [docOne[1]]);
+        json(res, 200, { ok: true });
+        return true;
+      }
+
+      const appDocs = pathname.match(/^\/api\/grants\/applications\/(\d+)\/documents$/);
+      if (appDocs && method === "POST") {
+        const b = await readBody(req);
+        await dbRun("INSERT INTO grant_application_documents (application_id, document_id, requirement, attached_at) VALUES (?, ?, ?, ?)",
+          [appDocs[1], b.document_id ? Number(b.document_id) : null, clean(b.requirement) || null, nowISO()]);
+        json(res, 200, { ok: true, ...(await applicationDetail(appDocs[1])) });
+        return true;
+      }
+      const appDocOne = pathname.match(/^\/api\/grants\/applications\/(\d+)\/documents\/(\d+)$/);
+      if (appDocOne && method === "DELETE") {
+        await dbRun("DELETE FROM grant_application_documents WHERE id = ? AND application_id = ?", [appDocOne[2], appDocOne[1]]);
+        json(res, 200, { ok: true, ...(await applicationDetail(appDocOne[1])) });
+        return true;
+      }
+
+      // ---------------- phase 2: calendar and alerts ----------------
+      if (pathname === "/api/grants/calendar" && method === "GET") {
+        json(res, 200, await calendar());
+        return true;
+      }
+
+      if (pathname === "/api/grants/deadline-sweep" && method === "POST") {
+        const b = await readBody(req).catch(() => ({}));
+        json(res, 200, await deadlineSweep({ dryRun: tri(b.dry_run) === true }));
+        return true;
+      }
+
       json(res, 404, { error: "Unknown grants route" });
       return true;
     } catch (e) {
@@ -1043,6 +1631,8 @@ module.exports = function initGrants(ctx) {
     initTables, handleApi,
     // exported for the tests and for later phases
     scoreGrant, analyzeEligibility, assess, dashboard, listGrants,
+    deadlineSweep, calendar, checklistFor, documentStatus, daysUntil, dueStage,
+    NARRATIVE_SECTIONS, APPLICATION_STATUSES, DOCUMENT_CATEGORIES, DEADLINE_STAGES,
     CATEGORIES, FUNDING_PRIORITIES, STATUSES, ELIGIBILITY_LABEL, WEIGHTS,
   };
 };

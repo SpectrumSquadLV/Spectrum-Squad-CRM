@@ -158,11 +158,56 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
   check("and say nothing is fetched yet", /Phase 4|nothing here fetches/i.test(src));
   check("marking which could be automated", /API available/i.test(src));
 
-  section("The phases that are not built say so");
-  await goTab("applications");
-  check("Applications is an honest placeholder", /Phase 2/.test(await page.locator("#view-mount").innerText()));
+  section("Phase 2: the application workspace");
+  // Start application on the eligible grant opens a real workspace.
+  await goTab("opportunities");
+  await page.click('.gf-card:has-text("UI Nevada RBT Workforce Grant") [data-act="start"]');
+  await page.waitForTimeout(2200);
+  const ws = await page.locator("#view-mount").innerText();
+  check("Start application opens a workspace", /Submission checklist/i.test(ws), ws.slice(0, 200));
+  check("it shows the grant it is for", /UI Nevada RBT Workforce Grant/.test(ws));
+  check("with the eligibility verdict carried through", /Eligible/i.test(ws));
+  check("a narrative section is offered", /Statement of need/i.test(ws));
+  check("and the checklist has an eligibility line", /Eligibility confirmed/i.test(ws));
+
+  // Ticking an item must persist, not just toggle in the DOM.
+  await page.click('[data-check="eligibility"]');
+  await page.waitForTimeout(1600);
+  check("ticking an item persists",
+    await page.isChecked('[data-check="eligibility"]'));
+
+  await page.fill('[data-narr="statement_of_need"]', "Southern Nevada has too few RBTs.");
+  await page.click("#gf-save-narr");
+  await page.waitForTimeout(1500);
+  check("the narrative saves", /Saved/.test(await page.locator("#gf-narr-msg").innerText()));
+
+  await page.fill("#gf-task-title", "Confirm SAM registration");
+  await page.click("#gf-add-task");
+  await page.waitForTimeout(1700);
+  check("a task can be added from the workspace",
+    /Confirm SAM registration/.test(await page.locator("#view-mount").innerText()));
+
+  await page.click("#gf-back");
+  await page.waitForTimeout(1500);
+  check("and the applications list shows it",
+    /UI Nevada RBT Workforce Grant/.test(await page.locator("#view-mount").innerText()));
+
+  section("Phase 2: the calendar");
   await goTab("calendar");
-  check("Grant calendar too", /Phase 2/.test(await page.locator("#view-mount").innerText()));
+  const cal = await page.locator("#view-mount").innerText();
+  check("the deadline appears", /Application deadline/i.test(cal), cal.slice(0, 200));
+  check("with the grant named", /UI Nevada RBT Workforce Grant/.test(cal));
+  check("and the eligibility verdict beside it, so it cannot mislead", /Eligible|ineligible/i.test(cal));
+
+  section("Phase 2: the document library");
+  await goTab("documents");
+  await page.fill('#gf-doc-form input[name="name"]', "UI Liability Insurance");
+  await page.fill('#gf-doc-form input[name="expires_at"]', new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10));
+  await page.click('#gf-doc-form button[type="submit"]');
+  await page.waitForTimeout(1800);
+  const docs = await page.locator("#view-mount").innerText();
+  check("a document can be added", /UI Liability Insurance/.test(docs), docs.slice(0, 200));
+  check("and one expiring soon is flagged", /Expires in \d+ days?/i.test(docs), docs.slice(0, 300));
 
   section("An admin does not see the owner's EIN");
   await login("grantadmin@spectrumsquadlv.com", "TestAdmin123!");

@@ -33,7 +33,7 @@
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   let META = null;                 // categories, priorities, statuses
-  const state = { tab: "dashboard", filters: {} };
+  const state = { tab: "dashboard", filters: {}, openApplication: null };
 
   function injectStyles() {
     if (document.getElementById("gf-styles")) return;
@@ -351,9 +351,10 @@
           return;
         }
         if (act === "start") {
-          alert("Application workspaces arrive in Phase 2. For now this grant is marked as Preparing Application so it shows on the dashboard.");
-          await api(`/api/grants/opportunities/${id}`, { method: "PATCH", body: { status: "Preparing Application" } });
-          return again();
+          const r = await api("/api/grants/applications", { method: "POST", body: { grant_id: Number(id) } });
+          state.tab = "applications";
+          state.openApplication = r.application.id;
+          return render(document.getElementById("view-mount"));
         }
         if (act === "dismiss" && !confirm("Dismiss this grant? It stays in the database but drops off the lists.")) return;
         await api(`/api/grants/opportunities/${id}/${act}`, { method: "POST" });
@@ -513,6 +514,340 @@
     }));
   }
 
+  // ------------------------------------------------------- applications
+  async function renderApplications(el) {
+    if (state.openApplication) return renderWorkspace(el, state.openApplication);
+    const { applications, statuses } = await api("/api/grants/applications");
+    el.innerHTML = applications.length ? `
+      <p style="font-size:12.5px;color:#6b7280;margin:0 0 12px;">
+        One workspace per grant you are applying for. Open it to work through the checklist,
+        the narrative and the documents.</p>
+      ${applications.map((a) => {
+        const pct = a.progress.total ? Math.round((a.progress.done / a.progress.total) * 100) : 0;
+        const d = a.days_left;
+        return `<div class="gf-card">
+          <div class="gf-score ${pct >= 80 ? "gf-s-hi" : pct >= 40 ? "gf-s-mid" : "gf-s-lo"}">
+            <b>${pct}%</b><span>ready</span></div>
+          <h4>${esc(a.grant_name)}</h4>
+          <div class="gf-funder">${esc(a.funder || "")}</div>
+          <span class="gf-elig gf-e-${a.status === "Submitted" || a.status === "Awarded" ? "eligible" : a.status === "Declined" ? "likely_ineligible" : "needs_review"}">${esc(a.status)}</span>
+          <div class="gf-meta">
+            <div><span>Checklist</span><br><strong>${a.progress.done} of ${a.progress.total} done</strong></div>
+            <div><span>Deadline</span><br><strong>${esc(a.submission_deadline || a.grant_deadline || "—")}
+              ${d !== null && d !== undefined ? `<span style="color:${d < 0 ? "#991b1b" : d <= 14 ? "#a56b00" : "#6b7280"};">(${d < 0 ? "passed" : d + " days"})</span>` : ""}</strong></div>
+            <div><span>Requesting</span><br><strong>${money(a.amount_requested)}</strong></div>
+            <div><span>Owner</span><br><strong>${esc(a.owner_email || "—")}</strong></div>
+          </div>
+          <div class="gf-actions"><button class="gf-btn primary" data-open-app="${a.id}">Open workspace</button></div>
+        </div>`;
+      }).join("")}`
+      : `<div class="gf-empty">No applications yet. Open one with “Start application” on any grant.</div>`;
+    el.querySelectorAll("[data-open-app]").forEach((b) => b.addEventListener("click", () => {
+      state.openApplication = Number(b.dataset.openApp);
+      renderApplications(el);
+    }));
+  }
+
+  async function renderWorkspace(el, appId) {
+    const d = await api(`/api/grants/applications/${appId}`);
+    const a = d.application, g = d.grant || {};
+    const pct = d.progress.total ? Math.round((d.progress.done / d.progress.total) * 100) : 0;
+    const field = (name, label, val, type = "text") =>
+      `<div><label>${label}</label><input name="${name}" type="${type}" value="${esc(val == null ? "" : val)}" /></div>`;
+
+    el.innerHTML = `
+      <button class="gf-btn" id="gf-back" style="margin-bottom:12px;">← All applications</button>
+
+      <div class="gf-card">
+        <div class="gf-score ${pct >= 80 ? "gf-s-hi" : pct >= 40 ? "gf-s-mid" : "gf-s-lo"}"><b>${pct}%</b><span>ready</span></div>
+        <h4>${esc(g.name || "")}</h4>
+        <div class="gf-funder">${esc(g.funder || "")}</div>
+        <span class="gf-elig gf-e-${g.eligibility_status || "needs_review"}">${esc(g.eligibility_label || "")}</span>
+        ${g.disqualification_flags && g.disqualification_flags.length
+          ? `<div class="gf-flags"><b>Check before you spend time on this</b>${g.disqualification_flags.map(esc).join(" · ")}</div>` : ""}
+        ${g.eligibility_explanation ? `<div class="gf-why">${esc(g.eligibility_explanation)}</div>` : ""}
+        <div class="gf-meta">
+          <div><span>Potential award</span><br><strong>${money(g.expected_award || g.amount_max)}</strong></div>
+          <div><span>Match</span><br><strong>${g.match_score == null ? "—" : g.match_score + "%"}</strong></div>
+          ${g.source_url ? `<div><span>Notice</span><br><a href="${esc(g.source_url)}" target="_blank" rel="noopener">Open</a></div>` : ""}
+        </div>
+      </div>
+
+      <div class="gf-card">
+        <h4>Submission checklist</h4>
+        <div id="gf-checklist">${d.checklist.map((c) => `
+          <label style="display:flex;align-items:center;gap:9px;padding:6px 0;font-size:13.5px;cursor:pointer;">
+            <input type="checkbox" data-check="${esc(c.key)}"${c.done ? " checked" : ""} />
+            <span style="${c.done ? "color:#6b7280;text-decoration:line-through;" : ""}">${esc(c.label)}</span>
+            ${c.done_by ? `<span style="margin-left:auto;font-size:11.5px;color:#9aa1ab;">${esc(c.done_by)}</span>` : ""}
+          </label>`).join("")}</div>
+      </div>
+
+      <div class="gf-card">
+        <h4>Dates, budget and status</h4>
+        <form id="gf-app-form" class="gf-form">
+          <div><label>Status</label><select name="status">
+            ${d.statuses ? "" : ""}${["Preparing", "Ready to submit", "Submitted", "Awarded", "Declined", "Withdrawn"]
+              .map((x) => `<option${a.status === x ? " selected" : ""}>${x}</option>`).join("")}</select></div>
+          ${field("owner_email", "Owner", a.owner_email)}
+          ${field("amount_requested", "Amount requested", a.amount_requested)}
+          ${field("submission_deadline", "Submission deadline", a.submission_deadline, "date")}
+          ${field("loi_deadline", "Letter of intent due", a.loi_deadline, "date")}
+          ${field("award_announcement_date", "Award announcement", a.award_announcement_date, "date")}
+          ${field("reporting_deadline", "Reporting due", a.reporting_deadline, "date")}
+          ${field("follow_up_date", "Follow up", a.follow_up_date, "date")}
+          ${field("confirmation_ref", "Submission confirmation reference", a.confirmation_ref)}
+          <div class="wide"><label>Budget notes</label><textarea name="budget_notes" rows="3">${esc(a.budget_notes || "")}</textarea></div>
+          <div class="wide"><label>Notes</label><textarea name="notes" rows="2">${esc(a.notes || "")}</textarea></div>
+          <div class="wide gf-actions">
+            <button type="submit" class="gf-btn primary">Save</button>
+            ${a.submitted_at
+              ? `<span style="align-self:center;font-size:12.5px;color:#0f7a5a;">Submitted ${esc(String(a.submitted_at).slice(0, 10))} by ${esc(a.submitted_by || "")}</span>`
+              : `<button type="button" class="gf-btn" id="gf-submit-app">Mark submitted</button>`}
+            <span id="gf-app-msg" style="align-self:center;font-size:12.5px;color:#0f7a5a;"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="gf-card">
+        <h4>Narrative</h4>
+        <p style="font-size:12.5px;color:#6b7280;margin:0 0 10px;">
+          Written by hand for now. Phase 3 drafts these from the organisation profile.</p>
+        ${d.narratives.map((n) => `
+          <div style="margin-bottom:12px;">
+            <label style="font-size:12px;font-weight:700;color:#475569;">${esc(n.label)}
+              ${n.updated_at ? `<span style="font-weight:400;color:#9aa1ab;"> — saved ${esc(String(n.updated_at).slice(0, 10))}</span>` : ""}</label>
+            <textarea data-narr="${esc(n.key)}" rows="4" style="width:100%;border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:8px 10px;font-size:13px;box-sizing:border-box;">${esc(n.content)}</textarea>
+          </div>`).join("")}
+        <div class="gf-actions"><button class="gf-btn primary" id="gf-save-narr">Save narrative</button>
+          <span id="gf-narr-msg" style="align-self:center;font-size:12.5px;color:#0f7a5a;"></span></div>
+      </div>
+
+      <div class="gf-card">
+        <h4>Application questions</h4>
+        <div id="gf-questions">${d.questions.length ? d.questions.map((q) => `
+          <div style="margin-bottom:11px;">
+            <div style="font-size:13px;font-weight:700;color:#1b2a6b;">${esc(q.question)}
+              <button class="gf-btn danger" data-del-q="${q.id}" style="float:right;padding:2px 8px;">Remove</button></div>
+            <textarea data-ans="${q.id}" rows="3" style="width:100%;border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:8px 10px;font-size:13px;box-sizing:border-box;margin-top:4px;">${esc(q.answer || "")}</textarea>
+          </div>`).join("") : `<p style="font-size:13px;color:#6b7280;">No questions recorded yet.</p>`}</div>
+        <div class="gf-actions">
+          <input id="gf-new-q" placeholder="Add a question from the application form…" style="flex:1;min-width:240px;border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:7px 10px;font-size:13px;" />
+          <button class="gf-btn" id="gf-add-q">Add</button>
+          <button class="gf-btn primary" id="gf-save-ans">Save answers</button>
+        </div>
+      </div>
+
+      <div class="gf-card">
+        <h4>Required documents</h4>
+        ${d.documents.length ? `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <tbody>${d.documents.map((x) => `<tr style="border-bottom:1px solid var(--border,#eef0f4);">
+            <td style="padding:7px 0;">${esc(x.name || x.requirement || "—")}${x.category ? ` <span style="color:#6b7280;">(${esc(x.category)})</span>` : ""}</td>
+            <td style="padding:7px 0;color:#6b7280;">${x.expires_at ? "expires " + esc(x.expires_at) : ""}</td>
+            <td style="padding:7px 0;text-align:right;"><button class="gf-btn danger" data-del-doc="${x.id}">Remove</button></td>
+          </tr>`).join("")}</tbody></table>` : `<p style="font-size:13px;color:#6b7280;">Nothing attached yet.</p>`}
+        <div class="gf-actions">
+          <select id="gf-doc-pick" style="border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:7px 10px;font-size:13px;">
+            <option value="">Attach from the document library…</option>
+          </select>
+          <input id="gf-doc-req" placeholder="…or note a requirement we do not have yet" style="flex:1;min-width:220px;border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:7px 10px;font-size:13px;" />
+          <button class="gf-btn" id="gf-attach">Add</button>
+        </div>
+      </div>
+
+      <div class="gf-card">
+        <h4>Tasks</h4>
+        <p style="font-size:12.5px;color:#6b7280;margin:0 0 10px;">
+          These are ordinary staff tasks, so they appear in the assignee's Tasks &amp; Alerts with the usual reminders.</p>
+        ${d.tasks.length ? d.tasks.map((t) => `<div style="display:flex;gap:9px;align-items:center;padding:5px 0;font-size:13px;border-bottom:1px solid var(--border,#eef0f4);">
+          <span style="${t.status === "done" ? "color:#6b7280;text-decoration:line-through;" : ""}">${esc(t.title)}</span>
+          <span style="margin-left:auto;color:#6b7280;font-size:12px;">${esc(t.assigned_name || "unassigned")}${t.due_date ? " · due " + esc(t.due_date) : ""}</span>
+        </div>`).join("") : `<p style="font-size:13px;color:#6b7280;">No tasks yet.</p>`}
+        <div class="gf-actions">
+          <input id="gf-task-title" placeholder="What needs doing?" style="flex:1;min-width:220px;border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:7px 10px;font-size:13px;" />
+          <input id="gf-task-due" type="date" style="border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:7px 10px;font-size:13px;" />
+          <button class="gf-btn" id="gf-add-task">Add task</button>
+        </div>
+      </div>`;
+
+    const reload = () => renderWorkspace(el, appId);
+    el.querySelector("#gf-back").addEventListener("click", () => { state.openApplication = null; renderApplications(el); });
+
+    el.querySelectorAll("[data-check]").forEach((cb) => cb.addEventListener("change", async () => {
+      await api(`/api/grants/applications/${appId}/checklist/${cb.dataset.check}`, { method: "PATCH", body: { done: cb.checked } });
+      reload();
+    }));
+
+    el.querySelector("#gf-app-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target); const body = {};
+      fd.forEach((v, k) => { body[k] = v === "" ? null : v; });
+      await api(`/api/grants/applications/${appId}`, { method: "PATCH", body });
+      el.querySelector("#gf-app-msg").textContent = "Saved.";
+    });
+
+    const submitBtn = el.querySelector("#gf-submit-app");
+    if (submitBtn) submitBtn.addEventListener("click", async () => {
+      const ref = prompt("Submission confirmation reference (optional):", "");
+      if (ref === null) return;
+      await api(`/api/grants/applications/${appId}/submit`, { method: "POST", body: { confirmation_ref: ref } });
+      reload();
+    });
+
+    el.querySelector("#gf-save-narr").addEventListener("click", async () => {
+      for (const ta of el.querySelectorAll("[data-narr]")) {
+        await api(`/api/grants/applications/${appId}/narrative/${ta.dataset.narr}`, { method: "PUT", body: { content: ta.value } });
+      }
+      el.querySelector("#gf-narr-msg").textContent = "Saved.";
+    });
+
+    el.querySelector("#gf-add-q").addEventListener("click", async () => {
+      const q = el.querySelector("#gf-new-q").value.trim();
+      if (!q) return;
+      await api(`/api/grants/applications/${appId}/questions`, { method: "POST", body: { question: q } });
+      reload();
+    });
+    el.querySelector("#gf-save-ans").addEventListener("click", async () => {
+      for (const ta of el.querySelectorAll("[data-ans]")) {
+        await api(`/api/grants/applications/${appId}/questions/${ta.dataset.ans}`, { method: "PATCH", body: { answer: ta.value } });
+      }
+      reload();
+    });
+    el.querySelectorAll("[data-del-q]").forEach((b) => b.addEventListener("click", async () => {
+      await api(`/api/grants/applications/${appId}/questions/${b.dataset.delQ}`, { method: "DELETE" });
+      reload();
+    }));
+
+    // Fill the attach picker from the library.
+    try {
+      const { documents } = await api("/api/grants/documents");
+      const pick = el.querySelector("#gf-doc-pick");
+      documents.forEach((doc) => {
+        const o = document.createElement("option");
+        o.value = doc.id; o.textContent = `${doc.name}${doc.category ? " — " + doc.category : ""}`;
+        pick.appendChild(o);
+      });
+    } catch (e) { /* the picker just stays empty */ }
+
+    el.querySelector("#gf-attach").addEventListener("click", async () => {
+      const docId = el.querySelector("#gf-doc-pick").value;
+      const req = el.querySelector("#gf-doc-req").value.trim();
+      if (!docId && !req) return;
+      await api(`/api/grants/applications/${appId}/documents`, { method: "POST", body: { document_id: docId || null, requirement: req || null } });
+      reload();
+    });
+    el.querySelectorAll("[data-del-doc]").forEach((b) => b.addEventListener("click", async () => {
+      await api(`/api/grants/applications/${appId}/documents/${b.dataset.delDoc}`, { method: "DELETE" });
+      reload();
+    }));
+
+    el.querySelector("#gf-add-task").addEventListener("click", async () => {
+      const title = el.querySelector("#gf-task-title").value.trim();
+      if (!title) return;
+      await api(`/api/grants/applications/${appId}/tasks`, {
+        method: "POST", body: { title, due_date: el.querySelector("#gf-task-due").value || null },
+      });
+      reload();
+    });
+  }
+
+  // ---------------------------------------------------------------- calendar
+  async function renderCalendar(el) {
+    const { events } = await api("/api/grants/calendar");
+    const TONE = {
+      urgent: ["#991b1b", "#fee2e2"], upcoming: ["#1b2a6b", "#eef1fb"],
+      submitted: ["#166534", "#dcfce7"], closed: ["#6b7280", "#e5e7eb"],
+    };
+    const groups = [
+      ["Overdue or closed", events.filter((e) => e.state === "closed")],
+      ["Next 14 days", events.filter((e) => e.state === "urgent")],
+      ["Later", events.filter((e) => e.state === "upcoming")],
+      ["Submitted", events.filter((e) => e.state === "submitted")],
+    ];
+    el.innerHTML = events.length ? groups.map(([title, list]) => !list.length ? "" : `
+      <h3 style="color:#1b2a6b;margin:18px 0 8px;font-size:15px;">${title} <span style="color:#9aa1ab;font-weight:400;">(${list.length})</span></h3>
+      <div class="gf-card" style="padding:0;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <tbody>${list.map((e) => {
+            const [fg, bg] = TONE[e.state] || TONE.upcoming;
+            return `<tr style="border-bottom:1px solid var(--border,#eef0f4);">
+              <td style="padding:9px 14px;white-space:nowrap;"><strong>${esc(e.date)}</strong>
+                ${e.days !== null ? `<br><span style="color:#9aa1ab;font-size:11.5px;">${e.days < 0 ? Math.abs(e.days) + " days ago" : e.days + " days"}</span>` : ""}</td>
+              <td style="padding:9px 14px;"><span class="gf-elig" style="background:${bg};color:${fg};">${esc(e.label)}</span></td>
+              <td style="padding:9px 14px;"><strong>${esc(e.grant)}</strong><br><span style="color:#6b7280;font-size:12px;">${esc(e.funder || "")}</span></td>
+              <td style="padding:9px 14px;"><span class="gf-elig gf-e-${e.eligibility_status}">${esc(e.eligibility_label)}</span></td>
+            </tr>`;
+          }).join("")}</tbody>
+        </table></div>`).join("")
+      : `<div class="gf-empty">No dates yet. Add a grant with a deadline and it appears here.</div>`;
+  }
+
+  // --------------------------------------------------------------- documents
+  async function renderDocuments(el) {
+    const { documents, categories } = await api("/api/grants/documents");
+    const TONE = { expired: ["#991b1b", "#fee2e2"], expiring: ["#854d0e", "#fef9c3"], ok: ["#166534", "#dcfce7"], no_expiry: ["#374151", "#e5e7eb"] };
+    el.innerHTML = `
+      <div class="gf-card">
+        <h4>Add a document</h4>
+        <p style="font-size:12.5px;color:#6b7280;margin:0 0 11px;">
+          The things funders ask for every time. Give anything that goes stale an expiry date and the
+          library will tell you before a grant application does.</p>
+        <form id="gf-doc-form" class="gf-form">
+          <div><label>Name *</label><input name="name" required /></div>
+          <div><label>Category</label><select name="category">${categories.map((c) => `<option>${esc(c)}</option>`).join("")}</select></div>
+          <div><label>Expires</label><input name="expires_at" type="date" /></div>
+          <div><label>Link (if it lives elsewhere)</label><input name="external_url" /></div>
+          <div class="wide"><label>File</label><input name="file" type="file" /></div>
+          <div class="wide"><label>Notes</label><input name="notes" /></div>
+          <div class="wide gf-actions"><button type="submit" class="gf-btn primary">Add document</button>
+            <span id="gf-doc-msg" style="align-self:center;font-size:12.5px;color:#991b1b;"></span></div>
+        </form>
+      </div>
+      ${documents.length ? `<div class="gf-card" style="padding:0;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="background:#f8fafc;">
+            <th style="text-align:left;padding:9px 14px;">Document</th>
+            <th style="text-align:left;padding:9px 14px;">Category</th>
+            <th style="text-align:left;padding:9px 14px;">Expiry</th>
+            <th style="padding:9px 14px;"></th></tr></thead>
+          <tbody>${documents.map((d) => {
+            const [fg, bg] = TONE[d.status.key] || TONE.no_expiry;
+            return `<tr style="border-top:1px solid var(--border,#eef0f4);">
+              <td style="padding:9px 14px;"><strong>${esc(d.name)}</strong>
+                ${d.filename ? `<br><span style="color:#6b7280;font-size:12px;">${esc(d.filename)}</span>` : ""}
+                ${d.external_url ? `<br><a href="${esc(d.external_url)}" target="_blank" rel="noopener" style="font-size:12px;">link</a>` : ""}</td>
+              <td style="padding:9px 14px;">${esc(d.category || "")}</td>
+              <td style="padding:9px 14px;"><span class="gf-elig" style="background:${bg};color:${fg};">${esc(d.status.label)}</span></td>
+              <td style="padding:9px 14px;text-align:right;"><button class="gf-btn danger" data-del="${d.id}">Remove</button></td>
+            </tr>`;
+          }).join("")}</tbody></table></div>` : `<div class="gf-empty">Nothing in the library yet.</div>`}`;
+
+    el.querySelector("#gf-doc-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const body = { name: fd.get("name"), category: fd.get("category"), expires_at: fd.get("expires_at") || null,
+        external_url: fd.get("external_url") || null, notes: fd.get("notes") || null };
+      const file = e.target.querySelector('input[type="file"]').files[0];
+      if (file) {
+        const buf = await file.arrayBuffer();
+        let bin = ""; const bytes = new Uint8Array(buf);
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        body.content_base64 = btoa(bin);
+        body.filename = file.name;
+        body.mime_type = file.type || "application/octet-stream";
+      }
+      try {
+        await api("/api/grants/documents", { method: "POST", body });
+        renderDocuments(el);
+      } catch (err) { el.querySelector("#gf-doc-msg").textContent = err.message; }
+    });
+    el.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
+      if (!confirm("Remove this document from the library?")) return;
+      await api(`/api/grants/documents/${b.dataset.del}`, { method: "DELETE" });
+      renderDocuments(el);
+    }));
+  }
+
   // ------------------------------------------------------- not yet built
   function laterPhase(el, title, whatItWillDo, phase) {
     el.innerHTML = `<div class="gf-soon">
@@ -556,12 +891,9 @@
       else if (state.tab === "saved") await renderSaved(body);
       else if (state.tab === "sources") await renderSources(body);
       else if (state.tab === "profile") await renderProfile(body);
-      else if (state.tab === "applications") laterPhase(body, "Applications",
-        "An application workspace per grant: questions, required documents, narrative drafts, budget, tasks and a submission checklist.", "Phase 2");
-      else if (state.tab === "calendar") laterPhase(body, "Grant calendar",
-        "Opening dates, deadlines, LOI dates and reporting dates on one calendar, with alerts inside the CRM.", "Phase 2");
-      else if (state.tab === "documents") laterPhase(body, "Documents",
-        "The reusable grant document library — W-9, licenses, insurance certificates, financials — with expiry dates.", "Phase 2");
+      else if (state.tab === "applications") await renderApplications(body);
+      else if (state.tab === "calendar") await renderCalendar(body);
+      else if (state.tab === "documents") await renderDocuments(body);
     } catch (e) {
       body.innerHTML = `<div class="gf-empty">Could not load: ${esc(e.message)}</div>`;
     }
