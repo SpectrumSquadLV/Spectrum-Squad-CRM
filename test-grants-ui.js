@@ -209,6 +209,40 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
   check("a document can be added", /UI Liability Insurance/.test(docs), docs.slice(0, 200));
   check("and one expiring soon is flagged", /Expires in \d+ days?/i.test(docs), docs.slice(0, 300));
 
+  section("Phase 3: the assistant is present and honest when switched off");
+  await goTab("opportunities");
+  await page.click('.gf-card:has-text("UI Nevada RBT Workforce Grant") [data-act="ai"]');
+  await page.waitForTimeout(1300);
+  const ai = await page.locator(".gf-ai-slot").innerText();
+  check("the assistant panel opens on a grant", /Grant assistant/i.test(ai), ai.slice(0, 200));
+  check("it offers the qualify question", /Do we qualify/i.test(ai));
+  check("and the missing-information action", /missing information/i.test(ai));
+  // CI has no ANTHROPIC_API_KEY, so the honest path is the one under test.
+  check("with no key it says so rather than pretending",
+    /not switched on|ANTHROPIC_API_KEY/i.test(ai), ai.slice(0, 300));
+
+  await page.click('.gf-ai-slot [data-ai="qualify"]');
+  await page.waitForTimeout(1800);
+  const answer = await page.locator("#gf-ai-out").innerText();
+  check("asking without a key returns an explanation, not a crash",
+    /not switched on|ANTHROPIC_API_KEY|No answer/i.test(answer), answer.slice(0, 200));
+
+  section("Phase 3: the reuse library");
+  await goTab("reuse");
+  const reuse = await page.locator("#view-mount").innerText();
+  check("the library lists its sections", /Mission statement/i.test(reuse), reuse.slice(0, 200));
+  check("and starts with nothing approved", /0 of \d+ approved/.test(reuse), reuse.slice(0, 300));
+  check("warning that the assistant has only the profile to work from",
+    /only the organisation profile/i.test(reuse));
+  await page.fill('[data-reuse="mission_statement"]', "Serving children with autism across southern Nevada.");
+  await page.check('[data-approve="mission_statement"]');
+  await page.click('[data-save-reuse="mission_statement"]');
+  await page.waitForTimeout(1500);
+  check("a block can be written and approved",
+    /Saved/.test(await page.locator('[data-msg="mission_statement"]').innerText()));
+  await goTab("reuse");
+  check("and the approved count goes up", /1 of \d+ approved/.test(await page.locator("#view-mount").innerText()));
+
   section("An admin does not see the owner's EIN");
   await login("grantadmin@spectrumsquadlv.com", "TestAdmin123!");
   await page.evaluate(() => { location.hash = "#/grants"; });

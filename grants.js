@@ -666,6 +666,31 @@ module.exports = function initGrants(ctx) {
     // its assignment email and due-date reminders.
     await dbRun("ALTER TABLE staff_tasks ADD COLUMN IF NOT EXISTS grant_id INTEGER").catch(() => {});
 
+    await dbRun(`CREATE TABLE IF NOT EXISTS grant_reuse_blocks (
+      key TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      content TEXT,
+      approved BOOLEAN NOT NULL DEFAULT false,
+      updated_at TEXT,
+      updated_by TEXT
+    )`).catch((e) => console.error("grant_reuse_blocks initTables:", e.message));
+
+    // Every assistant run, kept whether it worked or not. An assistant nobody
+    // can audit is one nobody should paste into a funding application.
+    await dbRun(`CREATE TABLE IF NOT EXISTS grant_ai_runs (
+      id SERIAL PRIMARY KEY,
+      grant_id INTEGER,
+      application_id INTEGER,
+      action TEXT NOT NULL,
+      ok BOOLEAN NOT NULL,
+      model TEXT,
+      reason TEXT,
+      output TEXT,
+      sources TEXT,
+      created_at TEXT
+    )`).catch((e) => console.error("grant_ai_runs initTables:", e.message));
+
+    await seedReuseBlocks();
     await seedProfile();
     await seedSources();
   }
@@ -721,6 +746,18 @@ module.exports = function initGrants(ctx) {
     ["Veteran business programs", "", "business", "manual", "Veteran-owned small business funding."],
     ["Woman-owned business programs", "", "business", "manual", "Woman-owned small business funding."],
   ];
+
+  // Seeded empty on purpose. A reuse block exists so a human can write and
+  // approve it; pre-filling one with invented prose would be the exact failure
+  // this module is built to avoid.
+  async function seedReuseBlocks() {
+    for (const sec of REUSE_SECTIONS) {
+      await dbRun(
+        "INSERT INTO grant_reuse_blocks (key, label, content, approved, updated_at) VALUES (?, ?, NULL, false, ?) ON CONFLICT (key) DO NOTHING",
+        [sec.key, sec.label, nowISO()]
+      ).catch(() => {});
+    }
+  }
 
   async function seedSources() {
     const row = await dbGet("SELECT COUNT(*) AS n FROM grant_sources").catch(() => ({ n: 1 }));
@@ -1171,6 +1208,282 @@ module.exports = function initGrants(ctx) {
   }
 
   // =====================================================================
+  // PHASE 3 -- the grant assistant and the reuse library
+  // =====================================================================
+  //
+  // The instruction was: use what we know about Spectrum Squad, and never make
+  // anything up. Those pull in opposite directions unless the model is only
+  // ever shown facts we actually hold, so that is how this is built.
+  //
+  //   * profileFacts() emits ONLY the profile fields that are filled in. An
+  //     empty field is not sent as an empty string, it is absent. The model
+  //     cannot repeat a number it was never given.
+  //   * The reuse library is the other source, and only APPROVED blocks are
+  //     sent. A half-written paragraph nobody signed off on must not end up in
+  //     a funder's inbox.
+  //   * Every prompt closes with the same rule: anything not in the material
+  //     above is unknown, and must be written as [Information Needed: ...]
+  //     rather than guessed.
+  //
+  // buildAssistantRequest() is pure and exported, so the tests can assert what
+  // the model is and is not told without spending a token or needing a key.
+
+  // The reusable paragraphs a grant application is assembled from. Seeded empty
+  // and filled in by a human; only approved ones are ever shown to the model.
+  const REUSE_SECTIONS = [
+    { key: "company_description", label: "Company description" },
+    { key: "mission_statement", label: "Mission statement" },
+    { key: "history", label: "History" },
+    { key: "population_served", label: "Population served" },
+    { key: "community_need", label: "Community need" },
+    { key: "program_description", label: "Program description" },
+    { key: "aba_services", label: "ABA services description" },
+    { key: "rbt_workforce_program", label: "RBT workforce program" },
+    { key: "leadership_background", label: "Leadership background" },
+    { key: "community_impact", label: "Community impact" },
+    { key: "goals", label: "Goals" },
+    { key: "measurable_outcomes", label: "Measurable outcomes" },
+    { key: "sustainability_plan", label: "Sustainability plan" },
+    { key: "diversity_access", label: "Diversity and access statement" },
+    { key: "veteran_owned", label: "Veteran-owned business description" },
+    { key: "woman_led", label: "Woman-led organisation description" },
+  ];
+
+  // Profile fields worth telling the model about, in the words a grant reader
+  // would use. Sensitive registration details are deliberately absent: an EIN
+  // has no business in a generated paragraph.
+  const PROFILE_FACTS = [
+    ["company_name", "Organisation"],
+    ["legal_name", "Legal entity name"],
+    ["business_type", "Business type"],
+    ["state", "State"],
+    ["county", "County"],
+    ["cities_served", "Cities served"],
+    ["year_founded", "Year founded"],
+    ["industry", "Industry"],
+    ["employee_count", "Employees"],
+    ["clients_served", "Clients served"],
+    ["populations_served", "Populations served"],
+    ["age_groups", "Age groups served"],
+    ["services", "Services provided"],
+    ["mission", "Mission"],
+    ["description", "Description"],
+    ["community_impact", "Community impact"],
+    ["workforce_programs", "Workforce programs"],
+    ["rbt_training_program", "RBT training program"],
+    ["school_partnerships", "School partnerships"],
+    ["clinic_locations", "Clinic locations"],
+    ["expansion_areas", "Areas of expansion"],
+    ["certifications", "Certifications"],
+    ["licenses", "Licenses"],
+    ["accreditations", "Accreditations"],
+    ["naics_codes", "NAICS codes"],
+  ];
+
+  // Only what is filled in. Absence is the point -- see the note above.
+  function profileFacts(profile = {}) {
+    const lines = [];
+    for (const [field, label] of PROFILE_FACTS) {
+      const v = clean(profile[field]);
+      if (v) lines.push(`${label}: ${v}`);
+    }
+    if (tri(profile.for_profit) === true) lines.push("Tax status: for-profit company (not a 501(c)(3) nonprofit)");
+    if (tri(profile.woman_owned) === true) lines.push("Ownership: woman-owned / woman-led");
+    if (tri(profile.veteran_owned) === true) lines.push("Ownership: veteran-owned");
+    if (tri(profile.minority_owned) === true) lines.push("Ownership: minority-owned");
+    if (tri(profile.small_business) === true) lines.push("Size: small business");
+    return lines;
+  }
+
+  // Only what somebody has approved.
+  function approvedBlocks(blocks = []) {
+    return blocks.filter((b) => tri(b.approved) === true && clean(b.content));
+  }
+
+  function grantFacts(grant = {}) {
+    const lines = [];
+    const add = (label, v) => { const c = clean(v); if (c) lines.push(`${label}: ${c}`); };
+    add("Grant", grant.name);
+    add("Funding organisation", grant.funder);
+    add("Opportunity number", grant.opportunity_number);
+    add("Description", grant.description);
+    add("Geographic eligibility", grant.geographic_eligibility);
+    add("Applicant eligibility, as written in the notice", grant.applicant_eligibility);
+    add("Industry", grant.industry);
+    add("Target population", grant.target_population);
+    add("Deadline", grant.deadline);
+    if (grant.amount_min || grant.amount_max) add("Award range", `${grant.amount_min || "?"} to ${grant.amount_max || "?"}`);
+    add("Expected award", grant.expected_award);
+    add("Requirements", grant.requirements);
+    add("Documents needed", grant.documents_needed);
+    const flag = (v, yes) => { if (tri(v) === true) lines.push(yes); };
+    flag(grant.for_profit_allowed, "For-profit organisations are eligible");
+    flag(grant.nonprofit_required, "Restricted to 501(c)(3) nonprofits");
+    flag(grant.small_business_eligible, "Small businesses are eligible");
+    flag(grant.woman_preference, "Preference for woman-owned businesses");
+    flag(grant.veteran_preference, "Preference for veteran-owned businesses");
+    flag(grant.matching_funds_required, "Matching funds are required");
+    flag(grant.partnerships_required, "A partner organisation is required");
+    flag(grant.sam_required, "An active SAM.gov registration is required");
+    flag(grant.uei_required, "A UEI is required");
+    if (tri(grant.for_profit_allowed) === null) lines.push("Whether for-profit organisations may apply has NOT been recorded");
+    return lines;
+  }
+
+  // The rule every prompt ends with. One wording, so it cannot drift between
+  // actions and quietly get weaker in one of them.
+  const NO_FABRICATION = [
+    "Use only the material above. It is everything the CRM holds about Spectrum Squad and this grant.",
+    "Never invent a fact, a number, a date, a partner, an outcome or a credential.",
+    "Where you need something that is not in the material above, write it inline exactly as",
+    "[Information Needed: what is missing] and carry on. Do not guess, do not use a placeholder",
+    "like XX or TBD, and do not quietly leave the gap out.",
+  ].join(" ");
+
+  const ASSISTANT_ROLE =
+    "You are helping Spectrum Squad, an ABA and behavioural health provider in Nevada, work on grant funding. " +
+    "Write plainly, for a busy owner, in British-neutral plain English without marketing language.";
+
+  const MISSING_SCHEMA = {
+    type: "object",
+    additionalProperties: false,
+    required: ["missing"],
+    properties: {
+      missing: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["item", "why"],
+          properties: {
+            item: { type: "string", description: "The fact or document that is missing" },
+            why: { type: "string", description: "What it is needed for" },
+          },
+        },
+      },
+    },
+  };
+
+  // Each action is a task description; the facts are assembled identically for
+  // all of them so no action can accidentally see more than another.
+  const ASSISTANT_ACTIONS = {
+    explain: { label: "Explain this grant", effort: "low", max: 1500,
+      task: "Explain what this grant funds, who it is for, and what applying would involve, in under 200 words." },
+    qualify: { label: "Do we qualify?", effort: "high", max: 2000,
+      task: "Assess whether Spectrum Squad is eligible to apply. Be direct about anything that disqualifies us, and about anything the notice does not say. Do not treat an unrecorded field as a yes." },
+    why_match: { label: "Why are we a match?", effort: "medium", max: 1500,
+      task: "Explain why Spectrum Squad is or is not a good fit for this funder's priorities." },
+    use_for: { label: "What could we request funding for?", effort: "medium", max: 1500,
+      task: "Suggest what Spectrum Squad could legitimately request funding for under this grant, based only on the services and programmes recorded for us." },
+    requirements: { label: "Summarise requirements", effort: "low", max: 2000,
+      task: "List what the funder requires: eligibility, documents, registrations, partnerships, deadlines. Mark anything the notice does not state." },
+    checklist: { label: "Create an application checklist", effort: "medium", max: 2000,
+      task: "Produce a checklist of everything that must be done to submit this application, in the order it should be done." },
+    missing: { label: "Identify missing information", effort: "medium", max: 2000, schema: MISSING_SCHEMA,
+      task: "List every fact, figure or document that would be needed to write a strong application for this grant and that is NOT in the material above. Return them as structured items." },
+    narrative: { label: "Draft the narrative", effort: "high", max: 8000,
+      task: "Draft a grant narrative for this application, using the approved reusable content where it fits." },
+  };
+
+  // The per-section drafting actions, generated from the narrative sections so
+  // the two lists cannot drift apart.
+  for (const sec of [
+    { key: "executive_summary", label: "Executive summary" },
+    { key: "statement_of_need", label: "Statement of need" },
+    { key: "program_description", label: "Program description" },
+    { key: "community_impact", label: "Community impact" },
+    { key: "organizational_background", label: "Organisational background" },
+    { key: "outcomes", label: "Measurable outcomes" },
+    { key: "budget_justification", label: "Budget justification" },
+  ]) {
+    ASSISTANT_ACTIONS[`draft_${sec.key}`] = {
+      label: `Draft: ${sec.label}`,
+      effort: "high",
+      max: 4000,
+      section: sec.key,
+      task: `Draft the "${sec.label}" section of this grant application.`,
+    };
+  }
+
+  // Pure. Everything the model will be shown, assembled from records only.
+  function buildAssistantRequest(actionKey, { grant, profile, application, blocks = [], question } = {}) {
+    const action = ASSISTANT_ACTIONS[actionKey];
+    if (!action) return null;
+    const facts = profileFacts(profile);
+    const approved = approvedBlocks(blocks);
+    const parts = [];
+
+    parts.push("=== WHAT THE CRM HOLDS ABOUT SPECTRUM SQUAD ===");
+    parts.push(facts.length ? facts.join("\n") : "(nothing recorded)");
+
+    parts.push("\n=== APPROVED REUSABLE CONTENT ===");
+    parts.push(approved.length
+      ? approved.map((b) => `--- ${b.label} ---\n${clean(b.content)}`).join("\n\n")
+      : "(none approved yet)");
+
+    if (grant) {
+      parts.push("\n=== THE GRANT ===");
+      parts.push(grantFacts(grant).join("\n") || "(nothing recorded)");
+      if (grant.eligibility_explanation) {
+        parts.push(`\nThe CRM's own eligibility assessment: ${grant.eligibility_label} -- ${grant.eligibility_explanation}`);
+      }
+    }
+
+    if (application) {
+      const bits = [];
+      if (application.amount_requested) bits.push(`Amount we intend to request: ${application.amount_requested}`);
+      if (clean(application.budget_notes)) bits.push(`Budget notes: ${clean(application.budget_notes)}`);
+      if (clean(application.notes)) bits.push(`Notes: ${clean(application.notes)}`);
+      if (bits.length) { parts.push("\n=== OUR APPLICATION SO FAR ==="); parts.push(bits.join("\n")); }
+    }
+
+    parts.push(`\n=== TASK ===\n${action.task}`);
+    if (clean(question)) parts.push(`\nThe person asking added: ${clean(question)}`);
+    parts.push(`\n${NO_FABRICATION}`);
+
+    return {
+      system: `${ASSISTANT_ROLE} ${NO_FABRICATION}`,
+      user: parts.join("\n"),
+      schema: action.schema || null,
+      effort: action.effort,
+      maxTokens: action.max,
+      action: actionKey,
+      section: action.section || null,
+      // Reported back so the UI can say what the answer was based on, which is
+      // the difference between a tool people trust and one they do not.
+      sources: { profile_facts: facts.length, approved_blocks: approved.length, has_grant: !!grant },
+    };
+  }
+
+  async function runAssistant(actionKey, { grantId, applicationId, question } = {}) {
+    const action = ASSISTANT_ACTIONS[actionKey];
+    if (!action) return { ok: false, reason: "unknown_action", error: "Unknown assistant action." };
+    let grant = null, application = null;
+    if (applicationId) {
+      application = await dbGet("SELECT * FROM grant_applications WHERE id = ?", [applicationId]).catch(() => null);
+      if (application) grantId = grantId || application.grant_id;
+    }
+    if (grantId) {
+      const row = await dbGet("SELECT * FROM grant_opportunities WHERE id = ?", [grantId]).catch(() => null);
+      if (row) [grant] = await decorate([row]);
+    }
+    const profile = await getProfile();
+    const blocks = await dbAll("SELECT * FROM grant_reuse_blocks").catch(() => []);
+    const req = buildAssistantRequest(actionKey, { grant, profile, application, blocks, question });
+    const out = await ctx.callClaude(req);
+    // Recorded either way. An assistant nobody can audit is one nobody should
+    // paste into a funding application.
+    await dbRun(
+      `INSERT INTO grant_ai_runs (grant_id, application_id, action, ok, model, reason, output, sources, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [grantId || null, applicationId || null, actionKey, !!out.ok, out.model || null,
+       out.ok ? null : out.reason, out.ok ? out.text : (out.error || null),
+       JSON.stringify(req.sources), nowISO()]
+    ).catch(() => {});
+    return { ...out, action: actionKey, label: action.label, section: action.section || null, sources: req.sources };
+  }
+
+  // =====================================================================
   // API
   // =====================================================================
   async function handleApi(req, res, pathname, method, query, user) {
@@ -1618,6 +1931,95 @@ module.exports = function initGrants(ctx) {
         return true;
       }
 
+      // ---------------- phase 3: the assistant ----------------
+      if (pathname === "/api/grants/ai/actions" && method === "GET") {
+        json(res, 200, {
+          actions: Object.entries(ASSISTANT_ACTIONS).map(([key, a]) => ({ key, label: a.label, section: a.section || null })),
+          configured: ctx.aiConfigured ? ctx.aiConfigured() : false,
+        });
+        return true;
+      }
+
+      if (pathname === "/api/grants/ai" && method === "POST") {
+        const b = await readBody(req);
+        const out = await runAssistant(clean(b.action), {
+          grantId: b.grant_id ? Number(b.grant_id) : null,
+          applicationId: b.application_id ? Number(b.application_id) : null,
+          question: clean(b.question),
+        });
+        if (!out.ok) {
+          // An install with no key, or a refusal, is a 200 with an honest
+          // reason rather than an error the UI has to guess at.
+          json(res, out.reason === "unknown_action" ? 400 : 200, {
+            ok: false, reason: out.reason, error: out.error, action: out.action,
+          });
+          return true;
+        }
+        json(res, 200, {
+          ok: true, action: out.action, label: out.label, section: out.section,
+          text: out.text, parsed: out.parsed, model: out.model, sources: out.sources,
+        });
+        return true;
+      }
+
+      // Save a drafted section straight onto the application, so a draft the
+      // owner is happy with does not have to be copied by hand.
+      const aiSave = pathname.match(/^\/api\/grants\/applications\/(\d+)\/narrative\/([a-z_]+)\/from-ai$/);
+      if (aiSave && method === "POST") {
+        const b = await readBody(req);
+        if (!NARRATIVE_SECTIONS.some((x) => x.key === aiSave[2])) { json(res, 400, { error: "Unknown section" }); return true; }
+        await dbRun(
+          `INSERT INTO grant_application_narratives (application_id, section_key, content, updated_at, updated_by)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (application_id, section_key) DO UPDATE SET content = EXCLUDED.content, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
+          [aiSave[1], aiSave[2], String(b.content == null ? "" : b.content), nowISO(), `${user.email} (AI draft)`]
+        );
+        json(res, 200, { ok: true, ...(await applicationDetail(aiSave[1])) });
+        return true;
+      }
+
+      // ---------------- phase 3: the reuse library ----------------
+      if (pathname === "/api/grants/reuse" && method === "GET") {
+        const rows = await dbAll("SELECT * FROM grant_reuse_blocks").catch(() => []);
+        const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
+        json(res, 200, {
+          blocks: REUSE_SECTIONS.map((sec) => ({
+            ...sec,
+            content: (byKey[sec.key] || {}).content || "",
+            approved: (byKey[sec.key] || {}).approved === true,
+            updated_at: (byKey[sec.key] || {}).updated_at || null,
+            updated_by: (byKey[sec.key] || {}).updated_by || null,
+          })),
+        });
+        return true;
+      }
+
+      const reuseOne = pathname.match(/^\/api\/grants\/reuse\/([a-z_]+)$/);
+      if (reuseOne && method === "PUT") {
+        if (!REUSE_SECTIONS.some((x) => x.key === reuseOne[1])) { json(res, 400, { error: "Unknown block" }); return true; }
+        const b = await readBody(req);
+        const sec = REUSE_SECTIONS.find((x) => x.key === reuseOne[1]);
+        await dbRun(
+          `INSERT INTO grant_reuse_blocks (key, label, content, approved, updated_at, updated_by)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content, approved = EXCLUDED.approved,
+             updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
+          [reuseOne[1], sec.label, String(b.content == null ? "" : b.content), tri(b.approved) === true, nowISO(), user.email]
+        );
+        json(res, 200, { ok: true });
+        return true;
+      }
+
+      // The audit trail. Owner-level, because it contains everything the
+      // assistant has been asked and everything it answered.
+      if (pathname === "/api/grants/ai/runs" && method === "GET") {
+        if (!canSeeSensitive(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+        json(res, 200, {
+          runs: await dbAll("SELECT * FROM grant_ai_runs ORDER BY id DESC LIMIT 50").catch(() => []),
+        });
+        return true;
+      }
+
       json(res, 404, { error: "Unknown grants route" });
       return true;
     } catch (e) {
@@ -1632,6 +2034,8 @@ module.exports = function initGrants(ctx) {
     // exported for the tests and for later phases
     scoreGrant, analyzeEligibility, assess, dashboard, listGrants,
     deadlineSweep, calendar, checklistFor, documentStatus, daysUntil, dueStage,
+    buildAssistantRequest, runAssistant, profileFacts, approvedBlocks, grantFacts,
+    ASSISTANT_ACTIONS, REUSE_SECTIONS, NO_FABRICATION,
     NARRATIVE_SECTIONS, APPLICATION_STATUSES, DOCUMENT_CATEGORIES, DEADLINE_STAGES,
     CATEGORIES, FUNDING_PRIORITIES, STATUSES, ELIGIBILITY_LABEL, WEIGHTS,
   };

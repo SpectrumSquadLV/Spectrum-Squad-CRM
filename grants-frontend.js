@@ -151,6 +151,7 @@
             ? `<button class="gf-btn" data-act="unsave" data-id="${g.id}">Remove from saved</button>`
             : `<button class="gf-btn" data-act="save" data-id="${g.id}">Save</button>`}
           <button class="gf-btn primary" data-act="start" data-id="${g.id}">Start application</button>
+          <button class="gf-btn" data-act="ai" data-id="${g.id}">Ask the assistant</button>
           <button class="gf-btn" data-act="edit" data-id="${g.id}">Edit</button>
           <button class="gf-btn danger" data-act="dismiss" data-id="${g.id}">Dismiss</button>
         </div>
@@ -350,6 +351,15 @@
           window.scrollTo({ top: 0, behavior: "smooth" });
           return;
         }
+        if (act === "ai") {
+          const card = btn.closest(".gf-card");
+          let slot = card.querySelector(".gf-ai-slot");
+          if (slot) { slot.remove(); return; }   // second click closes it
+          slot = document.createElement("div");
+          slot.className = "gf-ai-slot";
+          card.appendChild(slot);
+          return assistantPanel(slot, { grantId: Number(id) });
+        }
         if (act === "start") {
           const r = await api("/api/grants/applications", { method: "POST", body: { grant_id: Number(id) } });
           state.tab = "applications";
@@ -514,6 +524,98 @@
     }));
   }
 
+  // ------------------------------------------------------------- assistant
+  // One panel, used from a grant card and from inside a workspace. What it
+  // shows after every answer is as important as the answer: which facts it was
+  // based on, so nobody mistakes a confident paragraph for a sourced one.
+  let AI_ACTIONS = null;
+
+  async function assistantPanel(box, { grantId, applicationId, onSaved } = {}) {
+    if (!AI_ACTIONS) AI_ACTIONS = await api("/api/grants/ai/actions");
+    const drafts = AI_ACTIONS.actions.filter((a) => a.section);
+    const asks = AI_ACTIONS.actions.filter((a) => !a.section);
+    box.innerHTML = `
+      <div class="gf-card" style="background:#fbfcfe;">
+        <h4>Grant assistant</h4>
+        ${AI_ACTIONS.configured ? `
+          <p style="font-size:12.5px;color:#6b7280;margin:0 0 10px;">
+            Answers come only from the organisation profile, the approved reuse library and this grant's own
+            record. Anything it does not have, it marks <strong>[Information Needed]</strong> rather than inventing.</p>`
+          : `<div class="gf-flags"><b>The assistant is not switched on</b>
+             ANTHROPIC_API_KEY is not set on this install, so nothing here will run.</div>`}
+        <div class="gf-checks" style="margin-bottom:8px;">
+          ${asks.map((a) => `<span class="gf-check" data-ai="${a.key}">${esc(a.label)}</span>`).join("")}
+        </div>
+        ${applicationId ? `<div class="gf-checks">
+          ${drafts.map((a) => `<span class="gf-check" data-ai="${a.key}">${esc(a.label)}</span>`).join("")}
+        </div>` : ""}
+        <div class="gf-actions">
+          <input id="gf-ai-q" placeholder="Anything to add? (optional)" style="flex:1;min-width:220px;border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:7px 10px;font-size:13px;" />
+        </div>
+        <div id="gf-ai-out" style="margin-top:11px;"></div>
+      </div>`;
+
+    const out = box.querySelector("#gf-ai-out");
+    box.querySelectorAll("[data-ai]").forEach((btn) => btn.addEventListener("click", async () => {
+      const action = btn.dataset.ai;
+      out.innerHTML = `<p style="font-size:13px;color:#6b7280;">Thinking…</p>`;
+      let r;
+      try {
+        r = await api("/api/grants/ai", {
+          method: "POST",
+          body: { action, grant_id: grantId || null, application_id: applicationId || null,
+                  question: box.querySelector("#gf-ai-q").value.trim() || null },
+        });
+      } catch (e) { out.innerHTML = `<div class="gf-flags">${esc(e.message)}</div>`; return; }
+
+      if (!r.ok) {
+        const why = r.reason === "not_configured"
+          ? "The assistant is not switched on for this install — ANTHROPIC_API_KEY is not set."
+          : esc(r.error || "It could not answer.");
+        out.innerHTML = `<div class="gf-flags"><b>No answer</b>${why}</div>`;
+        return;
+      }
+
+      // Structured answers render as a list; everything else as text with the
+      // Information Needed markers made visible rather than buried.
+      let bodyHtml;
+      if (r.parsed && Array.isArray(r.parsed.missing)) {
+        bodyHtml = r.parsed.missing.length
+          ? `<ul style="margin:0;padding-left:18px;font-size:13px;">${r.parsed.missing.map((m) =>
+              `<li style="margin-bottom:4px;"><strong>${esc(m.item)}</strong> — ${esc(m.why)}</li>`).join("")}</ul>`
+          : `<p style="font-size:13px;color:#0f7a5a;margin:0;">Nothing obvious is missing.</p>`;
+      } else {
+        bodyHtml = `<div style="font-size:13.5px;white-space:pre-wrap;line-height:1.55;">${
+          esc(r.text).replace(/\[Information Needed:([^\]]*)\]/g,
+            '<mark style="background:#fef9c3;color:#854d0e;font-weight:700;">[Information Needed:$1]</mark>')
+        }</div>`;
+      }
+
+      out.innerHTML = `
+        <div style="border:1px solid var(--border,#e5e7eb);border-radius:10px;padding:12px 14px;background:#fff;">
+          <div style="font-size:12px;font-weight:700;color:#1b2a6b;margin-bottom:7px;">${esc(r.label)}</div>
+          ${bodyHtml}
+          <div style="margin-top:10px;font-size:11.5px;color:#9aa1ab;border-top:1px solid var(--border,#eef0f4);padding-top:7px;">
+            Based on ${r.sources.profile_facts} profile fact(s) and ${r.sources.approved_blocks} approved reuse block(s).
+            ${r.sources.approved_blocks === 0 ? "Approve some reuse content to give it more to work with." : ""}
+            · ${esc(r.model || "")}
+          </div>
+          ${r.section && applicationId ? `<div class="gf-actions">
+            <button class="gf-btn primary" id="gf-ai-save">Save as the ${esc(r.label.replace(/^Draft: /, ""))} section</button>
+            <span id="gf-ai-saved" style="align-self:center;font-size:12.5px;color:#0f7a5a;"></span></div>` : ""}
+        </div>`;
+
+      const saveBtn = out.querySelector("#gf-ai-save");
+      if (saveBtn) saveBtn.addEventListener("click", async () => {
+        await api(`/api/grants/applications/${applicationId}/narrative/${r.section}/from-ai`, {
+          method: "POST", body: { content: r.text },
+        });
+        out.querySelector("#gf-ai-saved").textContent = "Saved onto the application.";
+        if (onSaved) onSaved();
+      });
+    }));
+  }
+
   // ------------------------------------------------------- applications
   async function renderApplications(el) {
     if (state.openApplication) return renderWorkspace(el, state.openApplication);
@@ -609,6 +711,8 @@
         </form>
       </div>
 
+      <div id="gf-ws-ai"></div>
+
       <div class="gf-card">
         <h4>Narrative</h4>
         <p style="font-size:12.5px;color:#6b7280;margin:0 0 10px;">
@@ -671,6 +775,7 @@
       </div>`;
 
     const reload = () => renderWorkspace(el, appId);
+    assistantPanel(el.querySelector("#gf-ws-ai"), { grantId: a.grant_id, applicationId: appId, onSaved: reload });
     el.querySelector("#gf-back").addEventListener("click", () => { state.openApplication = null; renderApplications(el); });
 
     el.querySelectorAll("[data-check]").forEach((cb) => cb.addEventListener("change", async () => {
@@ -848,6 +953,48 @@
     }));
   }
 
+  // ----------------------------------------------------------- reuse library
+  async function renderReuse(el) {
+    const { blocks } = await api("/api/grants/reuse");
+    const approvedCount = blocks.filter((b) => b.approved && b.content).length;
+    el.innerHTML = `
+      <div class="gf-card">
+        <h4>Reusable application content</h4>
+        <p style="font-size:12.5px;color:#6b7280;margin:0 0 4px;">
+          The paragraphs that go into every application. Write them once, approve them, and the assistant
+          will draw on them instead of inventing.</p>
+        <p style="font-size:12.5px;margin:0;color:${approvedCount ? "#0f7a5a" : "#991b1b"};">
+          ${approvedCount} of ${blocks.length} approved.
+          ${approvedCount ? "" : "Until something is approved the assistant has only the organisation profile to work from."}</p>
+      </div>
+      ${blocks.map((b) => `
+        <div class="gf-card">
+          <h4>${esc(b.label)}
+            <span class="gf-elig ${b.approved && b.content ? "gf-e-eligible" : "gf-e-needs_review"}" style="float:right;">
+              ${b.approved && b.content ? "Approved" : b.content ? "Draft" : "Empty"}</span></h4>
+          ${b.updated_by ? `<div class="gf-funder">last edited by ${esc(b.updated_by)}${b.updated_at ? " on " + esc(String(b.updated_at).slice(0, 10)) : ""}</div>` : ""}
+          <textarea data-reuse="${esc(b.key)}" rows="4" style="width:100%;border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:8px 10px;font-size:13px;box-sizing:border-box;">${esc(b.content)}</textarea>
+          <div class="gf-actions">
+            <label style="display:flex;align-items:center;gap:7px;font-size:13px;">
+              <input type="checkbox" data-approve="${esc(b.key)}"${b.approved ? " checked" : ""} /> Approved for use in applications</label>
+            <button class="gf-btn primary" data-save-reuse="${esc(b.key)}">Save</button>
+            <span data-msg="${esc(b.key)}" style="align-self:center;font-size:12.5px;color:#0f7a5a;"></span>
+          </div>
+        </div>`).join("")}`;
+
+    el.querySelectorAll("[data-save-reuse]").forEach((btn) => btn.addEventListener("click", async () => {
+      const key = btn.dataset.saveReuse;
+      await api(`/api/grants/reuse/${key}`, {
+        method: "PUT",
+        body: {
+          content: el.querySelector(`[data-reuse="${key}"]`).value,
+          approved: el.querySelector(`[data-approve="${key}"]`).checked,
+        },
+      });
+      el.querySelector(`[data-msg="${key}"]`).textContent = "Saved.";
+    }));
+  }
+
   // ------------------------------------------------------- not yet built
   function laterPhase(el, title, whatItWillDo, phase) {
     el.innerHTML = `<div class="gf-soon">
@@ -868,6 +1015,7 @@
     ["calendar", "Grant calendar"],
     ["sources", "Funding sources"],
     ["profile", "Organisation profile"],
+    ["reuse", "Reuse library"],
     ["documents", "Documents"],
   ];
 
@@ -893,6 +1041,7 @@
       else if (state.tab === "profile") await renderProfile(body);
       else if (state.tab === "applications") await renderApplications(body);
       else if (state.tab === "calendar") await renderCalendar(body);
+      else if (state.tab === "reuse") await renderReuse(body);
       else if (state.tab === "documents") await renderDocuments(body);
     } catch (e) {
       body.innerHTML = `<div class="gf-empty">Could not load: ${esc(e.message)}</div>`;
