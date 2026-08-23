@@ -2,6 +2,7 @@
 // pause is arguably worse than no pause: staff would assume the family is
 // being chased and stop checking on them.
 const { chromium } = require("playwright");
+const { openCardSection, cardHintText } = require("./card-test-helpers");
 
 (async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
@@ -43,7 +44,10 @@ const { chromium } = require("playwright");
     });
   }, clientId);
   let text = await openCard();
-  check("off the waitlist: card explains what the waitlist does to reminders", /reminders to the family are paused/i.test(text), text.slice(0, 200));
+  // Off the waitlist this is background explanation, not state, so it sits on
+  // the hover icon rather than taking a line on the card.
+  check("off the waitlist: card explains what the waitlist does to reminders",
+    /reminders to the family are paused/i.test(await cardHintText(page)));
   check("off the waitlist: no active-pause warning", !/Automated reminders to this family are paused/i.test(text));
 
   // --- on the waitlist: the pause is stated plainly ---
@@ -55,6 +59,10 @@ const { chromium } = require("playwright");
     });
   }, clientId);
   text = await openCard();
+  // An active pause is state staff must not miss, so the section opens itself
+  // and says it in the card body -- not on a tooltip nobody hovers.
+  check("on the waitlist: the waitlist section is open without being asked",
+    await page.$eval('details.cs[data-cs="waitlist"]', (d) => d.open).catch(() => false));
   check("on the waitlist: says reminders are paused", /Automated reminders to this family are paused/i.test(text), text.slice(0, 300));
   check("on the waitlist: names the packet deadline", /7-day packet deadline is stopped/i.test(text));
   check("on the waitlist: says it resumes", /resumes?.*when you remove them/i.test(text));

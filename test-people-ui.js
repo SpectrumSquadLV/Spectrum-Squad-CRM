@@ -1,5 +1,6 @@
 // Browser test: does the new UI actually render and work in the real app?
 const { chromium } = require("playwright");
+const { openCardSection } = require("./card-test-helpers");
 
 (async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
@@ -134,6 +135,8 @@ const { chromium } = require("playwright");
     await card.click();
     await page.waitForTimeout(2500);
     const cm = page.locator(".modal-backdrop .modal").last();
+    await openCardSection(page, "emergency");
+    await page.waitForTimeout(800);
     check("client card has an emergency contacts section", await cm.locator("#emergency-mount").isVisible().catch(() => false));
     const cText = await cm.locator("#emergency-mount").innerText().catch(() => "");
     check("client emergency section loaded (not stuck loading)", cText.length > 0 && !/Loading/.test(cText), cText.slice(0, 160));

@@ -8,6 +8,7 @@
 //   DATABASE_URL=... node server.js
 //   node test-punchlist-ui.js
 const { chromium } = require("playwright");
+const { openCardSection, cardHintText } = require("./card-test-helpers");
 const BASE = process.env.BASE || "http://localhost:3009";
 const OWNER_PW = process.env.OWNER_PASSWORD || "TestOwner123!";
 const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
@@ -78,6 +79,7 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   section("1. Reactivate from Not Moving Forward");
 
   let card = await openCard(owner, clientId);
+  await openCardSection(owner, "closeout");
   let text = await card.innerText();
   check("a live client shows the close-out buttons", /Not moving forward/i.test(text), text.slice(0, 300));
   check("a live client shows no reactivate panel", !(await card.locator("#reactivate-btn").count()));
@@ -88,7 +90,10 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   card = await openCard(owner, clientId);
   text = await card.innerText();
   check("a closed-out client shows the reactivate panel", (await card.locator("#reactivate-btn").count()) === 1, text.slice(0, 400));
-  check("the panel explains the record is kept", /same record/i.test(text) || /nothing is duplicated|stays exactly where it is/i.test(text), text.slice(0, 600));
+  // That reassurance moved onto the hover icon when the card's sections were
+  // folded; the panel itself is now buttons and state.
+  check("the panel explains the record is kept",
+    /same record/i.test(await cardHintText(owner)) || /stays exactly where it is/i.test(await cardHintText(owner)));
   check("the closure reason is shown on the panel", /Never responded/.test(text), text.slice(0, 400));
   check("the close-out buttons are gone while closed out", !(await card.locator("#not-moving-btn").count()));
 
@@ -112,6 +117,8 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   let after = await api(owner, `/api/clients/${clientId}`);
   check("the client is back in the live pipeline", after.body.client.stage === "assessment_scheduling", after.body.client.stage);
   card = await openCard(owner, clientId);
+  await openCardSection(owner, "notes");
+  await owner.waitForTimeout(1000);
   text = await card.innerText();
   check("the card shows the reactivation in the note history", /Reactivated/.test(text), text.slice(0, 1200));
   check("the note names the original closure reason", /Never responded/.test(text), text.slice(0, 1200));
@@ -156,6 +163,7 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   section("2. Emergency contact editor");
 
   card = await openCard(owner, clientId);
+  await openCardSection(owner, "emergency");
   await owner.waitForTimeout(1200);
   const ecText = await card.locator("#emergency-mount").innerText().catch(() => "");
   check("the client card warns that an emergency contact is needed", /Emergency contact needed/i.test(ecText), ecText.slice(0, 300));
@@ -183,6 +191,7 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   await owner.waitForTimeout(1800);
 
   card = await openCard(owner, clientId);
+  await openCardSection(owner, "emergency");
   await owner.waitForTimeout(1500);
   const ecText2 = await card.locator("#emergency-mount").innerText().catch(() => "");
   check("the contact saved", new RegExp("Neighbour Pat " + stamp).test(ecText2), ecText2.slice(0, 400));
