@@ -16,6 +16,9 @@
 
 const fs = require("fs");
 const path = require("path");
+// The one place this CRM talks to Claude. These two screening calls used to
+// carry their own copy of the same fetch; ai-client.js is that call, once.
+const { callClaude } = require("./ai-client");
 
 module.exports = function initHr(ctx) {
   const {
@@ -3342,43 +3345,25 @@ Match categories:
 - insufficient_information: too little information to assess against the minimums.
 - does_not_meet: clearly does not meet one or more stated minimum requirements.`;
 
+  // Throws on any failure, as it always has -- callers catch and record a
+  // rules-based assessment instead. The wording of each error is unchanged
+  // because it is shown to whoever ran the screening.
   async function callClaudeAssessment(userContent) {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: HR_AI_MODEL,
-        max_tokens: 4096,
-        system: AI_SYSTEM_PROMPT,
-        output_config: {
-          effort: "medium",
-          format: { type: "json_schema", schema: ASSESSMENT_SCHEMA },
-        },
-        messages: [{ role: "user", content: userContent }],
-      }),
+    const r = await callClaude({
+      system: AI_SYSTEM_PROMPT,
+      user: userContent,          // a string, or content blocks when a resume PDF is attached
+      schema: ASSESSMENT_SCHEMA,
+      effort: "medium",
+      maxTokens: 4096,
+      model: HR_AI_MODEL,
     });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      throw new Error(`Anthropic API ${res.status}: ${errText.slice(0, 300)}`);
+    if (!r.ok) {
+      if (r.reason === "refused") throw new Error("The AI declined to assess this application.");
+      if (r.reason === "empty") throw new Error("No assessment returned by the AI.");
+      if (r.reason === "unparseable") throw new Error("AI returned an unparseable assessment.");
+      throw new Error(r.error || "The AI could not assess this application.");
     }
-    const data = await res.json();
-    if (data.stop_reason === "refusal") {
-      throw new Error("The AI declined to assess this application.");
-    }
-    const textBlock = (data.content || []).find((b) => b.type === "text");
-    if (!textBlock) throw new Error("No assessment returned by the AI.");
-    let parsed;
-    try {
-      parsed = JSON.parse(textBlock.text);
-    } catch (e) {
-      throw new Error("AI returned an unparseable assessment.");
-    }
-    return { parsed, model: data.model || HR_AI_MODEL };
+    return { parsed: r.parsed, model: r.model || HR_AI_MODEL };
   }
 
   // Builds the fairness-safe content payload: role requirements + the
@@ -3969,23 +3954,20 @@ Match categories:
 Never: make employment promises, negotiate or state compensation, send an offer, send a rejection, or offer to contact references.
 Set escalate=true (and keep the reply brief, saying a team member will personally follow up) if the message involves: compensation negotiation, disability accommodations, a complaint, discrimination concerns, legal threats, background checks, offer terms, or anything outside standard job/scheduling information.
 Write body as plain text with line breaks (no HTML).`;
+    // Never throws: a candidate reply is too important to lose to an API
+    // wobble, so anything short of a clean answer falls back to the hand
+    // written draft with a note saying why.
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: JSON.stringify({
-          model: HR_AI_MODEL,
-          max_tokens: 1500,
-          system: sys,
-          output_config: { effort: "low", format: { type: "json_schema", schema } },
-          messages: [{ role: "user", content: `Candidate: ${name}\nConversation so far:\n${convo}\n\nDraft a reply to their latest message.` }],
-        }),
+      const r = await callClaude({
+        system: sys,
+        user: `Candidate: ${name}\nConversation so far:\n${convo}\n\nDraft a reply to their latest message.`,
+        schema,
+        effort: "low",
+        maxTokens: 1500,
+        model: HR_AI_MODEL,
       });
-      if (!res.ok) throw new Error("API " + res.status);
-      const data = await res.json();
-      if (data.stop_reason === "refusal") throw new Error("declined");
-      const tb = (data.content || []).find((b) => b.type === "text");
-      const parsed = JSON.parse(tb.text);
+      if (!r.ok) return { ...fallback, note: "AI draft unavailable: " + (r.error || r.reason) };
+      const parsed = r.parsed || {};
       return { ok: true, ai: true, subject: parsed.subject, body: parsed.body, escalate: !!parsed.escalate };
     } catch (e) {
       return { ...fallback, note: "AI draft unavailable: " + e.message };
