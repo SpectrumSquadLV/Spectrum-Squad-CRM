@@ -325,6 +325,47 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-light
 
 .section-title { font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted); margin: 20px 0 10px; }
 
+/* Collapsible sections on the client card.
+   The card had grown to eighteen sections stacked flat, every one of them
+   fully expanded, so finding the BIP meant scrolling past the enrollment
+   packet. These fold. Native <details> so keyboard and screen readers get the
+   behaviour for free, and each closed header carries a status chip -- the
+   point of collapsing is to see MORE at a glance, not less, so a section you
+   have not opened still tells you where it stands. */
+.cs { border: 1px solid var(--border, #e5e7eb); border-radius: 10px; margin: 8px 0; background: var(--card, #fff); }
+.cs > summary {
+  display: flex; align-items: center; gap: 9px; cursor: pointer; list-style: none;
+  padding: 10px 13px; font-size: 13px; font-weight: 700; color: var(--text, #1f2430);
+  border-radius: 10px; user-select: none;
+}
+.cs > summary::-webkit-details-marker { display: none; }
+.cs > summary:hover { background: var(--hover, #f8fafc); }
+.cs > summary::after {
+  content: "⌄"; margin-left: auto; font-size: 15px; color: var(--text-muted);
+  transition: transform .15s ease; line-height: 1;
+}
+.cs[open] > summary::after { transform: rotate(180deg); }
+.cs[open] > summary { border-bottom: 1px solid var(--border, #e5e7eb); border-radius: 10px 10px 0 0; }
+.cs-ico { font-size: 14.5px; line-height: 1; width: 18px; text-align: center; flex: none; }
+.cs-body { padding: 12px 13px 14px; }
+/* Status chip on the header: state without opening the section. */
+.cs-chip {
+  font-size: 11px; font-weight: 700; letter-spacing: .01em; border-radius: 999px;
+  padding: 2px 8px; margin-left: 2px; white-space: nowrap;
+}
+.cs-chip.ok   { background: #dcfce7; color: #166534; }
+.cs-chip.warn { background: #fef3c7; color: #92400e; }
+.cs-chip.bad  { background: #fee2e2; color: #991b1b; }
+.cs-chip.none { background: #eef0f4; color: #5b6472; }
+/* An explanation that used to be a paragraph. Same words, on hover, out of
+   the way of somebody who already knows how the screen works. */
+.hint {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 50%; font-size: 10.5px; font-weight: 700;
+  background: #eef0f4; color: #5b6472; cursor: help; flex: none; margin-left: 5px;
+}
+.hint:hover { background: #dfe3ea; color: #1f2430; }
+
 .task-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .task-row:last-child { border-bottom: none; }
 .task-row .info { font-size: 13px; }
@@ -1301,7 +1342,7 @@ async function renderPipeline(mount) {
 
   mount.innerHTML = `
     <div class="page-header">
-      <div><h1>Client Pipeline</h1><p>Where every client sits, at a glance: Intake &amp; Eligibility → Assessment → Authorization → Ready to Start → Active. Click a card for full details and tasks, or drag it to move it to another phase.</p></div>
+      <div><h1>Client Pipeline ${hint("Where every client sits: Intake & Eligibility → Assessment → Authorization → Ready to Start → Active. Click a card for full details and tasks, or drag it to move it to another phase.")}</h1></div>
       <button class="btn" id="new-client-btn">+ New Enrollment</button>
     </div>
     <div style="display:flex; gap:8px; margin-bottom:14px;">
@@ -1474,9 +1515,17 @@ function authSectionHtml(client) {
       : `${days} day(s) remaining`;
   const editable = canEditAuth();
 
+  // The status chip lets somebody see where authorization stands without
+  // opening the longest block on the card.
+  const authChip = client.authorization_status
+    ? [client.authorization_status,
+       /approved/i.test(client.authorization_status) ? "ok"
+         : /denied|expired/i.test(client.authorization_status) ? "bad"
+         : /pending|submitted/i.test(client.authorization_status) ? "warn" : "none"]
+    : null;
+
   if (editable) {
-    return `
-      <div class="section-title">Authorization</div>
+    return cs("authorization", "🔑", "Authorization", `
       <div class="form-grid">
         <div class="field"><label>Insurance Payer</label><input id="auth-insurance_payer" value="${client.insurance_payer || ""}" /></div>
         <div class="field"><label>Authorization Status</label>
@@ -1494,26 +1543,25 @@ function authSectionHtml(client) {
         <div class="field"><label>Assigned Billing Staff (email)</label><input id="auth-assigned_billing_email" type="email" value="${client.assigned_billing_email || ""}" /></div>
         <div class="field full"><label>Notes</label><textarea id="auth-auth_notes" rows="2">${client.auth_notes || ""}</textarea></div>
       </div>
-      <div style="font-size:12px; color:var(--text-muted); margin:-4px 0 0;">Setting the status to <strong>Approved</strong> emails ${client.parent_name ? staffEsc(client.parent_name) : "the parent"} to say ${staffEsc(client.child_name || "their child")} is approved and it's time to schedule a first day. It only sends the first time.</div>
       ${treatmentPlanDeadlineHtml(client)}
       <div style="display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap;">
         <span class="tag" style="background:#eef0f5;">Days remaining: ${daysLabel}</span>
-        <button class="btn small secondary" id="auth-save-btn">Save Authorization</button>
+        <button class="btn small secondary" id="auth-save-btn">Save</button>
+        ${hint("Setting the status to Approved emails " + (client.parent_name || "the parent") + " to say " + (client.child_name || "their child") + " is approved and it's time to schedule a first day. It only sends the first time.")}
         <span id="auth-save-result" style="font-size:12px; color:var(--text-muted);"></span>
       </div>
       ${(client.auth_start_date && !["first_day_scheduled", "active", "discharged", "not_moving_forward"].includes(client.stage)) ? `
-      <div style="margin-top:12px; padding:12px 14px; border:1px solid #d7e9e6; background:#f0fbf8; border-radius:12px;">
-        <div style="font-weight:700; color:#1b2a6b; margin-bottom:2px;">Authorization is in hand ✓</div>
-        <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:8px;">Move ${staffEsc(client.child_name || "this client")} into First Day Scheduling. This notifies the scheduling team and creates their scheduling task. The authorization stays exactly as entered.</div>
-        <button class="btn small" id="move-to-scheduling-btn">➡ Move to Scheduling First Day</button>
-        <span id="move-sched-result" style="font-size:12px; margin-left:8px; color:var(--text-muted);"></span>
+      <div style="margin-top:12px; padding:11px 13px; border:1px solid #d7e9e6; background:#f0fbf8; border-radius:12px; display:flex; align-items:center; gap:9px; flex-wrap:wrap;">
+        <span style="font-weight:700; color:#1b2a6b;">Authorization is in hand ✓</span>
+        <button class="btn small" id="move-to-scheduling-btn">➡ Move to First Day Scheduling</button>
+        ${hint("This notifies the scheduling team and creates their scheduling task. The authorization stays exactly as entered.")}
+        <span id="move-sched-result" style="font-size:12px; color:var(--text-muted);"></span>
       </div>` : ""}
-    `;
+    `, { chip: authChip });
   }
 
   // Clinical (BCBA): read-only fields + editable notes only.
-  return `
-    <div class="section-title">Authorization</div>
+  return cs("authorization", "🔑", "Authorization", `
     <div class="form-grid">
       <div class="field"><label>Insurance Payer</label><div>${client.insurance_payer || "—"}</div></div>
       <div class="field"><label>Authorization Status</label><div>${client.authorization_status || "—"}</div></div>
@@ -1529,7 +1577,7 @@ function authSectionHtml(client) {
       <button class="btn small secondary" id="auth-save-btn">Save Notes</button>
       <span id="auth-save-result" style="font-size:12px; color:var(--text-muted); margin-left:8px;"></span>
     </div>
-  `;
+  `, { chip: authChip });
 }
 
 function wireAuthSection(backdrop, clientId) {
@@ -2019,6 +2067,52 @@ let clientDetailsEditing = false;
 // "Edit details" button; in edit mode it shows editable inputs plus Save /
 // Cancel. Saving uses PATCH /api/clients/:id, whose allowed-fields list this
 // mirrors.
+// ---- client card: collapsible sections -------------------------------------
+// Which sections a person left open, remembered per browser. Somebody who
+// works the BIP every morning should not have to open it every morning.
+const CS_OPEN_KEY = "ss.clientCard.open";
+// A map of key -> true/false, NOT a list of open sections. The difference
+// matters: with a list, a key that is absent is ambiguous between "they closed
+// it" and "they have never touched it", so the first time anyone collapsed
+// anything every other section would lose its default and slam shut.
+function csPrefs() {
+  try {
+    const v = JSON.parse(localStorage.getItem(CS_OPEN_KEY) || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch (e) { return {}; }
+}
+function csRemember(key, open) {
+  try {
+    const prefs = csPrefs();
+    prefs[key] = !!open;
+    localStorage.setItem(CS_OPEN_KEY, JSON.stringify(prefs));
+  } catch (e) { /* private browsing: the card still works, it just forgets */ }
+}
+
+// One collapsible section. `chip` is [text, tone] and shows on the closed
+// header, so the card can be read without opening anything.
+// `defaultOpen` applies only until this person has an opinion about this
+// section; after that their own choice wins.
+function cs(key, icon, title, bodyHtml, { chip = null, defaultOpen = false } = {}) {
+  const prefs = csPrefs();
+  const open = Object.prototype.hasOwnProperty.call(prefs, key) ? !!prefs[key] : defaultOpen;
+  const [chipText, chipTone] = chip || [];
+  return `<details class="cs" data-cs="${key}"${open ? " open" : ""}>
+    <summary><span class="cs-ico">${icon}</span>${title}${
+      chipText ? `<span class="cs-chip ${chipTone || "none"}">${chipText}</span>` : ""
+    }</summary>
+    <div class="cs-body">${bodyHtml}</div>
+  </details>`;
+}
+
+// An explanation that no longer takes up a line. The words are unchanged --
+// they are just on the icon now.
+function hint(text) {
+  const d = document.createElement("div");
+  d.textContent = text == null ? "" : String(text);
+  return `<span class="hint" title="${d.innerHTML.replace(/"/g, "&quot;")}">i</span>`;
+}
+
 function clientDetailsHtml(client, editing) {
   if (!editing) {
     return `
@@ -2110,31 +2204,27 @@ async function openClientModal(id) {
 
       ${authSectionHtml(client)}
 
-      <div class="section-title">Emergency Contacts</div>
-      <div id="emergency-mount"></div>
+      ${cs("emergency", "🚨", "Emergency Contacts", `<div id="emergency-mount"></div>`)}
 
-      <div class="section-title">Behavior Intervention Plan</div>
-      <div id="bip-mount"></div>
+      ${cs("bip", "🧩", "Behavior Intervention Plan", `<div id="bip-mount"></div>`, { defaultOpen: true })}
 
-      <div class="section-title">Services</div>
-      <div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:12px 14px; margin-bottom:12px;">
+      ${cs("services", "🚐", "Transportation", `
         <label style="display:flex; align-items:center; gap:10px; font-size:13.5px; font-weight:600; cursor:pointer;">
           <input type="checkbox" id="cd-transportation" ${client.transportation_services ? "checked" : ""} />
-          🚐 Spectrum Squad provides transportation for this client
+          Spectrum Squad provides transportation for this client
         </label>
         <div id="transport-notes-wrap" style="margin-top:10px; ${client.transportation_services ? "" : "display:none;"}">
-          <label style="font-size:12px; color:var(--text-muted);">Transportation notes (pickup details, times, constraints)</label>
-          <input type="text" id="cd-transportation_notes" value="${ea(client.transportation_notes)}" placeholder="e.g. Curbside pickup 8:15am, wheelchair van needed" style="width:100%; margin-top:4px;" />
+          <input type="text" id="cd-transportation_notes" value="${ea(client.transportation_notes)}" placeholder="Pickup details, times, constraints" style="width:100%;" />
         </div>
         <div style="margin-top:10px;">
-          <button class="btn small" id="save-transport-btn">Save transportation</button>
+          <button class="btn small" id="save-transport-btn">Save</button>
           <span id="transport-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
-        </div>
-      </div>
+        </div>`,
+        { chip: client.transportation_services ? ["Provided", "ok"] : null })}
 
-      <div class="section-title">Assessment</div>
+      ${cs("assessment", "📋", "Assessment", `
       <div class="form-grid" style="gap:10px;">
-        <div class="field"><label>In-clinic / in-home assessment date</label><input type="date" id="asmt-date" value="${(client.in_clinic_assessment_date || "").slice(0, 10)}" /></div>
+        <div class="field"><label>Assessment date ${hint("Used to observe " + (client.child_name || "the child") + " and build the treatment plan. If no date is set, a reminder is emailed to the parent automatically.")}</label><input type="date" id="asmt-date" value="${(client.in_clinic_assessment_date || "").slice(0, 10)}" /></div>
         <div class="field"><label>Location</label>
           <select id="asmt-loc">
             <option value="">—</option>
@@ -2143,8 +2233,7 @@ async function openClientModal(id) {
           </select>
         </div>
       </div>
-      <div style="font-size:12px; color:var(--text-muted); margin:2px 0 10px;">Used to observe ${client.child_name} and build the treatment plan. If no date is set, a reminder is emailed to the parent automatically.</div>
-      <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:8px;">
+      <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:8px; margin-top:10px;">
         ${[
           ["pddbi", "PDDBI", true],
           ["srs2", "SRS-2", true],
@@ -2152,23 +2241,24 @@ async function openClientModal(id) {
           ["vineland_tricare", "Vineland", false],
         ]
           .map(
-            ([key, label, tricare]) => `<div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:10px 12px;">
+            ([key, label, tricare]) => `<div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:9px 11px; min-width:0;">
               <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600;">
                 <input type="checkbox" data-asmt-done="${key}" ${client[key + "_completed"] ? "checked" : ""} /> ${label}
-                ${tricare ? `<span title="Required for TRICARE" style="font-size:10px; font-weight:700; letter-spacing:.3px; color:#1b2a6b; background:#edecf8; border-radius:999px; padding:2px 7px;">TRICARE</span>` : ""}
+                ${tricare ? `<span title="Required for TRICARE" style="font-size:10px; font-weight:700; color:#1b2a6b; background:#edecf8; border-radius:999px; padding:2px 6px;">TRICARE</span>` : ""}
               </label>
-              <input type="date" data-asmt-date="${key}" value="${(client[key + "_date"] || "").slice(0, 10)}" style="margin-top:8px; width:100%;" />
+              <input type="date" data-asmt-date="${key}" value="${(client[key + "_date"] || "").slice(0, 10)}" style="margin-top:7px; width:100%; min-width:0; box-sizing:border-box;" />
             </div>`
           )
           .join("")}
       </div>
-      <div style="margin-top:10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-        <button class="btn small" id="save-assessment-btn">Save assessment</button>
-        <button class="btn small secondary" id="post-assessment-email-btn">✉️ Send Post-Assessment / Next Steps Email</button>
+      <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button class="btn small" id="save-assessment-btn">Save</button>
+        <button class="btn small secondary" id="post-assessment-email-btn" title="Send the post-assessment / next steps email to the parent">✉️ Next steps email</button>
         <span id="assessment-status" style="font-size:12.5px; color:var(--text-muted);"></span>
-      </div>
+      </div>`,
+        { chip: client.in_clinic_assessment_date ? [fmtDate(client.in_clinic_assessment_date), "ok"] : ["Not scheduled", "warn"] })}
 
-      <div class="section-title">Case Notes</div>
+      ${cs("notes", "📝", "Case Notes", `
       <div class="field full" style="margin-bottom:10px;">
         <textarea id="case-note-input" rows="3" placeholder="Add a case update, call summary, or note about this family..."></textarea>
       </div>
@@ -2176,30 +2266,32 @@ async function openClientModal(id) {
         <button class="btn small" id="add-case-note-btn">Add note</button>
         <span id="case-note-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
       </div>
-      <div id="case-notes-list"><div class="empty-state">Loading notes…</div></div>
+      <div id="case-notes-list"><div class="empty-state">Loading notes…</div></div>`)}
 
-      <div class="section-title">Enrollment Packet (SignNow)</div>
       ${(() => {
         const p = enrollmentPacket;
         const colorFor = { sent: "#1e4fa3", completed: "#177a3c", declined: "#a3282e", expired: "#946213", failed: "#a3282e", blocked: "#a3282e" };
-        let statusLabel, statusColor, detail = "";
-        if (!p) { statusLabel = "Not sent yet"; statusColor = "#767488"; }
+        let statusLabel, statusColor, detail = "", chip;
+        if (!p) { statusLabel = "Not sent yet"; statusColor = "#767488"; chip = ["Not sent", "none"]; }
         else {
           statusLabel = { sent: "Sent — awaiting signature", completed: "Completed ✓", declined: "Declined", expired: "Expired (not completed in 7 days)", failed: "Failed to send", blocked: "Blocked" }[p.status] || p.status;
           statusColor = colorFor[p.status] || "#767488";
-          if ((p.status === "failed" || p.status === "blocked") && p.error_detail) detail = `<div style="font-size:12px;color:#a3282e;margin-top:4px;">Reason: ${p.error_detail}</div>`;
+          chip = {
+            sent: ["Awaiting signature", "warn"], completed: ["Signed", "ok"], declined: ["Declined", "bad"],
+            expired: ["Expired", "bad"], failed: ["Failed", "bad"], blocked: ["Blocked", "bad"],
+          }[p.status] || [p.status, "none"];
+          if ((p.status === "failed" || p.status === "blocked") && p.error_detail) detail = `<div style="font-size:12px;color:#a3282e;margin-top:4px;">${p.error_detail}</div>`;
         }
-        const cfgWarn = !signnowConfigured ? `<div style="font-size:12px;color:#946213;background:#fef3e0;border-radius:8px;padding:8px 10px;margin-top:6px;">⚠ SignNow isn't configured on the server (missing API key or template ID), so packets can't send until that's set.</div>` : "";
-        return `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        const cfgWarn = !signnowConfigured ? `<div style="font-size:12px;color:#946213;background:#fef3e0;border-radius:8px;padding:8px 10px;margin-top:6px;">⚠️ SignNow isn't configured on the server, so packets can't send until that's set.</div>` : "";
+        return cs("packet", "✍️", "Enrollment Packet", `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
             <span class="tag" style="background:${statusColor}; color:#fff;">${statusLabel}</span>
             ${p && p.attempts ? `<span style="font-size:12px;color:var(--text-muted);">${p.attempts} attempt(s)</span>` : ""}
-            <button class="btn small secondary" id="send-packet-btn">${p && p.status === "sent" ? "Resend packet" : "Send packet now"}</button>
+            <button class="btn small secondary" id="send-packet-btn">${p && p.status === "sent" ? "Resend" : "Send now"}</button>
             <span id="send-packet-result" style="font-size:12px; color:var(--text-muted);"></span>
-          </div>${detail}${cfgWarn}`;
+          </div>${detail}${cfgWarn}`, { chip });
       })()}
 
-      <div class="section-title">Documents</div>
-      ${
+      ${cs("documents", "📎", "Documents", `${
         (documents || []).length
           ? documents
               .map(
@@ -2213,41 +2305,39 @@ async function openClientModal(id) {
       }
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         <input type="file" id="doc-file-input" style="font-size:12.5px;" />
-        <input type="text" id="doc-label-input" placeholder="Label (optional)" style="width:180px;" />
-        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text-muted); cursor:pointer;">
-          <input type="checkbox" id="doc-is-card" style="width:auto;" /> This is the insurance card
+        <input type="text" id="doc-label-input" placeholder="Label (optional)" style="width:160px;" />
+        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text-muted); cursor:pointer;" title="Marks this upload as the insurance card, which is what the benefits check needs">
+          <input type="checkbox" id="doc-is-card" style="width:auto;" /> 💳 Insurance card
         </label>
-        <button class="btn small" id="upload-doc-btn">Upload document</button>
+        <button class="btn small" id="upload-doc-btn">Upload</button>
         <span id="upload-doc-status" style="font-size:12.5px; color:var(--text-muted);"></span>
-      </div>
+      </div>`,
+        { chip: (documents || []).length ? [String(documents.length), "none"] : ["None", "warn"] })}
 
-      <div class="section-title">Documents Requested from Parent</div>
-      <div id="doc-request-section"><div class="empty-state">Loading…</div></div>
+      ${cs("docrequests", "📨", "Documents Requested from Parent", `<div id="doc-request-section"><div class="empty-state">Loading…</div></div>`)}
 
-      <div style="margin-top:14px;">
-        <button class="btn small secondary" id="send-eligibility-btn"${hasInsuranceCard ? "" : " disabled"}>✉ Send Benefits &amp; Eligibility Check</button>
+      ${cs("eligibility", "🩺", "Benefits &amp; Eligibility Check", `
+        <button class="btn small secondary" id="send-eligibility-btn"${hasInsuranceCard ? "" : " disabled"}>✉️ Send benefits check</button>
         <span id="eligibility-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
         ${client.eligibility_check_sent_at
-          ? `<div style="font-size:12px; color:#166534; margin-top:4px;">✓ Sent ${fmtDate(client.eligibility_check_sent_at)}. Sending again replaces nothing — it just re-notifies billing.</div>`
+          ? `<div style="font-size:12px; color:#166534; margin-top:6px;">✓ Sent ${fmtDate(client.eligibility_check_sent_at)} ${hint("Sending again replaces nothing — it just re-notifies billing.")}</div>`
           : ""}
-        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+        <div style="font-size:12px; color:${hasInsuranceCard ? "var(--text-muted)" : "#946213"}; margin-top:6px;">
           ${hasInsuranceCard
-            ? "Emails the patient's name, DOB, insurance details and the insurance card to your billing/verification contact. This also sends by itself the moment a card is uploaded."
-            : "<span style=\"color:#946213;\">⚠ No insurance card is on file, so this can't be sent yet — a benefits check without the card is not actionable. Use <strong>Request documents from parent</strong> above to ask the family for the front and back. The check then sends itself the moment the card arrives.</span>"}
-        </div>
-      </div>
+            ? `Sends the patient's details and insurance card to billing. ${hint("This also sends by itself the moment a card is uploaded.")}`
+            : `⚠️ No insurance card on file. ${hint("A benefits check without the card is not actionable. Use 'Documents Requested from Parent' above to ask the family for the front and back. The check then sends itself the moment the card arrives.")}`}
+        </div>`,
+        { chip: client.eligibility_check_sent_at ? ["Sent", "ok"] : hasInsuranceCard ? ["Ready", "none"] : ["Needs card", "warn"] })}
 
-      <div class="section-title">Financial Obligation Form</div>
-      <div id="financial-form-section"><div class="empty-state">Loading…</div></div>
+      ${cs("financial", "💵", "Financial Obligation Form", `<div id="financial-form-section"><div class="empty-state">Loading…</div></div>`)}
 
-      <div class="section-title">Parent Schedule Request</div>
-      <div id="schedule-req-section"><div class="empty-state">Loading…</div></div>
+      ${cs("schedulereq", "🗓️", "Parent Schedule Request", `<div id="schedule-req-section"><div class="empty-state">Loading…</div></div>`)}
 
-      <div class="section-title">Attendance</div>
+      ${cs("attendance", "📊", "Attendance", `
       <div style="margin-bottom:8px;">
         <button class="btn small" id="send-attendance-btn">Send attendance alert</button>
         <span id="attendance-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
-        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Use when attendance has fallen <strong>under 80%</strong>. The parent gets an email with an "I acknowledge" button; acknowledgment shows below.</div>
+        ${hint("Use when attendance has fallen under 80%. The parent gets an email with an 'I acknowledge' button; acknowledgment shows below.")}
       </div>
       ${
         (notifications || []).filter((n) => n.type === "attendance_alert").length
@@ -2260,17 +2350,22 @@ async function openClientModal(id) {
                 : `<button class="btn small secondary" data-ack-att="${n.id}">Mark acknowledged</button>`}
             </div>`).join("")
           : ""
-      }
+      }`,
+        { chip: (notifications || []).filter((n) => n.type === "attendance_alert" && !n.acknowledged).length
+            ? [(notifications || []).filter((n) => n.type === "attendance_alert" && !n.acknowledged).length + " unacknowledged", "warn"] : null })}
 
-      <div class="section-title">Stage Tasks</div>
-      <div style="font-size:12px; color:var(--text-muted); margin:-4px 0 8px;">Ticking the last task in a stage moves the client on. Undo puts a task back to not done — it does not move the client back.</div>
-      ${
+      ${(() => {
+        const overdue = tasks.filter((t) => t.status === "overdue").length;
+        const done = tasks.filter((t) => t.status === "completed").length;
+        const chip = overdue ? [overdue + " overdue", "bad"]
+          : tasks.length ? [done + "/" + tasks.length, done === tasks.length ? "ok" : "none"] : null;
+        return cs("tasks", "✅", `Stage Tasks ${hint("Ticking the last task in a stage moves the client on. Undo puts a task back to not done — it does not move the client back.")}`, `${
         tasks.length
           ? tasks
               .map(
                 (t) => `<div class="task-row">
                   <div class="info">
-                    <span class="status-dot ${t.status}"></span><strong>${t.label}</strong>${t.assignable === false ? ` <span class="tag" style="background:#e7effb; color:#1b3a7b;" title="This step runs automatically — the screener is sent, reminded, and marked complete by the system. It is never assigned to staff.">Automated · not assignable</span>` : ""}
+                    <span class="status-dot ${t.status}"></span><strong>${t.label}</strong>${t.assignable === false ? ` <span title="This step runs automatically — the screener is sent, reminded, and marked complete by the system. It is never assigned to staff." style="font-size:11px;">🤖</span>` : ""}
                     <div class="due">${t.department_name} · due ${fmtDate(t.due_date)} ${t.status === "overdue" ? "· <span style='color:#b91c1c;font-weight:700;'>OVERDUE</span>" : ""}</div>
                     ${taskHistoryLine(t)}
                   </div>
@@ -2286,54 +2381,50 @@ async function openClientModal(id) {
               )
               .join("")
           : `<div class="empty-state">No tasks yet.</div>`
-      }
+      }`, { chip, defaultOpen: true });
+      })()}
 
-      <div class="section-title">Waitlist</div>
+      ${cs("waitlist", "⏳", "Waitlist", `
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         ${
           client.waitlisted
-            ? `<span class="tag" style="background:#fef3c7; color:#92400e;">On waitlist since ${client.waitlisted_at ? fmtDate(client.waitlisted_at) : "—"}</span>
+            ? `<span class="tag" style="background:#fef3c7; color:#92400e;">Since ${client.waitlisted_at ? fmtDate(client.waitlisted_at) : "—"}</span>
                <button class="btn secondary small" id="waitlist-remove-btn">Remove from waitlist</button>`
             : `<button class="btn secondary small" id="waitlist-add-btn">Place on waitlist</button>`
         }
+        ${client.waitlisted
+          ? `<span style="font-size:12.5px; color:#92400e;">⏸️ Reminders paused ${hint("Enrollment packet, clinical screener and assessment nudges are paused, and the 7-day packet deadline is stopped, so they can't be closed out for not signing while they wait. Everything resumes, with the time they had left, when you remove them from the waitlist.")}</span>`
+          : hint("While a client is on the waitlist, automated reminders to the family are paused and the 7-day enrollment packet deadline stops.")}
+        ${client.parent_email ? "" : `<span style="font-size:12.5px; color:var(--text-muted);" title="No parent email on file — no automated email will be sent.">✉️❌</span>`}
       </div>
       ${
         client.waitlisted && client.waitlist_reason
           ? `<div style="font-size:12.5px; color:var(--text-muted); margin-top:6px;">Reason: ${client.waitlist_reason}</div>`
           : ""
-      }
-      <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">
-        ${client.parent_email ? "An automated email is sent to the parent when a client is placed on or removed from the waitlist." : "No parent email on file — no automated email will be sent."}
-      </div>
-      ${
-        client.waitlisted
-          ? `<div style="font-size:12px; color:#92400e; background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:8px 10px; margin-top:8px;">
-               Automated reminders to this family are paused — enrollment packet, clinical screener and assessment nudges. The 7-day packet deadline is stopped too, so they can't be closed out for not signing while they wait. Everything resumes, with the time they had left, when you remove them from the waitlist.
-             </div>`
-          : `<div style="font-size:12px; color:var(--text-muted); margin-top:6px;">While a client is on the waitlist, automated reminders to the family are paused and the 7-day enrollment packet deadline stops.</div>`
-      }
+      }`,
+        { chip: client.waitlisted ? ["On waitlist", "warn"] : null })}
 
-      <div class="section-title">Advance / Close Out</div>
-      ${isClosedOut ? `
+      ${cs("closeout", "🔀", "Advance / Close Out", `${isClosedOut ? `
       <div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:12px 14px; margin-bottom:10px;">
         <div style="font-weight:700; color:#9a3412; font-size:13.5px;">${client.stage === "not_moving_forward" ? "Marked Not Moving Forward" : "Discharged"}${client.discharge_reason ? ` — ${escapeHtml(client.discharge_reason)}` : ""}</div>
-        <div style="font-size:12.5px; color:#7c2d12; margin-top:4px;">Bringing this family back keeps this same record — every note, document, task and message stays exactly where it is, and the closure above is written into their notes so it is never lost.</div>
         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;">
           <label style="font-size:12.5px; color:#7c2d12;">Move back into
             <select id="reactivate-stage" style="margin-left:6px;">
               ${REACTIVATABLE_STAGES.map((k) => `<option value="${k}">${escapeHtml(stageLabelOf(k))}</option>`).join("")}
             </select>
           </label>
-          <button class="btn small" id="reactivate-btn" style="background:#16a34a; border-color:#16a34a;">↩ Reactivate / Move Back to Active</button>
+          <button class="btn small" id="reactivate-btn" style="background:#16a34a; border-color:#16a34a;">↩ Reactivate</button>
           <span id="reactivate-status" style="font-size:12.5px; color:#7c2d12;"></span>
+          ${hint("Bringing this family back keeps this same record — every note, document, task and message stays exactly where it is, and the closure above is written into their notes so it is never lost.")}
         </div>
       </div>` : ""}
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        ${isClosedOut ? "" : `<button class="btn secondary small" id="advance-btn">Advance to next stage manually</button>
+        ${isClosedOut ? "" : `<button class="btn secondary small" id="advance-btn">Advance to next stage</button>
         <button class="btn secondary small" id="discharge-btn">Mark discharged</button>
         <button class="btn secondary small" id="not-moving-btn" style="color:#b91c1c;">Not moving forward</button>`}
-      <button class="btn secondary small" id="delete-lead-btn" style="color:#fff; background:#b91c1c; border-color:#b91c1c;">Delete Lead</button>
-      </div>
+        <button class="btn secondary small" id="delete-lead-btn" style="color:#fff; background:#b91c1c; border-color:#b91c1c;">Delete lead</button>
+      </div>`,
+        { chip: isClosedOut ? [client.stage === "not_moving_forward" ? "Not moving forward" : "Discharged", "bad"] : null })}
 
       <!-- The Weekly Schedule list was the last piece of scheduling still on
            screen -- sessions, and the session notes hanging off them, belong to
@@ -2342,11 +2433,9 @@ async function openClientModal(id) {
            gone, so restoring it is deleting this comment and putting the
            template back. -->
 
-      <div class="section-title">Communications &amp; Forms Sent to Parents</div>
-      ${commsRestricted
-        ? `<div class="empty-state" style="text-align:left;">🔒 You can only see communications for clients assigned to you. This family isn't assigned to you, so their message history is hidden. An owner or administrator can see it.</div>`
-        : `<p style="font-size:12px; color:var(--text-muted); margin:-4px 0 8px;">Every email, form, and file sent to this family. Click <strong>View</strong> to read the full message. Forms are also linked in their sections above.</p>
-      ${
+      ${cs("comms", "💬", "Communications Sent to Parents", `${commsRestricted
+        ? `<div class="empty-state" style="text-align:left;">🔒 You can only see communications for clients assigned to you. An owner or administrator can see it.</div>`
+        : `${
         notifications.length
           ? notifications
               .map(
@@ -2355,10 +2444,16 @@ async function openClientModal(id) {
               )
               .join("")
           : `<div class="empty-state">No communications sent yet.</div>`
-      }`}
+      }`}`,
+        { chip: commsRestricted ? ["Hidden", "none"] : notifications.length ? [String(notifications.length), "none"] : null })}
     </div>
   `;
   document.body.appendChild(backdrop);
+
+  // Remember which sections this person leaves open.
+  backdrop.querySelectorAll("details.cs").forEach((d) => {
+    d.addEventListener("toggle", () => csRemember(d.dataset.cs, d.open));
+  });
 
   // The BIP workspace renders itself into the card. It loads after the modal is
   // attached so it can measure the modal for its sticky header.
