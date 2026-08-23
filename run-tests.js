@@ -28,16 +28,12 @@ const BOOT_TIMEOUT_MS = 60000;
 // nobody trusts.
 const SKIP = {};
 
-// Extra environment for the suites that verify a signed third-party webhook.
-// These are dummy values, not credentials -- the suite signs its own payloads
-// with the same string and checks the server rejects anything else. Note what
-// is deliberately absent: no STRIPE_SECRET_KEY, and no TWILIO_ACCOUNT_SID or
-// from-number, so smsClient.configured() stays false and every send is still
-// simulated. Setting the auth token alone is what switches on the inbound
-// signature check, which is the property under test.
+// Extra environment for the suite that verifies a signed third-party webhook.
+// A dummy value, not a credential -- the suite signs its own payloads with the
+// same string and checks the server rejects anything else. Note what is
+// deliberately absent: no STRIPE_SECRET_KEY, so nothing reaches Stripe.
 const SUITE_ENV = {
   "test-phase6b-stripe.js": { STRIPE_WEBHOOK_SECRET: "whsec_test" },
-  "test-sms.js": { SMS_PROVIDER: "none", TWILIO_AUTH_TOKEN: "testtoken" },
 };
 
 // The server seeds every account with a random unusable password on a fresh

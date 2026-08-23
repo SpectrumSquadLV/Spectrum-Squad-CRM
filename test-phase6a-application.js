@@ -1,5 +1,11 @@
-// Phase 6a: expanded employment application. Verifies the new fields + SMS
-// consent metadata + availability are captured and stored.
+// Phase 6a: expanded employment application. Verifies the new fields and
+// availability are captured and stored.
+//
+// Texting was later removed, so the consent checkbox is gone from the form.
+// The consent COLUMNS are not: a consent somebody gave is a record about them,
+// and applications imported from elsewhere may still carry one. So this checks
+// two things that pull in opposite directions -- the form no longer asks, and
+// the store still keeps what it is given.
 const { Pool } = require("pg");
 const BASE = process.env.BASE || "http://localhost:3009";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false });
@@ -13,7 +19,9 @@ async function post(path, body) { const r = await fetch(BASE + path, { method: "
   check("no unrendered ${ in the served page", !page.includes("${"), false);
   check("no stray backticks in the served page", page.indexOf("`") === -1, false);
   check("the new Availability step is present", page.includes("stepAvailability"), false);
-  check("the SMS disclosure is present", /recruiting-related text messages/i.test(page), false);
+  check("the texting consent box is gone, since nothing can send a text",
+    !/recruiting-related text messages/i.test(page), false);
+  check("and the form no longer asks for it at all", !page.includes("consent_sms"), false);
 
   console.log("\n== an expanded application is stored in full ==");
   const sub = await post("/api/hr/apply", {
@@ -36,15 +44,17 @@ async function post(path, body) { const r = await fetch(BASE + path, { method: "
   const avail = a && a.availability ? JSON.parse(a.availability) : {};
   check("availability days stored", avail.days && avail.days.Mon === true && avail.days.Wed === true, avail);
   check("availability hours + type stored", avail.weekly_hours === "25" && avail.type === "part_time", avail);
-  check("SMS consent recorded true", a && (a.consent_sms === true || a.consent_sms === "t"), a && a.consent_sms);
-  check("SMS consent timestamp recorded", a && !!a.sms_consent_at, a && a.sms_consent_at);
-  check("SMS disclosure version recorded", a && a.sms_consent_version === "sms-v1-2026-08", a && a.sms_consent_version);
+  // Historical/imported consent still stores and reads back, so nothing that
+  // was already recorded is lost by the texting removal.
+  check("a supplied text consent is still recorded", a && (a.consent_sms === true || a.consent_sms === "t"), a && a.consent_sms);
+  check("with its timestamp", a && !!a.sms_consent_at, a && a.sms_consent_at);
+  check("and the disclosure version it was given under", a && a.sms_consent_version === "sms-v1-2026-08", a && a.sms_consent_version);
 
-  console.log("\n== SMS consent metadata is NOT recorded when consent is declined ==");
+  console.log("\n== consent metadata is NOT recorded when consent is declined ==");
   const sub2 = await post("/api/hr/apply", { full_name: "No SMS", email: "nosms+6a@example.test", slug: "rbt", source: "website", consent_email: true, consent_sms: false, sms_consent_at: new Date().toISOString(), sms_consent_version: "sms-v1-2026-08" });
   check("second application accepted", sub2.status === 201, sub2.data);
   const b = (await pool.query("SELECT * FROM hr_applicants WHERE email = 'nosms+6a@example.test' ORDER BY id DESC LIMIT 1")).rows[0];
-  check("no SMS consent timestamp when declined", b && !b.sms_consent_at, b && b.sms_consent_at);
+  check("no consent timestamp when declined", b && !b.sms_consent_at, b && b.sms_consent_at);
 
   await pool.end();
   console.log("\n" + pass + " passed, " + fail + " failed\n");
