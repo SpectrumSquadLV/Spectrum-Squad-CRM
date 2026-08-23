@@ -161,5 +161,32 @@ for (const k of ["company_description", "mission_statement", "history", "populat
   check(`"${k}" is a reuse block`, REUSE_SECTIONS.some((s) => s.key === k), REUSE_SECTIONS.map((s) => s.key));
 }
 
-console.log(`\n${pass} passed, ${fail} failed\n`);
-process.exit(fail ? 1 : 0);
+section("There is one Claude client, and only one");
+const fs = require("fs");
+const sources = fs.readdirSync(__dirname)
+  .filter((f) => f.endsWith(".js") && !f.startsWith("test-") && f !== "run-tests.js");
+const withEndpoint = sources.filter((f) =>
+  fs.readFileSync(path.join(__dirname, f), "utf8").includes("api.anthropic.com"));
+check("exactly one module holds the Anthropic endpoint", withEndpoint.length === 1, withEndpoint);
+check("and it is ai-client.js", withEndpoint[0] === "ai-client.js", withEndpoint);
+check("hr.js goes through the shared client",
+  fs.readFileSync(path.join(__dirname, "hr.js"), "utf8").includes('require("./ai-client")'));
+check("so does the grants module, via its ctx",
+  fs.readFileSync(path.join(__dirname, "server.js"), "utf8").includes("callClaude: (o) => aiClient.callClaude(o)"));
+
+section("Without a key the client declines rather than throwing");
+const aiClient = require(path.join(__dirname, "ai-client.js"));
+const hadKey = process.env.ANTHROPIC_API_KEY;
+delete process.env.ANTHROPIC_API_KEY;
+check("configured() is false", aiClient.configured() === false);
+// No network: not_configured short-circuits before any fetch.
+aiClient.callClaude({ system: "s", user: "u" }).then((r) => {
+  check("callClaude resolves rather than rejecting", !!r);
+  check("with ok false", r.ok === false, r);
+  check("and a reason the UI can state plainly", r.reason === "not_configured", r);
+  if (hadKey) process.env.ANTHROPIC_API_KEY = hadKey;
+
+  console.log(`\n${pass} passed, ${fail} failed\n`);
+  process.exit(fail ? 1 : 0);
+});
+
