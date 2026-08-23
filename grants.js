@@ -690,6 +690,27 @@ module.exports = function initGrants(ctx) {
       created_at TEXT
     )`).catch((e) => console.error("grant_ai_runs initTables:", e.message));
 
+    // Every discovery run, successful or not. Without this the automation is
+    // unfalsifiable: nobody can tell a source that found nothing from one that
+    // has been quietly failing for a month.
+    await dbRun(`CREATE TABLE IF NOT EXISTS grant_discovery_runs (
+      id SERIAL PRIMARY KEY,
+      source_key TEXT NOT NULL,
+      ok BOOLEAN NOT NULL,
+      fetched INTEGER DEFAULT 0,
+      imported INTEGER DEFAULT 0,
+      duplicates INTEGER DEFAULT 0,
+      rejected INTEGER DEFAULT 0,
+      high_matches INTEGER DEFAULT 0,
+      dry_run BOOLEAN DEFAULT FALSE,
+      error TEXT,
+      raw_sample TEXT,          -- so a wrong mapping can be seen, not guessed at.
+                                -- Truncated for storage, so it is for reading, not re-parsing.
+      triggered_by TEXT,
+      started_at TEXT,
+      finished_at TEXT
+    )`).catch((e) => console.error("grant_discovery_runs initTables:", e.message));
+
     await seedReuseBlocks();
     await seedProfile();
     await seedSources();
@@ -1484,6 +1505,138 @@ module.exports = function initGrants(ctx) {
   }
 
   // =====================================================================
+  // PHASE 4 -- discovery: bringing opportunities in from outside
+  // =====================================================================
+  //
+  // The pipeline the brief drew: source -> found -> imported -> read ->
+  // eligibility checked -> scored -> high matches surfaced -> owner alerted.
+  // Everything after "imported" already existed; this is the front of it.
+  //
+  // The one thing worth stating loudly: an imported grant is never marked
+  // eligible. The connector copies the funder's eligibility wording across
+  // verbatim and leaves every tri-state flag null, so the engine reports
+  // "needs review" and a human reads the notice. A robot that guessed here
+  // would quietly undo the whole point of phase 1.
+
+  const connectors = ctx.connectors || require("./grant-connectors");
+
+  // Import already-normalised records. Returns counts rather than throwing, so
+  // a partly-bad batch still lands the good rows.
+  async function importOpportunities(records, { sourceKey = "paste", actor = "system" } = {}) {
+    let imported = 0, duplicates = 0, rejected = 0;
+    const highMatches = [];
+
+    for (const raw of records || []) {
+      const g = connectors.normalize(sourceKey, raw);
+      if (!g) { rejected++; continue; }
+
+      const dupe = await findDuplicate(g);
+      if (dupe) { duplicates++; continue; }
+
+      // Note what is NOT in this list: not one eligibility flag. normalize()
+      // already leaves them null, and this allowlist means a feed that hands us
+      // "for_profit_allowed": true cannot write it either. Both would have to
+      // be changed to make an import able to claim we qualify.
+      const cols = ["name", "funder", "opportunity_number", "source_url", "application_url", "description",
+        "amount_min", "amount_max", "expected_award", "opening_date", "deadline",
+        "geographic_eligibility", "applicant_eligibility", "industry", "target_population"];
+      const present = cols.filter((c) => g[c] !== undefined && g[c] !== null && g[c] !== "");
+      const r = await dbRun(
+        `INSERT INTO grant_opportunities (${present.join(", ")}, tags, status, created_by, created_at, updated_at)
+         VALUES (${present.map(() => "?").join(", ")}, ?, 'New', ?, ?, ?) RETURNING id`,
+        [...present.map((c) => g[c]), JSON.stringify(g.tags || []),
+         actor && actor !== "system" ? `${sourceKey} import (${actor})` : `${sourceKey} import`, nowISO(), nowISO()]
+      ).catch((e) => { console.error("[grants] import row failed:", e.message); return null; });
+      if (!r || !r.rows || !r.rows[0]) { rejected++; continue; }
+
+      imported++;
+      const stored = await restamp(r.rows[0].id);
+      // "High match" deliberately excludes anything we could not apply for.
+      if (stored && stored.match_score >= 70 && stored.eligibility_status !== "likely_ineligible") {
+        highMatches.push(stored);
+      }
+    }
+    return { imported, duplicates, rejected, highMatches };
+  }
+
+  async function alertHighMatches(highMatches, sourceLabel) {
+    if (!highMatches.length) return 0;
+    const to = await alertRecipients();
+    if (!to.length || !ctx.sendEmail) return 0;
+    await ctx.sendEmail({
+      to: to.join(", "),
+      subject: `${highMatches.length} new grant${highMatches.length === 1 ? "" : "s"} worth a look`,
+      html: `<p>${esc(sourceLabel)} brought in ${highMatches.length} opportunit${highMatches.length === 1 ? "y" : "ies"}
+             scoring 70% or better that we are not obviously ineligible for.</p>
+             ${highMatches.map((g) => `<p><strong>${esc(g.name)}</strong>${g.funder ? ` &mdash; ${esc(g.funder)}` : ""}<br>
+               Match ${g.match_score}% &middot; ${esc(g.eligibility_label)}${g.deadline ? ` &middot; closes ${esc(g.deadline)}` : ""}<br>
+               <span style="color:#555;">${esc(g.match_explanation)}</span></p>`).join("")}
+             <p style="color:#888;font-size:12px;">Eligibility has not been confirmed on these. The notice still needs reading.</p>`,
+      type: "grant_discovery",
+    }).catch((e) => console.error("[grants] discovery email failed:", e.message));
+    return to.length;
+  }
+
+  // One source, one run, recorded either way.
+  async function discoveryRun(sourceKey, { triggeredBy = "schedule", fetchImpl, dryRun = false } = {}) {
+    const started = nowISO();
+    const status = connectors.connectorStatus(sourceKey);
+    const record = async (row) => {
+      await dbRun(
+        `INSERT INTO grant_discovery_runs (source_key, ok, fetched, imported, duplicates, rejected, high_matches,
+           dry_run, error, raw_sample, triggered_by, started_at, finished_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [sourceKey, !!row.ok, row.fetched || 0, row.imported || 0, row.duplicates || 0, row.rejected || 0,
+         row.high_matches || 0, !!row.dry_run, row.error || null,
+         row.raw_sample ? JSON.stringify(row.raw_sample).slice(0, 4000) : null,
+         triggeredBy, started, nowISO()]
+      ).catch(() => {});
+      return row;
+    };
+
+    if (!status.available) {
+      return record({ ok: false, error: status.reason || "This source cannot run." });
+    }
+
+    const connector = connectors.CONNECTORS[sourceKey];
+    let out;
+    try {
+      out = await connector.fetch({ fetchImpl: fetchImpl || ctx.httpFetch || fetch });
+    } catch (e) {
+      return record({ ok: false, error: `Could not reach ${status.label}: ${e.message}` });
+    }
+    if (!out.ok) return record({ ok: false, error: out.error, raw_sample: out.raw_sample });
+
+    // A look before importing. Worth having while an adapter is unverified:
+    // it answers "is the mapping right?" without writing a row.
+    if (dryRun) {
+      const sample = out.records.slice(0, 3).map((r) => connectors.normalize(sourceKey, r)).filter(Boolean);
+      await record({ ok: true, fetched: out.records.length, dry_run: true, raw_sample: out.raw_sample });
+      return { ok: true, dry_run: true, fetched: out.records.length, sample, raw_sample: out.raw_sample };
+    }
+
+    const res = await importOpportunities(out.records, { sourceKey });
+    const alerted = await alertHighMatches(res.highMatches, status.label);
+    console.log(`[grants] discovery source=${sourceKey} fetched=${out.records.length} imported=${res.imported} `
+      + `duplicates=${res.duplicates} high=${res.highMatches.length} alerted=${alerted}`);
+    return record({
+      ok: true, fetched: out.records.length, imported: res.imported, duplicates: res.duplicates,
+      rejected: res.rejected, high_matches: res.highMatches.length, raw_sample: out.raw_sample,
+    });
+  }
+
+  // Every source that can run, daily.
+  async function discoverySweep({ triggeredBy = "schedule", fetchImpl } = {}) {
+    const results = [];
+    for (const key of Object.keys(connectors.CONNECTORS)) {
+      const status = connectors.connectorStatus(key);
+      if (!status.available) continue;   // reported in the connectors list, not as a failed run
+      results.push({ source: key, ...(await discoveryRun(key, { triggeredBy, fetchImpl })) });
+    }
+    return { results };
+  }
+
+  // =====================================================================
   // API
   // =====================================================================
   async function handleApi(req, res, pathname, method, query, user) {
@@ -2020,6 +2173,61 @@ module.exports = function initGrants(ctx) {
         return true;
       }
 
+      // ---------------- phase 4: discovery ----------------
+      if (pathname === "/api/grants/connectors" && method === "GET") {
+        const list = Object.keys(connectors.CONNECTORS).map((k) => connectors.connectorStatus(k));
+        for (const c of list) {
+          c.last_run = await dbGet(
+            "SELECT * FROM grant_discovery_runs WHERE source_key = ? ORDER BY id DESC LIMIT 1", [c.key]
+          ).catch(() => null);
+        }
+        json(res, 200, { connectors: list });
+        return true;
+      }
+
+      if (pathname === "/api/grants/discovery/run" && method === "POST") {
+        const b = await readBody(req);
+        const key = clean(b.source);
+        if (key && !connectors.CONNECTORS[key]) { json(res, 400, { error: "No such source." }); return true; }
+        const out = key
+          ? await discoveryRun(key, { triggeredBy: user.email, dryRun: tri(b.dry_run) === true })
+          : await discoverySweep({ triggeredBy: user.email });
+        json(res, 200, out);
+        return true;
+      }
+
+      if (pathname === "/api/grants/discovery/runs" && method === "GET") {
+        json(res, 200, {
+          runs: await dbAll("SELECT * FROM grant_discovery_runs ORDER BY id DESC LIMIT 40").catch(() => []),
+        });
+        return true;
+      }
+
+      // The path that works with no integration at all: paste what a portal
+      // gave you. Same normalisation, same dedupe, same refusal to guess
+      // eligibility as an automated source.
+      if (pathname === "/api/grants/import" && method === "POST") {
+        const b = await readBody(req);
+        let rows = b.records;
+        if (typeof rows === "string") {
+          try { rows = JSON.parse(rows); }
+          catch (e) { json(res, 400, { error: "That did not parse as JSON." }); return true; }
+        }
+        if (!Array.isArray(rows)) { json(res, 400, { error: "Expected a JSON array of opportunities." }); return true; }
+        const res2 = await importOpportunities(rows, { sourceKey: "paste", actor: user.email });
+        await alertHighMatches(res2.highMatches, "a pasted import");
+        await dbRun(
+          `INSERT INTO grant_discovery_runs (source_key, ok, fetched, imported, duplicates, rejected, high_matches, triggered_by, started_at, finished_at)
+           VALUES ('paste', true, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [rows.length, res2.imported, res2.duplicates, res2.rejected, res2.highMatches.length, user.email, nowISO(), nowISO()]
+        ).catch(() => {});
+        json(res, 200, {
+          ok: true, fetched: rows.length, imported: res2.imported, duplicates: res2.duplicates,
+          rejected: res2.rejected, high_matches: res2.highMatches.length,
+        });
+        return true;
+      }
+
       json(res, 404, { error: "Unknown grants route" });
       return true;
     } catch (e) {
@@ -2035,6 +2243,7 @@ module.exports = function initGrants(ctx) {
     scoreGrant, analyzeEligibility, assess, dashboard, listGrants,
     deadlineSweep, calendar, checklistFor, documentStatus, daysUntil, dueStage,
     buildAssistantRequest, runAssistant, profileFacts, approvedBlocks, grantFacts,
+    importOpportunities, discoveryRun, discoverySweep, alertHighMatches,
     ASSISTANT_ACTIONS, REUSE_SECTIONS, NO_FABRICATION,
     NARRATIVE_SECTIONS, APPLICATION_STATUSES, DOCUMENT_CATEGORIES, DEADLINE_STAGES,
     CATEGORIES, FUNDING_PRIORITIES, STATUSES, ELIGIBILITY_LABEL, WEIGHTS,

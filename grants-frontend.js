@@ -489,12 +489,74 @@
       portal_only: ["#854d0e", "#fef9c3", "Website only — check by hand for now"],
       manual: ["#374151", "#e5e7eb", "Tracked manually"],
     };
+    const { connectors } = await api("/api/grants/connectors");
+    const { runs } = await api("/api/grants/discovery/runs");
+    const when = (t) => (t ? new Date(t).toLocaleString() : "never");
+
     el.innerHTML = `
       <div class="gf-card">
-        <h4>Where opportunities come from</h4>
+        <h4>Automated sources</h4>
+        <p style="font-size:12.5px;color:#6b7280;margin:0 0 10px;">
+          These pull opportunities in on their own, once a day. Anything imported arrives as
+          <strong>needs review</strong> — a funder's eligibility wording is copied across for a person to read,
+          never turned into a yes by the importer.</p>
+        ${connectors.map((c) => `
+          <div style="border:1px solid var(--border,#eef0f4);border-radius:8px;padding:11px 13px;margin-bottom:9px;">
+            <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+              <strong>${esc(c.label)}</strong>
+              <span class="gf-elig" style="background:${c.available ? "#dcfce7" : "#fef9c3"};color:${c.available ? "#166534" : "#854d0e"};">
+                ${c.available ? "Ready" : esc(c.reason || "Not configured")}</span>
+              ${c.verified ? "" : `<span class="gf-elig" style="background:#e5e7eb;color:#374151;">Unverified against the live service</span>`}
+              <span style="margin-left:auto;font-size:12px;color:#6b7280;">Last run: ${esc(when(c.last_run && c.last_run.finished_at))}</span>
+              ${c.available ? `<button class="gf-btn" data-test="${esc(c.key)}">Test fetch</button>
+                <button class="gf-btn" data-run="${esc(c.key)}">Run now</button>` : ""}
+            </div>
+            ${c.note ? `<p style="margin:7px 0 0;font-size:12px;color:#6b7280;">${esc(c.note)}</p>` : ""}
+            ${c.last_run ? `<p style="margin:6px 0 0;font-size:12px;color:${c.last_run.ok ? "#374151" : "#b91c1c"};">
+              ${!c.last_run.ok ? `Failed: ${esc(c.last_run.error || "no reason recorded")}`
+                : c.last_run.dry_run ? `Test fetch only — ${c.last_run.fetched} returned, nothing imported.`
+                : `Found ${c.last_run.fetched}, imported ${c.last_run.imported}, ${c.last_run.duplicates} already tracked${Number(c.last_run.high_matches) ? `, ${c.last_run.high_matches} scoring 70%+` : ""}.`}</p>` : ""}
+            ${c.docs ? `<p style="margin:5px 0 0;font-size:12px;"><a href="${esc(c.docs)}" target="_blank" rel="noopener">API documentation</a></p>` : ""}
+            <div class="gf-testout" data-for="${esc(c.key)}" style="display:none;margin-top:8px;"></div>
+          </div>`).join("")}
+      </div>
+
+      <div class="gf-card">
+        <h4>Paste an export</h4>
+        <p style="font-size:12.5px;color:#6b7280;margin:0 0 8px;">
+          The path that needs no integration at all: paste a JSON array of opportunities from any portal.
+          Duplicates are skipped, and these are held to exactly the same rule — nothing arrives marked eligible.</p>
+        <textarea id="gf-paste" rows="6" placeholder='[{"name": "...", "funder": "...", "deadline": "2027-03-31", "description": "..."}]'
+          style="width:100%;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:9px;border:1px solid var(--border,#dfe3ea);border-radius:7px;"></textarea>
+        <div style="margin-top:8px;"><button class="gf-btn primary" id="gf-paste-go">Import</button>
+          <span id="gf-paste-msg" style="margin-left:10px;font-size:12.5px;"></span></div>
+      </div>
+
+      ${runs.length ? `<div class="gf-card">
+        <h4>Recent runs</h4>
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+          <thead><tr style="background:#f8fafc;">
+            <th style="text-align:left;padding:7px 10px;">Source</th>
+            <th style="text-align:left;padding:7px 10px;">When</th>
+            <th style="text-align:left;padding:7px 10px;">Result</th>
+            <th style="text-align:left;padding:7px 10px;">Run by</th>
+          </tr></thead>
+          <tbody>${runs.map((r) => `<tr style="border-top:1px solid var(--border,#eef0f4);">
+            <td style="padding:7px 10px;">${esc(r.source_key)}</td>
+            <td style="padding:7px 10px;">${esc(when(r.finished_at))}</td>
+            <td style="padding:7px 10px;color:${r.ok ? "#374151" : "#b91c1c"};">${!r.ok ? esc(r.error || "failed")
+              : r.dry_run ? `test fetch &middot; ${r.fetched} returned &middot; nothing imported`
+              : `${r.fetched} found &middot; ${r.imported} imported &middot; ${r.duplicates} duplicate`}</td>
+            <td style="padding:7px 10px;color:#6b7280;">${esc(r.triggered_by || "schedule")}</td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </div>` : ""}
+
+      <div class="gf-card">
+        <h4>Where else opportunities come from</h4>
         <p style="font-size:12.5px;color:#6b7280;margin:0 0 4px;">
-          Nothing here fetches anything yet — that is Phase 4. The integration column is an honest record of
-          what each source would actually take to automate, so the work can be scoped rather than guessed at.</p>
+          Sources checked by hand. The integration column records what each would take to automate,
+          so the work can be scoped rather than guessed at.</p>
       </div>
       <div class="gf-card" style="padding:0;">
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
@@ -522,6 +584,60 @@
       await api(`/api/grants/sources/${b.dataset.src}`, { method: "DELETE" });
       renderSources(el);
     }));
+
+    // Fetch and map, but write nothing. While an adapter has not been run
+    // against the live service this is how you find out whether the mapping is
+    // right -- without putting a wrongly-read grant in front of anyone.
+    el.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", async () => {
+      const out = el.querySelector(`.gf-testout[data-for="${b.dataset.test}"]`);
+      out.style.display = "block";
+      out.innerHTML = `<span style="font-size:12px;color:#6b7280;">Fetching…</span>`;
+      try {
+        const r = await api("/api/grants/discovery/run", { method: "POST", body: { source: b.dataset.test, dry_run: true } });
+        if (!r.ok) { out.innerHTML = `<span style="font-size:12.5px;color:#b91c1c;">${esc(r.error || "Could not reach it.")}</span>`; return; }
+        out.innerHTML = `<p style="margin:0 0 6px;font-size:12.5px;">Reached it. ${r.fetched} opportunit${r.fetched === 1 ? "y" : "ies"} returned, nothing imported.
+          ${r.sample && r.sample.length ? "This is how the first few would be read:" : "It returned nothing to read."}</p>
+          ${(r.sample || []).map((g) => `<div style="border-left:3px solid #cbd5e1;padding:4px 0 4px 9px;margin-bottom:6px;font-size:12.5px;">
+            <strong>${esc(g.name)}</strong>${g.funder ? ` — ${esc(g.funder)}` : ""}<br>
+            <span style="color:#6b7280;">${esc(g.opportunity_number || "no opportunity number")}
+              ${g.deadline ? ` · closes ${esc(g.deadline)}` : " · no deadline read"}
+              ${g.amount_max ? ` · up to $${Number(g.amount_max).toLocaleString()}` : ""}</span><br>
+            <span style="color:#6b7280;">Eligibility as written: ${esc(g.applicant_eligibility || "(none given)")} — not interpreted.</span>
+          </div>`).join("")}`;
+      } catch (e) {
+        out.innerHTML = `<span style="font-size:12.5px;color:#b91c1c;">${esc(e.message)}</span>`;
+      }
+    }));
+
+    el.querySelectorAll("[data-run]").forEach((b) => b.addEventListener("click", async () => {
+      const was = b.textContent;
+      b.textContent = "Running…"; b.disabled = true;
+      try {
+        const r = await api("/api/grants/discovery/run", { method: "POST", body: { source: b.dataset.run } });
+        if (!r.ok) alert(r.error || "That source could not run.");
+        renderSources(el);
+      } catch (e) {
+        alert(e.message); b.textContent = was; b.disabled = false;
+      }
+    }));
+
+    const go = el.querySelector("#gf-paste-go");
+    if (go) go.addEventListener("click", async () => {
+      const text = el.querySelector("#gf-paste").value.trim();
+      const msg = el.querySelector("#gf-paste-msg");
+      if (!text) { msg.textContent = "Paste something first."; return; }
+      go.disabled = true; msg.textContent = "Importing…";
+      try {
+        const r = await api("/api/grants/import", { method: "POST", body: { records: text } });
+        msg.style.color = "#166534";
+        msg.textContent = `${r.imported} imported, ${r.duplicates} already tracked`
+          + (r.rejected ? `, ${r.rejected} unusable` : "")
+          + (r.high_matches ? ` — ${r.high_matches} scoring 70%+` : "") + ".";
+        el.querySelector("#gf-paste").value = "";
+      } catch (e) {
+        msg.style.color = "#b91c1c"; msg.textContent = e.message;
+      } finally { go.disabled = false; }
+    });
   }
 
   // ------------------------------------------------------------- assistant

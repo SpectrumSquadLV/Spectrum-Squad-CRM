@@ -7462,9 +7462,6 @@ async function start() {
   growthSweeps();
   setInterval(growthSweeps, 24 * 60 * 60 * 1000);
 
-  // Staff certification expiry -- staged notices to the staff member and the
-  // Clinical Director. Runs on boot and then daily. Each stage sends at most
-  // once per certification per expiration date, so a restart cannot re-send.
   // Grant submission-deadline notices (30/14/7/3/1/day-of). Runs on boot and
   // then daily; each stage fires at most once per grant, and anything we are
   // likely ineligible for is never chased.
@@ -7473,6 +7470,19 @@ async function start() {
     grants.deadlineSweep().catch((e) => console.error("Grant deadline sweep failed:", e));
   }, 24 * 60 * 60 * 1000);
 
+  // Automated grant discovery: daily, but deliberately NOT on boot. Every other
+  // sweep here only touches our own database, so running one at start-up is
+  // free; this one calls out to somebody else's API, and a few deploys in an
+  // afternoon should not become a few rounds of traffic at a funder. Sources
+  // that cannot run (an API key nobody has set) are skipped rather than logged
+  // as a daily failure -- the connectors screen is where that is reported.
+  setInterval(() => {
+    grants.discoverySweep().catch((e) => console.error("Grant discovery sweep failed:", e));
+  }, 24 * 60 * 60 * 1000);
+
+  // Staff certification expiry -- staged notices to the staff member and the
+  // Clinical Director. Runs on boot and then daily. Each stage sends at most
+  // once per certification per expiration date, so a restart cannot re-send.
   people.certificationSweep().catch((e) => console.error("Certification sweep failed:", e));
   setInterval(() => {
     people.certificationSweep().catch((e) => console.error("Certification sweep failed:", e));
