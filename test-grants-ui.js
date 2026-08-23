@@ -151,12 +151,20 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
   await page.waitForTimeout(1600);
   check("saving priorities reports the rescore", /rescored/i.test(await page.locator("#gf-prierr").innerText()));
 
-  section("Funding sources are honest about automation");
+  section("Funding sources are honest about what each one can do");
   await goTab("sources");
   const src = await page.locator("#view-mount").innerText();
   check("the sources are listed", /Grants\.gov/.test(src));
-  check("and say nothing is fetched yet", /Phase 4|nothing here fetches/i.test(src));
-  check("marking which could be automated", /API available/i.test(src));
+  check("an automated source that can run says Ready", /Ready/.test(src), src.slice(0, 400));
+  check("and is marked unverified, since it has not been run against the live service",
+    /Unverified against the live service/i.test(src), src.slice(0, 400));
+  check("a source missing its key names the variable rather than looking healthy",
+    /SAM_API_KEY/.test(src), src.slice(0, 600));
+  check("the screen states that imports arrive needing review",
+    /needs review/i.test(src), src.slice(0, 600));
+  check("the paste path is offered, since it needs no integration",
+    /Paste an export/i.test(src));
+  check("manual sources still mark which could be automated", /API available/i.test(src));
 
   section("Phase 2: the application workspace");
   // Start application on the eligible grant opens a real workspace.
