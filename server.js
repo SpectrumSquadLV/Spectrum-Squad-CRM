@@ -7165,6 +7165,7 @@ const people = require("./people")({
 // ===== GRANT FINDER add-on: funding opportunities, the Spectrum Squad
 // organisation profile they are matched against, eligibility analysis and
 // match scoring. Owns /api/grants/*. =====
+const aiClient = require("./ai-client");
 const grants = require("./grants")({
   dbGet, dbAll, dbRun, nowISO, readBody, json,
   // Phase 2: deadline alerts email through the same gate everything else does,
@@ -7173,6 +7174,10 @@ const grants = require("./grants")({
   getAppSetting, sendEmail,
   createStaffTask: (t) => createStaffTask(t),
   saveDocument: (o) => saveDocumentFile(o),
+  // Phase 3: the grant assistant. One shared Claude client, so this is not a
+  // third copy of the same fetch.
+  callClaude: (o) => aiClient.callClaude(o),
+  aiConfigured: () => aiClient.configured(),
 });
 
 // ===== SCHEDULING CENTER add-on: dated sessions on the real staff directory,
