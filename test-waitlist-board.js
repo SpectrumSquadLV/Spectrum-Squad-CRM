@@ -130,6 +130,42 @@ const BASE = process.env.BASE || "http://localhost:3009";
   check("the stage board marks the waitlisted client", /Waitlist/i.test(oldBoard), oldBoard.slice(0, 300));
   check("no money on the stage board", !MONEY.test(oldBoard), (oldBoard.match(MONEY) || [""])[0] + " …");
 
+  // ---- every filter has to be reachable ----------------------------------
+  // Reported as "I can't find the waitlisted clients". They were on the board
+  // the whole time; the waitlist filter is the LAST control in the filter row
+  // and it had scrolled off the right edge of the window, along with "Clear
+  // filters". The cause was .main being a flex child with the default
+  // min-width:auto, so the wide board pushed the page wider than the window
+  // instead of scrolling inside its own container -- and anything past the
+  // fold became unreachable.
+  //
+  // Asserted on geometry rather than on the CSS rule, because the next way this
+  // breaks will not be that rule.
+  await page.evaluate(() => { location.hash = "#/pipeline-v2"; });
+  await page.waitForTimeout(2200);
+
+  const layout = await page.evaluate(() => {
+    const off = [];
+    document.querySelectorAll("#view-mount select, #view-mount button").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return;         // genuinely hidden
+      if (r.right > window.innerWidth + 1 || r.left < -1) {
+        off.push((el.id || el.tagName) + " @" + Math.round(r.left) + "-" + Math.round(r.right));
+      }
+    });
+    return {
+      offScreen: off,
+      pageScrollsSideways: document.documentElement.scrollWidth > document.documentElement.clientWidth + 2,
+      waitlistFilter: !!document.querySelector("#pv2-f-waitlist"),
+    };
+  });
+  check("the board has a waitlist filter at all", layout.waitlistFilter === true);
+  check("no control is pushed off the side of the window",
+    layout.offScreen.length === 0, layout.offScreen);
+  check("and the page itself does not scroll sideways",
+    layout.pageScrollsSideways === false,
+    "the board should scroll inside its own container, not widen the page");
+
   await setWaitlist(waited.id, false);
   check("no uncaught JavaScript errors", errors.length === 0, errors.join(" ;; "));
   console.log(`\n  ${pass} passed, ${fail} failed`);

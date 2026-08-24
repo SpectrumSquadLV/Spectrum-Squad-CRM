@@ -3127,11 +3127,22 @@ async function checkEnrollmentPackets() {
         // Log the shape (keys only, never field values -- a signed enrollment
         // packet is full of a family's personal details) so a mismatch shows up
         // in the logs instead of as a mystery.
+        // Document id and status strings only -- both safe to log. The first
+        // version of this printed the response's key list, which proved the
+        // shape was not what the fix assumed but could not say WHICH packet was
+        // which, so it could not be checked against SignNow. The document id
+        // makes that cross-reference possible; the statuses say what SignNow
+        // actually calls the state we are failing to recognise.
+        const inviteStatuses = []
+          .concat((doc.field_invites || []).map((i) => `fi:${i && i.status}`))
+          .concat((doc.requests || []).map((i) => `rq:${i && i.status}${i && i.signature_id ? "+sig" : ""}`));
         console.log(`[signnow] packet ${packet.id} not complete yet. `
-          + `keys=${Object.keys(doc || {}).sort().join(",")} `
+          + `doc=${packet.signnow_document_id} `
           + `field_invites=${(doc.field_invites || []).length} `
           + `requests=${(doc.requests || []).length} `
-          + `signatures=${(doc.signatures || []).length}`);
+          + `signatures=${(doc.signatures || []).length} `
+          + `group=${doc.document_group_info ? "yes" : "no"} `
+          + `statuses=[${inviteStatuses.join(" ")}]`);
       }
     } catch (err) {
       console.error("SignNow status check failed for packet", packet.id, err.message);
