@@ -2,6 +2,7 @@
 // the dashboard: Intake Packet is gone as a phase, the Pipeline Snapshot
 // counts the clients it actually shows, and a stage task can be un-ticked.
 const { chromium } = require("playwright");
+const { cardHintText } = require("./card-test-helpers");
 const BASE = process.env.BASE || "http://localhost:3009";
 
 (async () => {
@@ -115,8 +116,10 @@ const BASE = process.env.BASE || "http://localhost:3009";
     await page.evaluate((id) => openClientModal(id), target.clientId);
     await page.waitForTimeout(2400);
     let modal = page.locator(".modal-backdrop").last();
+    // The stage-task explanation moved onto the hover icon in the section
+    // header when the card's sections were folded. Same words, same section.
     check("the card explains that undo doesn't move the client back",
-      /Undo puts a task back to not done/i.test(await modal.innerText()));
+      /Undo puts a task back to not done/i.test(await cardHintText(page)));
 
     await modal.locator(`[data-complete-task="${target.taskId}"]`).click();
     await page.waitForTimeout(2600);

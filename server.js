@@ -474,10 +474,10 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS tp_reminders_sent TEXT NOT NULL DEF
 -- Transportation services provided by Spectrum Squad (surfaced to schedulers).
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_services BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_notes TEXT;
--- Parent/guardian express consent to receive text messages (TCPA). A staffer
--- records this after the family has agreed to be texted; sendSms enforces it on
--- every manual text from the client card, and STOP replies land on the shared
--- opt-out list just like every other channel.
+-- Parent/guardian express consent to receive text messages (TCPA). Texting has
+-- since been removed, but these columns stay: a consent a family gave is a
+-- record about them, not a feature flag, and deleting it would destroy the
+-- evidence that it was properly obtained.
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS parent_sms_consent BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS parent_sms_consent_at TEXT;
 -- Rename the old Vineland stage task to the In-Clinic Assessment.
@@ -696,13 +696,6 @@ const auth = { createUser, findUserByEmail, login, logout, getUserFromToken, par
 const PROVIDER = (process.env.EMAIL_PROVIDER || "none").toLowerCase(); // resend | sendgrid | none
 const FROM_EMAIL = process.env.EMAIL_FROM || "no-reply@spectrumsquadlv.com";
 
-// Zero-dependency SMS (Twilio) sending, mirroring the email design above. With
-// no Twilio credentials configured, sends are "simulated" (logged) so the app
-// stays fully demoable. Consent + opt-out are enforced here in sendSms so every
-// path -- automated confirmations and manual staff messages alike -- shares one
-// compliance gate.
-const smsClient = require("./sms-client");
-
 // Low-level provider delivery. Returns { delivered, errorMsg } WITHOUT writing
 // to notifications_log, so both first-time sends (sendEmail) and manual retries
 // of previously-failed emails (resendFailedEmail) share the exact same provider
@@ -803,69 +796,13 @@ async function sendEmail({ to, subject, html, clientId = null, type = "parent_mi
   return { delivered, errorMsg };
 }
 
-// ============================ SMS (Twilio) ==================================
-// Low-level delivery. Returns { delivered, errorMsg, sid } WITHOUT touching the
-// log, so sendSms owns logging just like sendEmail/deliverEmail.
-async function deliverSms({ to, body }) {
-  try {
-    if (smsClient.configured()) {
-      const r = await smsClient.sendMessage({ to, body });
-      return { delivered: r.ok ? "sent" : "failed", errorMsg: r.ok ? null : r.error, sid: r.sid || null };
-    }
-    console.log(`\n[SMS:SIMULATED] To: ${to}\n${body}\n`);
-    return { delivered: "simulated", errorMsg: null, sid: null };
-  } catch (err) {
-    return { delivered: "failed", errorMsg: err.message, sid: null };
-  }
-}
-
-// Opt-out suppression list (per phone number, E.164). Honored on EVERY send.
-async function smsOptedOut(rawPhone) {
-  const e164 = smsClient.toE164(rawPhone);
-  if (!e164) return false;
-  const row = await dbGet("SELECT phone FROM sms_opt_outs WHERE phone = ?", [e164]);
-  return !!row;
-}
-async function recordSmsOptOut(rawPhone, reason) {
-  const e164 = smsClient.toE164(rawPhone);
-  if (!e164) return null;
-  await dbRun(
-    `INSERT INTO sms_opt_outs (phone, opted_out_at, reason) VALUES (?, ?, ?)
-     ON CONFLICT (phone) DO UPDATE SET opted_out_at = EXCLUDED.opted_out_at, reason = EXCLUDED.reason`,
-    [e164, nowISO(), reason || null]
-  );
-  return e164;
-}
-async function clearSmsOptOut(rawPhone) {
-  const e164 = smsClient.toE164(rawPhone);
-  if (!e164) return null;
-  await dbRun("DELETE FROM sms_opt_outs WHERE phone = ?", [e164]);
-  return e164;
-}
-
-// The single outbound-SMS gate. Enforces, in order: a valid number, consent
-// (recruiting/marketing texts require prior express consent), and the opt-out
-// list. Skips are returned (not thrown) with a machine-readable delivered code,
-// then everything is logged to notifications_log (channel='sms') for the audit
-// trail -- successes, failures, and skips alike.
-async function sendSms({ to, body, clientId = null, type = "sms", consented = false, allowWithoutConsent = false }) {
-  const e164 = smsClient.toE164(to);
-  const logRow = async (delivered, errorMsg) => {
-    await dbRun(
-      `INSERT INTO notifications_log (client_id, type, channel, recipient, subject, body, sent_at, delivered)
-       VALUES (?, ?, 'sms', ?, ?, ?, ?, ?)`,
-      [clientId, type, e164 || String(to || ""), "SMS", body, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : "")]
-    ).catch((e) => console.error("sms log insert failed:", e.message));
-  };
-
-  if (!e164) { await logRow("skipped_invalid_number", "Unparseable phone number"); return { delivered: "skipped_invalid_number", errorMsg: "Invalid phone number" }; }
-  if (!consented && !allowWithoutConsent) { await logRow("skipped_no_consent", null); return { delivered: "skipped_no_consent", errorMsg: "No SMS consent on file" }; }
-  if (await smsOptedOut(e164)) { await logRow("skipped_opted_out", null); return { delivered: "skipped_opted_out", errorMsg: "Recipient has opted out of texts" }; }
-
-  const { delivered, errorMsg, sid } = await deliverSms({ to: e164, body });
-  await logRow(delivered, errorMsg);
-  return { delivered, errorMsg, sid, to: e164 };
-}
+// Texting was removed at Quiana's request -- it was never connected to Twilio
+// and is no longer wanted. What is deliberately KEPT is the record of it: the
+// sms_opt_outs table, the parent_sms_consent / applicant sms_consent columns,
+// and every past message in notifications_log (channel='sms'). Consent someone
+// gave, and a STOP someone sent, are facts about that person; they are not
+// ours to delete because we stopped using the channel. Nothing sends or
+// receives a text any more -- these rows are read-only history.
 
 // ---- Benefits & Eligibility Check -----------------------------------------
 // When a new patient enrolls, send the billing/verification contact the info
@@ -2235,13 +2172,8 @@ async function checkOverdueTasks() {
 // A client on the waitlist has been told, in the waitlist email itself, that
 // they don't need to do anything right now. Every automated "please finish X"
 // message to the parent is therefore held while that is true, and picks back up
-// when they come off. Postgres hands this back as a real boolean, but a couple
-// of older code paths compare against "t", so both are accepted here rather
-// than trusting one driver's shape.
-function isWaitlisted(client) {
-  if (!client) return false;
-  return client.waitlisted === true || client.waitlisted === "t" || client.waitlisted === 1;
-}
+// when they come off -- along with the other cases in intake-chasing.js.
+const { isWaitlisted, intakeChasingPaused } = require("./intake-chasing");
 
 async function processAssessmentReminders() {
   const clients = await dbAll(
@@ -3185,12 +3117,13 @@ async function checkEnrollmentPackets() {
       continue;
     }
 
-    // Waitlisted families are not chased and are not timed out. The clock is
-    // genuinely stopped, not just quiet: suppressing the reminder alone would
-    // still let the 7-day rule move them to "not moving forward" for failing
-    // to sign a packet we had asked them to ignore.
+    // Families we should not be chasing are not reminded AND not timed out --
+    // see intakeChasingPaused(). The clock is genuinely stopped, not just
+    // quiet: suppressing the reminder alone would still let the 7-day rule
+    // move them to "not moving forward", which for a client already in active
+    // therapy would close out a family mid-treatment over a stale packet row.
     const packetClient = await dbGet("SELECT * FROM clients WHERE id = ?", [packet.client_id]);
-    if (isWaitlisted(packetClient)) {
+    if (intakeChasingPaused(packetClient)) {
       if (!packet.paused_since) {
         await dbRun("UPDATE enrollment_packets SET paused_since = ? WHERE id = ?", [nowISO(), packet.id]);
       }
@@ -3939,7 +3872,6 @@ const stripeClient = require("./stripe-client");
 
 const PUBLIC_ROUTES = new Set([
   "/api/stripe/webhook",
-  "/api/sms/inbound",
   "/api/auth/login",
   "/api/webhook/enrollment",
   "/api/admin/backfill-import",
@@ -4500,63 +4432,6 @@ async function handle(req, res, pathname, method, query = {}) {
       return json(res, 200, r);
     }
 
-    // Inbound SMS webhook (public, Twilio-signature-verified). Point your Twilio
-    // number's "A message comes in" webhook here. Handles carrier keywords
-    // (STOP/START/HELP) for opt-out compliance and hands real replies to the HR
-    // module so they land on the candidate's timeline. A verified request always
-    // answers 200 with empty TwiML so Twilio doesn't retry or auto-send a second
-    // message; an unverified one gets 403 and is not processed at all.
-    if (pathname === "/api/sms/inbound" && method === "POST") {
-      const raw = await readRawBody(req);
-      const params = {};
-      for (const [k, v] of new URLSearchParams(raw)) params[k] = v;
-      // Verify the request really came from Twilio, and fail CLOSED if we
-      // cannot. This used to skip verification entirely when no auth token was
-      // set, which reads as "dev convenience" but is the wrong way round: with
-      // no token there is no way to tell Twilio from anyone who found the URL,
-      // and an install without Twilio credentials has no legitimate inbound
-      // traffic to accept anyway. What it accepted was not harmless -- a forged
-      // STOP lands a number on the shared opt-out list, and every later send to
-      // that family is refused.
-      const inboundToken = process.env.TWILIO_AUTH_TOKEN || "";
-      if (!inboundToken) {
-        console.warn("[sms] inbound request refused: TWILIO_AUTH_TOKEN is not set, so no signature can be verified");
-        res.writeHead(403, { "Content-Type": "text/plain" });
-        return res.end("Inbound SMS is not configured");
-      }
-      const fullUrl = `${APP_BASE_URL}/api/sms/inbound`;
-      const sig = req.headers["x-twilio-signature"];
-      const v = smsClient.verifyInboundSignature(fullUrl, params, sig);
-      if (!v.ok) { res.writeHead(403, { "Content-Type": "text/plain" }); return res.end("Invalid signature"); }
-      const from = params.From || "";
-      const body = params.Body || "";
-      const kind = smsClient.classifyInbound(body);
-      let reply = "";
-      try {
-        if (kind === "stop") {
-          await recordSmsOptOut(from, "inbound_stop");
-          reply = "You have been unsubscribed from Spectrum Squad texts. Reply START to resubscribe.";
-        } else if (kind === "start") {
-          await clearSmsOptOut(from);
-          reply = "You are resubscribed to Spectrum Squad texts. Reply STOP to opt out at any time.";
-        } else if (kind === "help") {
-          reply = "Spectrum Squad recruiting. Reply STOP to unsubscribe. Msg&data rates may apply.";
-        }
-        // A genuine reply (and keyword messages too) get logged to the sender's
-        // candidate timeline when we can match them by phone.
-        if (hr && typeof hr.processInboundSms === "function") {
-          await hr.processInboundSms({ from, body, kind }).catch((e) => console.error("processInboundSms failed:", e.message));
-        }
-      } catch (e) {
-        console.error("inbound SMS handling failed:", e.message);
-      }
-      const twiml = reply
-        ? `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${reply.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</Message></Response>`
-        : `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`;
-      res.writeHead(200, { "Content-Type": "text/xml" });
-      return res.end(twiml);
-    }
-
     // Public webhook: point a Google Apps Script "on form submit" trigger (or
     // your website's enrollment form) at this endpoint to feed new signups
     // straight into the pipeline, with no manual re-entry. Protect it with
@@ -4949,9 +4824,6 @@ async function handle(req, res, pathname, method, query = {}) {
         "SELECT status, error_detail, attempts, sent_at, last_attempt_at, completed_at FROM enrollment_packets WHERE client_id = ?",
         [id]
       );
-      // Text-a-parent card state: whether texting is wired up server-side, and
-      // whether this parent's number has landed on the shared STOP list.
-      const parentSmsOptedOut = client.parent_phone ? await smsOptedOut(client.parent_phone) : false;
       return json(res, 200, {
         client: authAlerts.sanitizeClientForRole(user, client),
         tasks,
@@ -4961,8 +4833,6 @@ async function handle(req, res, pathname, method, query = {}) {
         documents,
         enrollmentPacket: enrollmentPacket || null,
         signnowConfigured: signNowConfigured(),
-        smsConfigured: smsClient.configured(),
-        parentSmsOptedOut,
       });
     }
 
@@ -4976,44 +4846,6 @@ async function handle(req, res, pathname, method, query = {}) {
       if (!client) return json(res, 404, { error: "Not found" });
       const result = await sendEnrollmentPacket(client);
       return json(res, result.ok ? 200 : 400, result);
-    }
-
-    // Text a parent/guardian directly from the client card. Same compliance
-    // gate as every other outbound text: a valid number, recorded consent, and
-    // not on the STOP list -- all re-checked centrally in sendSms too. Only
-    // staff assigned to the client (or an owner/admin) may text the family, so
-    // the permission mirrors who can see the family's message history.
-    const clientSmsMatch = pathname.match(/^\/api\/clients\/(\d+)\/send-sms$/);
-    if (clientSmsMatch && method === "POST") {
-      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientSmsMatch[1]]);
-      if (!client) return json(res, 404, { error: "Not found" });
-      if (!userAssignedToClient(user, client)) {
-        return json(res, 403, { error: "You can only text families assigned to you." });
-      }
-      if (!client.parent_phone) return json(res, 400, { error: "No parent phone number on file." });
-      if (!(client.parent_sms_consent === true || client.parent_sms_consent === "t" || client.parent_sms_consent === "true")) {
-        return json(res, 400, { error: "This parent hasn't consented to text messages yet. Record consent first." });
-      }
-      if (await smsOptedOut(client.parent_phone)) {
-        return json(res, 400, { error: "This parent has opted out of texts (replied STOP)." });
-      }
-      const body = await readBody(req);
-      const text = String(body.body || "").trim();
-      if (!text) return json(res, 400, { error: "Message body is required." });
-      if (text.length > 1000) return json(res, 400, { error: "Message is too long (max 1000 characters)." });
-      const result = await sendSms({
-        to: client.parent_phone,
-        body: text,
-        clientId: client.id,
-        type: "parent_manual_sms",
-        consented: true,
-      });
-      const failed = result.delivered === "failed" || String(result.delivered || "").startsWith("skipped");
-      return json(res, failed ? 502 : 200, {
-        ok: !failed,
-        delivered: result.delivered,
-        error: failed ? result.errorMsg : undefined,
-      });
     }
 
     if (clientMatch && method === "PATCH") {
@@ -5030,17 +4862,10 @@ async function handle(req, res, pathname, method, query = {}) {
         "psi_completed", "psi_date", "vineland_tricare_completed", "vineland_tricare_date",
         // Transportation services provided by Spectrum Squad
         "transportation_services", "transportation_notes",
-        // Parent consent to be texted (TCPA); gate for manual texts from the card.
-        "parent_sms_consent",
+        // parent_sms_consent is deliberately absent: texting is gone, so there
+        // is nothing left to consent to. The stored values stay as the record
+        // of a consent that was given, and are now read-only.
       ];
-      // Stamp when consent is switched on so the audit trail shows the moment a
-      // family agreed to be texted (and clear it when consent is withdrawn).
-      if (Object.prototype.hasOwnProperty.call(updates, "parent_sms_consent")) {
-        const consented = updates.parent_sms_consent === true || updates.parent_sms_consent === "true";
-        updates.parent_sms_consent = consented;
-        updates.parent_sms_consent_at = consented ? nowISO() : null;
-        allowed.push("parent_sms_consent_at");
-      }
       const fields = Object.keys(updates).filter((k) => allowed.includes(k));
       if (fields.length) {
         const setClause = fields.map((f) => `${f} = ?`).join(", ");
@@ -7014,6 +6839,9 @@ function moduleGranted(user, key) {
 const screener = require("./screener")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, PUBLIC_DIR, moduleGranted,
   onCompletion: (...a) => completions.record(...a),
+  // One place decides who should not be chased about intake paperwork, so the
+  // screener and the enrollment packet cannot drift apart on it.
+  intakeChasingPaused,
   // The screener's parent emails are editable templates like every other
   // parent email, rather than strings baked into the module.
   getEmailTemplate: (key) => emailTemplates.getEmailTemplate(key),
@@ -7022,9 +6850,6 @@ const screener = require("./screener")({
 // ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
 const hr = require("./hr")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR, moduleGranted,
-  // SMS (Twilio). sendSms enforces consent + opt-out centrally; the helpers let
-  // HR surface opt-out state and toggle suppression from the candidate page.
-  sendSms, smsOptedOut, recordSmsOptOut, clearSmsOptOut, smsConfigured: () => smsClient.configured(),
   onCompletion: (...a) => completions.record(...a),
   // New-hire employment packet (SignNow). Passed in rather than reimplemented so
   // there is one SignNow client, one token cache, and one place that knows how

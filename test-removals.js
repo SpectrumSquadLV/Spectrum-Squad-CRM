@@ -3,6 +3,7 @@
 // card (restored so staff can send it to parents) -- without breaking anything
 // around them.
 const { chromium } = require("playwright");
+const { openAllCardSections } = require("./card-test-helpers");
 
 (async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
@@ -81,6 +82,9 @@ const { chromium } = require("playwright");
     await page.waitForTimeout(2600);
     const modal = page.locator(".modal-backdrop").last();
     check("client card opened", await modal.isVisible().catch(() => false));
+    // The card's sections fold; a closed one is not rendered, so open them all
+    // before reading the card as text.
+    await openAllCardSections(page);
     const modalText = await modal.innerText().catch(() => "");
     check("'Financial Obligation Form' heading is on the card", /financial obligation/i.test(modalText));
     check("the send-form (co-pay / out-of-pocket) fields are present", /co-pay|out-of-pocket/i.test(modalText), modalText.slice(0, 200));

@@ -55,20 +55,36 @@ const PNG_1PX =
     return page.locator(".modal-backdrop").last();
   };
 
+  // The client card's sections fold now, and a folded <details> is genuinely
+  // not rendered -- innerText skips it and clicks time out. A person opens the
+  // section they want to work in, so the test does too.
+  const openSection = async (key) => {
+    await page.evaluate((k) => {
+      const d = document.querySelector(`.modal-backdrop details.cs[data-cs="${k}"]`);
+      if (d && !d.open) { d.open = true; d.dispatchEvent(new Event("toggle")); }
+    }, key);
+    await page.waitForTimeout(350);
+  };
+
   // ---------------- eligibility button ----------------
   section("The eligibility button with no card on file");
 
   let card = await openCard();
+  await openSection("eligibility");
   const eligBtn = card.locator("#send-eligibility-btn");
   check("the eligibility button is on the card", (await eligBtn.count()) === 1);
   check("it is disabled with no card on file", await eligBtn.isDisabled(), "enabled");
   let text = await card.innerText();
-  check("the card explains why it can't be sent", /No insurance card is on file/i.test(text), text.slice(0, 200));
-  check("and points at the document request", /Request documents from parent/i.test(text));
+  check("the card explains why it can't be sent", /No insurance card on file/i.test(text), text.slice(0, 200));
+  // The longer explanation moved onto the hover icon rather than being deleted.
+  const eligHints = await card.locator(".hint").evaluateAll((hs) => hs.map((h) => h.getAttribute("title")));
+  check("and still points at the document request",
+    eligHints.some((h) => /Documents Requested from Parent/i.test(h || "")), eligHints);
 
   // ---------------- document request ----------------
   section("Requesting documents from the parent");
 
+  await openSection("docrequests");
   const reqSection = card.locator("#doc-request-section");
   check("the client card has a document-request section", (await reqSection.count()) === 1);
   await page.waitForTimeout(1200);
@@ -81,6 +97,7 @@ const PNG_1PX =
   await reqSection.locator("#doc-req-send").click();
   await page.waitForTimeout(3000);
   card = page.locator(".modal-backdrop").last();
+  await openSection("docrequests");
   reqText = await card.locator("#doc-request-section").innerText();
   check("sending reports who it went to", /Sent to uidocs\./i.test(reqText) || /outstanding/i.test(reqText), reqText.slice(0, 300));
 
@@ -138,6 +155,9 @@ const PNG_1PX =
 
   card = await openCard();
   await page.waitForTimeout(1500);
+  await openSection("docrequests");
+  await openSection("eligibility");
+  await openSection("documents");
   reqText = await card.locator("#doc-request-section").innerText();
   check("staff see the request as complete", /All documents received/i.test(reqText), reqText.slice(0, 400));
   check("staff see when each arrived", (reqText.match(/Received /g) || []).length >= 3, reqText.slice(0, 500));
@@ -145,7 +165,7 @@ const PNG_1PX =
   check("the eligibility button is now enabled", !(await card.locator("#send-eligibility-btn").isDisabled()));
   text = await card.innerText();
   check("the card confirms the check was sent", /✓ Sent/.test(text), text.slice(0, 400));
-  check("the no-card warning is gone", !/No insurance card is on file/i.test(text));
+  check("the no-card warning is gone", !/No insurance card on file/i.test(text));
 
   // The upload row's insurance-card checkbox.
   check("the upload row offers an 'is the insurance card' box", (await card.locator("#doc-is-card").count()) === 1);

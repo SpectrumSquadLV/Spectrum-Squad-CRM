@@ -28,6 +28,9 @@ module.exports = function initScreener(ctx) {
   // Optional so this module still loads standalone; a missing recorder must
   // never break a parent's submission.
   const onCompletion = ctx.onCompletion || (() => {});
+  // Who should not be chased about intake paperwork -- intake-chasing.js owns
+  // the rule (waitlisted, in active therapy, or closed out).
+  const chasingPaused = ctx.intakeChasingPaused || require("./intake-chasing").intakeChasingPaused;
   // Editable wording for the two parent-facing screener emails. Optional for
   // the same reason: without them the module falls back to its built-in copy
   // rather than failing to send.
@@ -193,19 +196,19 @@ module.exports = function initScreener(ctx) {
 
   async function tick() {
     // 1. Packet completed + screener not done + no invite yet -> send it.
-    // Waitlisted families are excluded here and in the reminder pass below.
-    // The waitlist email tells them there is nothing to do right now, so the
-    // screener invite waits with them; nothing is lost, because this query
-    // picks them up on the next sweep after they come off.
-    const toSend = await dbAll(
+    // Families who should not be chased are filtered in JS rather than SQL so
+    // the rule lives in exactly one place (chasingPaused), and applies here and
+    // in the reminder pass below. Nothing is lost by skipping: this query picks
+    // a family up again on the next sweep once chasing resumes.
+    const candidates = await dbAll(
       `SELECT c.* FROM clients c
        JOIN enrollment_packets p ON p.client_id = c.id
        WHERE p.status = 'completed'
          AND c.clinical_screener_completed = false
          AND c.parent_email IS NOT NULL
-         AND c.waitlisted = false
          AND NOT EXISTS (SELECT 1 FROM screener_invites si WHERE si.client_id = c.id)`
     );
+    const toSend = candidates.filter((c) => !chasingPaused(c));
     for (const client of toSend) {
       try { await createAndSend(client); }
       catch (e) { console.error("[screener] send failed for client", client.id, e.message); }
@@ -225,7 +228,7 @@ module.exports = function initScreener(ctx) {
       // Paused, not cancelled: the invite stays 'sent' and its reminder count
       // is untouched, so a family who waits a month does not burn through
       // their 30 reminders while nobody is asking them for anything.
-      if (client.waitlisted === true || client.waitlisted === "t") continue;
+      if (chasingPaused(client)) continue;
       const last = inv.last_reminder_at ? new Date(inv.last_reminder_at).getTime() : new Date(inv.sent_at).getTime();
       const hours = (now - last) / (1000 * 60 * 60);
       if (hours >= REMINDER_INTERVAL_HOURS) {
@@ -264,7 +267,11 @@ module.exports = function initScreener(ctx) {
     let autoBlockedReason = null;
     if (!client.parent_email) autoBlockedReason = "No parent email is on file for this family.";
     else if (client.clinical_screener_completed) autoBlockedReason = null;
-    else if (client.waitlisted === true || client.waitlisted === "t") autoBlockedReason = "This family is on the waitlist, so automatic screener emails are paused.";
+    else if (chasingPaused(client)) {
+      // Paused, not blocked: staff can still send it by hand from this screen.
+      autoBlockedReason = require("./intake-chasing").pauseReason(client)
+        + " You can still send it by hand.";
+    }
     else if (!inv && (!packet || packet.status !== "completed")) {
       autoBlockedReason = packet
         ? `The screener sends automatically once the enrollment packet is signed. That packet is currently "${packet.status}".`
