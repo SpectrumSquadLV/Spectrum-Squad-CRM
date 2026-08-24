@@ -84,10 +84,28 @@ check("and no longer carries the old one-line check",
 check("an undetermined status is logged rather than passing silently",
   /\[signnow\] packet .*not complete yet/.test(server));
 // The log line is a diagnostic on a document full of a family's personal
-// details, so it must report the shape and never the contents.
-const logLine = (server.match(/console\.log\(`\[signnow\][\s\S]{0,400}?\);/) || [""])[0];
-check("the diagnostic logs keys and counts, never field values",
-  logLine.includes("Object.keys") && !/\.value|fields\[/.test(logLine), logLine.slice(0, 200));
+// details -- a signed enrollment packet carries names, dates of birth, an
+// address and insurance details. It must say enough to diagnose a mismatch and
+// nothing about the family.
+//
+// This checks the PROPERTY, not one implementation of it: an earlier version of
+// this assertion pinned the exact expression used, and failed the moment the
+// diagnostic was improved while still being perfectly private.
+const logLine = (server.match(/console\.log\(`\[signnow\][\s\S]{0,700}?\);/) || [""])[0];
+check("the diagnostic exists", logLine.length > 0);
+for (const forbidden of [
+  ["field values", /\.value\b/],
+  ["the fields array", /\bfields\[/],
+  ["the document name, which is the child's name", /document_name/],
+  ["the whole response", /JSON\.stringify\(doc\)/],
+  ["signer emails", /signer_email|email/i],
+]) {
+  check(`it does not log ${forbidden[0]}`, !forbidden[1].test(logLine), logLine.slice(0, 260));
+}
+check("it identifies which packet, so a mismatch can be chased",
+  /packet \$\{packet\.id\}/.test(logLine));
+check("and which document, so it can be checked against SignNow",
+  /signnow_document_id/.test(logLine));
 
 console.log(`\n  ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

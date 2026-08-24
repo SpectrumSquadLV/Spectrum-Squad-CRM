@@ -153,6 +153,13 @@ button { font-family: inherit; cursor: pointer; }
 
 .main {
   flex: 1;
+  /* Without this the flex default of min-width:auto refuses to shrink below the
+     widest thing inside, so a wide board (the pipeline's five columns) pushes
+     the whole page wider than the window instead of scrolling inside its own
+     container. Everything to the right of the fold then becomes unreachable --
+     which is how the pipeline's waitlist filter, the last control in its filter
+     row, went missing. */
+  min-width: 0;
   padding: 28px 36px;
   max-width: 1400px;
 }
