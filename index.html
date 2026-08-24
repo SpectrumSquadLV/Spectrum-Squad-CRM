@@ -2384,7 +2384,7 @@ async function openClientModal(id) {
                     t.status !== "completed"
                       ? `<span style="display:flex; align-items:center; gap:6px;">
                            <button class="btn small" data-complete-task="${t.id}" data-task-stage="${t.stage_key || ""}" data-task-label="${t.label || ""}">Mark done</button>
-                           <button class="btn small secondary" data-complete-task="${t.id}" data-task-stage="${t.stage_key || ""}" data-task-label="${t.label || ""}" data-silent="1" title="Record this as already done. Nothing is emailed to the family or to staff — use it when the work happened outside the CRM.">Already done</button>
+                           <button class="btn small secondary" data-already-task="${t.id}" data-task-stage="${t.stage_key || ""}" data-task-label="${t.label || ""}" title="Record this as already done. Nothing is emailed to the family or to staff — use it when the work happened outside the CRM.">Already done</button>
                          </span>`
                       : `<span style="display:flex; align-items:center; gap:8px;">
                            <span class="tag" style="background:#dcfce7; color:#166534;">Completed</span>
@@ -2815,8 +2815,14 @@ async function openClientModal(id) {
     });
   }
 
-  backdrop.querySelectorAll("[data-complete-task]").forEach((btn) => {
+  // Two buttons, two attributes. "Already done" deliberately does NOT reuse
+  // data-complete-task: that selector is used elsewhere (and by tests) to mean
+  // "the button that completes this task", and having it match two elements is
+  // an ambiguity waiting to pick the wrong one.
+  backdrop.querySelectorAll("[data-complete-task], [data-already-task]").forEach((btn) => {
     btn.addEventListener("click", async () => {
+      const taskId = btn.dataset.completeTask || btn.dataset.alreadyTask;
+      const isSilent = !!btn.dataset.alreadyTask;
       // Ticking the authorization task is the moment the treatment plan goes
       // to the payer, and the parent email quotes that date back to them --
       // so ask for it here rather than hoping someone fills it in later.
@@ -2825,7 +2831,7 @@ async function openClientModal(id) {
       // the task and moves the client on, but sends no parent email and no
       // department alert. Confirmed because the absence of an email is the kind
       // of thing nobody notices until a family says they were never told.
-      if (btn.dataset.silent) {
+      if (isSilent) {
         if (!confirm("Mark this as already done?\n\nThe task is ticked and the client moves on as normal, but NO email is sent to the family or to staff for this step.")) return;
         body.silent = true;
       }
@@ -2834,7 +2840,7 @@ async function openClientModal(id) {
         if (date === null) return; // cancelled -- leave the task untouched
         if (date) body.treatment_plan_submitted_date = date;
       }
-      await api(`/api/tasks/${btn.dataset.completeTask}/complete`, { method: "POST", body });
+      await api(`/api/tasks/${taskId}/complete`, { method: "POST", body });
       close();
       await loadClients();
       openClientModal(id);
