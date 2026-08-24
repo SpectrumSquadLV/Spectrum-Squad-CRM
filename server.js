@@ -4194,6 +4194,13 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // PTO add-on owns /api/pto/* (accrual and balances; leave taken still lives
+  // in staff_time_off, which the scheduler owns).
+  if (pathname.startsWith("/api/pto")) {
+    const handled = await pto.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // Supply Requests add-on owns /api/supply/* (public submit/track split enforced
   // internally, so it is dispatched before the global 401 gate below).
   if (pathname.startsWith("/api/supervision")) {
@@ -6856,6 +6863,7 @@ const PUBLIC_FILES = new Set([
   "/ot-frontend.js",
   "/hr-attendance-frontend.js",
   "/billable-frontend.js",
+  "/pto-frontend.js",
   "/supervision-frontend.js",
   "/growth-frontend.js",
   "/supply-requests-frontend.js",
@@ -6952,6 +6960,11 @@ const hr = require("./hr")({
   // time rather than at require time.
   startOnboarding: (employee, actor) => onboarding.startOnboarding(employee, actor),
   onboardingPortalUrl: (token) => onboarding.portalUrl(token),
+});
+// ===== PTO add-on: accrual per hour worked, on top of the existing
+// staff_time_off table (which already records leave taken) =====
+const pto = require("./pto")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting,
 });
 // ===== BILLABLE add-on: per-BCBA monthly requirements + the monthly email =====
 const billable = require("./billable")({
@@ -7257,6 +7270,7 @@ async function start() {
   await attendance.initTables().catch((e) => console.error("Attendance initTables failed:", e));
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
+  await pto.initTables().catch((e) => console.error("PTO initTables failed:", e));
   await supervision.initTables().catch((e) => console.error("Supervision initTables failed:", e));
   await financialAdvisor.initTables().catch((e) => console.error("Financial advisor initTables failed:", e));
   await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
