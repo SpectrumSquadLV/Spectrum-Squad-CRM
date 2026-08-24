@@ -205,6 +205,19 @@
     // the phone, or before the CRM existed. It stops the automatic invite and
     // the daily reminders, which is the point: chasing somebody for a form they
     // have already filled in is the worst message in the chain.
+    var pdfBtn = document.createElement("button");
+    pdfBtn.id = "screener-pdf-btn";
+    pdfBtn.type = "button";
+    pdfBtn.textContent = "⬇ Download PDF";
+    pdfBtn.title = "The screener as a document, with every question the parent was asked and their answer under it.";
+    pdfBtn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#edecf8;color:#1b2a6b;padding:8px 14px;border-radius:10px;cursor:pointer;";
+    pdfBtn.addEventListener("click", function(){
+      // A plain navigation, so the browser handles the download and a 404
+      // ("not completed yet") is shown by the server rather than swallowed.
+      window.open("/api/screener/pdf/" + id, "_blank");
+    });
+    bar.appendChild(pdfBtn);
+
     var doneBtn = document.createElement("button");
     doneBtn.id = "screener-done-btn";
     doneBtn.type = "button";

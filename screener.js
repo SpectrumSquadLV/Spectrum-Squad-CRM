@@ -31,6 +31,9 @@ module.exports = function initScreener(ctx) {
   // Who should not be chased about intake paperwork -- intake-chasing.js owns
   // the rule (waitlisted, in active therapy, or closed out).
   const chasingPaused = ctx.intakeChasingPaused || require("./intake-chasing").intakeChasingPaused;
+  // Optional so the module still loads standalone; without it the flag is still
+  // recorded, only the task is not raised.
+  const createStaffTask = ctx.createStaffTask || (async () => null);
   // Editable wording for the two parent-facing screener emails. Optional for
   // the same reason: without them the module falls back to its built-in copy
   // rather than failing to send.
@@ -256,6 +259,54 @@ module.exports = function initScreener(ctx) {
   // override for exactly that case.
   const MANUAL_RESEND_COOLDOWN_HOURS = 12;
 
+  // The parent has said the child already receives ABA somewhere.
+  //
+  // This matters more than it looks: a child can only be authorised with one
+  // ABA provider at a time, so until a termination letter from the current
+  // provider is in hand, a start date here cannot be honoured. Left unnoticed
+  // it surfaces weeks later as a denied authorisation.
+  //
+  // So the answer becomes two things -- a flag on the record, visible on the
+  // client card, and a task somebody owns. The provider's name is carried onto
+  // the task because a task reading "request a termination letter" without
+  // saying from whom is a task that starts with a phone call to the parent.
+  async function flagExistingAbaProvider(client, body) {
+    const answer = String((body && body.aba) || "").trim().toLowerCase();
+    if (answer !== "yes") return { flagged: false };
+
+    const provider = String((body && body.aba_current_provider) || "").trim().slice(0, 200);
+    await dbRun(
+      `UPDATE clients SET needs_aba_termination_letter = true, current_aba_provider = ?, updated_at = ?
+       WHERE id = ?`,
+      [provider || null, nowISO(), client.id]
+    );
+
+    // Not raised twice if a family submits the screener again. staff_tasks
+    // statuses are open|done, so this looks for one still open -- a letter
+    // already chased and closed should not spawn a fresh chase.
+    const existing = await dbGet(
+      `SELECT id FROM staff_tasks WHERE client_id = ? AND title LIKE 'Request ABA termination letter%'
+         AND COALESCE(status, 'open') = 'open'`,
+      [client.id]
+    ).catch(() => null);
+    if (existing) return { flagged: true, task: "already open" };
+
+    const who = provider || "their current provider";
+    await createStaffTask({
+      title: `Request ABA termination letter — ${client.child_name}`,
+      description:
+        `${client.child_name} is already receiving ABA from ${who} (reported by the parent on the clinical screener).\n\n`
+        + `A child can only be authorised with one ABA provider at a time, so a termination letter from `
+        + `${who} is needed before services can start here. Upload it to the client's Documents when it arrives.`,
+      client_id: client.id,
+      created_by: "clinical screener",
+      priority: "high",
+    }).catch((e) => console.error("[screener] could not raise the termination-letter task:", e.message));
+
+    console.log(`[screener] client ${client.id} already in ABA with ${who} -- flagged and tasked`);
+    return { flagged: true, provider: provider || null };
+  }
+
   async function screenerStatus(clientId) {
     const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
     if (!client) return null;
@@ -426,6 +477,8 @@ module.exports = function initScreener(ctx) {
         dedupeKey: `screener:${inv.id}`,
         link: `${APP_BASE_URL}/#/pipeline/${client.id}`,
       });
+      await flagExistingAbaProvider(client, body).catch((e) =>
+        console.error("[screener] ABA flag failed:", e.message));
       notifyTeam(client, body).catch((e) => console.error("[screener] team notify failed:", e.message));
       json(res, 200, { ok: true });
       return true;
@@ -496,6 +549,89 @@ module.exports = function initScreener(ctx) {
       ).catch((e) => console.error("[screener] note insert failed:", e.message));
       console.log(`[screener] marked already-complete for client ${clientId} by ${actor}`);
       json(res, 200, { ok: true, marked_by: actor, marked_at: nowISO() });
+      return true;
+    }
+
+    // The screener as a document: every question the parent was asked, with
+    // their answer under it, in the order they answered them.
+    //
+    // Asked for because the on-screen viewer shows field names ("Aba: Yes"),
+    // which is no use to a BCBA reading a child's history or to anything that
+    // needs filing. The questions come from the form itself (see
+    // screener-questions.js) so the wording on the PDF is the wording the
+    // parent actually read.
+    const pdfMatch = pathname.match(/^\/api\/screener\/pdf\/(\d+)$/);
+    if (pdfMatch && method === "GET") {
+      if (!user) { json(res, 401, { error: "Not authenticated" }); return true; }
+      if (!canSendScreener(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const clientId = Number(pdfMatch[1]);
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+      if (!client) { json(res, 404, { error: "Client not found" }); return true; }
+      const sub = await dbGet(
+        "SELECT * FROM screener_submissions WHERE client_id = ? ORDER BY submitted_at DESC LIMIT 1",
+        [clientId]
+      );
+      if (!sub) { json(res, 404, { error: "This family has not completed their clinical screener yet." }); return true; }
+
+      let data = {};
+      try { data = JSON.parse(sub.data || "{}"); } catch (e) { data = {}; }
+
+      const { screenerQuestions } = require("./screener-questions");
+      const { buildPdf } = require("./pdf-doc");
+      const questions = screenerQuestions();
+
+      const shown = (v) => {
+        if (Array.isArray(v)) return v.join(", ");
+        if (v === true) return "Yes";
+        if (v === false) return "No";
+        return v == null ? "" : String(v);
+      };
+
+      const blocks = [];
+      // In the form's own order, so the document reads the way the
+      // conversation went rather than however JSON.stringify happened to
+      // order the keys.
+      for (const key of Object.keys(questions)) {
+        if (!(key in data)) continue;
+        const val = shown(data[key]);
+        if (!String(val).trim()) continue;
+        blocks.push({ type: "row", label: questions[key], value: val });
+      }
+
+      // Anything the parent answered that the form no longer asks -- a
+      // question since reworded or removed. Printed rather than dropped: it is
+      // still something a family told us, and silently losing it from a
+      // clinical record is the worse failure.
+      const extras = Object.keys(data).filter(
+        (k) => k.indexOf("_") !== 0 && !(k in questions) && String(shown(data[k])).trim()
+      );
+      if (extras.length) {
+        blocks.push({ type: "space", size: 8 });
+        blocks.push({ type: "heading", text: "Other answers on file" });
+        blocks.push({ type: "text", text: "Recorded against questions the form no longer asks in this wording." });
+        for (const k of extras) blocks.push({ type: "row", label: k, value: shown(data[k]) });
+      }
+
+      if (!blocks.length) blocks.push({ type: "text", text: "The submission is on file but contains no answers." });
+
+      const submitted = sub.submitted_at ? new Date(sub.submitted_at).toLocaleString() : "";
+      const pdf = buildPdf({
+        title: `Clinical Screener — ${client.child_name || "Client"}`,
+        subtitle: [
+          client.parent_name ? `Completed by ${client.parent_name}` : "",
+          submitted ? `Submitted ${submitted}` : "",
+        ].filter(Boolean).join("   ·   "),
+        footer: "Spectrum Squad · Clinical Screener",
+        blocks,
+      });
+
+      const safeName = String(client.child_name || "client").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      res.writeHead(200, {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="Clinical-Screener-${safeName || "client"}.pdf"`,
+        "Content-Length": pdf.length,
+      });
+      res.end(pdf);
       return true;
     }
 

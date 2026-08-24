@@ -2196,6 +2196,9 @@ async function openClientModal(id) {
           <span class="badge" style="background:${stage.color}">${stage.label}</span>
           ${client.waitlisted ? `<span class="badge" style="background:#c98a1b;">⏳ Waitlist</span>` : ""}
           ${client.transportation_services ? `<span class="badge" title="Spectrum Squad provides transportation for this client" style="background:#3f8f89;">🚐 Transportation</span>` : ""}
+          ${client.needs_aba_termination_letter && !client.aba_termination_letter_received_at
+            ? `<span class="badge" title="${ea("The parent reported on the clinical screener that this child already receives ABA" + (client.current_aba_provider ? " from " + client.current_aba_provider : "") + ". A child can only be authorised with one ABA provider at a time, so a termination letter is needed before services can start.")}" style="background:#b45309;">📄 Termination letter needed${client.current_aba_provider ? " — " + ea(client.current_aba_provider) : ""}</span>`
+            : ""}
         </div>
         <button class="close-btn">✕</button>
       </div>

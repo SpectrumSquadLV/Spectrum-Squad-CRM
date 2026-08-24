@@ -83,6 +83,10 @@ textarea{min-height:92px;resize:vertical;line-height:1.5;}
 .reveal{display:none;margin-top:10px;padding-left:2px;}
 .behavior:has(input:checked) .reveal,
 .wrap-reveal:has(input.trigger-yes:checked) .reveal{display:block;animation:slideIn .3s ease;}
+/* The ABA question reveals on BOTH answers, for different reasons: "no" asks
+   about past ABA, "yes" asks who the current provider is. */
+.reveal-yes{display:none;margin-top:10px;padding-left:2px;}
+.wrap-reveal:has(input.trigger-aba-yes:checked) .reveal-yes{display:block;animation:slideIn .3s ease;}
 .mini{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
 .mini input{font-size:14px;padding:9px 11px;}
 .mini .full{grid-column:1/-1;}
@@ -223,10 +227,24 @@ canvas#confetti{position:fixed;inset:0;pointer-events:none;z-index:50;}
       <div class="field wrap-reveal">
         <label class="lbl">ABA services?</label>
         <div class="opts two">
-          <label class="opt"><input type="radio" name="aba" value="Yes">Yes<span class="tick">✓</span></label>
+          <label class="opt"><input class="trigger-aba-yes" type="radio" name="aba" value="Yes">Yes<span class="tick">✓</span></label>
           <label class="opt"><input class="trigger-yes" type="radio" name="aba" value="No">No<span class="tick">✓</span></label>
         </div>
         <div class="reveal"><input type="text" name="aba_past" placeholder="If no — has your child received ABA in the past?" /></div>
+        <!-- Shown when ABA is already being received. A child can only be
+             authorised with one ABA provider at a time, so a termination letter
+             from the current one is needed before services can start. Asking
+             the parent who that is, here, is the difference between a task
+             somebody can action and one that begins "find out who they were
+             with". -->
+        <div class="reveal-yes">
+          <input type="text" name="aba_current_provider" placeholder="Which provider or agency?" />
+          <div style="font-size:12.5px;color:#5b5876;margin-top:8px;line-height:1.45;">
+            We ask because a child can only be authorised with one ABA provider at a time.
+            We will need a termination letter from them before services can start with us —
+            our team will help you with that.
+          </div>
+        </div>
       </div>
       <div class="field wrap-reveal">
         <label class="lbl">Is your child currently in school?</label>

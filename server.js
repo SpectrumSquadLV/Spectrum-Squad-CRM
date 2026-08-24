@@ -483,6 +483,13 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_notes TEXT;
 -- Recorded because somebody will later ask why a family never heard about a
 -- step, and "it was back-filled" is the answer.
 ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS completed_silently BOOLEAN NOT NULL DEFAULT false;
+-- The child is already receiving ABA somewhere else. A child can only be
+-- authorised with one ABA provider at a time, so this blocks a start date until
+-- a termination letter from the current provider is in hand. Captured from the
+-- clinical screener, where the parent is the one who knows.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS current_aba_provider TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS needs_aba_termination_letter BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS aba_termination_letter_received_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS parent_sms_consent BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS parent_sms_consent_at TEXT;
 -- Rename the old Vineland stage task to the In-Clinic Assessment.
@@ -6916,6 +6923,10 @@ const screener = require("./screener")({
   // One place decides who should not be chased about intake paperwork, so the
   // screener and the enrollment packet cannot drift apart on it.
   intakeChasingPaused,
+  // A screener answer can create work (a child already in ABA needs a
+  // termination letter from the current provider), so the module needs the
+  // same task system everything else uses rather than its own.
+  createStaffTask,
   // The screener's parent emails are editable templates like every other
   // parent email, rather than strings baked into the module.
   getEmailTemplate: (key) => emailTemplates.getEmailTemplate(key),
