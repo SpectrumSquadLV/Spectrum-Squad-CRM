@@ -51,7 +51,15 @@
       + '</td>'
       + '<td style="padding:9px 12px;">' + h(r.hours_worked) + '<div style="margin-top:3px;">' + basis + '</div></td>'
       + '<td style="padding:9px 12px;">' + h(r.accrued)
-        + '<div style="font-size:11.5px;color:#6b7280;">at ' + r.rate + '/h</div></td>'
+        + '<div style="font-size:11.5px;color:#6b7280;">at ' + r.rate + '/h'
+          + (r.annual_cap > 0 ? ', cap ' + r.annual_cap + '/yr' : '') + '</div>'
+        // Hours the cap prevented accruing, shown rather than dropped: somebody
+        // will ask why a full year of work produced the cap and not more.
+        + (r.forfeited_to_cap > 0
+            ? '<div style="font-size:11.5px;color:#92400e;" title="Held back by the annual cap.">'
+              + h(r.forfeited_to_cap) + ' above the cap</div>'
+            : "")
+      + '</td>'
       + '<td style="padding:9px 12px;">' + h(r.taken)
         + (r.taken_assumed_days ? '<div style="font-size:11.5px;color:#92400e;">' + r.taken_assumed_days + ' full day(s) assumed at ' + (r.weekly_hours / 5) + ' h</div>' : "")
       + '</td>'
@@ -74,6 +82,12 @@
           ? ' — the Nevada statutory minimum (NRS 608.0197), 40 hours over a 2,080-hour year.'
           : ' (the Nevada statutory minimum is ' + data.statutory_rate + ').')
       + ' Leave taken comes from the existing time-off records. As of ' + esc(data.as_of) + '.</p>'
+      + '<p style="color:var(--text-muted);font-size:13px;margin:0 0 6px;max-width:800px;">'
+      + (data.default_annual_cap > 0
+          ? 'Accrual is capped at <strong>' + data.default_annual_cap + ' hours per benefit year</strong>, counted from each person\'s hire anniversary'
+            + (data.default_annual_cap === data.statutory_cap ? ' — the Nevada maximum.' : '.')
+          : 'Accrual is <strong>not capped</strong>.')
+      + '</p>'
 
       + (estimated
         ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:11px 13px;margin:12px 0;font-size:13px;color:#92400e;">'
@@ -88,6 +102,8 @@
           + '<input type="number" step="0.00001" min="0" id="pto-rate" value="' + data.default_rate + '" style="width:130px;margin-top:3px;" /></label>'
         + '<label style="font-size:13px;">Standard week (hours)<br>'
           + '<input type="number" step="0.5" min="1" max="168" id="pto-weekly" value="' + data.default_weekly_hours + '" style="width:110px;margin-top:3px;" /></label>'
+        + '<label style="font-size:13px;">Annual cap (hours, 0 = none)<br>'
+          + '<input type="number" step="1" min="0" id="pto-cap" value="' + data.default_annual_cap + '" style="width:130px;margin-top:3px;" /></label>'
         + '<button class="btn small" id="pto-save">Save defaults</button>'
         + '<span id="pto-status" style="font-size:12.5px;color:var(--text-muted);"></span>'
       + '</div>'
@@ -122,6 +138,7 @@
         body: {
           rate: MOUNT.querySelector("#pto-rate").value,
           weekly_hours: MOUNT.querySelector("#pto-weekly").value,
+          annual_cap: MOUNT.querySelector("#pto-cap").value,
         },
       }).then(function () {
         save.disabled = false;

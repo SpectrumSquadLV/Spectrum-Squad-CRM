@@ -68,13 +68,51 @@ const near = (a, b, tol = 0.05) => a != null && Math.abs(a - b) <= tol;
 
   // Set the defaults this suite reasons about, so it does not depend on
   // whatever a previous run left behind.
-  await owner("/api/pto/settings", { method: "PUT", body: { rate: 0.01923, weekly_hours: 40 } });
+  await owner("/api/pto/settings", { method: "PUT", body: { rate: 0.01923, weekly_hours: 40, annual_cap: 40 } });
 
   section("The default is the Nevada statutory rate");
   let roster = (await owner("/api/pto/roster")).data;
   check("the roster loads", !!roster && Array.isArray(roster.staff), roster);
   check("the statutory rate is stated", roster.statutory_rate === 0.01923, roster.statutory_rate);
   check("and is the default in use", roster.default_rate === 0.01923, roster.default_rate);
+
+  section("Accrual is capped per benefit year");
+  // Quiana's instruction: cap PTO at 40. Implemented as 40 hours per BENEFIT
+  // YEAR, counted from the hire anniversary -- not as a cap on the balance.
+  // Capping the whole span instead would stop somebody accruing anything at
+  // all after their first year, which is a different and much worse policy.
+  const threeYears = await mk("PTO ThreeYears", { hire: ago(1095), weekly: 40 });
+  let r3 = (await owner("/api/pto/roster")).data;
+  let three = (r3.staff || []).find((x) => x.employee_id === threeYears) || {};
+  check("the cap is reported on the row", three.annual_cap === 40, three.annual_cap);
+  check("three benefit years are counted", three.benefit_years === 3, three.benefit_years);
+  check("three years accrue about three caps, not one",
+    near(three.accrued, 120, 2), { accrued: three.accrued, benefit_years: three.benefit_years });
+  check("and the hours the cap held back are shown, not dropped",
+    three.forfeited_to_cap > 0, three.forfeited_to_cap);
+
+  section("Under the cap, nothing is held back");
+  const halfYear = await mk("PTO HalfYear", { hire: ago(120), weekly: 20 });
+  r3 = (await owner("/api/pto/roster")).data;
+  const half = (r3.staff || []).find((x) => x.employee_id === halfYear) || {};
+  // ~17 weeks x 20 h = ~343 h x 0.01923 = ~6.6 h, well under 40.
+  check("a part year under the cap accrues in full", near(half.accrued, (120 / 7) * 20 * 0.01923, 0.6), half.accrued);
+  check("and forfeits nothing", half.forfeited_to_cap === 0, half.forfeited_to_cap);
+
+  section("The cap can be turned off, and 0 means off rather than unset");
+  await owner("/api/pto/settings", { method: "PUT", body: { annual_cap: 0 } });
+  r3 = (await owner("/api/pto/roster")).data;
+  three = (r3.staff || []).find((x) => x.employee_id === threeYears) || {};
+  check("uncapped accrues the full amount", three.accrued > 120, three.accrued);
+  check("and nothing is reported as forfeited", three.forfeited_to_cap === 0, three.forfeited_to_cap);
+  await owner("/api/pto/settings", { method: "PUT", body: { annual_cap: 40 } });
+
+  section("A person can carry their own cap");
+  await owner(`/api/pto/employee/${threeYears}`, { method: "PUT", body: { annual_cap: 80 } });
+  r3 = (await owner("/api/pto/roster")).data;
+  three = (r3.staff || []).find((x) => x.employee_id === threeYears) || {};
+  check("their own cap is used", three.annual_cap === 80, three.annual_cap);
+  await owner(`/api/pto/employee/${threeYears}`, { method: "PUT", body: { annual_cap: "" } });
 
   section("A salaried person with no timecards is ESTIMATED, and says so");
   // This is the case Quiana actually has: salaried staff who do not clock in.
@@ -158,7 +196,10 @@ const near = (a, b, tol = 0.05) => a != null && Math.abs(a - b) <= tol;
   s = find(custom);
   check("their own rate is used", s.rate === 0.04, s.rate);
   check("their own week is used", s.weekly_hours === 20, s.weekly_hours);
-  check("and the accrual reflects both", near(s.accrued, (364 / 7) * 20 * 0.04, 1), s.accrued);
+  // 52 weeks x 20 h x 0.04 = 41.6 h, which the 40 h cap clips. That the cap
+  // binds here is the point: a per-person rate does not escape the cap.
+  check("and the accrual reflects both, then meets the cap", near(s.accrued, 40, 0.1), s.accrued);
+  check("with the clipped hours reported", near(s.forfeited_to_cap, 1.6, 0.2), s.forfeited_to_cap);
 
   section("No hire date means no invented start");
   const nohire = (await pool.query(
@@ -189,6 +230,11 @@ const near = (a, b, tol = 0.05) => a != null && Math.abs(a - b) <= tol;
     (await owner("/api/pto/settings", { method: "PUT", body: { weekly_hours: 200 } })).status === 400);
   check("nonsense is refused",
     (await owner("/api/pto/settings", { method: "PUT", body: { rate: "lots" } })).status === 400);
+  check("a negative cap is refused",
+    (await owner("/api/pto/settings", { method: "PUT", body: { annual_cap: -1 } })).status === 400);
+  check("but zero is allowed, because it means uncapped",
+    (await owner("/api/pto/settings", { method: "PUT", body: { annual_cap: 0 } })).status === 200);
+  await owner("/api/pto/settings", { method: "PUT", body: { annual_cap: 40 } });
 
   section("It did not build a second time-off system");
   // The rule from the original brief: do not duplicate what exists. Leave

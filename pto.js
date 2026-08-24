@@ -32,6 +32,8 @@
 // Nevada's statutory minimum, and the default. 0.01923 h per hour worked is
 // 40 hours over a 2,080-hour year.
 const NV_STATUTORY_RATE = 0.01923;
+// Nevada permits limiting accrual to 40 hours per benefit year.
+const NV_ANNUAL_CAP = 40;
 
 module.exports = function initPto(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting } = ctx;
@@ -46,6 +48,7 @@ module.exports = function initPto(ctx) {
     await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS pto_accrual_rate NUMERIC").catch(() => {});
     await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS standard_weekly_hours NUMERIC").catch(() => {});
     await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS pto_enrolled BOOLEAN NOT NULL DEFAULT false").catch(() => {});
+    await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS pto_annual_cap NUMERIC").catch(() => {});
 
     // Manual entries: an opening balance carried in from a spreadsheet, a
     // correction, a payout. Kept separate from accrual and usage so a balance
@@ -67,10 +70,43 @@ module.exports = function initPto(ctx) {
     const r = Number(raw);
     return Number.isFinite(r) && r > 0 ? r : NV_STATUTORY_RATE;
   }
+  // The most anyone accrues in one benefit year. Nevada permits an employer to
+  // limit accrual to 40 hours per benefit year, and that is the default.
+  //
+  // 0 means uncapped, and is distinguished from "unset": somebody who
+  // deliberately turns the cap off should not silently get 40 back.
+  async function companyAnnualCap() {
+    const raw = getAppSetting ? await getAppSetting("pto_annual_cap", "") : "";
+    if (String(raw).trim() === "") return NV_ANNUAL_CAP;
+    const c = Number(raw);
+    return Number.isFinite(c) && c >= 0 ? c : NV_ANNUAL_CAP;
+  }
+
   async function companyWeeklyHours() {
     const raw = getAppSetting ? await getAppSetting("pto_standard_weekly_hours", "") : "";
     const h = Number(raw);
     return Number.isFinite(h) && h > 0 ? h : 40;
+  }
+
+  // The benefit years between hire and now, as [start, end] pairs. A benefit
+  // year runs from the hire anniversary, because that is when accrual started;
+  // using the calendar year instead would hand a January hire a full year's cap
+  // for one month of work.
+  function benefitYears(hire, end) {
+    const out = [];
+    let s = hire;
+    while (s <= end) {
+      const d = new Date(s + "T00:00:00Z");
+      d.setUTCFullYear(d.getUTCFullYear() + 1);
+      const nextStart = d.toISOString().slice(0, 10);
+      const yearEnd = nextStart <= end
+        ? new Date(d.getTime() - 86400000).toISOString().slice(0, 10)
+        : end;
+      out.push([s, yearEnd]);
+      s = nextStart;
+      if (out.length > 60) break; // a guard, not a policy
+    }
+    return out;
   }
 
   const daysBetween = (a, b) =>
@@ -177,14 +213,47 @@ module.exports = function initPto(ctx) {
       };
     }
 
-    const worked = await hoursWorked(emp.id, start, end, weekly);
+    const cap = emp.pto_annual_cap == null ? await companyAnnualCap() : num(emp.pto_annual_cap);
+
+    // Accrual is computed PER BENEFIT YEAR, then capped, then summed. Working
+    // out the whole span at once and capping the total would be a different
+    // policy: it would stop somebody accruing anything after their first year.
+    const years = benefitYears(start, end);
+    let accrued = 0;
+    let forfeited = 0;
+    let workedTotal = 0;
+    const bases = new Set();
+    let basisDetail = "";
+    for (const [ys, ye] of years) {
+      const w = await hoursWorked(emp.id, ys, ye, weekly);
+      workedTotal += w.hours;
+      bases.add(w.basis);
+      if (!basisDetail) basisDetail = w.detail;
+      const raw = w.hours * rate;
+      const allowed = cap > 0 ? Math.min(raw, cap) : raw;
+      accrued += allowed;
+      forfeited += Math.max(0, raw - allowed);
+    }
+    accrued = round2(accrued);
+    forfeited = round2(forfeited);
+
+    // Only one basis is reported when the whole span used one. A span covering
+    // both -- timecards in recent years, assumed weeks in older ones -- is
+    // reported as mixed rather than as whichever happened to come last.
+    const basis = bases.size === 1 ? [...bases][0] : "mixed";
+    const worked = {
+      hours: round2(workedTotal),
+      basis,
+      detail: basis === "mixed"
+        ? "Some periods from approved timecards, others from the assumed standard week"
+        : basisDetail,
+    };
+
     const taken = await hoursTaken(emp.id, start, end, weekly);
     const adjRows = await dbAll(
       "SELECT hours, reason, effective_date FROM pto_adjustments WHERE employee_id = ?", [emp.id]
     ).catch(() => []);
     const adjustments = round2(adjRows.reduce((s, a) => s + num(a.hours), 0));
-
-    const accrued = round2(worked.hours * rate);
     return {
       employee_id: emp.id,
       name: emp.name,
@@ -197,6 +266,11 @@ module.exports = function initPto(ctx) {
       hours_basis: worked.basis,          // "timecards" | "standard"
       hours_basis_detail: worked.detail,
       accrued,
+      annual_cap: cap,
+      benefit_years: years.length,
+      // Hours the cap prevented accruing. Shown rather than dropped: somebody
+      // will ask why a full year of work produced 40 hours and not 52.
+      forfeited_to_cap: forfeited,
       taken: taken.hours,
       taken_assumed_days: taken.assumed_days,
       taken_entries: taken.entries,
@@ -214,7 +288,7 @@ module.exports = function initPto(ctx) {
     const emps = await dbAll(
       `SELECT id, name, email, role_title,
               COALESCE(NULLIF(hr_hire_date, ''), NULLIF(hire_date, '')) AS hire_date,
-              pto_accrual_rate, standard_weekly_hours, pto_enrolled
+              pto_accrual_rate, standard_weekly_hours, pto_annual_cap, pto_enrolled
          FROM hr_employees
         WHERE COALESCE(status,'active') <> 'terminated'
         ORDER BY name`
@@ -225,7 +299,9 @@ module.exports = function initPto(ctx) {
       as_of: isDate(to) ? to : today(),
       default_rate: await companyRate(),
       default_weekly_hours: await companyWeeklyHours(),
+      default_annual_cap: await companyAnnualCap(),
       statutory_rate: NV_STATUTORY_RATE,
+      statutory_cap: NV_ANNUAL_CAP,
       staff,
     };
   }
@@ -248,12 +324,18 @@ module.exports = function initPto(ctx) {
           if (!Number.isFinite(r) || r < 0) { json(res, 400, { error: "The accrual rate must be a number of hours per hour worked." }); return true; }
           if (setAppSetting) await setAppSetting("pto_accrual_rate", String(r));
         }
+        if (b && b.annual_cap !== undefined) {
+          const c = Number(b.annual_cap);
+          // 0 is meaningful -- it means uncapped -- so it is allowed through.
+          if (!Number.isFinite(c) || c < 0 || c > 2080) { json(res, 400, { error: "The annual cap must be a number of hours (0 for no cap)." }); return true; }
+          if (setAppSetting) await setAppSetting("pto_annual_cap", String(c));
+        }
         if (b && b.weekly_hours !== undefined) {
           const h = Number(b.weekly_hours);
           if (!Number.isFinite(h) || h <= 0 || h > 168) { json(res, 400, { error: "Standard weekly hours must be between 0 and 168." }); return true; }
           if (setAppSetting) await setAppSetting("pto_standard_weekly_hours", String(h));
         }
-        json(res, 200, { ok: true, rate: await companyRate(), weekly_hours: await companyWeeklyHours() });
+        json(res, 200, { ok: true, rate: await companyRate(), weekly_hours: await companyWeeklyHours(), annual_cap: await companyAnnualCap() });
         return true;
       }
 
@@ -264,7 +346,7 @@ module.exports = function initPto(ctx) {
         if (b && b.pto_enrolled !== undefined) {
           await dbRun("UPDATE hr_employees SET pto_enrolled = ? WHERE id = ?", [b.pto_enrolled === true, id]);
         }
-        for (const [field, col, max] of [["rate", "pto_accrual_rate", 1], ["weekly_hours", "standard_weekly_hours", 168]]) {
+        for (const [field, col, max] of [["rate", "pto_accrual_rate", 1], ["weekly_hours", "standard_weekly_hours", 168], ["annual_cap", "pto_annual_cap", 2080]]) {
           if (b && b[field] !== undefined) {
             const raw = b[field];
             if (raw === null || String(raw).trim() === "") {
@@ -309,6 +391,8 @@ module.exports = function initPto(ctx) {
     }
   }
 
-  return { initTables, handleApi, roster, balanceFor, hoursWorked, hoursTaken, NV_STATUTORY_RATE };
+  return { initTables, handleApi, roster, balanceFor, hoursWorked, hoursTaken, benefitYears,
+           NV_STATUTORY_RATE, NV_ANNUAL_CAP };
 };
 module.exports.NV_STATUTORY_RATE = NV_STATUTORY_RATE;
+module.exports.NV_ANNUAL_CAP = NV_ANNUAL_CAP;
