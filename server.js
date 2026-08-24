@@ -3071,6 +3071,11 @@ async function retryFailedEnrollmentPackets() {
   }
 }
 
+// Reading SignNow's answer to "is this signed yet?" lives in its own module so
+// a test can call the real function -- the bug it fixes was exactly one
+// unverified line. See signnow-status.js.
+const { readSignNowCompletion } = require("./signnow-status");
+
 async function checkEnrollmentPackets() {
   // Polling a document's status needs authentication, not a template. This
   // used to test SIGNNOW_API_KEY, which is empty on every install using the
@@ -3086,11 +3091,19 @@ async function checkEnrollmentPackets() {
     let signNowStatus = null;
     try {
       const doc = await signNowRequest(`/document/${packet.signnow_document_id}`);
-      const invites = doc.field_invites || doc.requests || [];
-      if (invites.some((i) => String(i.status).toLowerCase() === "fulfilled")) {
-        signNowStatus = "completed";
-      } else if (invites.some((i) => String(i.status).toLowerCase() === "declined")) {
-        signNowStatus = "declined";
+      signNowStatus = readSignNowCompletion(doc);
+      if (!signNowStatus) {
+        // Not signed yet -- or a response shape we do not understand. Those two
+        // look identical from here and used to be silently treated as "still
+        // waiting", which is how completed packets sat unnoticed for weeks.
+        // Log the shape (keys only, never field values -- a signed enrollment
+        // packet is full of a family's personal details) so a mismatch shows up
+        // in the logs instead of as a mystery.
+        console.log(`[signnow] packet ${packet.id} not complete yet. `
+          + `keys=${Object.keys(doc || {}).sort().join(",")} `
+          + `field_invites=${(doc.field_invites || []).length} `
+          + `requests=${(doc.requests || []).length} `
+          + `signatures=${(doc.signatures || []).length}`);
       }
     } catch (err) {
       console.error("SignNow status check failed for packet", packet.id, err.message);

@@ -156,6 +156,20 @@ module.exports = function initHrAttendance(ctx) {
   }
 
   // -------------------------------------------------------------- permissions
+  // The effective hire date, as SQL.
+  //
+  // There are two columns. `hire_date` is the original; `hr_hire_date` was
+  // added later and is the one the Staff card writes and the offer-accepted
+  // flow sets. Attendance read only the old one, so for anybody hired through
+  // the app the bonus cycle said "No hire date on file" and never started --
+  // which is exactly the bug this fixes. The Staff card already displays
+  // `hr_hire_date || hire_date`, so this matches what a person sees on screen.
+  //
+  // NULLIF guards the empty string: a cleared date field stores "" rather than
+  // NULL, and COALESCE alone would happily hand back "" as though it were set.
+  const HIRE_DATE_SQL =
+    "COALESCE(NULLIF(hr_hire_date, ''), NULLIF(hire_date, '')) AS hire_date";
+
   function role(user) { return (user && (user.role || user.role_key || "")) || ""; }
   function canManage(user) {
     return ["owner", "super_admin", "admin", "hr_admin"].includes(role(user));
@@ -733,7 +747,7 @@ module.exports = function initHrAttendance(ctx) {
     const byKey = {};
     types.forEach((t) => { byKey[t.key] = t; });
     const emps = await dbAll(
-      "SELECT id, name, role_title, hire_date, status FROM hr_employees ORDER BY name"
+      "SELECT id, name, role_title, " + HIRE_DATE_SQL + ", status FROM hr_employees ORDER BY name"
     ).catch(() => []);
     const already = await dbAll(
       "SELECT imported_from FROM hr_attendance_flags WHERE imported_from IS NOT NULL"
@@ -898,7 +912,7 @@ module.exports = function initHrAttendance(ctx) {
       const listMatch = pathname.match(/^\/api\/attendance\/employee\/(\d+)$/);
       if (listMatch && method === "GET") {
         const empId = Number(listMatch[1]);
-        const emp = await dbGet("SELECT id, name, role_title, hire_date, email FROM hr_employees WHERE id = ?", [empId]);
+        const emp = await dbGet("SELECT id, name, role_title, " + HIRE_DATE_SQL + ", email FROM hr_employees WHERE id = ?", [empId]);
         const rows = await dbAll("SELECT * FROM hr_attendance_flags WHERE employee_id = ? ORDER BY COALESCE(incident_date, created_at) DESC, id DESC", [empId]);
         rows.forEach((r) => { r.has_pdf = !!r.pdf_stored; r.points = r.points == null ? null : num(r.points); delete r.signature; });
         return json(res, 200, {
@@ -914,7 +928,7 @@ module.exports = function initHrAttendance(ctx) {
       // hand out or withhold a $50 bonus by editing a request.
       if (listMatch && method === "POST") {
         const empId = Number(listMatch[1]);
-        const emp = await dbGet("SELECT id, name, email, hire_date FROM hr_employees WHERE id = ?", [empId]);
+        const emp = await dbGet("SELECT id, name, email, " + HIRE_DATE_SQL + " FROM hr_employees WHERE id = ?", [empId]);
         if (!emp) return json(res, 404, { error: "Employee not found" });
         const b = await readBody(req);
 
@@ -985,7 +999,7 @@ module.exports = function initHrAttendance(ctx) {
       if (pathname === "/api/attendance/roster" && method === "GET") {
         const asOf = /^\d{4}-\d{2}-\d{2}$/.test(query.as_of || "") ? query.as_of : today();
         const emps = await dbAll(
-          `SELECT id, name, role_title, hire_date, email, status FROM hr_employees
+          `SELECT id, name, role_title, ${HIRE_DATE_SQL}, email, status FROM hr_employees
             WHERE COALESCE(status,'active') <> 'terminated' ORDER BY name`
         ).catch(() => []);
         const all = await dbAll("SELECT * FROM hr_attendance_flags").catch(() => []);
@@ -1188,7 +1202,7 @@ module.exports = function initHrAttendance(ctx) {
     const asOf = period === today().slice(0, 7) ? today() : lastDayOf(period);
 
     const emps = await dbAll(
-      `SELECT id, name, email, role_title, hire_date FROM hr_employees
+      `SELECT id, name, email, role_title, ${HIRE_DATE_SQL} FROM hr_employees
         WHERE COALESCE(status,'active') <> 'terminated' ORDER BY name`
     ).catch(() => []);
     const all = await dbAll("SELECT * FROM hr_attendance_flags").catch(() => []);
