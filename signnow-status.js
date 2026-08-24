@@ -49,4 +49,37 @@ function readSignNowCompletion(doc) {
   return null;
 }
 
-module.exports = { readSignNowCompletion };
+// The sibling question, asked at SEND time rather than at poll time: did an
+// invite actually get created?
+//
+// This exists because of what the account looked like on 2026-08-24. Five
+// families sat in the CRM as "sent, awaiting signature" against SignNow
+// documents that carried no invite of any kind -- the document had been copied
+// from the template, every field was empty, and nothing had ever been emailed
+// to the parent. The CRM chased them daily for a document they had never
+// received, and the 7-day rule was lined up to close them out for not signing
+// it. Three duplicate copies of one child's packet sat beside it, from retries.
+//
+// The send code could not have noticed: it POSTs the invite, and if that does
+// not throw it records "sent". So the only defence is to read the document
+// back and look.
+//
+//   true  -- an invite exists; the family has been written to
+//   false -- the document is there and carries no invite at all
+//   null  -- could not tell (the read failed, or the shape is unfamiliar)
+//
+// The three-way answer matters: a failed read must not be reported as "no
+// invite", or a blip at SignNow would mark a genuinely-sent packet failed and
+// send the family a second copy.
+function readSignNowInviteDelivered(doc) {
+  if (!doc || typeof doc !== "object") return null;
+  const fieldInvites = Array.isArray(doc.field_invites) ? doc.field_invites : null;
+  const requests = Array.isArray(doc.requests) ? doc.requests : null;
+  // Neither key present at all is a response we do not understand, not a
+  // document without an invite.
+  if (fieldInvites === null && requests === null) return null;
+  if ((fieldInvites || []).length > 0 || (requests || []).length > 0) return true;
+  return false;
+}
+
+module.exports = { readSignNowCompletion, readSignNowInviteDelivered };

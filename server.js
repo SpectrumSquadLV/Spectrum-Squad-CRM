@@ -376,6 +376,17 @@ ALTER TABLE enrollment_packets ADD COLUMN IF NOT EXISTS last_attempt_at TEXT;
 ALTER TABLE enrollment_packets ADD COLUMN IF NOT EXISTS paused_since TEXT;
 ALTER TABLE enrollment_packets ADD COLUMN IF NOT EXISTS paused_ms BIGINT NOT NULL DEFAULT 0;
 
+-- A deliberate, reversible hold on the automated intake-paperwork chasers,
+-- put there by a person for a family the automatic rules cannot spot: the case
+-- it was built for is a packet the CRM believes it sent and SignNow never
+-- delivered, where the family is being chased daily for a document they never
+-- received and would be closed out for not signing it. The timestamp is the
+-- flag; who and why are recorded alongside so the hold can be audited and
+-- safely lifted rather than becoming permanent silence. See intake-chasing.js.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_chasing_paused_at TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_chasing_paused_by TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_chasing_pause_note TEXT;
+
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS insurance_payer TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_start_date TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_expiration_date TEXT;
@@ -2201,7 +2212,8 @@ async function checkOverdueTasks() {
 // they don't need to do anything right now. Every automated "please finish X"
 // message to the parent is therefore held while that is true, and picks back up
 // when they come off -- along with the other cases in intake-chasing.js.
-const { isWaitlisted, intakeChasingPaused } = require("./intake-chasing");
+const { isWaitlisted, intakeChasingPaused, chasingState } = require("./intake-chasing");
+const { packetSweepStep } = require("./packet-clock");
 
 async function processAssessmentReminders() {
   const clients = await dbAll(
@@ -2917,6 +2929,12 @@ async function recordPacketOutcome(clientId, { status, documentId = null, error 
   );
 }
 
+// Reading SignNow's answers -- "is this signed yet?" and, at send time, "did an
+// invite actually get created?" -- lives in its own module so a test can call
+// the real functions. The bug behind the first was exactly one unverified line.
+// See signnow-status.js.
+const { readSignNowCompletion, readSignNowInviteDelivered } = require("./signnow-status");
+
 async function sendEnrollmentPacket(client) {
   if (!signNowConfigured()) {
     const msg = "SignNow is not configured on the server (need SIGNNOW_ENROLLMENT_TEMPLATE_ID plus either the auto-refresh creds SIGNNOW_BASIC_TOKEN/SIGNNOW_USERNAME/SIGNNOW_PASSWORD, or a static SIGNNOW_API_KEY).";
@@ -2931,11 +2949,37 @@ async function sendEnrollmentPacket(client) {
     return { ok: false, status: "blocked", error: msg };
   }
   try {
-    const copy = await signNowRequest(`/template/${SIGNNOW_ENROLLMENT_TEMPLATE_ID}/copy`, {
-      method: "POST",
-      body: JSON.stringify({ document_name: `Enrollment Packet - ${client.child_name}` }),
-    });
-    const documentId = copy.id;
+    // Reuse the copy a previous failed attempt left behind, rather than making
+    // another one. retryFailedEnrollmentPackets() retries a failed packet up to
+    // six times, and each attempt used to copy a fresh document -- which is
+    // where three identical "Enrollment Packet - Valeria Hernandez" documents
+    // came from, none of them ever sent to anybody.
+    //
+    // Only reused when SignNow positively confirms the document is still there
+    // AND still carries no invite. Anything less certain copies fresh:
+    // re-inviting a document that DID get an invite would put a second packet
+    // in front of a family who already had one.
+    let documentId = null;
+    const prior = await dbGet(
+      "SELECT signnow_document_id, status FROM enrollment_packets WHERE client_id = ?", [client.id]);
+    if (prior && prior.signnow_document_id && prior.status === "failed") {
+      const stranded = await signNowRequest(`/document/${prior.signnow_document_id}`).catch(() => null);
+      if (stranded && readSignNowInviteDelivered(stranded) === false) {
+        documentId = prior.signnow_document_id;
+        console.log(`[signnow] reusing the uninvited copy from the last attempt for client ${client.id} doc=${documentId}`);
+      }
+    }
+    if (!documentId) {
+      const copy = await signNowRequest(`/template/${SIGNNOW_ENROLLMENT_TEMPLATE_ID}/copy`, {
+        method: "POST",
+        body: JSON.stringify({ document_name: `Enrollment Packet - ${client.child_name}` }),
+      });
+      documentId = copy.id;
+    }
+    // Carried on the error so the catch below can record which copy was left
+    // behind. Without it a failed invite abandons a real document in the
+    // account with nothing in the CRM pointing at it.
+    const tagDoc = (e) => { e.signNowDocumentId = documentId; throw e; };
     await signNowRequest(`/document/${documentId}/invite`, {
       method: "POST",
       body: JSON.stringify({
@@ -2944,13 +2988,54 @@ async function sendEnrollmentPacket(client) {
         subject: `Please complete ${client.child_name}'s enrollment packet — Spectrum Squad`,
         message: `Hi ${client.parent_name || "there"}, thank you for choosing Spectrum Squad! Please review and complete ${client.child_name}'s New Patient Enrollment Packet using the link below. If you have any questions, just reply to this email.`,
       }),
-    });
+    }).catch(tagDoc);
+    // Read the document back and check an invite really exists before telling
+    // the CRM this family has been written to.
+    //
+    // On 2026-08-24, five families sat at "sent, awaiting signature" against
+    // documents that carried no invite at all -- copied from the template,
+    // every field empty, nothing ever emailed to the parent. They were chased
+    // daily for a document they had never received, and the 7-day rule was
+    // lined up to close them out for not signing it.
+    //
+    // The invite POST above had not thrown, so nothing here could have
+    // noticed. A packet recorded as sent is the trigger for all of that
+    // chasing, so it should mean an invite was observed, not that a request
+    // came back 2xx.
+    let delivered = null;
+    try {
+      delivered = readSignNowInviteDelivered(await signNowRequest(`/document/${documentId}`));
+    } catch (readErr) {
+      console.error(`[signnow] could not verify the invite for client ${client.id} doc=${documentId}: ${readErr.message}`);
+    }
+
+    if (delivered === false) {
+      // The document exists and has no invite on it. Recorded as failed WITH
+      // the document id, so the copy is traceable rather than orphaned in the
+      // account -- three duplicate copies of one child's packet came from
+      // retries that each dropped the id they had just created.
+      const msg = "SignNow accepted the invite request but no invite exists on the document, so nothing reached the family.";
+      console.error(`[signnow] packet not delivered for client ${client.id} doc=${documentId} -- ${msg}`);
+      await recordPacketOutcome(client.id, { status: "failed", documentId, error: msg }).catch(() => {});
+      return { ok: false, status: "failed", documentId, error: msg };
+    }
+
     await recordPacketOutcome(client.id, { status: "sent", documentId });
-    console.log(`Enrollment packet sent to ${client.parent_email} for client ${client.id}`);
-    return { ok: true, status: "sent", documentId };
+    // `delivered === null` means the check itself could not be made, not that
+    // the invite is missing -- failing the send on a blip at SignNow would send
+    // a second copy to a family who already had one. It is recorded as sent and
+    // the uncertainty is logged.
+    console.log(`Enrollment packet sent for client ${client.id} doc=${documentId}`
+      + (delivered === true ? " invite=confirmed" : " invite=unverified"));
+    return { ok: true, status: "sent", documentId, inviteVerified: delivered === true };
   } catch (err) {
     console.error("Failed to send enrollment packet for client", client.id, err.message);
-    await recordPacketOutcome(client.id, { status: "failed", error: err.message }).catch(() => {});
+    // The document id when there is one: a failed send that drops it leaves the
+    // copy stranded in SignNow with nothing pointing at it, which is how the
+    // duplicates accumulated.
+    await recordPacketOutcome(client.id, {
+      status: "failed", documentId: err.signNowDocumentId || null, error: err.message,
+    }).catch(() => {});
     return { ok: false, status: "failed", error: err.message };
   }
 }
@@ -3099,11 +3184,6 @@ async function retryFailedEnrollmentPackets() {
   }
 }
 
-// Reading SignNow's answer to "is this signed yet?" lives in its own module so
-// a test can call the real function -- the bug it fixes was exactly one
-// unverified line. See signnow-status.js.
-const { readSignNowCompletion } = require("./signnow-status");
-
 async function checkEnrollmentPackets() {
   // Polling a document's status needs authentication, not a template. This
   // used to test SIGNNOW_API_KEY, which is empty on every install using the
@@ -3169,36 +3249,28 @@ async function checkEnrollmentPackets() {
       continue;
     }
 
-    // Families we should not be chasing are not reminded AND not timed out --
-    // see intakeChasingPaused(). The clock is genuinely stopped, not just
-    // quiet: suppressing the reminder alone would still let the 7-day rule
-    // move them to "not moving forward", which for a client already in active
-    // therapy would close out a family mid-treatment over a stale packet row.
+    // What to do with this packet -- reminder, expiry, or leave it alone -- is
+    // decided by packet-clock.js. It is the part of this sweep with teeth (it
+    // emails families and closes them out), and keeping it out here, wrapped
+    // in a SignNow call, meant it could only ever be tested by copying it.
     const packetClient = await dbGet("SELECT * FROM clients WHERE id = ?", [packet.client_id]);
-    if (intakeChasingPaused(packetClient)) {
-      if (!packet.paused_since) {
+    const step = packetSweepStep({ packet, client: packetClient, now });
+
+    if (step.action === "hold") {
+      if (step.startPause) {
         await dbRun("UPDATE enrollment_packets SET paused_since = ? WHERE id = ?", [nowISO(), packet.id]);
       }
       continue;
     }
-    if (packet.paused_since) {
-      // Came off the waitlist since the last sweep: bank the paused time and
-      // carry on from where the clock stopped.
-      const pausedFor = Math.max(0, now - new Date(packet.paused_since).getTime());
-      await dbRun("UPDATE enrollment_packets SET paused_since = NULL, paused_ms = paused_ms + ? WHERE id = ?", [pausedFor, packet.id]);
-      packet.paused_ms = Number(packet.paused_ms || 0) + pausedFor;
+
+    // Time spent held is banked before anything else acts on the packet's age.
+    if (step.bankMs !== null) {
+      await dbRun("UPDATE enrollment_packets SET paused_since = NULL, paused_ms = ? WHERE id = ?", [step.bankMs, packet.id]);
+      packet.paused_ms = step.bankMs;
       packet.paused_since = null;
     }
 
-    const sentAt = new Date(packet.sent_at).getTime();
-    const pausedMs = Number(packet.paused_ms || 0);
-    // Clamped: if paused_ms ever exceeded the real elapsed time -- a clock
-    // change, or a pause recorded against a re-sent packet -- the packet reads
-    // as brand new rather than as a negative age, which errs towards giving
-    // the family more time instead of less.
-    const daysSinceSent = Math.max(0, now - sentAt - pausedMs) / (1000 * 60 * 60 * 24);
-
-    if (daysSinceSent >= 7) {
+    if (step.action === "expire") {
       const client = packetClient;
       if (client && client.stage !== "not_moving_forward" && client.stage !== "discharged") {
         await dbRun(
@@ -3210,9 +3282,7 @@ async function checkEnrollmentPackets() {
       continue;
     }
 
-    const lastReminder = packet.last_reminder_at ? new Date(packet.last_reminder_at).getTime() : sentAt;
-    const hoursSinceReminder = (now - lastReminder) / (1000 * 60 * 60);
-    if (hoursSinceReminder >= 24) {
+    if (step.action === "remind") {
       const client = packetClient;
       if (client && client.parent_email) {
         const template = await emailTemplates.getEmailTemplate("enrollment_packet_reminder");
@@ -4899,6 +4969,11 @@ async function handle(req, res, pathname, method, query = {}) {
         documents,
         enrollmentPacket: enrollmentPacket || null,
         signnowConfigured: signNowConfigured(),
+        // Derived by intake-chasing.js rather than by the card, so the screen
+        // and the sweeps can never disagree about whether a family is being
+        // chased. The card used to work this out from `waitlisted` alone,
+        // which was already one copy of the rule too many.
+        intakeChasing: chasingState(client),
       });
     }
 
@@ -4938,6 +5013,90 @@ async function handle(req, res, pathname, method, query = {}) {
       ).catch((e) => console.error("packet note insert failed:", e.message));
       console.log(`[packet] client ${clientId} marked already-complete by ${actor}`);
       return json(res, 200, { ok: true, marked_by: actor, marked_at: nowISO() });
+    }
+
+    // Put the automated intake chasers on hold for one family, or take them
+    // off it. Owner/admin/intake only -- the same people who may send or
+    // already-complete a packet.
+    //
+    // This exists because the automatic rules can only see things the CRM
+    // knows: a stage, a waitlist flag. They cannot see that a packet the CRM
+    // believes it sent was never actually delivered, which is the case it was
+    // built for. Left alone, such a family is emailed daily about a document
+    // they never received and then closed out by the 7-day rule for not
+    // signing it.
+    //
+    // Deliberately NOT the waitlist. Putting somebody on the waitlist to
+    // silence them would move them on the board, badge them as waiting for a
+    // place they are not waiting for, and email them to say so.
+    const chasingHoldMatch = pathname.match(/^\/api\/clients\/(\d+)\/intake-chasing$/);
+    if (chasingHoldMatch && method === "POST") {
+      if (!["owner", "super_admin", "admin", "intake"].includes(user.role)) {
+        return json(res, 403, { error: "Not permitted" });
+      }
+      const clientId = Number(chasingHoldMatch[1]);
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+      if (!client) return json(res, 404, { error: "Not found" });
+
+      const body = await readBody(req);
+      const wantHold = body.on_hold !== false; // default: place the hold
+      const note = String(body.note || "").trim().slice(0, 500) || null;
+      const actor = user.email || "staff";
+
+      if (wantHold) {
+        // Idempotent: holding a family who is already held keeps the original
+        // date and the original holder. Overwriting them would move "Held 24
+        // August" forward every time somebody pressed it, which is the one
+        // thing the record is there to answer. A new note is taken; the absence
+        // of one does not erase the note already there.
+        await dbRun(
+          `UPDATE clients SET
+             intake_chasing_paused_at  = COALESCE(NULLIF(intake_chasing_paused_at, ''), ?),
+             intake_chasing_paused_by  = COALESCE(NULLIF(intake_chasing_paused_by, ''), ?),
+             intake_chasing_pause_note = COALESCE(?, intake_chasing_pause_note),
+             updated_at = ?
+           WHERE id = ?`,
+          [nowISO(), actor, note, nowISO(), clientId]
+        );
+        // Stop the packet's 7-day clock at the moment somebody clicked, not at
+        // the next hourly sweep. The sweep would bank it anyway, but the button
+        // says the deadline stops now and it should be true when they read it.
+        // Only when no pause is already open, so an existing one is not lost.
+        await dbRun(
+          "UPDATE enrollment_packets SET paused_since = ? WHERE client_id = ? AND status = 'sent' AND paused_since IS NULL",
+          [nowISO(), clientId]
+        ).catch((e) => console.error("packet clock pause failed:", e.message));
+      } else {
+        await dbRun(
+          `UPDATE clients SET intake_chasing_paused_at = NULL, intake_chasing_paused_by = NULL,
+                              intake_chasing_pause_note = NULL, updated_at = ?
+             WHERE id = ?`,
+          [nowISO(), clientId]
+        );
+        // The banking of the paused time is left to the sweep, which already
+        // does it correctly for the waitlist and would otherwise be a second
+        // copy of that arithmetic here.
+      }
+
+      // Written to the case notes, not only to the columns: a hold that stops
+      // a family being contacted is a decision about that family, and it should
+      // be readable in the same place as every other one.
+      await dbRun(
+        `INSERT INTO client_notes (client_id, author_name, body, created_at) VALUES (?, ?, ?, ?)`,
+        [clientId, actor,
+         wantHold
+           ? "Automatic intake reminders put on hold." + (note ? " Reason: " + note : "")
+           : "Automatic intake reminders taken off hold.",
+         nowISO()]
+      ).catch((e) => console.error("chasing hold note insert failed:", e.message));
+
+      console.log(`[intake-chasing] client ${clientId} ${wantHold ? "held" : "released"} by ${actor}`);
+      const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+      return json(res, 200, {
+        ok: true,
+        client: authAlerts.sanitizeClientForRole(user, updated),
+        intakeChasing: chasingState(updated),
+      });
     }
 
     const packetSendMatch = pathname.match(/^\/api\/clients\/(\d+)\/enrollment-packet\/send$/);

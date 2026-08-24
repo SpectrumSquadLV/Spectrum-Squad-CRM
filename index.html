@@ -1407,7 +1407,7 @@ async function renderPipeline(mount) {
         ${clients
           .map(
             (c) => `<div class="client-card" draggable="true" style="border-left-color:${phase.color}" data-client="${c.id}">
-              <div class="name">${c.child_name} ${c.waitlisted ? `<span class="tag" style="background:#fef3c7; color:#92400e;">⏳ Waitlist</span>` : ""}</div>
+              <div class="name">${c.child_name} ${c.waitlisted ? `<span class="tag" style="background:#fef3c7; color:#92400e;">⏳ Waitlist</span>` : ""}${c.intake_chasing_paused_at ? `<span class="tag" title="Automatic intake reminders are on hold for this family." style="background:#e5e7eb; color:#374151;">⏸️ On hold</span>` : ""}</div>
               <div class="meta">${c.parent_name || "—"} · ${c.service_location || "—"}</div>
               <div class="tags">
                 ${multi ? `<span class="tag" style="background:#eef2ff; color:#3f56b5;">${stageLabelOf(c.stage)}</span>` : ""}
@@ -2186,6 +2186,10 @@ async function openClientModal(id) {
   const commsRestricted = !!data.communications_restricted;
   const enrollmentPacket = data.enrollmentPacket || null;
   const signnowConfigured = data.signnowConfigured;
+  // Worked out by intake-chasing.js on the server -- the same function the
+  // sweeps consult -- so this card cannot disagree with what is actually
+  // happening to the family.
+  const chasing = data.intakeChasing || { paused: false, on_hold: false };
   const sMap = stageMap();
   const stage = sMap[client.stage] || {};
   // A closed-out record swaps the close-out buttons for the Reactivate panel.
@@ -2214,6 +2218,7 @@ async function openClientModal(id) {
           <h2>${client.child_name}</h2>
           <span class="badge" style="background:${stage.color}">${stage.label}</span>
           ${client.waitlisted ? `<span class="badge" style="background:#c98a1b;">⏳ Waitlist</span>` : ""}
+          ${chasing.on_hold ? `<span class="badge" title="${ea("Automatic intake reminders are on hold for this family. Nothing is being emailed to them about the enrollment packet or the clinical screener, and the 7-day packet deadline is stopped.")}" style="background:#6b7280;">⏸️ Reminders on hold</span>` : ""}
           ${client.transportation_services ? `<span class="badge" title="Spectrum Squad provides transportation for this client" style="background:#3f8f89;">🚐 Transportation</span>` : ""}
           ${client.needs_aba_termination_letter && !client.aba_termination_letter_received_at
             ? `<span class="badge" title="${ea("The parent reported on the clinical screener that this child already receives ABA" + (client.current_aba_provider ? " from " + client.current_aba_provider : "") + ". A child can only be authorised with one ABA provider at a time, so a termination letter is needed before services can start.")}" style="background:#b45309;">📄 Termination letter needed${client.current_aba_provider ? " — " + ea(client.current_aba_provider) : ""}</span>`
@@ -2221,6 +2226,15 @@ async function openClientModal(id) {
         </div>
         <button class="close-btn">✕</button>
       </div>
+
+      ${chasing.on_hold ? `
+      <div style="background:#f3f4f6; border:1px solid #d1d5db; border-left:4px solid #6b7280; border-radius:8px; padding:11px 13px; margin:0 0 12px; font-size:13px; color:#374151;">
+        <strong>⏸️ Automatic intake reminders are on hold.</strong>
+        Nothing is being emailed to this family about the enrollment packet or the clinical screener, and the 7-day packet
+        deadline is stopped — they can't be closed out for not signing while the hold is on.
+        ${chasing.held_at ? `<div style="margin-top:5px; font-size:12.5px; color:#6b7280;">Held ${fmtDate(chasing.held_at)}${chasing.held_by ? ` by ${ea(chasing.held_by)}` : ""}${chasing.note ? ` — ${ea(chasing.note)}` : ""}</div>` : ""}
+        <div style="margin-top:8px;"><button class="btn small secondary" id="chasing-resume-btn">Resume reminders</button></div>
+      </div>` : ""}
 
       ${clientDetailsHtml(client, clientDetailsEditing)}
 
@@ -2310,8 +2324,18 @@ async function openClientModal(id) {
             ${p && p.attempts ? `<span style="font-size:12px;color:var(--text-muted);">${p.attempts} attempt(s)</span>` : ""}
             <button class="btn small secondary" id="send-packet-btn">${p && p.status === "sent" ? "Resend" : "Send now"}</button>
             ${p && p.status === "completed" ? "" : `<button class="btn small secondary" id="packet-already-btn" title="For a family who signed on paper, or in SignNow before the CRM was watching. Stops the daily chase and releases the clinical screener.">Already signed</button>`}
+            ${chasing.on_hold ? "" : `<button class="btn small secondary" id="chasing-hold-btn" title="${ea("Stops the daily reminder emails to this family about the enrollment packet and the clinical screener, and stops the 7-day packet deadline. Nothing is sent or cancelled in SignNow. Use this when a packet is stuck and the family shouldn't be chased for it.")}">⏸️ Pause reminders</button>`}
             <span id="send-packet-result" style="font-size:12px; color:var(--text-muted);"></span>
-          </div>${detail}${cfgWarn}`, { chip });
+          </div>${detail}${cfgWarn}${
+            chasing.on_hold
+              ? `<div style="font-size:12px; color:#6b7280; margin-top:6px;">⏸️ Reminders for this family are on hold — see the note at the top of this card.</div>`
+              : chasing.paused
+                ? `<div style="font-size:12px; color:#946213; margin-top:6px;">⏸️ ${ea(chasing.reason || "")}</div>`
+                : ""
+          }`, { chip,
+          // A stuck packet with the chase held is exactly the state somebody
+          // needs to see without hunting for it.
+          defaultOpen: chasing.on_hold && !!p && p.status === "sent" });
       })()}
 
       ${cs("documents", "📎", "Documents", `${
@@ -2887,6 +2911,58 @@ async function openClientModal(id) {
       }
     });
   });
+
+  // Holding and releasing the automated intake chasers. Deliberately separate
+  // from the waitlist: this changes nothing about where the family sits in the
+  // pipeline and sends them nothing at all -- it only stops the CRM contacting
+  // them about paperwork, and stops the deadline that would close them out.
+  const chasingHoldBtn = backdrop.querySelector("#chasing-hold-btn");
+  if (chasingHoldBtn) {
+    chasingHoldBtn.addEventListener("click", async () => {
+      const note = await askReason("Pause intake reminders", "Why (optional — visible to staff only, never sent to the family)");
+      if (note === null) return; // cancelled
+      if (!confirm(`Pause automatic intake reminders for ${client.child_name}?\n\n`
+        + "• No more daily emails about the enrollment packet or the clinical screener\n"
+        + "• The 7-day packet deadline stops, so they can't be closed out for not signing\n"
+        + "• Nothing is sent, cancelled or changed in SignNow\n\n"
+        + "You can resume from this card at any time.")) return;
+      try {
+        await api(`/api/clients/${id}/intake-chasing`, { method: "POST", body: { on_hold: true, note } });
+        // Reopen the card rather than close()ing it: close() drops back to the
+        // board, which would hide the notice they just created. Removing this
+        // backdrop first matters -- openClientModal appends a new one and does
+        // not clear the old, so re-opening over the top stacks two cards and
+        // the buttons on the visible one stop responding.
+        backdrop.remove();
+        await loadClients();
+        await openClientModal(id);
+      } catch (e) {
+        alert("Could not pause reminders: " + e.message);
+      }
+    });
+  }
+
+  const chasingResumeBtn = backdrop.querySelector("#chasing-resume-btn");
+  if (chasingResumeBtn) {
+    chasingResumeBtn.addEventListener("click", async () => {
+      // If a stage or the waitlist would keep them paused anyway, say so before
+      // the click rather than leaving somebody to wonder why nothing changed.
+      const stillPaused = chasing.still_paused_without_hold
+        ? "\n\nNote: reminders will still be paused after this — " + (chasing.automatic_reason || "")
+        : "";
+      if (!confirm(`Resume automatic intake reminders for ${client.child_name}?\n\n`
+        + "The daily emails start again and the 7-day packet deadline restarts with the time they had left "
+        + "when it was paused — not from zero." + stillPaused)) return;
+      try {
+        await api(`/api/clients/${id}/intake-chasing`, { method: "POST", body: { on_hold: false } });
+        backdrop.remove();
+        await loadClients();
+        await openClientModal(id);
+      } catch (e) {
+        alert("Could not resume reminders: " + e.message);
+      }
+    });
+  }
 
   const waitlistAddBtn = backdrop.querySelector("#waitlist-add-btn");
   if (waitlistAddBtn) {
