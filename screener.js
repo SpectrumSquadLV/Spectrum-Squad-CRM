@@ -461,6 +461,44 @@ module.exports = function initScreener(ctx) {
       return true;
     }
 
+    // "This was already done." Marks the screener complete without sending the
+    // parent anything -- for families who completed it before the CRM existed,
+    // or on paper, or over the phone. It stops the automatic invite and the
+    // daily reminders, which is the whole point: the alternative is a family
+    // being chased for a form they have already filled in.
+    //
+    // Deliberately NOT the same as a submission: no answers are invented, and
+    // the screener submission list stays empty for this client rather than
+    // gaining a fabricated row. What is recorded is exactly what is known --
+    // that somebody marked it done, who, and when.
+    const markMatch = pathname.match(/^\/api\/screener\/mark-complete\/(\d+)$/);
+    if (markMatch && method === "POST") {
+      if (!user) { json(res, 401, { error: "Not authenticated" }); return true; }
+      if (!canSendScreener(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const clientId = Number(markMatch[1]);
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+      if (!client) { json(res, 404, { error: "Client not found" }); return true; }
+      const actor = user.email || user.name || "staff";
+      let body = {};
+      try { body = (await readBody(req)) || {}; } catch (e) { body = {}; }
+      const note = String(body.note || "").trim().slice(0, 500);
+
+      await dbRun("UPDATE clients SET clinical_screener_completed = true, updated_at = ? WHERE id = ?",
+        [nowISO(), clientId]);
+      // Any outstanding invite stops here, so no more reminders go out.
+      await dbRun(
+        "UPDATE screener_invites SET status = 'completed', completed_at = ? WHERE client_id = ? AND status = 'sent'",
+        [nowISO(), clientId]
+      ).catch(() => {});
+      await dbRun(
+        `INSERT INTO client_notes (client_id, author_name, body, created_at) VALUES (?, ?, ?, ?)`,
+        [clientId, actor, `Clinical screener marked as already completed.${note ? " " + note : ""}`, nowISO()]
+      ).catch((e) => console.error("[screener] note insert failed:", e.message));
+      console.log(`[screener] marked already-complete for client ${clientId} by ${actor}`);
+      json(res, 200, { ok: true, marked_by: actor, marked_at: nowISO() });
+      return true;
+    }
+
     // Staff view of a client's submission (auth required).
     if (pathname.startsWith("/api/screener/submission/") && method === "GET") {
       if (!user) { json(res, 401, { error: "Not authenticated" }); return true; }

@@ -478,6 +478,11 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_notes TEXT;
 -- since been removed, but these columns stay: a consent a family gave is a
 -- record about them, not a feature flag, and deleting it would destroy the
 -- evidence that it was properly obtained.
+-- A task ticked as "already done" rather than done now: the work happened
+-- outside the CRM, so no parent email or department alert was sent for it.
+-- Recorded because somebody will later ask why a family never heard about a
+-- step, and "it was back-filled" is the answer.
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS completed_silently BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS parent_sms_consent BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS parent_sms_consent_at TEXT;
 -- Rename the old Vineland stage task to the In-Clinic Assessment.
@@ -1926,7 +1931,13 @@ function getStage(key) {
 // Create the task(s) required for a given stage, due `sla_days` business days
 // from now, and fire the department alert email that tells staff a client
 // needs attention at this stage.
-async function enterStage(clientId, stageKey) {
+// `silent` records the stage move without telling anybody about it. That is
+// for catching the CRM up on work that already happened outside it: emailing a
+// family a "welcome to the next step" for a step they completed a fortnight
+// ago is worse than not emailing at all, and the department alert asks staff to
+// action something already actioned. The move, the tasks and the history are
+// all still written -- only the outbound messages are held.
+async function enterStage(clientId, stageKey, { silent = false } = {}) {
   const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
   if (!client) return;
 
@@ -1971,17 +1982,19 @@ async function enterStage(clientId, stageKey) {
         task_label: task.label,
         due_date: new Date(dueDate).toLocaleDateString(),
       };
-      sendEmail({
-        to: dept.notify_email,
-        subject: emailTemplates.renderMergeFields(template.subject_template, fields),
-        html: emailTemplates.renderMergeFields(template.body_template, fields),
-        clientId,
-        type: "department_alert",
-      }).catch((e) => console.error("sendEmail failed:", e));
+      if (!silent) {
+        sendEmail({
+          to: dept.notify_email,
+          subject: emailTemplates.renderMergeFields(template.subject_template, fields),
+          html: emailTemplates.renderMergeFields(template.body_template, fields),
+          clientId,
+          type: "department_alert",
+        }).catch((e) => console.error("sendEmail failed:", e));
+      }
     }
   }
 
-  await sendParentMilestone(client, stageKey);
+  if (!silent) await sendParentMilestone(client, stageKey);
 }
 
 // Stages that trigger a parent-facing milestone email, mapped to the template
@@ -2060,6 +2073,14 @@ async function completeTask(taskId, completedByUserId, opts = {}) {
   // so a task that is reopened still shows when it had been ticked.
   await dbRun("UPDATE client_tasks SET status = 'completed', completed_at = ?, last_completed_at = ? WHERE id = ?", [nowISO(), nowISO(), taskId]);
 
+  // Marked as already-done rather than done-now. Recorded on the row, because
+  // "no email went out for this one" is a fact somebody will need later when
+  // they wonder why a family never heard about a step.
+  const silent = opts.silent === true;
+  if (silent) {
+    await dbRun("UPDATE client_tasks SET completed_silently = TRUE WHERE id = ?", [taskId]).catch(() => {});
+  }
+
   const taskLabel = await dbGet("SELECT label, stage_key FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
 
   // Ticking "Submit Authorization Request" is the moment the treatment plan
@@ -2105,7 +2126,7 @@ async function completeTask(taskId, completedByUserId, opts = {}) {
 
   if (Number(remaining.n) === 0) {
     const next = nextStageKey(client.stage);
-    if (next) await enterStage(client.id, next);
+    if (next) await enterStage(client.id, next, { silent });
   }
 
   return { ok: true };
@@ -4850,6 +4871,43 @@ async function handle(req, res, pathname, method, query = {}) {
     }
 
     // Manually (re)send the enrollment packet for a client. Owner/admin only.
+    // "This packet is already signed." For a family who signed on paper, or in
+    // SignNow before the CRM was watching. Marking it stops the daily chase and
+    // releases everything gated on packet completion -- notably the clinical
+    // screener, which fires on exactly this.
+    const packetDoneMatch = pathname.match(/^\/api\/clients\/(\d+)\/enrollment-packet\/mark-complete$/);
+    if (packetDoneMatch && method === "POST") {
+      if (!["owner", "super_admin", "admin", "intake"].includes(user.role)) {
+        return json(res, 403, { error: "Not permitted" });
+      }
+      const clientId = Number(packetDoneMatch[1]);
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      const actor = user.email || "staff";
+      const existing = await dbGet("SELECT * FROM enrollment_packets WHERE client_id = ?", [clientId]);
+      if (existing) {
+        await dbRun("UPDATE enrollment_packets SET status = 'completed', completed_at = ? WHERE id = ?",
+          [nowISO(), existing.id]);
+      } else {
+        // No packet was ever sent from here -- the family signed elsewhere. A
+        // row is still written so the rest of the system (the screener trigger,
+        // the card, the sweep) sees a completed packet rather than none at all.
+        // The document id is null, which is honest: there is no SignNow
+        // document behind this one.
+        await dbRun(
+          `INSERT INTO enrollment_packets (client_id, signnow_document_id, status, sent_at, completed_at)
+           VALUES (?, NULL, 'completed', ?, ?)`,
+          [clientId, nowISO(), nowISO()]
+        );
+      }
+      await dbRun(
+        `INSERT INTO client_notes (client_id, author_name, body, created_at) VALUES (?, ?, ?, ?)`,
+        [clientId, actor, "Enrollment packet marked as already completed.", nowISO()]
+      ).catch((e) => console.error("packet note insert failed:", e.message));
+      console.log(`[packet] client ${clientId} marked already-complete by ${actor}`);
+      return json(res, 200, { ok: true, marked_by: actor, marked_at: nowISO() });
+    }
+
     const packetSendMatch = pathname.match(/^\/api\/clients\/(\d+)\/enrollment-packet\/send$/);
     if (packetSendMatch && method === "POST") {
       if (!["owner", "super_admin", "admin", "intake"].includes(user.role)) {
@@ -5741,6 +5799,9 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const body = await readBody(req).catch(() => ({}));
       const result = await pipeline.completeTask(completeTaskMatch[1], user.id, {
         treatment_plan_submitted_date: body && body.treatment_plan_submitted_date,
+        // "Already done": tick it, tell nobody. For catching the CRM up on work
+        // that happened outside it.
+        silent: !!(body && body.silent),
       });
       return json(res, result.ok ? 200 : 400, result);
     }

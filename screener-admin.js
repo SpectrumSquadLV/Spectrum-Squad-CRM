@@ -201,6 +201,18 @@
     sendBtn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#1b2a6b;color:#fff;padding:8px 14px;border-radius:10px;cursor:pointer;";
     bar.appendChild(sendBtn);
 
+    // "Already done" -- for a family who completed the screener on paper, over
+    // the phone, or before the CRM existed. It stops the automatic invite and
+    // the daily reminders, which is the point: chasing somebody for a form they
+    // have already filled in is the worst message in the chain.
+    var doneBtn = document.createElement("button");
+    doneBtn.id = "screener-done-btn";
+    doneBtn.type = "button";
+    doneBtn.textContent = "✓ Already done";
+    doneBtn.title = "Record the screener as already completed. Nothing is emailed to the family, and the reminders stop.";
+    doneBtn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#eef0f4;color:#3b4252;padding:8px 14px;border-radius:10px;cursor:pointer;";
+    bar.appendChild(doneBtn);
+
     var strip = document.createElement("div");
     strip.id = "screener-status-strip";
     strip.style.cssText = "flex-basis:100%;font-size:12px;color:#5b5876;display:flex;flex-wrap:wrap;gap:8px;align-items:center;";
@@ -211,6 +223,36 @@
     else header.parentNode.appendChild(bar);
 
     wireSend(sendBtn, strip, id);
+    wireAlreadyDone(doneBtn, strip, id);
+  }
+
+  function wireAlreadyDone(btn, strip, clientId){
+    btn.addEventListener("click", function(){
+      if(!confirm("Mark the clinical screener as already completed?\n\nThe reminders stop and nothing is emailed to the family. No answers are recorded — only that it was done.")) return;
+      btn.disabled = true;
+      btn.textContent = "Saving…";
+      fetch("/api/screener/mark-complete/" + clientId, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({}),
+      }).then(function(r){ return r.json().catch(function(){ return {}; }).then(function(d){ return { ok: r.ok, d: d }; }); })
+        .then(function(res){
+          if(!res.ok){
+            btn.disabled = false;
+            btn.textContent = "✓ Already done";
+            alert((res.d && res.d.error) || "Could not mark it complete.");
+            return;
+          }
+          btn.textContent = "✓ Marked done";
+          if(strip) strip.textContent = "Screener marked as already completed.";
+        })
+        .catch(function(e){
+          btn.disabled = false;
+          btn.textContent = "✓ Already done";
+          alert(e.message || "Could not mark it complete.");
+        });
+    });
   }
 
   var obs = new MutationObserver(function(muts){

@@ -2287,6 +2287,7 @@ async function openClientModal(id) {
             <span class="tag" style="background:${statusColor}; color:#fff;">${statusLabel}</span>
             ${p && p.attempts ? `<span style="font-size:12px;color:var(--text-muted);">${p.attempts} attempt(s)</span>` : ""}
             <button class="btn small secondary" id="send-packet-btn">${p && p.status === "sent" ? "Resend" : "Send now"}</button>
+            ${p && p.status === "completed" ? "" : `<button class="btn small secondary" id="packet-already-btn" title="For a family who signed on paper, or in SignNow before the CRM was watching. Stops the daily chase and releases the clinical screener.">Already signed</button>`}
             <span id="send-packet-result" style="font-size:12px; color:var(--text-muted);"></span>
           </div>${detail}${cfgWarn}`, { chip });
       })()}
@@ -2371,7 +2372,10 @@ async function openClientModal(id) {
                   </div>
                   ${
                     t.status !== "completed"
-                      ? `<button class="btn small" data-complete-task="${t.id}" data-task-stage="${t.stage_key || ""}" data-task-label="${t.label || ""}">Mark done</button>`
+                      ? `<span style="display:flex; align-items:center; gap:6px;">
+                           <button class="btn small" data-complete-task="${t.id}" data-task-stage="${t.stage_key || ""}" data-task-label="${t.label || ""}">Mark done</button>
+                           <button class="btn small secondary" data-complete-task="${t.id}" data-task-stage="${t.stage_key || ""}" data-task-label="${t.label || ""}" data-silent="1" title="Record this as already done. Nothing is emailed to the family or to staff — use it when the work happened outside the CRM.">Already done</button>
+                         </span>`
                       : `<span style="display:flex; align-items:center; gap:8px;">
                            <span class="tag" style="background:#dcfce7; color:#166534;">Completed</span>
                            <button class="btn small secondary" data-reopen-task="${t.id}" data-task-stage="${t.stage_key || ""}" title="Put this task back to not done">Undo</button>
@@ -2534,6 +2538,26 @@ async function openClientModal(id) {
   }
 
   wireAuthSection(backdrop, id);
+
+  // "Already signed" -- for a packet completed outside the CRM. Writes the
+  // completion so the daily chase stops and everything gated on it (the
+  // clinical screener above all) is released.
+  const packetAlreadyBtn = backdrop.querySelector("#packet-already-btn");
+  if (packetAlreadyBtn) {
+    packetAlreadyBtn.addEventListener("click", async () => {
+      if (!confirm("Mark this family's enrollment packet as already signed?\n\nThe reminders stop and the clinical screener is released. Nothing is emailed to the family.")) return;
+      packetAlreadyBtn.disabled = true;
+      try {
+        await api(`/api/clients/${id}/enrollment-packet/mark-complete`, { method: "POST" });
+        close();
+        await loadClients();
+        openClientModal(id);
+      } catch (e) {
+        packetAlreadyBtn.disabled = false;
+        alert(e.message || "Could not mark it complete.");
+      }
+    });
+  }
 
   const sendPacketBtn = backdrop.querySelector("#send-packet-btn");
   if (sendPacketBtn) {
@@ -2787,6 +2811,14 @@ async function openClientModal(id) {
       // to the payer, and the parent email quotes that date back to them --
       // so ask for it here rather than hoping someone fills it in later.
       const body = {};
+      // "Already done" back-fills work that happened outside the CRM: it ticks
+      // the task and moves the client on, but sends no parent email and no
+      // department alert. Confirmed because the absence of an email is the kind
+      // of thing nobody notices until a family says they were never told.
+      if (btn.dataset.silent) {
+        if (!confirm("Mark this as already done?\n\nThe task is ticked and the client moves on as normal, but NO email is sent to the family or to staff for this step.")) return;
+        body.silent = true;
+      }
       if (btn.dataset.taskStage === "authorization") {
         const date = await askTreatmentPlanDate(client);
         if (date === null) return; // cancelled -- leave the task untouched
