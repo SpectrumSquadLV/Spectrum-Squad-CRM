@@ -4187,6 +4187,13 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Billable requirements add-on owns /api/billable/* (per-BCBA monthly hours
+  // targets and the monthly summary email).
+  if (pathname.startsWith("/api/billable")) {
+    const handled = await billable.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // Supply Requests add-on owns /api/supply/* (public submit/track split enforced
   // internally, so it is dispatched before the global 401 gate below).
   if (pathname.startsWith("/api/supervision")) {
@@ -6848,6 +6855,7 @@ const PUBLIC_FILES = new Set([
   "/hr-recruiting.js",
   "/ot-frontend.js",
   "/hr-attendance-frontend.js",
+  "/billable-frontend.js",
   "/supervision-frontend.js",
   "/growth-frontend.js",
   "/supply-requests-frontend.js",
@@ -6944,6 +6952,10 @@ const hr = require("./hr")({
   // time rather than at require time.
   startOnboarding: (employee, actor) => onboarding.startOnboarding(employee, actor),
   onboardingPortalUrl: (token) => onboarding.portalUrl(token),
+});
+// ===== BILLABLE add-on: per-BCBA monthly requirements + the monthly email =====
+const billable = require("./billable")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, readBody, json,
 });
 const clientForms = require("./client-forms")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
@@ -7244,6 +7256,7 @@ async function start() {
   await ot.initTables().catch((e) => console.error("OT initTables failed:", e));
   await attendance.initTables().catch((e) => console.error("Attendance initTables failed:", e));
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
+  await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
   await supervision.initTables().catch((e) => console.error("Supervision initTables failed:", e));
   await financialAdvisor.initTables().catch((e) => console.error("Financial advisor initTables failed:", e));
   await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
@@ -7389,6 +7402,14 @@ async function start() {
   setInterval(() => {
     grants.discoverySweep().catch((e) => console.error("Grant discovery sweep failed:", e));
   }, 24 * 60 * 60 * 1000);
+
+  // Monthly billable summaries to clinical staff who carry a requirement.
+  // Checked hourly rather than monthly: a redeploy resets an interval, and a
+  // restart on the 2nd would otherwise skip the month. The notices table is
+  // what prevents a second send, not the timing.
+  setInterval(() => {
+    billable.tick().catch((e) => console.error("Billable monthly tick failed:", e));
+  }, 60 * 60 * 1000);
 
   // Staff certification expiry -- staged notices to the staff member and the
   // Clinical Director. Runs on boot and then daily. Each stage sends at most
