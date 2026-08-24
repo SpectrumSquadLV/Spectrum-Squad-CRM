@@ -478,6 +478,18 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS transportation_notes TEXT;
 -- since been removed, but these columns stay: a consent a family gave is a
 -- record about them, not a feature flag, and deleting it would destroy the
 -- evidence that it was properly obtained.
+-- A task ticked as "already done" rather than done now: the work happened
+-- outside the CRM, so no parent email or department alert was sent for it.
+-- Recorded because somebody will later ask why a family never heard about a
+-- step, and "it was back-filled" is the answer.
+ALTER TABLE client_tasks ADD COLUMN IF NOT EXISTS completed_silently BOOLEAN NOT NULL DEFAULT false;
+-- The child is already receiving ABA somewhere else. A child can only be
+-- authorised with one ABA provider at a time, so this blocks a start date until
+-- a termination letter from the current provider is in hand. Captured from the
+-- clinical screener, where the parent is the one who knows.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS current_aba_provider TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS needs_aba_termination_letter BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS aba_termination_letter_received_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS parent_sms_consent BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS parent_sms_consent_at TEXT;
 -- Rename the old Vineland stage task to the In-Clinic Assessment.
@@ -1926,7 +1938,13 @@ function getStage(key) {
 // Create the task(s) required for a given stage, due `sla_days` business days
 // from now, and fire the department alert email that tells staff a client
 // needs attention at this stage.
-async function enterStage(clientId, stageKey) {
+// `silent` records the stage move without telling anybody about it. That is
+// for catching the CRM up on work that already happened outside it: emailing a
+// family a "welcome to the next step" for a step they completed a fortnight
+// ago is worse than not emailing at all, and the department alert asks staff to
+// action something already actioned. The move, the tasks and the history are
+// all still written -- only the outbound messages are held.
+async function enterStage(clientId, stageKey, { silent = false } = {}) {
   const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
   if (!client) return;
 
@@ -1971,17 +1989,19 @@ async function enterStage(clientId, stageKey) {
         task_label: task.label,
         due_date: new Date(dueDate).toLocaleDateString(),
       };
-      sendEmail({
-        to: dept.notify_email,
-        subject: emailTemplates.renderMergeFields(template.subject_template, fields),
-        html: emailTemplates.renderMergeFields(template.body_template, fields),
-        clientId,
-        type: "department_alert",
-      }).catch((e) => console.error("sendEmail failed:", e));
+      if (!silent) {
+        sendEmail({
+          to: dept.notify_email,
+          subject: emailTemplates.renderMergeFields(template.subject_template, fields),
+          html: emailTemplates.renderMergeFields(template.body_template, fields),
+          clientId,
+          type: "department_alert",
+        }).catch((e) => console.error("sendEmail failed:", e));
+      }
     }
   }
 
-  await sendParentMilestone(client, stageKey);
+  if (!silent) await sendParentMilestone(client, stageKey);
 }
 
 // Stages that trigger a parent-facing milestone email, mapped to the template
@@ -2060,6 +2080,14 @@ async function completeTask(taskId, completedByUserId, opts = {}) {
   // so a task that is reopened still shows when it had been ticked.
   await dbRun("UPDATE client_tasks SET status = 'completed', completed_at = ?, last_completed_at = ? WHERE id = ?", [nowISO(), nowISO(), taskId]);
 
+  // Marked as already-done rather than done-now. Recorded on the row, because
+  // "no email went out for this one" is a fact somebody will need later when
+  // they wonder why a family never heard about a step.
+  const silent = opts.silent === true;
+  if (silent) {
+    await dbRun("UPDATE client_tasks SET completed_silently = TRUE WHERE id = ?", [taskId]).catch(() => {});
+  }
+
   const taskLabel = await dbGet("SELECT label, stage_key FROM stage_tasks WHERE id = ?", [task.stage_task_id]).catch(() => null);
 
   // Ticking "Submit Authorization Request" is the moment the treatment plan
@@ -2105,7 +2133,7 @@ async function completeTask(taskId, completedByUserId, opts = {}) {
 
   if (Number(remaining.n) === 0) {
     const next = nextStageKey(client.stage);
-    if (next) await enterStage(client.id, next);
+    if (next) await enterStage(client.id, next, { silent });
   }
 
   return { ok: true };
@@ -3071,6 +3099,11 @@ async function retryFailedEnrollmentPackets() {
   }
 }
 
+// Reading SignNow's answer to "is this signed yet?" lives in its own module so
+// a test can call the real function -- the bug it fixes was exactly one
+// unverified line. See signnow-status.js.
+const { readSignNowCompletion } = require("./signnow-status");
+
 async function checkEnrollmentPackets() {
   // Polling a document's status needs authentication, not a template. This
   // used to test SIGNNOW_API_KEY, which is empty on every install using the
@@ -3086,11 +3119,19 @@ async function checkEnrollmentPackets() {
     let signNowStatus = null;
     try {
       const doc = await signNowRequest(`/document/${packet.signnow_document_id}`);
-      const invites = doc.field_invites || doc.requests || [];
-      if (invites.some((i) => String(i.status).toLowerCase() === "fulfilled")) {
-        signNowStatus = "completed";
-      } else if (invites.some((i) => String(i.status).toLowerCase() === "declined")) {
-        signNowStatus = "declined";
+      signNowStatus = readSignNowCompletion(doc);
+      if (!signNowStatus) {
+        // Not signed yet -- or a response shape we do not understand. Those two
+        // look identical from here and used to be silently treated as "still
+        // waiting", which is how completed packets sat unnoticed for weeks.
+        // Log the shape (keys only, never field values -- a signed enrollment
+        // packet is full of a family's personal details) so a mismatch shows up
+        // in the logs instead of as a mystery.
+        console.log(`[signnow] packet ${packet.id} not complete yet. `
+          + `keys=${Object.keys(doc || {}).sort().join(",")} `
+          + `field_invites=${(doc.field_invites || []).length} `
+          + `requests=${(doc.requests || []).length} `
+          + `signatures=${(doc.signatures || []).length}`);
       }
     } catch (err) {
       console.error("SignNow status check failed for packet", packet.id, err.message);
@@ -4146,6 +4187,20 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Billable requirements add-on owns /api/billable/* (per-BCBA monthly hours
+  // targets and the monthly summary email).
+  if (pathname.startsWith("/api/billable")) {
+    const handled = await billable.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  // PTO add-on owns /api/pto/* (accrual and balances; leave taken still lives
+  // in staff_time_off, which the scheduler owns).
+  if (pathname.startsWith("/api/pto")) {
+    const handled = await pto.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // Supply Requests add-on owns /api/supply/* (public submit/track split enforced
   // internally, so it is dispatched before the global 401 gate below).
   if (pathname.startsWith("/api/supervision")) {
@@ -4837,6 +4892,43 @@ async function handle(req, res, pathname, method, query = {}) {
     }
 
     // Manually (re)send the enrollment packet for a client. Owner/admin only.
+    // "This packet is already signed." For a family who signed on paper, or in
+    // SignNow before the CRM was watching. Marking it stops the daily chase and
+    // releases everything gated on packet completion -- notably the clinical
+    // screener, which fires on exactly this.
+    const packetDoneMatch = pathname.match(/^\/api\/clients\/(\d+)\/enrollment-packet\/mark-complete$/);
+    if (packetDoneMatch && method === "POST") {
+      if (!["owner", "super_admin", "admin", "intake"].includes(user.role)) {
+        return json(res, 403, { error: "Not permitted" });
+      }
+      const clientId = Number(packetDoneMatch[1]);
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+      if (!client) return json(res, 404, { error: "Not found" });
+      const actor = user.email || "staff";
+      const existing = await dbGet("SELECT * FROM enrollment_packets WHERE client_id = ?", [clientId]);
+      if (existing) {
+        await dbRun("UPDATE enrollment_packets SET status = 'completed', completed_at = ? WHERE id = ?",
+          [nowISO(), existing.id]);
+      } else {
+        // No packet was ever sent from here -- the family signed elsewhere. A
+        // row is still written so the rest of the system (the screener trigger,
+        // the card, the sweep) sees a completed packet rather than none at all.
+        // The document id is null, which is honest: there is no SignNow
+        // document behind this one.
+        await dbRun(
+          `INSERT INTO enrollment_packets (client_id, signnow_document_id, status, sent_at, completed_at)
+           VALUES (?, NULL, 'completed', ?, ?)`,
+          [clientId, nowISO(), nowISO()]
+        );
+      }
+      await dbRun(
+        `INSERT INTO client_notes (client_id, author_name, body, created_at) VALUES (?, ?, ?, ?)`,
+        [clientId, actor, "Enrollment packet marked as already completed.", nowISO()]
+      ).catch((e) => console.error("packet note insert failed:", e.message));
+      console.log(`[packet] client ${clientId} marked already-complete by ${actor}`);
+      return json(res, 200, { ok: true, marked_by: actor, marked_at: nowISO() });
+    }
+
     const packetSendMatch = pathname.match(/^\/api\/clients\/(\d+)\/enrollment-packet\/send$/);
     if (packetSendMatch && method === "POST") {
       if (!["owner", "super_admin", "admin", "intake"].includes(user.role)) {
@@ -5728,6 +5820,9 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const body = await readBody(req).catch(() => ({}));
       const result = await pipeline.completeTask(completeTaskMatch[1], user.id, {
         treatment_plan_submitted_date: body && body.treatment_plan_submitted_date,
+        // "Already done": tick it, tell nobody. For catching the CRM up on work
+        // that happened outside it.
+        silent: !!(body && body.silent),
       });
       return json(res, result.ok ? 200 : 400, result);
     }
@@ -6767,6 +6862,8 @@ const PUBLIC_FILES = new Set([
   "/hr-recruiting.js",
   "/ot-frontend.js",
   "/hr-attendance-frontend.js",
+  "/billable-frontend.js",
+  "/pto-frontend.js",
   "/supervision-frontend.js",
   "/growth-frontend.js",
   "/supply-requests-frontend.js",
@@ -6842,6 +6939,10 @@ const screener = require("./screener")({
   // One place decides who should not be chased about intake paperwork, so the
   // screener and the enrollment packet cannot drift apart on it.
   intakeChasingPaused,
+  // A screener answer can create work (a child already in ABA needs a
+  // termination letter from the current provider), so the module needs the
+  // same task system everything else uses rather than its own.
+  createStaffTask,
   // The screener's parent emails are editable templates like every other
   // parent email, rather than strings baked into the module.
   getEmailTemplate: (key) => emailTemplates.getEmailTemplate(key),
@@ -6859,6 +6960,15 @@ const hr = require("./hr")({
   // time rather than at require time.
   startOnboarding: (employee, actor) => onboarding.startOnboarding(employee, actor),
   onboardingPortalUrl: (token) => onboarding.portalUrl(token),
+});
+// ===== PTO add-on: accrual per hour worked, on top of the existing
+// staff_time_off table (which already records leave taken) =====
+const pto = require("./pto")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting,
+});
+// ===== BILLABLE add-on: per-BCBA monthly requirements + the monthly email =====
+const billable = require("./billable")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, readBody, json,
 });
 const clientForms = require("./client-forms")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
@@ -7159,6 +7269,8 @@ async function start() {
   await ot.initTables().catch((e) => console.error("OT initTables failed:", e));
   await attendance.initTables().catch((e) => console.error("Attendance initTables failed:", e));
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
+  await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
+  await pto.initTables().catch((e) => console.error("PTO initTables failed:", e));
   await supervision.initTables().catch((e) => console.error("Supervision initTables failed:", e));
   await financialAdvisor.initTables().catch((e) => console.error("Financial advisor initTables failed:", e));
   await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
@@ -7304,6 +7416,14 @@ async function start() {
   setInterval(() => {
     grants.discoverySweep().catch((e) => console.error("Grant discovery sweep failed:", e));
   }, 24 * 60 * 60 * 1000);
+
+  // Monthly billable summaries to clinical staff who carry a requirement.
+  // Checked hourly rather than monthly: a redeploy resets an interval, and a
+  // restart on the 2nd would otherwise skip the month. The notices table is
+  // what prevents a second send, not the timing.
+  setInterval(() => {
+    billable.tick().catch((e) => console.error("Billable monthly tick failed:", e));
+  }, 60 * 60 * 1000);
 
   // Staff certification expiry -- staged notices to the staff member and the
   // Clinical Director. Runs on boot and then daily. Each stage sends at most

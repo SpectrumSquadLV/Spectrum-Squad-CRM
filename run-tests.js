@@ -17,6 +17,7 @@ const { spawn } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const { Client } = require("pg");
+const net = require("net");
 
 const PORT = Number(process.env.PORT || 3011);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -248,6 +249,29 @@ function runSuite(suite, dbUrl, outPath, extraEnv) {
     for (const [s, why] of Object.entries(SKIP)) console.log(`SKIP  ${s}  -- ${why}`);
     if (Object.keys(SKIP).length) console.log("");
   }
+
+  // Is something already on our port? Two runs at once produce a whole suite of
+  // phantom failures -- every request lands on the other run's server, against
+  // the other run's database -- and they look exactly like real breakage. It
+  // has cost real debugging time more than once, so it is refused up front.
+  await new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once("error", (e) => {
+      if (e.code === "EADDRINUSE") {
+        console.error(
+          `\nPort ${PORT} is already in use.\n\n`
+          + `Something else -- most likely another run-tests.js, or a server left\n`
+          + `running -- is on it. Every suite would talk to that instead of its own\n`
+          + `server and fail for reasons that have nothing to do with the code.\n\n`
+          + `Stop it first, or set PORT to something else.\n`
+        );
+        process.exit(2);
+      }
+      resolve();
+    });
+    probe.once("listening", () => probe.close(resolve));
+    probe.listen(PORT, "127.0.0.1");
+  });
 
   fs.mkdirSync("test-logs", { recursive: true });
   const results = [];
