@@ -628,6 +628,7 @@ async function route() {
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/rethink-clients")) { if (window.__renderRethinkMatch) await window.__renderRethinkMatch(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/events")) { if (window.__renderEvents) await window.__renderEvents(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/grants")) { if (window.__renderGrants) await window.__renderGrants(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/policies")) { if (window.__renderPolicies) await window.__renderPolicies(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/map")) { if (window.__renderMap) await window.__renderMap(mount); else await renderDashboard(mount); }
@@ -667,6 +668,7 @@ const MODULE_CATALOG = {
   supervision: { label: "RBT Supervision", icon: "📋" },
   "rethink-clients": { label: "Rethink Client Matching", icon: "🔗", hash: "#/rethink-clients" },
   leads: { label: "Lead Management", icon: "🎯" },
+  events: { label: "Events", icon: "🎪" },
   policies: { label: "Policies & SOPs", icon: "📚" },
   map: { label: "Map", icon: "🗺️" },
   hr: { label: "HR & Recruiting", icon: "👥" },
@@ -762,6 +764,11 @@ function renderShell(active) {
     navItems.push({ key: "rethink-clients", label: "Rethink Client Matching", icon: "🔗", hash: "#/rethink-clients" });
   if (["owner", "super_admin", "admin", "intake", "scheduling"].includes(state.user.role))
     navItems.push({ key: "leads", label: "Lead Management", icon: "🎯" });
+  // Events: the reusable community-event system. The nav entry is deliberately
+  // generic -- an individual event (the Halloween Palooza) is a row inside it,
+  // never a permanent menu item of its own.
+  if (["owner", "super_admin", "admin", "intake", "scheduling"].includes(state.user.role))
+    navItems.push({ key: "events", label: "Events", icon: "🎪" });
   navItems.push({ key: "policies", label: "Policies & SOPs", icon: "📚" });
   if (["owner", "super_admin", "admin", "scheduling"].includes(state.user.role))
     navItems.push({ key: "map", label: "Map", icon: "🗺️" });
@@ -5481,6 +5488,7 @@ function openAccessModal(u, onDone) {
   <script src="grants-frontend.js"></script>
   <script src="rethink-match-frontend.js"></script>
   <script src="growth-frontend.js"></script>
+  <script src="events-frontend.js"></script>
   <script src="supply-requests-frontend.js"></script>
   <script src="geo-map-frontend.js"></script>
   <script src="bip-frontend.js"></script>

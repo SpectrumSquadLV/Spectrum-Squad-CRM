@@ -4349,6 +4349,12 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Events owns /api/events/* and enforces its own role tiers internally.
+  if (pathname.startsWith("/api/events")) {
+    const handled = await events.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/supply/")) {
     const handled = await supply.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -7036,6 +7042,7 @@ const PUBLIC_FILES = new Set([
   "/pto-frontend.js",
   "/supervision-frontend.js",
   "/growth-frontend.js",
+  "/events-frontend.js",
   "/supply-requests-frontend.js",
   "/geo-map-frontend.js",
   "/bip-frontend.js",
@@ -7239,6 +7246,13 @@ const finLedger = require("./fin-ledger")({
 // ===== GROWTH add-on: Lead Management + Policies/SOPs (public QR viewer). =====
 // Gets the PDF/zip readers from the financial advisor (initialised above) so
 // policy uploads can read .pdf and .docx without a second copy of that code.
+// ===== EVENTS: the reusable community-event system (Halloween Palooza is the
+// first ROW in it, not the architecture). Owns /api/events/*. Additive: new
+// tables only, and deliberately no client or clinical data. =====
+const events = require("./events")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, moduleGranted,
+});
+
 const growth = require("./growth")({
   dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, moduleGranted,
   extractPdfLines: (buf) => financialAdvisor.extractPdfLines(buf),
@@ -7514,6 +7528,7 @@ async function start() {
     }
   }
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
+  await events.initTables().catch((e) => console.error("Events initTables failed:", e));
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
