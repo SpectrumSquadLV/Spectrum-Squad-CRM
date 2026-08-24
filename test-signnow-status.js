@@ -14,7 +14,8 @@
 //   node test-signnow-status.js
 "use strict";
 const path = require("path");
-const { readSignNowCompletion } = require(path.join(__dirname, "signnow-status.js"));
+const { readSignNowCompletion, readSignNowInviteDelivered } =
+  require(path.join(__dirname, "signnow-status.js"));
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -74,6 +75,66 @@ for (const junk of [null, undefined, "", 0, [], "completed", { field_invites: "n
     readSignNowCompletion(junk));
 }
 
+section("Did an invite actually get created? (asked at SEND time)");
+// The shapes here are what the Spectrum Squad account really returned on
+// 2026-08-24. Five families sat in the CRM as "sent, awaiting signature"
+// against documents like the third one below: copied from the template, every
+// field empty, no invite of any kind. They had never been written to, were
+// chased daily for it, and the 7-day rule was lined up to close them out.
+check("a pending field invite means the family was written to",
+  readSignNowInviteDelivered({
+    field_invites: [{ status: "pending", email: "imanigates0206@gmail.com" }], requests: [],
+  }) === true);
+check("so does a freeform request",
+  readSignNowInviteDelivered({ field_invites: [], requests: [{ id: "r1" }] }) === true);
+check("and a fulfilled one, obviously",
+  readSignNowInviteDelivered({ field_invites: [{ status: "fulfilled" }] }) === true);
+check("a document with no invite at all reads as NOT delivered",
+  readSignNowInviteDelivered({ field_invites: [], requests: [], signatures: [] }) === false);
+
+section("...and 'I could not tell' is its own answer");
+// The distinction that keeps this from becoming a second bug. Reporting a
+// failed read as "no invite" would mark a genuinely-sent packet failed, and the
+// retry would send a second copy to a family who already had one.
+for (const unknown of [null, undefined, "", 0, {}, { signatures: [] }, "nope"]) {
+  check(`${JSON.stringify(unknown)} is undetermined, not "no invite"`,
+    readSignNowInviteDelivered(unknown) === null, readSignNowInviteDelivered(unknown));
+}
+check("a response carrying only one of the two keys is still readable",
+  readSignNowInviteDelivered({ field_invites: [] }) === false);
+check("and one carrying neither is not",
+  readSignNowInviteDelivered({ id: "abc", document_name: "x" }) === null);
+check("a non-array where an array belongs is undetermined, not empty",
+  readSignNowInviteDelivered({ field_invites: "nope", requests: "nope" }) === null);
+
+section("The send path checks, and reacts the right way to each answer");
+const serverSrc = require("fs").readFileSync(path.join(__dirname, "server.js"), "utf8");
+const send = (serverSrc.match(/async function sendEnrollmentPacket[\s\S]*?\n\}/) || [""])[0];
+check("the send reads the document back after inviting",
+  /readSignNowInviteDelivered\(await signNowRequest/.test(send), send.slice(0, 200));
+check("no invite means the packet is NOT recorded as sent",
+  /delivered === false[\s\S]{0,600}status: "failed"/.test(send));
+check("and the family is not told anything went out",
+  /nothing reached the family/i.test(send));
+check("an unverifiable check still records sent, rather than sending twice",
+  /delivered === null/.test(send) || /invite=unverified/.test(send), send.slice(-600));
+check("a failed send keeps the document id instead of orphaning the copy",
+  /status: "failed", documentId: err\.signNowDocumentId/.test(send), send.slice(-400));
+check("which needs the id to survive the throw",
+  /e\.signNowDocumentId = documentId/.test(send));
+
+section("A retry does not leave another copy behind");
+// retryFailedEnrollmentPackets() retries a failed packet up to six times. When
+// each attempt copies a fresh document, six attempts leave six documents and
+// none of them reach anybody -- which is where three identical copies of one
+// child's packet came from.
+check("a failed attempt's copy is looked up before making another",
+  /SELECT signnow_document_id, status FROM enrollment_packets WHERE client_id/.test(send), send.slice(0, 900));
+check("and reused only when it is confirmed still uninvited",
+  /readSignNowInviteDelivered\(stranded\) === false/.test(send));
+check("anything less certain copies fresh, rather than risking a second packet",
+  /if \(!documentId\) \{[\s\S]{0,200}\/copy/.test(send), send.slice(0, 1400));
+
 section("server.js uses it rather than keeping its own copy");
 const fs = require("fs");
 const server = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
@@ -91,7 +152,7 @@ check("an undetermined status is logged rather than passing silently",
 // This checks the PROPERTY, not one implementation of it: an earlier version of
 // this assertion pinned the exact expression used, and failed the moment the
 // diagnostic was improved while still being perfectly private.
-const logLine = (server.match(/console\.log\(`\[signnow\][\s\S]{0,700}?\);/) || [""])[0];
+const logLine = (server.match(/console\.log\(`\[signnow\] packet \$\{packet\.id\} not complete yet[\s\S]{0,700}?\);/) || [""])[0];
 check("the diagnostic exists", logLine.length > 0);
 for (const forbidden of [
   ["field values", /\.value\b/],

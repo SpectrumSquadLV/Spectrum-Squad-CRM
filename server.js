@@ -2929,6 +2929,12 @@ async function recordPacketOutcome(clientId, { status, documentId = null, error 
   );
 }
 
+// Reading SignNow's answers -- "is this signed yet?" and, at send time, "did an
+// invite actually get created?" -- lives in its own module so a test can call
+// the real functions. The bug behind the first was exactly one unverified line.
+// See signnow-status.js.
+const { readSignNowCompletion, readSignNowInviteDelivered } = require("./signnow-status");
+
 async function sendEnrollmentPacket(client) {
   if (!signNowConfigured()) {
     const msg = "SignNow is not configured on the server (need SIGNNOW_ENROLLMENT_TEMPLATE_ID plus either the auto-refresh creds SIGNNOW_BASIC_TOKEN/SIGNNOW_USERNAME/SIGNNOW_PASSWORD, or a static SIGNNOW_API_KEY).";
@@ -2943,11 +2949,37 @@ async function sendEnrollmentPacket(client) {
     return { ok: false, status: "blocked", error: msg };
   }
   try {
-    const copy = await signNowRequest(`/template/${SIGNNOW_ENROLLMENT_TEMPLATE_ID}/copy`, {
-      method: "POST",
-      body: JSON.stringify({ document_name: `Enrollment Packet - ${client.child_name}` }),
-    });
-    const documentId = copy.id;
+    // Reuse the copy a previous failed attempt left behind, rather than making
+    // another one. retryFailedEnrollmentPackets() retries a failed packet up to
+    // six times, and each attempt used to copy a fresh document -- which is
+    // where three identical "Enrollment Packet - Valeria Hernandez" documents
+    // came from, none of them ever sent to anybody.
+    //
+    // Only reused when SignNow positively confirms the document is still there
+    // AND still carries no invite. Anything less certain copies fresh:
+    // re-inviting a document that DID get an invite would put a second packet
+    // in front of a family who already had one.
+    let documentId = null;
+    const prior = await dbGet(
+      "SELECT signnow_document_id, status FROM enrollment_packets WHERE client_id = ?", [client.id]);
+    if (prior && prior.signnow_document_id && prior.status === "failed") {
+      const stranded = await signNowRequest(`/document/${prior.signnow_document_id}`).catch(() => null);
+      if (stranded && readSignNowInviteDelivered(stranded) === false) {
+        documentId = prior.signnow_document_id;
+        console.log(`[signnow] reusing the uninvited copy from the last attempt for client ${client.id} doc=${documentId}`);
+      }
+    }
+    if (!documentId) {
+      const copy = await signNowRequest(`/template/${SIGNNOW_ENROLLMENT_TEMPLATE_ID}/copy`, {
+        method: "POST",
+        body: JSON.stringify({ document_name: `Enrollment Packet - ${client.child_name}` }),
+      });
+      documentId = copy.id;
+    }
+    // Carried on the error so the catch below can record which copy was left
+    // behind. Without it a failed invite abandons a real document in the
+    // account with nothing in the CRM pointing at it.
+    const tagDoc = (e) => { e.signNowDocumentId = documentId; throw e; };
     await signNowRequest(`/document/${documentId}/invite`, {
       method: "POST",
       body: JSON.stringify({
@@ -2956,13 +2988,54 @@ async function sendEnrollmentPacket(client) {
         subject: `Please complete ${client.child_name}'s enrollment packet — Spectrum Squad`,
         message: `Hi ${client.parent_name || "there"}, thank you for choosing Spectrum Squad! Please review and complete ${client.child_name}'s New Patient Enrollment Packet using the link below. If you have any questions, just reply to this email.`,
       }),
-    });
+    }).catch(tagDoc);
+    // Read the document back and check an invite really exists before telling
+    // the CRM this family has been written to.
+    //
+    // On 2026-08-24, five families sat at "sent, awaiting signature" against
+    // documents that carried no invite at all -- copied from the template,
+    // every field empty, nothing ever emailed to the parent. They were chased
+    // daily for a document they had never received, and the 7-day rule was
+    // lined up to close them out for not signing it.
+    //
+    // The invite POST above had not thrown, so nothing here could have
+    // noticed. A packet recorded as sent is the trigger for all of that
+    // chasing, so it should mean an invite was observed, not that a request
+    // came back 2xx.
+    let delivered = null;
+    try {
+      delivered = readSignNowInviteDelivered(await signNowRequest(`/document/${documentId}`));
+    } catch (readErr) {
+      console.error(`[signnow] could not verify the invite for client ${client.id} doc=${documentId}: ${readErr.message}`);
+    }
+
+    if (delivered === false) {
+      // The document exists and has no invite on it. Recorded as failed WITH
+      // the document id, so the copy is traceable rather than orphaned in the
+      // account -- three duplicate copies of one child's packet came from
+      // retries that each dropped the id they had just created.
+      const msg = "SignNow accepted the invite request but no invite exists on the document, so nothing reached the family.";
+      console.error(`[signnow] packet not delivered for client ${client.id} doc=${documentId} -- ${msg}`);
+      await recordPacketOutcome(client.id, { status: "failed", documentId, error: msg }).catch(() => {});
+      return { ok: false, status: "failed", documentId, error: msg };
+    }
+
     await recordPacketOutcome(client.id, { status: "sent", documentId });
-    console.log(`Enrollment packet sent to ${client.parent_email} for client ${client.id}`);
-    return { ok: true, status: "sent", documentId };
+    // `delivered === null` means the check itself could not be made, not that
+    // the invite is missing -- failing the send on a blip at SignNow would send
+    // a second copy to a family who already had one. It is recorded as sent and
+    // the uncertainty is logged.
+    console.log(`Enrollment packet sent for client ${client.id} doc=${documentId}`
+      + (delivered === true ? " invite=confirmed" : " invite=unverified"));
+    return { ok: true, status: "sent", documentId, inviteVerified: delivered === true };
   } catch (err) {
     console.error("Failed to send enrollment packet for client", client.id, err.message);
-    await recordPacketOutcome(client.id, { status: "failed", error: err.message }).catch(() => {});
+    // The document id when there is one: a failed send that drops it leaves the
+    // copy stranded in SignNow with nothing pointing at it, which is how the
+    // duplicates accumulated.
+    await recordPacketOutcome(client.id, {
+      status: "failed", documentId: err.signNowDocumentId || null, error: err.message,
+    }).catch(() => {});
     return { ok: false, status: "failed", error: err.message };
   }
 }
@@ -3110,11 +3183,6 @@ async function retryFailedEnrollmentPackets() {
     await sendEnrollmentPacket(client).catch((e) => console.error("retry packet failed:", e.message));
   }
 }
-
-// Reading SignNow's answer to "is this signed yet?" lives in its own module so
-// a test can call the real function -- the bug it fixes was exactly one
-// unverified line. See signnow-status.js.
-const { readSignNowCompletion } = require("./signnow-status");
 
 async function checkEnrollmentPackets() {
   // Polling a document's status needs authentication, not a template. This
