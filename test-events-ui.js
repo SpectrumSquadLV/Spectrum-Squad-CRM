@@ -275,6 +275,22 @@ const BASE = process.env.BASE || "http://localhost:3011";
     await fetch("/api/events/" + id, { method: "DELETE", credentials: "include" });
   }, noGoal);
 
+  section("Public vendor sign-ups are closed until somebody opens them");
+  // A public write endpoint that is live the moment an event exists is the
+  // thing this panel has to make impossible to switch on by accident.
+  await page.evaluate(() => {
+    const b = Array.from(document.querySelectorAll("[data-tab]")).find((x) => x.dataset.tab === "vendors");
+    if (b) b.click();
+  });
+  for (let i = 0; i < 40 && !/Public vendor sign-up/.test(await mainText()); i++) await page.waitForTimeout(250);
+  text = await mainText();
+  check("the sign-up panel renders", /Public vendor sign-up/.test(text), text.slice(0, 400));
+  check("it starts closed", /closed/i.test(text), (text.match(/Public vendor sign-up[\s\S]{0,220}/) || [""])[0]);
+  check("and says nobody can apply yet",
+    /nobody can apply/i.test(text), (text.match(/Public vendor sign-up[\s\S]{0,260}/) || [""])[0]);
+  check("no public link is shown while it is closed", !(await page.$("#v-signup-link")));
+  check("but the control to open it is there", !!(await page.$("#v-signup-toggle")));
+
   section("The Outreach screen refuses before it offers");
   // The thing to prove on screen: a person arriving at the outreach tab is told
   // it cannot send, and the send control is not available to press.

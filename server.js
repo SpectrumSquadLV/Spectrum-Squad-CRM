@@ -7373,6 +7373,12 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // VENDOR SIGN-UP: the public form a vendor fills in themselves. Closed per
+  // event until somebody opens it; see serveVendorSignup for the defences.
+  if (pathname.startsWith("/vendor-signup/")) {
+    if (await events.serveVendorSignup(req, res, pathname, req.method)) return;
+  }
+
   // OUTREACH OPT-OUT: the unsubscribe link in every outreach email. Public and
   // unauthenticated on purpose -- the recipient is a business owner with no
   // account here, and must not need one in order to be left alone.
