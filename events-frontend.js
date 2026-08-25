@@ -180,7 +180,7 @@
   var TABS = [
     ["overview", "Overview"], ["prospects", "Prospects"], ["sponsors", "Sponsors"],
     ["donations", "Donations"], ["vendors", "Vendors"], ["partners", "Community Partners"],
-    ["settings", "Settings"],
+    ["outreach", "Outreach"], ["settings", "Settings"],
   ];
 
   function openEvent(id) {
@@ -234,6 +234,7 @@
     if (STATE.tab === "donations") return renderDonations(el, d);
     if (STATE.tab === "vendors") return renderVendors(el, d);
     if (STATE.tab === "partners") return renderPartners(el, d);
+    if (STATE.tab === "outreach") return renderOutreach(el, d);
     if (STATE.tab === "settings") return renderSettings(el, d);
   }
 
@@ -818,6 +819,191 @@
         return api(url, { method: existing ? "PATCH" : "POST", body: payload })
           .then(function () { close(); return refresh(); });
       }, { width: 720 });
+  }
+
+  // ---------------------------------------------------------- outreach
+  //
+  // The screen for the one feature here that emails people who never asked to
+  // hear from us. It is built around the review queue: drafts are generated in
+  // bulk, and each one is read and approved by a person before anything can
+  // reach an inbox. Nothing on this screen sends an unapproved message.
+  function renderOutreach(el, d) {
+    el.innerHTML = '<div class="empty-state">Loading…</div>';
+    Promise.all([
+      api("/api/events/outreach/settings"),
+      api("/api/events/" + STATE.eventId + "/outreach/templates"),
+      api("/api/events/" + STATE.eventId + "/outreach/messages"),
+    ]).then(function (r) {
+      var cfg = r[0], templates = r[1].templates || [], q = r[2];
+      var problems = q.problems || [];
+      var counts = q.counts || {};
+
+      // Said at the top, in words, before anything else. Somebody arriving here
+      // should know immediately whether this thing can send.
+      var banner = problems.length
+        ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-left:4px solid ' + VIZ.warn + ';border-radius:10px;padding:12px 14px;margin-bottom:14px;">'
+          + '<strong style="color:#92400e;">Nothing can send yet.</strong>'
+          + '<ul style="margin:6px 0 0;padding-left:20px;color:#92400e;font-size:13px;">'
+          + problems.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join("") + '</ul></div>'
+        : '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-left:4px solid ' + VIZ.good + ';border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:13px;color:#166534;">'
+          + '<strong>Sending is on.</strong> ' + (q.sent_today || 0) + ' of ' + (cfg.settings.daily_limit || 0)
+          + ' sent today · ' + (q.within_hours ? 'inside' : '<strong>outside</strong>') + ' the sending window ('
+          + (cfg.settings.send_hour_start) + ':00–' + (cfg.settings.send_hour_end) + ':00)</div>';
+
+      var s = cfg.settings || {};
+      var settingsHtml =
+        '<div class="card" style="margin-bottom:16px;">'
+        + '<div style="font-weight:700;font-size:14px;margin-bottom:2px;">Sending controls</div>'
+        + '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">'
+        + 'These apply to <strong>every</strong> event. A daily limit is about the reputation of the '
+        + 'sending domain, so two events do not get one each.</div>'
+        + '<div class="form-grid">'
+        + field("Sending switched on", "o-enabled", !!s.enabled, { type: "checkbox" })
+        + field("Daily send limit", "o-daily", s.daily_limit, { type: "number" })
+        + field("Batch size (per pass)", "o-batch", s.batch_size, { type: "number" })
+        + field("Send from hour", "o-hstart", s.send_hour_start, { type: "number" })
+        + field("Send until hour", "o-hend", s.send_hour_end, { type: "number" })
+        + field("Maximum follow-ups", "o-maxfu", s.max_follow_ups, { type: "number" })
+        + field("Organisation name", "o-org", s.org_name, { placeholder: "Spectrum Squad" })
+        + field("Reply-to address", "o-replyto", s.reply_to, { type: "email" })
+        + field("Postal address (required by law in commercial email)", "o-postal", s.postal_address,
+            { full: true, placeholder: "Street, city, state, ZIP" })
+        + '</div>'
+        + '<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">'
+        + '<button class="btn small" id="o-save-settings">Save controls</button>'
+        + '<span id="o-settings-msg" style="font-size:12.5px;color:var(--text-muted);"></span></div></div>';
+
+      var tmplRows = templates.map(function (t) {
+        return tr([
+          td('<strong>' + esc(t.name) + '</strong>'),
+          td(t.step === 1 ? "First approach" : "Follow-up " + (t.step - 1)),
+          td(esc(t.subject)),
+          td(t.active ? pill("Active", "ok") : pill("Inactive", "grey")),
+          td('<button class="btn small secondary" data-draft-tmpl="' + t.id + '">Generate drafts</button>'
+            + ' <button class="btn small secondary" data-edit-tmpl="' + t.id + '">Edit</button>'),
+        ]);
+      });
+
+      var msgs = q.messages || [];
+      var msgRows = msgs.slice(0, 100).map(function (m) {
+        var tone = { draft: "warn", approved: "none", sent: "ok", cancelled: "grey", failed: "bad", skipped: "grey" }[m.status] || "grey";
+        return tr([
+          td('<div style="font-size:12.5px;">' + esc(m.to_email) + '</div>'
+            + '<div style="font-size:11.5px;color:var(--text-muted);">' + (m.step === 1 ? "First approach" : "Follow-up " + (m.step - 1)) + '</div>'),
+          td('<div style="font-size:12.5px;">' + esc(m.subject) + '</div>'),
+          td(pill(human(m.status), tone)
+            + (m.skipped_reason ? '<div style="font-size:11px;color:var(--text-muted);margin-top:3px;">' + esc(m.skipped_reason) + '</div>' : "")
+            + (m.failed_reason ? '<div style="font-size:11px;color:#b91c1c;margin-top:3px;">' + esc(m.failed_reason) + '</div>' : "")),
+          td(m.approved_by ? '<div style="font-size:11.5px;color:var(--text-muted);">' + esc(m.approved_by) + '</div>' : "—"),
+          td('<button class="btn small secondary" data-view-msg="' + m.id + '">Read</button>'
+            + (m.status === "draft" ? ' <button class="btn small" data-approve-msg="' + m.id + '">Approve</button>' : "")
+            + (m.status === "draft" || m.status === "approved"
+              ? ' <button class="btn small secondary" data-cancel-msg="' + m.id + '" style="color:#b91c1c;">Cancel</button>' : "")),
+        ]);
+      });
+
+      el.innerHTML = banner + settingsHtml
+        + '<h3 style="margin:0 0 8px;font-size:15px;">Templates</h3>'
+        + '<p style="font-size:12.5px;color:var(--text-muted);margin:0 0 10px;">'
+        + 'Merge fields: {{business_name}}, {{contact_name}}, {{event_name}}, {{event_date}}, {{venue_name}}, {{registration_url}}. '
+        + 'The opt-out link and postal address are added automatically — do not paste them in.</p>'
+        + addBar("Add template", "o-add-tmpl")
+        + table(["Template", "Step", "Subject", "", ""], tmplRows, "No templates yet.")
+        + '<h3 style="margin:22px 0 4px;font-size:15px;">Review queue</h3>'
+        + '<p style="font-size:12.5px;color:var(--text-muted);margin:0 0 10px;">'
+        + '<strong>Nothing sends until a person approves it.</strong> '
+        + (counts.draft || 0) + ' awaiting review · ' + (counts.approved || 0) + ' approved and queued · '
+        + (counts.sent || 0) + ' sent · ' + (counts.skipped || 0) + ' skipped · ' + (counts.cancelled || 0) + ' cancelled</p>'
+        + '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">'
+        + '<button class="btn small" id="o-send-pass"' + (problems.length ? " disabled" : "") + '>Send approved now</button>'
+        + '<span id="o-send-msg" style="font-size:12.5px;color:var(--text-muted);align-self:center;"></span></div>'
+        + table(["To", "Subject", "Status", "Approved by", ""], msgRows, "Nothing queued yet.");
+
+      // ---- wiring
+      document.getElementById("o-save-settings").addEventListener("click", function () {
+        var msg = document.getElementById("o-settings-msg");
+        msg.textContent = "Saving…";
+        api("/api/events/outreach/settings", { method: "PUT", body: {
+          enabled: get("o-enabled"), daily_limit: get("o-daily"), batch_size: get("o-batch"),
+          send_hour_start: get("o-hstart"), send_hour_end: get("o-hend"), max_follow_ups: get("o-maxfu"),
+          org_name: get("o-org"), reply_to: get("o-replyto"), postal_address: get("o-postal"),
+        } }).then(function () { renderOutreach(el, d); })
+          .catch(function (e) { msg.textContent = "Could not save: " + e.message; });
+      });
+      document.getElementById("o-add-tmpl").addEventListener("click", function () { templateModal(null, el, d); });
+      wireRowButtons(el, "edit-tmpl", function (id) {
+        templateModal(templates.filter(function (t) { return t.id === id; })[0], el, d);
+      });
+      wireRowButtons(el, "draft-tmpl", function (id) {
+        if (!confirm("Generate draft emails for this event's prospects?\n\nThey are DRAFTS — nothing is sent until you approve each one.")) return;
+        api("/api/events/" + STATE.eventId + "/outreach/draft", { method: "POST", body: { template_id: id } })
+          .then(function (r) {
+            alert(r.created + " draft(s) created, " + r.skipped + " skipped."
+              + (r.skipped ? "\n\nSkipped:\n" + (r.skipped_detail || []).slice(0, 12)
+                  .map(function (x) { return "• " + x.business_name + " — " + x.reason; }).join("\n") : ""));
+            renderOutreach(el, d);
+          }).catch(function (e) { alert("Could not generate drafts: " + e.message); });
+      });
+      wireRowButtons(el, "view-msg", function (id) {
+        var m = msgs.filter(function (x) { return x.id === id; })[0];
+        if (!m) return;
+        formModal("To " + m.to_email,
+          '<div class="field full"><label>Subject</label><div style="font-weight:600;">' + esc(m.subject) + '</div></div>'
+          + '<div class="field full"><label>Body</label>'
+          + '<div style="border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:12px;max-height:340px;overflow:auto;background:#fff;">'
+          + m.body + '</div></div>'
+          + '<div class="field full"><div style="font-size:12px;color:var(--text-muted);">'
+          + 'An unsubscribe link and the postal address are added automatically when this sends.</div></div>',
+          function (close) { close(); }, { width: 720, saveLabel: "Close" });
+      });
+      wireRowButtons(el, "approve-msg", function (id) {
+        api("/api/events/" + STATE.eventId + "/outreach/messages/" + id + "/approve", { method: "POST", body: {} })
+          .then(function () { renderOutreach(el, d); });
+      });
+      wireRowButtons(el, "cancel-msg", function (id) {
+        api("/api/events/" + STATE.eventId + "/outreach/messages/" + id + "/cancel", { method: "POST", body: {} })
+          .then(function () { renderOutreach(el, d); });
+      });
+      var sendBtn = document.getElementById("o-send-pass");
+      if (sendBtn) sendBtn.addEventListener("click", function () {
+        if (!confirm("Send the approved messages now?\n\nThis emails real businesses. "
+          + "Only messages you have approved will go, up to the batch size and the daily limit.")) return;
+        var msg = document.getElementById("o-send-msg");
+        msg.textContent = "Sending…";
+        api("/api/events/" + STATE.eventId + "/outreach/send", { method: "POST", body: {} })
+          .then(function (r) {
+            alert("Sent " + r.sent + ", failed " + r.failed + ", held " + r.held + "."
+              + ((r.held_detail || []).length ? "\n\nHeld:\n" + r.held_detail.slice(0, 12)
+                  .map(function (h) { return "• " + h.reason; }).join("\n") : ""));
+            renderOutreach(el, d);
+          }).catch(function (e) { msg.textContent = "Could not send: " + e.message; });
+      });
+    }).catch(function (e) {
+      el.innerHTML = '<div class="empty-state">Could not load outreach: ' + esc(e.message) + '</div>';
+    });
+  }
+
+  function templateModal(existing, el, d) {
+    var v = existing || {};
+    formModal(existing ? "Edit template" : "Add template",
+      field("Template name", "t-name", v.name, { full: true })
+      + field("Step (1 = first approach)", "t-step", v.step == null ? 1 : v.step, { type: "number" })
+      + field("Days after previous step", "t-delay", v.delay_days == null ? 7 : v.delay_days, { type: "number" })
+      + field("Subject", "t-subject", v.subject, { full: true })
+      + field("Body (HTML)", "t-body", v.body, { type: "textarea", full: true, rows: 10 })
+      + field("Active", "t-active", existing ? !!v.active : true, { type: "checkbox" }),
+      function (close) {
+        var payload = {
+          name: (get("t-name") || "").trim(), step: get("t-step"), delay_days: get("t-delay"),
+          subject: (get("t-subject") || "").trim(), body: (get("t-body") || "").trim(), active: get("t-active"),
+        };
+        if (!payload.name || !payload.subject || !payload.body) {
+          throw new Error("A template needs a name, a subject and a body.");
+        }
+        var url = "/api/events/" + STATE.eventId + "/outreach/templates" + (existing ? "/" + existing.id : "");
+        return api(url, { method: existing ? "PATCH" : "POST", body: payload })
+          .then(function () { close(); renderOutreach(el, d); });
+      }, { width: 760 });
   }
 
   function renderSettings(el, d) {

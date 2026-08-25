@@ -275,6 +275,26 @@ const BASE = process.env.BASE || "http://localhost:3011";
     await fetch("/api/events/" + id, { method: "DELETE", credentials: "include" });
   }, noGoal);
 
+  section("The Outreach screen refuses before it offers");
+  // The thing to prove on screen: a person arriving at the outreach tab is told
+  // it cannot send, and the send control is not available to press.
+  await page.evaluate(() => {
+    const b = Array.from(document.querySelectorAll("[data-tab]")).find((x) => x.dataset.tab === "outreach");
+    if (b) b.click();
+  });
+  for (let i = 0; i < 40 && !/Review queue/.test(await mainText()); i++) await page.waitForTimeout(250);
+  text = await mainText();
+  check("the outreach tab renders", /Review queue/.test(text), text.slice(0, 300));
+  check("it says plainly that nothing can send yet", /nothing can send yet/i.test(text), text.slice(0, 600));
+  check("and lists what is missing, including the postal address",
+    /postal address/i.test(text), text.slice(0, 800));
+  check("the send button is disabled while it cannot send",
+    (await page.$eval("#o-send-pass", (b) => b.disabled)) === true);
+  check("the queue states that approval gates sending",
+    /nothing sends until a person approves it/i.test(text), text.slice(0, 900));
+  check("the sending controls say they apply to every event",
+    /every.{0,20}event/i.test(text), text.slice(0, 900));
+
   section("Screenshot for a human to eyeball");
   await openEventCard(secondId);
   for (let i = 0; i < 40 && !/Needs attention/.test(await mainText()); i++) await page.waitForTimeout(250);

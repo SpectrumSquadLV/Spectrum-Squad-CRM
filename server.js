@@ -7251,6 +7251,11 @@ const finLedger = require("./fin-ledger")({
 // tables only, and deliberately no client or clinical data. =====
 const events = require("./events")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, moduleGranted,
+  // Phase 3 outreach: sending, merge fields and absolute links for the
+  // unsubscribe footer. sendEmail already writes every send to
+  // notifications_log, which is the activity log the outreach spec required.
+  sendEmail, renderMergeFields, APP_BASE_URL,
+  randomToken: () => crypto.randomBytes(24).toString("hex"),
 });
 
 const growth = require("./growth")({
@@ -7366,6 +7371,13 @@ const server = http.createServer(async (req, res) => {
       res.end(fs.readFileSync(file));
       return;
     }
+  }
+
+  // OUTREACH OPT-OUT: the unsubscribe link in every outreach email. Public and
+  // unauthenticated on purpose -- the recipient is a business owner with no
+  // account here, and must not need one in order to be left alone.
+  if (pathname === "/outreach/unsubscribe") {
+    if (await events.handleUnsubscribe(req, res, parsed.query || {})) return;
   }
 
 // SCREENER: serve the public form page at /screener/:token
