@@ -225,6 +225,19 @@ const BASE = process.env.BASE || "http://localhost:3011";
   for (let i = 0; i < 40 && !/Needs attention/.test(await mainText()); i++) await page.waitForTimeout(250);
   text = await mainText();
   check("the goals section renders", /goals/i.test(text), text.slice(0, 200));
+  // A goal for something the CRM cannot measure must not render as 0 of N.
+  await page.evaluate(async (id) => {
+    await fetch("/api/events/" + id, { method: "PATCH", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ registration_goal: 400 }) });
+  }, secondId);
+  await page.evaluate(() => window.__renderEvents(document.querySelector(".main")));
+  for (let i = 0; i < 40 && !/Needs attention/.test(await mainText()); i++) await page.waitForTimeout(250);
+  text = await mainText();
+  check("a registration goal shows the goal without claiming a count",
+    /goal 400/i.test(text) && !/0 of 400/.test(text), (text.match(/Registrations[\s\S]{0,120}/i) || [""])[0]);
+  check("and says where that number actually lives",
+    /eventbrite/i.test(text), (text.match(/Registrations[\s\S]{0,160}/i) || [""])[0]);
   check("a goal shows progress against its target", /of \$5,000\.00|of 6/.test(text), text.slice(0, 600));
   check("the countdown renders", /day|Today/.test(text), text.slice(0, 300));
   check("the prospect pipeline renders", /Prospect pipeline/.test(text), text.slice(0, 300));

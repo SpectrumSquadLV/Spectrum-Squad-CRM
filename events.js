@@ -425,17 +425,27 @@ module.exports = function initEvents(ctx) {
     return Math.round((then - now) / 86400000);
   }
 
-  function meter(label, actual, target) {
+  // Two different unknowns, kept apart, because collapsing either into zero
+  // states something false:
+  //
+  //   target_set  false -- nobody entered a goal. Percent is null, not 0/100.
+  //   actual_known false -- the CRM HAS no figure for this. Registrations and
+  //                  attendance are ticketed on Eventbrite and never flow in
+  //                  here, so reporting "0 of 400" would claim nobody has
+  //                  signed up rather than that we do not know.
+  function meter(label, actual, target, opts) {
     const t = num(target);
     const set = t !== null && t > 0;
+    const known = !(opts && opts.actualUnknown);
+    const a = known ? Math.round((num(actual) || 0) * 100) / 100 : null;
     return {
       label,
-      actual: Math.round((num(actual) || 0) * 100) / 100,
+      actual: a,
+      actual_known: known,
+      source: (opts && opts.source) || null,
       target: set ? t : null,
       target_set: set,
-      // Null, not 0 and not 100, when there is no target. A screen that shows a
-      // full bar for "no goal set" is worse than showing nothing.
-      percent: set ? Math.round(((num(actual) || 0) / t) * 1000) / 10 : null,
+      percent: set && known ? Math.round((a / t) * 1000) / 10 : null,
     };
   }
 
@@ -499,8 +509,10 @@ module.exports = function initEvents(ctx) {
         sponsorship: meter("Sponsorship raised", totals.sponsorship_paid, event.sponsorship_goal),
         sponsorship_committed: meter("Sponsorship committed", totals.sponsorship_committed, event.sponsorship_goal),
         vendors: meter("Vendors confirmed", totals.vendors_confirmed, event.vendor_goal),
-        registrations: meter("Registrations", null, event.registration_goal),
-        attendance: meter("Attendance", null, event.attendance_goal),
+        registrations: meter("Registrations", null, event.registration_goal,
+          { actualUnknown: true, source: "Ticketing lives on Eventbrite — the CRM has no registration count." }),
+        attendance: meter("Attendance", null, event.attendance_goal,
+          { actualUnknown: true, source: "Counted on the day — the CRM has no attendance figure." }),
       },
       funnel: {
         order: PIPELINE_ORDER,

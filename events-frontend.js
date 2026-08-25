@@ -255,14 +255,28 @@
   function meterHtml(m, opts) {
     opts = opts || {};
     var fmt = opts.money ? money : function (v) { return v == null ? "—" : Number(v).toLocaleString(); };
+    var label = '<span style="color:var(--text-muted);">' + esc(m.label) + '</span>';
+
+    // The CRM has no figure for this at all -- registrations and attendance are
+    // not tracked here. Drawing "0 of 400" with an empty bar would claim nobody
+    // has signed up, which is a different and much worse statement than "we do
+    // not have this number".
+    if (m.actual_known === false) {
+      return '<div style="margin-bottom:14px;">'
+        + '<div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;">'
+        + label + '<span style="font-weight:600;color:var(--text-muted);">'
+        + (m.target_set ? 'Goal ' + fmt(m.target) : 'No goal set') + '</span></div>'
+        + '<div style="font-size:11.5px;color:var(--text-muted);">'
+        + esc(m.source || "Not tracked in the CRM.") + '</div></div>';
+    }
+
     // A target nobody entered is not a target of zero. No bar is drawn at all,
     // because a full bar or an empty one both assert something untrue.
     if (!m.target_set) {
       return '<div style="margin-bottom:14px;">'
         + '<div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;">'
-        + '<span style="color:var(--text-muted);">' + esc(m.label) + '</span>'
-        + '<span style="color:var(--text-muted);">No goal set</span></div>'
-        + '<div style="font-size:15px;font-weight:700;">' + (opts.hideActual ? "—" : fmt(m.actual)) + '</div>'
+        + label + '<span style="color:var(--text-muted);">No goal set</span></div>'
+        + '<div style="font-size:15px;font-weight:700;">' + fmt(m.actual) + '</div>'
         + '<div style="font-size:11.5px;color:var(--text-muted);margin-top:2px;">Set a goal in Settings to track progress.</div>'
         + '</div>';
     }
@@ -271,7 +285,7 @@
     var met = pct >= 100;
     return '<div style="margin-bottom:14px;">'
       + '<div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;">'
-      + '<span style="color:var(--text-muted);">' + esc(m.label) + '</span>'
+      + label
       + '<span style="font-weight:600;">' + fmt(m.actual) + ' <span style="color:var(--text-muted);font-weight:400;">of ' + fmt(m.target) + '</span></span></div>'
       + '<div style="height:10px;background:' + VIZ.track + ';border-radius:5px;overflow:hidden;">'
       + '<div style="height:100%;width:' + width + '%;background:' + (met ? VIZ.good : VIZ.fill) + ';border-radius:5px;"></div></div>'
@@ -348,8 +362,8 @@
       // Registrations and attendance have no source of truth in the CRM yet --
       // ticketing lives on Eventbrite. Showing a meter at zero would claim
       // nobody has registered, which is not something this system knows.
-      if (m.registrations && m.registrations.target_set) meters.push(meterHtml(m.registrations, { hideActual: true }));
-      if (m.attendance && m.attendance.target_set) meters.push(meterHtml(m.attendance, { hideActual: true }));
+      if (m.registrations && m.registrations.target_set) meters.push(meterHtml(m.registrations));
+      if (m.attendance && m.attendance.target_set) meters.push(meterHtml(m.attendance));
 
       var mo = k.money || {};
       function tile(label, value, note, color) {

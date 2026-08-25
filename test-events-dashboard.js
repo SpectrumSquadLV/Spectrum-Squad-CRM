@@ -86,6 +86,24 @@ const dayOffset = (n) => new Date(Date.now() + n * 86400000).toISOString().slice
   check("zero is not a target", k.meters.vendors.target_set === false, k.meters.vendors);
   check("and does not read as 100% achieved", k.meters.vendors.percent === null, k.meters.vendors);
 
+  section("A number the CRM does not have is not reported as zero");
+  // The trap this closes: registrations and attendance are ticketed on
+  // Eventbrite and never reach the CRM. With a goal entered, "0 of 400" and an
+  // empty bar claims nobody has signed up -- a different and much worse
+  // statement than "we do not have this number". A rendered screen caught the
+  // sibling of this bug on the in-kind tile, so it is pinned here too.
+  k = buildDashboard({ ...empty, event: { id: 1, name: "X", registration_goal: 400, attendance_goal: 500 } });
+  for (const key of ["registrations", "attendance"]) {
+    check(`${key}: the goal is kept`, k.meters[key].target_set === true && k.meters[key].target > 0, k.meters[key]);
+    check(`${key}: but the actual is unknown, not zero`, k.meters[key].actual_known === false, k.meters[key]);
+    check(`${key}: and null rather than 0`, k.meters[key].actual === null, k.meters[key]);
+    check(`${key}: so no percentage is computed against it`, k.meters[key].percent === null, k.meters[key]);
+    check(`${key}: and it says where the real number lives`,
+      /eventbrite|on the day/i.test(k.meters[key].source || ""), k.meters[key].source);
+  }
+  check("meters the CRM DOES own still report a real figure",
+    k.meters.vendors.actual_known === true, k.meters.vendors);
+
   section("Real goals compute honestly");
   k = buildDashboard({
     ...empty,
