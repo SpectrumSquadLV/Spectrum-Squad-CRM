@@ -34,9 +34,19 @@
 "use strict";
 
 const { findDuplicates } = require("./prospect-match");
+// Every reason NOT to send lives in outreach-guard.js, pure and exhaustively
+// tested. See test-outreach-guard.js.
+const guard = require("./outreach-guard");
 
 module.exports = function initEvents(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, readBody, json } = ctx;
+  // Optional so the module still loads standalone for the pure tests. Without
+  // sendEmail nothing can send, which is the correct direction to fail.
+  const sendEmail = ctx.sendEmail || null;
+  const renderMergeFields = ctx.renderMergeFields
+    || ((str, f) => String(str || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (m, k) => (f && f[k] != null ? String(f[k]) : "")));
+  const APP_BASE_URL = ctx.APP_BASE_URL || "";
+  const randomToken = ctx.randomToken || (() => require("crypto").randomBytes(24).toString("hex"));
   const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
   const role = (u) => (u && (u.role || u.role_key || "")) || "";
 
@@ -47,6 +57,10 @@ module.exports = function initEvents(ctx) {
   // Money: committed amounts, payments, valuations.
   const canMoney = (u) => ["owner", "super_admin", "admin"].includes(role(u));
   const canDelete = (u) => ["owner", "super_admin", "admin"].includes(role(u));
+  // Deliberately NARROWER than canEvents. Viewing the partner list is one
+  // thing; sending email in Spectrum Squad's name to businesses who never
+  // asked to hear from us is another, and intake/scheduling do not get it.
+  const canOutreach = (u) => ["owner", "super_admin", "admin"].includes(role(u));
 
   // ---- Vocabularies. Stored as TEXT and validated here rather than as a
   // database enum, matching how the rest of this CRM handles stages, so a new
@@ -306,6 +320,79 @@ module.exports = function initEvents(ctx) {
     )`).catch((e) => console.error("event_community_partners:", e.message));
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_event_partners_event ON event_community_partners(event_id)`).catch(() => {});
 
+    // ---- Phase 3: outreach ------------------------------------------------
+    //
+    // Settings are GLOBAL, deliberately not per event. A daily send limit is a
+    // domain-reputation control: two events each with their own limit of 50
+    // would put 100 cold emails a day out of one sending domain, which is how
+    // a domain stops being delivered at all.
+    await dbRun(`CREATE TABLE IF NOT EXISTS event_outreach_settings (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      daily_limit INTEGER NOT NULL DEFAULT 40,
+      batch_size INTEGER NOT NULL DEFAULT 10,
+      send_hour_start INTEGER NOT NULL DEFAULT 9,
+      send_hour_end INTEGER NOT NULL DEFAULT 17,
+      max_follow_ups INTEGER NOT NULL DEFAULT 2,
+      -- Required before anything sends: CAN-SPAM wants a real mailing address
+      -- in commercial email, and it is not something this code can invent.
+      postal_address TEXT,
+      reply_to TEXT,
+      org_name TEXT,
+      updated_by TEXT,
+      updated_at TEXT
+    )`).catch((e) => console.error("event_outreach_settings:", e.message));
+    // Starts DISABLED with no postal address, so a fresh install cannot send
+    // even if somebody finds the button.
+    await dbRun(`INSERT INTO event_outreach_settings (id, enabled, updated_at)
+                 VALUES (1, FALSE, ?) ON CONFLICT (id) DO NOTHING`, [nowISO()]).catch(() => {});
+
+    await dbRun(`CREATE TABLE IF NOT EXISTS event_outreach_templates (
+      id SERIAL PRIMARY KEY,
+      event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      -- Step 1 is the first approach; 2+ are follow-ups, capped by
+      -- max_follow_ups. delay_days is how long after the previous step.
+      step INTEGER NOT NULL DEFAULT 1,
+      delay_days INTEGER NOT NULL DEFAULT 7,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TEXT,
+      updated_at TEXT
+    )`).catch((e) => console.error("event_outreach_templates:", e.message));
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_outreach_templates_event ON event_outreach_templates(event_id)`).catch(() => {});
+
+    await dbRun(`CREATE TABLE IF NOT EXISTS event_outreach_messages (
+      id SERIAL PRIMARY KEY,
+      event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      prospect_id INTEGER NOT NULL REFERENCES event_prospects(id) ON DELETE CASCADE,
+      template_id INTEGER REFERENCES event_outreach_templates(id) ON DELETE SET NULL,
+      step INTEGER NOT NULL DEFAULT 1,
+      to_email TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      -- draft -> approved -> sent, or cancelled / failed / skipped. Nothing
+      -- reaches an inbox from 'draft': a person has to approve it.
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_by TEXT,
+      approved_by TEXT,
+      approved_at TEXT,
+      sent_at TEXT,
+      failed_reason TEXT,
+      skipped_reason TEXT,
+      -- One per message, so an unsubscribe can be traced to what prompted it.
+      unsubscribe_token TEXT UNIQUE,
+      created_at TEXT,
+      updated_at TEXT
+    )`).catch((e) => console.error("event_outreach_messages:", e.message));
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_outreach_messages_event ON event_outreach_messages(event_id)`).catch(() => {});
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_outreach_messages_status ON event_outreach_messages(status)`).catch(() => {});
+    // The hard stop on double-sending, at the database rather than only in
+    // code: one SENT message per prospect per step, ever.
+    await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_once_per_step
+                 ON event_outreach_messages(prospect_id, step) WHERE status = 'sent'`).catch(() => {});
+
     await seedFirstEvent();
   }
 
@@ -548,6 +635,55 @@ module.exports = function initEvents(ctx) {
     return out;
   };
 
+  // ------------------------------------------------------------- outreach
+  const OUTREACH_STATUSES = ["draft", "approved", "sent", "cancelled", "failed", "skipped"];
+
+  async function outreachSettings() {
+    const row = await dbGet("SELECT * FROM event_outreach_settings WHERE id = 1");
+    return row || { enabled: false };
+  }
+
+  const localHour = (iso) => new Date(iso).getHours();
+
+  async function sentTodayCount(today) {
+    const day = String(today).slice(0, 10);
+    const rows = await dbAll(
+      "SELECT id FROM event_outreach_messages WHERE status = 'sent' AND sent_at IS NOT NULL AND sent_at LIKE ?",
+      [day + "%"]);
+    return rows.length;
+  }
+
+  async function suppressedSet() {
+    const rows = await dbAll("SELECT email FROM event_outreach_suppression WHERE email IS NOT NULL");
+    return new Set(rows.map((r) => String(r.email || "").trim().toLowerCase()));
+  }
+
+  // Which steps each prospect has ALREADY been sent. The duplicate guard reads
+  // this rather than trusting the queue, so a re-queued message cannot become
+  // a second email.
+  async function sentStepsFor(eventId) {
+    const rows = await dbAll(
+      "SELECT prospect_id, step FROM event_outreach_messages WHERE event_id = ? AND status = 'sent'", [eventId]);
+    const out = {};
+    for (const r of rows) (out[r.prospect_id] = out[r.prospect_id] || []).push(String(r.step));
+    return out;
+  }
+
+  function mergeFieldsFor(event, prospect) {
+    return {
+      business_name: prospect.business_name || "",
+      contact_name: prospect.contact_name || prospect.business_name || "",
+      contact_title: prospect.contact_title || "",
+      city: prospect.city || "",
+      event_name: event.name || "",
+      event_date: event.event_date || "",
+      venue_name: event.venue_name || "",
+      registration_url: event.registration_url || "",
+      public_contact_email: event.public_contact_email || "",
+      public_contact_phone: event.public_contact_phone || "",
+    };
+  }
+
   // ------------------------------------------------------------------ API
   async function handleApi(req, res, pathname, method, query, user) {
     if (!pathname.startsWith("/api/events")) return false;
@@ -565,6 +701,270 @@ module.exports = function initEvents(ctx) {
         payment_statuses: PAYMENT_STATUSES, vendor_statuses: VENDOR_STATUSES,
         partner_statuses: PARTNER_STATUSES, donation_categories: DONATION_CATEGORIES,
         can_see_money: seesMoney, can_delete: canDelete(user),
+      });
+      return true;
+    }
+
+    // ---- outreach settings (GLOBAL -- see the table comment)
+    if (pathname === "/api/events/outreach/settings" && method === "GET") {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const st = await outreachSettings();
+      json(res, 200, { settings: st, problems: guard.configProblems(st) });
+      return true;
+    }
+    if (pathname === "/api/events/outreach/settings" && method === "PUT") {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const b = await readBody(req);
+      const sets = [], vals = [];
+      const put = (c, v) => { sets.push(`${c} = ?`); vals.push(v); };
+      if ("enabled" in b) put("enabled", bool(b.enabled));
+      for (const f of ["daily_limit", "batch_size", "send_hour_start", "send_hour_end", "max_follow_ups"]) {
+        if (f in b) put(f, intOrNull(b[f]));
+      }
+      for (const f of ["postal_address", "reply_to", "org_name"]) if (f in b) put(f, clean(b[f], 500));
+      if (!sets.length) { json(res, 400, { error: "Nothing to update." }); return true; }
+      vals.push(actor, nowISO());
+      await dbRun(`UPDATE event_outreach_settings SET ${sets.join(", ")}, updated_by = ?, updated_at = ? WHERE id = 1`, vals);
+      const st = await outreachSettings();
+      // The problems list comes back with the save, so turning outreach on
+      // while it is still unsendable says so immediately rather than at the
+      // moment somebody presses send.
+      json(res, 200, { ok: true, settings: st, problems: guard.configProblems(st) });
+      return true;
+    }
+
+    // ---- outreach templates
+    const tmplMatch = pathname.match(/^\/api\/events\/(\d+)\/outreach\/templates$/);
+    if (tmplMatch && method === "GET") {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const eventId = Number(tmplMatch[1]);
+      json(res, 200, {
+        templates: await dbAll(
+          "SELECT * FROM event_outreach_templates WHERE event_id = ? ORDER BY step, id", [eventId]),
+      });
+      return true;
+    }
+    if (tmplMatch && method === "POST") {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const eventId = Number(tmplMatch[1]);
+      if (!(await eventExists(eventId))) { json(res, 404, { error: "Event not found" }); return true; }
+      const b = await readBody(req);
+      const name = clean(b.name, 200), subject = clean(b.subject, 300), body = clean(b.body, 20000);
+      if (!name || !subject || !body) {
+        json(res, 400, { error: "A template needs a name, a subject and a body." }); return true;
+      }
+      const row = await dbRun(
+        `INSERT INTO event_outreach_templates (event_id, name, step, delay_days, subject, body, active, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`,
+        [eventId, name, Math.max(1, intOrNull(b.step) || 1), Math.max(0, intOrNull(b.delay_days) || 0),
+         subject, body, "active" in b ? bool(b.active) : true, nowISO(), nowISO()]);
+      json(res, 201, { ok: true, id: row.rows[0].id });
+      return true;
+    }
+    const tmplOne = pathname.match(/^\/api\/events\/(\d+)\/outreach\/templates\/(\d+)$/);
+    if (tmplOne && (method === "PATCH" || method === "DELETE")) {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const id = Number(tmplOne[2]);
+      const before = await dbGet("SELECT * FROM event_outreach_templates WHERE id = ? AND event_id = ?",
+        [id, Number(tmplOne[1])]);
+      if (!before) { json(res, 404, { error: "Not found" }); return true; }
+      if (method === "DELETE") {
+        await dbRun("DELETE FROM event_outreach_templates WHERE id = ?", [id]);
+        json(res, 200, { ok: true }); return true;
+      }
+      const b = await readBody(req);
+      const sets = [], vals = [];
+      const put = (c, v) => { sets.push(`${c} = ?`); vals.push(v); };
+      for (const f of ["name", "subject"]) if (f in b) put(f, clean(b[f], 300));
+      if ("body" in b) put("body", clean(b.body, 20000));
+      if ("step" in b) put("step", Math.max(1, intOrNull(b.step) || 1));
+      if ("delay_days" in b) put("delay_days", Math.max(0, intOrNull(b.delay_days) || 0));
+      if ("active" in b) put("active", bool(b.active));
+      if (!sets.length) { json(res, 400, { error: "Nothing to update." }); return true; }
+      vals.push(nowISO(), id);
+      await dbRun(`UPDATE event_outreach_templates SET ${sets.join(", ")}, updated_at = ? WHERE id = ?`, vals);
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    // ---- draft generation
+    //
+    // Produces DRAFTS. Nothing here can send. Every prospect that is skipped
+    // comes back with a reason rather than being quietly left out, because
+    // "why didn't the bakery get one?" is the question this screen exists to
+    // answer.
+    const draftMatch = pathname.match(/^\/api\/events\/(\d+)\/outreach\/draft$/);
+    if (draftMatch && method === "POST") {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const eventId = Number(draftMatch[1]);
+      const event = await dbGet("SELECT * FROM events WHERE id = ?", [eventId]);
+      if (!event) { json(res, 404, { error: "Event not found" }); return true; }
+      const b = await readBody(req);
+      const templateId = intOrNull(b.template_id);
+      const template = templateId
+        ? await dbGet("SELECT * FROM event_outreach_templates WHERE id = ? AND event_id = ?", [templateId, eventId])
+        : null;
+      if (!template) { json(res, 400, { error: "Pick a template that belongs to this event." }); return true; }
+
+      const settings = await outreachSettings();
+      const suppressed = await suppressedSet();
+      const sentSteps = await sentStepsFor(eventId);
+      const ids = Array.isArray(b.prospect_ids) ? b.prospect_ids.map(Number).filter(Boolean) : null;
+      const prospects = ids && ids.length
+        ? await dbAll(`SELECT * FROM event_prospects WHERE event_id = ? AND id IN (${ids.map(() => "?").join(",")})`, [eventId, ...ids])
+        : await dbAll("SELECT * FROM event_prospects WHERE event_id = ?", [eventId]);
+
+      const created = [], skipped = [];
+      for (const p of prospects) {
+        const why = guard.canQueueStep({
+          step: template.step, settings, prospect: p, alreadySentSteps: sentSteps[p.id] || [],
+        });
+        if (why) { skipped.push({ prospect_id: p.id, business_name: p.business_name, reason: why }); continue; }
+        const to = guard.validEmail(p.public_email || p.contact_email);
+        if (!to) { skipped.push({ prospect_id: p.id, business_name: p.business_name, reason: "No usable email address on file." }); continue; }
+        if (suppressed.has(to)) { skipped.push({ prospect_id: p.id, business_name: p.business_name, reason: "On the do-not-contact list." }); continue; }
+        const existing = await dbGet(
+          "SELECT id FROM event_outreach_messages WHERE event_id = ? AND prospect_id = ? AND step = ? AND status IN ('draft','approved')",
+          [eventId, p.id, template.step]);
+        if (existing) { skipped.push({ prospect_id: p.id, business_name: p.business_name, reason: "A message for this step is already waiting." }); continue; }
+
+        const f = mergeFieldsFor(event, p);
+        const row = await dbRun(
+          `INSERT INTO event_outreach_messages (event_id, prospect_id, template_id, step, to_email, subject, body,
+             status, created_by, unsubscribe_token, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,'draft',?,?,?,?) RETURNING id`,
+          [eventId, p.id, template.id, template.step, to,
+           renderMergeFields(template.subject, f), renderMergeFields(template.body, f),
+           actor, randomToken(), nowISO(), nowISO()]);
+        created.push({ id: row.rows[0].id, prospect_id: p.id, business_name: p.business_name, to_email: to });
+      }
+      json(res, 200, { ok: true, created: created.length, skipped: skipped.length, drafts: created, skipped_detail: skipped });
+      return true;
+    }
+
+    // ---- the review queue
+    const msgsMatch = pathname.match(/^\/api\/events\/(\d+)\/outreach\/messages$/);
+    if (msgsMatch && method === "GET") {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const eventId = Number(msgsMatch[1]);
+      const status = clean(query && query.status, 40);
+      const rows = status && OUTREACH_STATUSES.includes(status)
+        ? await dbAll("SELECT * FROM event_outreach_messages WHERE event_id = ? AND status = ? ORDER BY id DESC LIMIT 500", [eventId, status])
+        : await dbAll("SELECT * FROM event_outreach_messages WHERE event_id = ? ORDER BY id DESC LIMIT 500", [eventId]);
+      const settings = await outreachSettings();
+      const counts = {};
+      for (const st of OUTREACH_STATUSES) counts[st] = 0;
+      for (const r of await dbAll("SELECT status FROM event_outreach_messages WHERE event_id = ?", [eventId])) {
+        counts[r.status] = (counts[r.status] || 0) + 1;
+      }
+      json(res, 200, {
+        messages: rows, counts, settings,
+        problems: guard.configProblems(settings),
+        sent_today: await sentTodayCount(nowISO()),
+        within_hours: guard.withinSendingHours(localHour(nowISO()), settings),
+      });
+      return true;
+    }
+
+    // ---- approve / cancel
+    const msgOne = pathname.match(/^\/api\/events\/(\d+)\/outreach\/messages\/(\d+)\/(approve|cancel)$/);
+    if (msgOne && method === "POST") {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const id = Number(msgOne[2]), action = msgOne[3];
+      const m = await dbGet("SELECT * FROM event_outreach_messages WHERE id = ? AND event_id = ?", [id, Number(msgOne[1])]);
+      if (!m) { json(res, 404, { error: "Not found" }); return true; }
+      if (m.status === "sent") { json(res, 400, { error: "That message has already been sent." }); return true; }
+      if (action === "approve") {
+        await dbRun("UPDATE event_outreach_messages SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ?",
+          [actor, nowISO(), nowISO(), id]);
+      } else {
+        await dbRun("UPDATE event_outreach_messages SET status = 'cancelled', updated_at = ? WHERE id = ?", [nowISO(), id]);
+      }
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    // ---- the send pass
+    //
+    // Every guard is re-checked HERE, immediately before each send, not at
+    // queue time: somebody can be marked do-not-contact, or reply, in the hours
+    // between a batch being approved and its last message going out.
+    const sendMatch = pathname.match(/^\/api\/events\/(\d+)\/outreach\/send$/);
+    if (sendMatch && method === "POST") {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const eventId = Number(sendMatch[1]);
+      const event = await dbGet("SELECT * FROM events WHERE id = ?", [eventId]);
+      if (!event) { json(res, 404, { error: "Event not found" }); return true; }
+      if (!sendEmail) { json(res, 503, { error: "Email is not wired up on this server." }); return true; }
+
+      const settings = await outreachSettings();
+      const approved = await dbAll(
+        "SELECT * FROM event_outreach_messages WHERE event_id = ? AND status = 'approved' ORDER BY id", [eventId]);
+      const prospectsById = {};
+      for (const p of await dbAll("SELECT * FROM event_prospects WHERE event_id = ?", [eventId])) prospectsById[p.id] = p;
+
+      const plan = guard.sendableNow({
+        messages: approved, prospectsById,
+        suppressedEmails: await suppressedSet(),
+        sentStepsByProspect: await sentStepsFor(eventId),
+        settings, sentToday: await sentTodayCount(nowISO()), hour: localHour(nowISO()),
+      });
+
+      // A message held for a permanent reason is marked skipped so it stops
+      // being retried every pass; one held for a temporary reason (batch full,
+      // daily limit, outside hours) stays approved and goes next time.
+      const TEMPORARY = /batch full|daily send limit|outside the configured sending hours/i;
+      for (const h of plan.hold) {
+        if (TEMPORARY.test(h.reason) || plan.problems.length) continue;
+        await dbRun("UPDATE event_outreach_messages SET status = 'skipped', skipped_reason = ?, updated_at = ? WHERE id = ?",
+          [h.reason, nowISO(), h.message.id]);
+      }
+
+      const sent = [], failed = [];
+      for (const m of plan.send) {
+        const unsubscribeUrl = `${APP_BASE_URL}/outreach/unsubscribe?token=${encodeURIComponent(m.unsubscribe_token || "")}`;
+        const footer = guard.complianceFooter({
+          unsubscribeUrl, postalAddress: settings.postal_address,
+          orgName: settings.org_name || "Spectrum Squad",
+        });
+        // Refuses rather than sending without an opt-out. configProblems
+        // already caught this, so reaching here means something changed
+        // underneath -- and the answer is still not to send.
+        if (!footer) {
+          failed.push({ id: m.id, reason: "No postal address or unsubscribe link -- refused to send." });
+          await dbRun("UPDATE event_outreach_messages SET status = 'failed', failed_reason = ?, updated_at = ? WHERE id = ?",
+            ["Missing opt-out or postal address", nowISO(), m.id]);
+          continue;
+        }
+        try {
+          const r = await sendEmail({
+            to: m.to_email, subject: m.subject, html: String(m.body || "") + footer,
+            clientId: null, type: "event_outreach",
+          });
+          if (r && r.delivered === "failed") throw new Error(r.errorMsg || "delivery failed");
+          await dbRun("UPDATE event_outreach_messages SET status = 'sent', sent_at = ?, updated_at = ? WHERE id = ?",
+            [nowISO(), nowISO(), m.id]);
+          // The prospect's own record moves too, so the pipeline and the
+          // dashboard reflect that they have actually been contacted.
+          await dbRun(
+            `UPDATE event_prospects SET date_contacted = COALESCE(NULLIF(date_contacted,''), ?),
+               last_contact_date = ?, status = CASE WHEN status IN ('NEW_PROSPECT','RESEARCHED','READY_FOR_OUTREACH')
+               THEN 'CONTACTED' ELSE status END, updated_at = ? WHERE id = ?`,
+            [nowISO(), nowISO(), nowISO(), m.prospect_id]);
+          sent.push({ id: m.id, to: m.to_email });
+        } catch (err) {
+          await dbRun("UPDATE event_outreach_messages SET status = 'failed', failed_reason = ?, updated_at = ? WHERE id = ?",
+            [String(err.message || err).slice(0, 500), nowISO(), m.id]);
+          failed.push({ id: m.id, reason: String(err.message || err).slice(0, 200) });
+        }
+      }
+
+      console.log(`[outreach] event ${eventId}: sent ${sent.length}, failed ${failed.length}, held ${plan.hold.length} by ${actor}`);
+      json(res, 200, {
+        ok: true, sent: sent.length, failed: failed.length, held: plan.hold.length,
+        problems: plan.problems,
+        held_detail: plan.hold.map((h) => ({ id: h.message.id, reason: h.reason })),
+        failed_detail: failed,
       });
       return true;
     }
@@ -1191,8 +1591,75 @@ module.exports = function initEvents(ctx) {
     return true;
   }
 
+  // The opt-out link in every outreach email. PUBLIC -- no session, because the
+  // recipient is a business owner who has no account here and must not need one
+  // to be left alone.
+  //
+  // A GET changes state, which is normally wrong, and here it is deliberate. A
+  // confirmation step would mean an opt-out that some people never complete,
+  // and the two ways to be wrong are not symmetrical: a link-scanner
+  // unsubscribing somebody who did not click costs us one prospect, while a
+  // missed opt-out means emailing a person who asked us to stop. The second is
+  // worse, so this errs towards unsubscribing.
+  //
+  // Suppression is GLOBAL and permanent -- it is not scoped to the event they
+  // happened to be emailed about.
+  async function handleUnsubscribe(req, res, query) {
+    const token = String((query && query.token) || "").trim();
+    const page = (title, body) => {
+      const html = `<!doctype html><html><head><meta charset="utf-8">`
+        + `<meta name="viewport" content="width=device-width,initial-scale=1">`
+        + `<title>${title}</title></head>`
+        + `<body style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:560px;margin:12vh auto;padding:0 20px;color:#201a4d;line-height:1.6;">`
+        + body + `</body></html>`;
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(html);
+    };
+    if (!token) {
+      page("Unsubscribe", "<h1>That link is not valid</h1><p>The unsubscribe link was incomplete. "
+        + "Please reply to the email you received and we will remove you.</p>");
+      return true;
+    }
+    const msg = await dbGet("SELECT * FROM event_outreach_messages WHERE unsubscribe_token = ?", [token]);
+    if (!msg) {
+      page("Unsubscribe", "<h1>That link is not valid</h1><p>We could not find that unsubscribe link. "
+        + "Please reply to the email you received and we will remove you.</p>");
+      return true;
+    }
+    const email = String(msg.to_email || "").trim().toLowerCase();
+    if (email) {
+      const prospect = await dbGet("SELECT * FROM event_prospects WHERE id = ?", [msg.prospect_id]).catch(() => null);
+      await dbRun(
+        `INSERT INTO event_outreach_suppression (email, business_name, reason, created_by, created_at)
+         VALUES (?, ?, 'Unsubscribed from an outreach email', 'self-service', ?)
+         ON CONFLICT (email) DO NOTHING`,
+        [email, prospect ? prospect.business_name : null, nowISO()]).catch((e) => console.error("unsubscribe:", e.message));
+      // The prospect record is flagged too, so anybody looking at them in the
+      // CRM sees it -- not only the send path.
+      await dbRun(
+        `UPDATE event_prospects SET do_not_contact = TRUE, status = 'DO_NOT_CONTACT',
+           do_not_contact_reason = 'Unsubscribed from an outreach email',
+           do_not_contact_at = COALESCE(NULLIF(do_not_contact_at,''), ?),
+           do_not_contact_by = 'self-service', updated_at = ?
+         WHERE lower(public_email) = ? OR lower(contact_email) = ?`,
+        [nowISO(), nowISO(), email, email]).catch((e) => console.error("unsubscribe flag:", e.message));
+      // Anything still queued for them is cancelled, not left to be approved
+      // by somebody who has not noticed.
+      await dbRun(
+        "UPDATE event_outreach_messages SET status = 'cancelled', updated_at = ? WHERE lower(to_email) = ? AND status IN ('draft','approved')",
+        [nowISO(), email]).catch(() => {});
+      console.log(`[outreach] unsubscribe honoured for a recipient of message ${msg.id}`);
+    }
+    page("Unsubscribed", "<h1>You're unsubscribed</h1>"
+      + "<p>We won't contact you about this or any future Spectrum Squad community event.</p>"
+      + "<p style=\"color:#6b6a86;font-size:14px;\">If this was a mistake, reply to the email you received "
+      + "and we can put it back.</p>");
+    return true;
+  }
+
   return {
-    initTables, handleApi, rollup, buildDashboard, daysUntil, slugify, canEvents, canMoney,
+    initTables, handleApi, handleUnsubscribe, rollup, buildDashboard, daysUntil, slugify,
+    canEvents, canMoney, canOutreach, outreachSettings,
     PIPELINE_ORDER, OUT_OF_PIPELINE,
     EVENT_STATUSES, PROSPECT_STATUSES, OPPORTUNITY_TYPES, PAYMENT_STATUSES,
     VENDOR_STATUSES, PARTNER_STATUSES, DONATION_CATEGORIES, STARTER_LEVELS, FIRST_EVENT_NAME,
