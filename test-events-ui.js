@@ -295,6 +295,16 @@ const BASE = process.env.BASE || "http://localhost:3011";
   check("the sending controls say they apply to every event",
     /every.{0,20}event/i.test(text), text.slice(0, 900));
 
+  // Phase 4. The claim that matters on screen is that the scheduler drafts
+  // rather than sends -- a person reading this panel must not think it will
+  // email businesses on its own overnight.
+  check("the follow-up panel renders", /Follow-ups/.test(text), text.slice(0, 1200));
+  check("and says plainly that it drafts and cannot send",
+    /drafts.{0,60}cannot send|cannot send/i.test(text), (text.match(/Follow-ups[\s\S]{0,320}/) || [""])[0]);
+  check("and that a person still approves each one",
+    /approve each one/i.test(text), (text.match(/Follow-ups[\s\S]{0,320}/) || [""])[0]);
+  check("the due-preview control is offered", !!(await page.$("#o-fu-preview")));
+
   section("Screenshot for a human to eyeball");
   await openEventCard(secondId);
   for (let i = 0; i < 40 && !/Needs attention/.test(await mainText()); i++) await page.waitForTimeout(250);
