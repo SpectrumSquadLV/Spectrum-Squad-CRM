@@ -909,6 +909,17 @@
         + 'The opt-out link and postal address are added automatically — do not paste them in.</p>'
         + addBar("Add template", "o-add-tmpl")
         + table(["Template", "Step", "Subject", "", ""], tmplRows, "No templates yet.")
+        + '<div class="card" style="margin:18px 0 4px;">'
+        + '<div style="font-weight:700;font-size:14px;margin-bottom:2px;">Follow-ups</div>'
+        + '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">'
+        + 'Runs daily. It writes <strong>drafts</strong> into the review queue below and cannot send \u2014 '
+        + 'you still read and approve each one. A business that replied, unsubscribed, or has already had '
+        + 'the maximum number of follow-ups is left alone.</div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
+        + '<button class="btn small secondary" id="o-fu-preview">See what is due</button>'
+        + '<button class="btn small secondary" id="o-fu-run">Draft due follow-ups now</button>'
+        + '<span id="o-fu-msg" style="font-size:12.5px;color:var(--text-muted);"></span></div>'
+        + '<div id="o-fu-detail" style="margin-top:10px;"></div></div>'
         + '<h3 style="margin:22px 0 4px;font-size:15px;">Review queue</h3>'
         + '<p style="font-size:12.5px;color:var(--text-muted);margin:0 0 10px;">'
         + '<strong>Nothing sends until a person approves it.</strong> '
@@ -964,6 +975,38 @@
         api("/api/events/" + STATE.eventId + "/outreach/messages/" + id + "/cancel", { method: "POST", body: {} })
           .then(function () { renderOutreach(el, d); });
       });
+      document.getElementById("o-fu-preview").addEventListener("click", function () {
+        var box = document.getElementById("o-fu-detail");
+        box.innerHTML = '<div style="font-size:12.5px;color:var(--text-muted);">Checking\u2026</div>';
+        api("/api/events/" + STATE.eventId + "/outreach/follow-ups").then(function (r) {
+          var due = r.due || [], sk = r.skipped || [];
+          // Everyone left out is listed with the reason. "Why didn't the bakery
+          // get one?" is the question this panel exists to answer.
+          box.innerHTML =
+            '<div style="font-size:13px;margin-bottom:6px;"><strong>' + due.length + '</strong> due now'
+            + (due.length ? ': ' + due.map(function (x) {
+                return esc(x.business_name || "\u2014") + ' (follow-up ' + (x.step - 1) + ')';
+              }).join(", ") : "") + '</div>'
+            + (sk.length
+              ? '<details style="font-size:12.5px;color:var(--text-muted);"><summary>'
+                + sk.length + ' not due, and why</summary><ul style="margin:6px 0 0;padding-left:20px;">'
+                + sk.slice(0, 60).map(function (x) {
+                    return '<li>' + esc(x.business_name || ("#" + x.prospect_id)) + ' \u2014 ' + esc(x.reason) + '</li>';
+                  }).join("") + '</ul></details>'
+              : "");
+        }).catch(function (e) { box.innerHTML = '<div style="color:#b91c1c;font-size:12.5px;">' + esc(e.message) + '</div>'; });
+      });
+      document.getElementById("o-fu-run").addEventListener("click", function () {
+        if (!confirm("Draft the follow-ups that are due?\n\nThey are DRAFTS \u2014 nothing is sent until you approve each one.")) return;
+        var fm = document.getElementById("o-fu-msg");
+        fm.textContent = "Working\u2026";
+        api("/api/events/" + STATE.eventId + "/outreach/follow-ups", { method: "POST", body: {} })
+          .then(function (r) {
+            alert(r.drafted + " follow-up draft(s) created. Nothing has been sent \u2014 they are waiting in the review queue.");
+            renderOutreach(el, d);
+          }).catch(function (e) { fm.textContent = "Could not run: " + e.message; });
+      });
+
       var sendBtn = document.getElementById("o-send-pass");
       if (sendBtn) sendBtn.addEventListener("click", function () {
         if (!confirm("Send the approved messages now?\n\nThis emails real businesses. "

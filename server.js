@@ -7541,6 +7541,19 @@ async function start() {
   }
   await growth.initTables().catch((e) => console.error("Growth initTables failed:", e));
   await events.initTables().catch((e) => console.error("Events initTables failed:", e));
+
+  // Event outreach follow-ups (Phase 4). Drafts only -- it writes messages
+  // into the review queue and cannot send; a person still approves each one.
+  // Daily rather than hourly: a follow-up delay is measured in days, so there
+  // is nothing an hourly pass would catch sooner that matters.
+  //
+  // Deliberately NOT on boot. A few redeploys in an afternoon should not each
+  // be a chance to draft the same batch, and nothing here is time-critical.
+  setInterval(() => {
+    events.followUpSweepAll()
+      .then((r) => { if (r && r.drafted) console.log(`[outreach] daily follow-up sweep drafted ${r.drafted} message(s) across ${r.events} event(s)`); })
+      .catch((e) => console.error("Follow-up sweep failed:", e.message));
+  }, 24 * 60 * 60 * 1000);
   await geoMap.initTables().catch((e) => console.error("Geo Map initTables failed:", e));
   await hr.seed().catch((e) => console.error("HR seed failed:", e));
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));

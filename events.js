@@ -37,6 +37,8 @@ const { findDuplicates } = require("./prospect-match");
 // Every reason NOT to send lives in outreach-guard.js, pure and exhaustively
 // tested. See test-outreach-guard.js.
 const guard = require("./outreach-guard");
+// Which follow-ups are due, decided purely. See test-followup-schedule.js.
+const { dueFollowUps } = require("./followup-schedule");
 
 module.exports = function initEvents(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, readBody, json } = ctx;
@@ -842,6 +844,48 @@ module.exports = function initEvents(ctx) {
       return true;
     }
 
+    // ---- follow-up sweep, on demand
+    //
+    // Drafts only. There is deliberately no route anywhere that both generates
+    // a follow-up and sends it.
+    const fuMatch = pathname.match(/^\/api\/events\/(\d+)\/outreach\/follow-ups$/);
+    if (fuMatch && (method === "POST" || method === "GET")) {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const eventId = Number(fuMatch[1]);
+      const event = await dbGet("SELECT * FROM events WHERE id = ?", [eventId]);
+      if (!event) { json(res, 404, { error: "Event not found" }); return true; }
+
+      if (method === "GET") {
+        // A preview: what WOULD be drafted, without writing anything. So a
+        // person can look before letting the sweep loose on a real list.
+        const settings = await outreachSettings();
+        const prospects = await dbAll("SELECT * FROM event_prospects WHERE event_id = ?", [eventId]);
+        const messages = await dbAll("SELECT * FROM event_outreach_messages WHERE event_id = ?", [eventId]);
+        const templates = await dbAll("SELECT * FROM event_outreach_templates WHERE event_id = ? AND active = TRUE", [eventId]);
+        const messagesByProspect = {};
+        for (const m of messages) (messagesByProspect[m.prospect_id] = messagesByProspect[m.prospect_id] || []).push(m);
+        const templatesByStep = {};
+        for (const t of templates.slice().sort((a, b) => a.id - b.id)) {
+          if (templatesByStep[t.step] === undefined) templatesByStep[t.step] = t;
+        }
+        const preview = dueFollowUps({
+          prospects, messagesByProspect, templatesByStep, settings,
+          suppressedEmails: await suppressedSet(), now: nowISO(),
+        });
+        const byId = {};
+        for (const p of prospects) byId[p.id] = p.business_name;
+        json(res, 200, {
+          due: preview.due,
+          skipped: preview.skipped.map((s) => ({ ...s, business_name: byId[s.prospect_id] })),
+        });
+        return true;
+      }
+
+      const r = await followUpSweep(eventId, actor);
+      json(res, 200, { ok: true, ...r });
+      return true;
+    }
+
     // ---- the review queue
     const msgsMatch = pathname.match(/^\/api\/events\/(\d+)\/outreach\/messages$/);
     if (msgsMatch && method === "GET") {
@@ -1591,6 +1635,83 @@ module.exports = function initEvents(ctx) {
     return true;
   }
 
+  // ---- follow-up sweep (Phase 4)
+  //
+  // Turns a due follow-up into a DRAFT in the same review queue as everything
+  // else. It cannot send: it writes rows with status 'draft', and a person
+  // still has to read and approve each one. That is the whole point -- Phase 3
+  // is built on nothing reaching an inbox unread, and a scheduler that
+  // promoted itself to sending would undo that silently, overnight.
+  async function followUpSweep(eventId, actorName) {
+    const event = await dbGet("SELECT * FROM events WHERE id = ?", [eventId]);
+    if (!event) return { drafted: 0, skipped: 0, detail: [], error: "Event not found" };
+
+    const settings = await outreachSettings();
+    const prospects = await dbAll("SELECT * FROM event_prospects WHERE event_id = ?", [eventId]);
+    const messages = await dbAll("SELECT * FROM event_outreach_messages WHERE event_id = ?", [eventId]);
+    const templates = await dbAll(
+      "SELECT * FROM event_outreach_templates WHERE event_id = ? AND active = TRUE", [eventId]);
+
+    const messagesByProspect = {};
+    for (const m of messages) (messagesByProspect[m.prospect_id] = messagesByProspect[m.prospect_id] || []).push(m);
+    const templatesByStep = {};
+    // Lowest id wins when two templates claim the same step, so the choice is
+    // stable rather than depending on row order.
+    for (const t of templates.slice().sort((a, b) => a.id - b.id)) {
+      if (templatesByStep[t.step] === undefined) templatesByStep[t.step] = t;
+    }
+
+    const { due, skipped } = dueFollowUps({
+      prospects, messagesByProspect, templatesByStep, settings,
+      suppressedEmails: await suppressedSet(), now: nowISO(),
+    });
+
+    const created = [];
+    for (const d of due) {
+      const p = prospects.find((x) => x.id === d.prospect_id);
+      const t = templatesByStep[d.step];
+      if (!p || !t) continue;
+      const f = mergeFieldsFor(event, p);
+      const row = await dbRun(
+        `INSERT INTO event_outreach_messages (event_id, prospect_id, template_id, step, to_email, subject, body,
+           status, created_by, unsubscribe_token, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,'draft',?,?,?,?) RETURNING id`,
+        [eventId, p.id, t.id, d.step, d.to_email,
+         renderMergeFields(t.subject, f), renderMergeFields(t.body, f),
+         actorName || "follow-up sweep", randomToken(), nowISO(), nowISO()]
+      ).catch((e) => { console.error("followup draft:", e.message); return null; });
+      if (row && row.rows && row.rows[0]) {
+        created.push({ id: row.rows[0].id, prospect_id: p.id, business_name: p.business_name, step: d.step });
+      }
+    }
+    if (created.length) {
+      console.log(`[outreach] follow-up sweep drafted ${created.length} message(s) for event ${eventId} -- all awaiting approval`);
+    }
+    return { drafted: created.length, skipped: skipped.length, created, skipped_detail: skipped };
+  }
+
+  // Runs across every event that is not finished with. Scheduled daily; also
+  // available on demand from the Outreach screen.
+  async function followUpSweepAll() {
+    const settings = await outreachSettings();
+    // Nothing is drafted while outreach is switched off. Queueing drafts a
+    // person would find waiting for them after deciding not to do outreach at
+    // all is its own small betrayal.
+    if (!(settings.enabled === true || settings.enabled === "t")) {
+      return { events: 0, drafted: 0, reason: "Outreach is switched off." };
+    }
+    const events = await dbAll(
+      "SELECT id FROM events WHERE status NOT IN ('COMPLETED','CANCELLED')").catch(() => []);
+    let drafted = 0;
+    for (const ev of events) {
+      const r = await followUpSweep(ev.id, "follow-up sweep").catch((e) => {
+        console.error("followUpSweep failed for event", ev.id, e.message); return null;
+      });
+      if (r) drafted += r.drafted;
+    }
+    return { events: events.length, drafted };
+  }
+
   // The opt-out link in every outreach email. PUBLIC -- no session, because the
   // recipient is a business owner who has no account here and must not need one
   // to be left alone.
@@ -1658,7 +1779,8 @@ module.exports = function initEvents(ctx) {
   }
 
   return {
-    initTables, handleApi, handleUnsubscribe, rollup, buildDashboard, daysUntil, slugify,
+    initTables, handleApi, handleUnsubscribe, followUpSweep, followUpSweepAll,
+    rollup, buildDashboard, daysUntil, slugify,
     canEvents, canMoney, canOutreach, outreachSettings,
     PIPELINE_ORDER, OUT_OF_PIPELINE,
     EVENT_STATUSES, PROSPECT_STATUSES, OPPORTUNITY_TYPES, PAYMENT_STATUSES,
