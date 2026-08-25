@@ -392,6 +392,144 @@ module.exports = function initEvents(ctx) {
     return t;
   }
 
+  // ---------------------------------------------------------- dashboard
+  //
+  // Phase 2. Derived here rather than on the screen so the dashboard and the
+  // tabs can never disagree about the same number.
+  //
+  // Two rules carried over from the data layer, because a dashboard is exactly
+  // where they get broken:
+  //
+  //   A GOAL NOBODY SET IS NOT A GOAL OF ZERO. Reporting 0/0 as 100%, or as
+  //   0%, invents a denominator. Every meter says whether a target was actually
+  //   entered, and reads "No goal set" when it was not.
+  //
+  //   CASH AND DONATED GOODS STAY APART. Committed is a promise, paid is money
+  //   received, in-kind is somebody's estimate of what a donated item was
+  //   worth. There is no combined figure here to misquote.
+  const PIPELINE_ORDER = [
+    "NEW_PROSPECT", "RESEARCHED", "READY_FOR_OUTREACH", "CONTACTED",
+    "FOLLOW_UP_NEEDED", "RESPONDED", "INTERESTED", "COMMITTED",
+  ];
+  const OUT_OF_PIPELINE = ["NOT_INTERESTED", "DO_NOT_CONTACT"];
+
+  // Dates in this CRM are TEXT. Only a plain YYYY-MM-DD is treated as a day, so
+  // a half-typed date cannot become a countdown of forty thousand days.
+  function daysUntil(dateText, today) {
+    const s = String(dateText || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    const then = Date.parse(s + "T00:00:00Z");
+    if (!Number.isFinite(then)) return null;
+    const now = Date.parse(String(today).slice(0, 10) + "T00:00:00Z");
+    if (!Number.isFinite(now)) return null;
+    return Math.round((then - now) / 86400000);
+  }
+
+  function meter(label, actual, target) {
+    const t = num(target);
+    const set = t !== null && t > 0;
+    return {
+      label,
+      actual: Math.round((num(actual) || 0) * 100) / 100,
+      target: set ? t : null,
+      target_set: set,
+      // Null, not 0 and not 100, when there is no target. A screen that shows a
+      // full bar for "no goal set" is worse than showing nothing.
+      percent: set ? Math.round(((num(actual) || 0) / t) * 1000) / 10 : null,
+    };
+  }
+
+  function buildDashboard({ event, prospects, sponsorships, donations, vendors, partners, levels, today }) {
+    const totals = rollup(sponsorships, donations, vendors, partners, prospects);
+
+    const byStatus = {};
+    for (const st of PIPELINE_ORDER.concat(OUT_OF_PIPELINE)) byStatus[st] = 0;
+    for (const p of prospects) {
+      if (byStatus[p.status] === undefined) byStatus[p.status] = 0;
+      byStatus[p.status] += 1;
+    }
+
+    // Work queues, not decoration. Each one is a thing a person can go and do,
+    // and each carries the rows so the screen can link straight to them.
+    const isTrue = (v) => v === true || v === "t";
+    const attention = [];
+    const push = (key, label, rows, tone) => {
+      if (rows.length) attention.push({ key, label, count: rows.length, tone, ids: rows.map((r) => r.id).slice(0, 50) });
+    };
+
+    const todayStr = String(today).slice(0, 10);
+    push("follow_up_due", "Prospects with a follow-up date that has passed",
+      prospects.filter((p) => {
+        const d = String(p.next_follow_up || "").trim();
+        return /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= todayStr && !isTrue(p.do_not_contact)
+          && !["COMMITTED", "NOT_INTERESTED", "DO_NOT_CONTACT"].includes(p.status);
+      }), "warning");
+    push("ready_no_contact", "Researched and ready, but nobody has reached out",
+      prospects.filter((p) => p.status === "READY_FOR_OUTREACH" && !isTrue(p.do_not_contact)), "info");
+    push("sponsor_unpaid", "Sponsorships committed but not fully paid",
+      sponsorships.filter((s) => {
+        if (s.payment_status === "CANCELLED" || s.payment_status === "WAIVED") return false;
+        const c = num(s.amount_committed) || 0, p = num(s.amount_paid) || 0;
+        return c > 0 && p < c;
+      }), "warning");
+    push("sponsor_no_logo", "Sponsors whose logo has not arrived",
+      sponsorships.filter((s) => (isTrue(s.banner_placement) || isTrue(s.flyer_placement)) && !isTrue(s.logo_received)), "warning");
+    push("vendor_insurance", "Confirmed vendors whose insurance is still outstanding",
+      vendors.filter((v) => v.status === "CONFIRMED" && isTrue(v.insurance_required) && !isTrue(v.insurance_received)), "critical");
+    push("vendor_not_briefed", "Confirmed vendors who have not had arrival instructions",
+      vendors.filter((v) => v.status === "CONFIRMED" && !isTrue(v.arrival_instructions_sent)), "info");
+    push("vendor_stalled", "Vendors waiting on us to review their application",
+      vendors.filter((v) => ["APPLICATION_RECEIVED", "UNDER_REVIEW"].includes(v.status)), "warning");
+    push("donation_unreceived", "Donations promised but not yet received",
+      donations.filter((d) => !isTrue(d.received)), "info");
+    push("donation_unthanked", "Donations received with no thank-you sent",
+      donations.filter((d) => isTrue(d.received) && !isTrue(d.thank_you_sent)), "warning");
+    push("donation_unvalued", "Donated items nobody has valued yet",
+      donations.filter((d) => num(d.estimated_value) === null), "info");
+    push("partner_undecided", "Community partners who have not said yes or no",
+      partners.filter((p) => ["PROSPECT", "INVITED", "INTERESTED"].includes(p.status)), "info");
+
+    return {
+      event_id: event.id,
+      event_name: event.name,
+      event_date: event.event_date || null,
+      days_until: daysUntil(event.event_date, today),
+      status: event.status,
+      meters: {
+        sponsorship: meter("Sponsorship raised", totals.sponsorship_paid, event.sponsorship_goal),
+        sponsorship_committed: meter("Sponsorship committed", totals.sponsorship_committed, event.sponsorship_goal),
+        vendors: meter("Vendors confirmed", totals.vendors_confirmed, event.vendor_goal),
+        registrations: meter("Registrations", null, event.registration_goal),
+        attendance: meter("Attendance", null, event.attendance_goal),
+      },
+      funnel: {
+        order: PIPELINE_ORDER,
+        out_of_pipeline: OUT_OF_PIPELINE,
+        counts: byStatus,
+        total: prospects.length,
+      },
+      money: {
+        committed: totals.sponsorship_committed,
+        paid: totals.sponsorship_paid,
+        outstanding: Math.round((totals.sponsorship_committed - totals.sponsorship_paid) * 100) / 100,
+        in_kind_estimate_received: totals.in_kind_estimate_received,
+        in_kind_estimate_promised: totals.in_kind_estimate_promised,
+        in_kind_items_unvalued: totals.in_kind_items_unvalued,
+        levels_offered: levels.filter((l) => isTrue(l.active)).length,
+      },
+      readiness: {
+        vendors_confirmed: totals.vendors_confirmed,
+        vendors_total: totals.vendors_total,
+        needs_electricity: totals.needs_electricity,
+        needs_table: totals.needs_table,
+        partners_confirmed: totals.partners_confirmed,
+        partners_total: totals.partners_total,
+      },
+      attention,
+      totals,
+    };
+  }
+
   const stripMoney = (row, fields) => {
     const out = { ...row };
     for (const f of fields) delete out[f];
@@ -461,6 +599,37 @@ module.exports = function initEvents(ctx) {
          oneOf(b.status, EVENT_STATUSES, "DRAFT"), actor, nowISO(), nowISO()]
       );
       json(res, 201, { ok: true, id: row.rows[0].id });
+      return true;
+    }
+
+    const dashMatch = pathname.match(/^\/api\/events\/(\d+)\/dashboard$/);
+    if (dashMatch && method === "GET") {
+      const id = Number(dashMatch[1]);
+      const ev = await dbGet("SELECT * FROM events WHERE id = ?", [id]);
+      if (!ev) { json(res, 404, { error: "Not found" }); return true; }
+      const [prospects, levels, sponsorships, donations, vendors, partners] = await Promise.all([
+        dbAll("SELECT * FROM event_prospects WHERE event_id = ?", [id]),
+        dbAll("SELECT * FROM event_sponsorship_levels WHERE event_id = ?", [id]),
+        dbAll("SELECT * FROM event_sponsorships WHERE event_id = ?", [id]),
+        dbAll("SELECT * FROM event_in_kind_donations WHERE event_id = ?", [id]),
+        dbAll("SELECT * FROM event_vendors WHERE event_id = ?", [id]),
+        dbAll("SELECT * FROM event_community_partners WHERE event_id = ?", [id]),
+      ]);
+      const d = buildDashboard({
+        event: ev, prospects, sponsorships, donations, vendors, partners, levels, today: nowISO(),
+      });
+      if (!seesMoney) {
+        // Money is removed, not zeroed. A zero would read as "nobody has
+        // sponsored anything", which is a different and worse claim than
+        // "you are not shown this".
+        d.money = { in_kind_items_unvalued: d.money.in_kind_items_unvalued, levels_offered: d.money.levels_offered };
+        delete d.meters.sponsorship;
+        delete d.meters.sponsorship_committed;
+        d.totals = stripMoney(d.totals, ["sponsorship_committed", "sponsorship_paid",
+          "in_kind_estimate_received", "in_kind_estimate_promised"]);
+        d.attention = d.attention.filter((a) => a.key !== "sponsor_unpaid");
+      }
+      json(res, 200, { ...d, can_see_money: seesMoney });
       return true;
     }
 
@@ -1011,7 +1180,8 @@ module.exports = function initEvents(ctx) {
   }
 
   return {
-    initTables, handleApi, rollup, slugify, canEvents, canMoney,
+    initTables, handleApi, rollup, buildDashboard, daysUntil, slugify, canEvents, canMoney,
+    PIPELINE_ORDER, OUT_OF_PIPELINE,
     EVENT_STATUSES, PROSPECT_STATUSES, OPPORTUNITY_TYPES, PAYMENT_STATUSES,
     VENDOR_STATUSES, PARTNER_STATUSES, DONATION_CATEGORIES, STARTER_LEVELS, FIRST_EVENT_NAME,
   };

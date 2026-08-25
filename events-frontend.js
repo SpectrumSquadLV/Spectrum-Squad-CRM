@@ -45,6 +45,7 @@
     return isFinite(n) ? "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—";
   }
   function val(v) { return (v == null || v === "") ? "—" : esc(v); }
+  function plural(n, one, many) { return n + " " + (Number(n) === 1 ? one : (many || one + "s")); }
   // Unknowns are labelled, never invented. A blank venue is a blank venue.
   function needed(v) {
     return (v == null || v === "")
@@ -236,41 +237,186 @@
     if (STATE.tab === "settings") return renderSettings(el, d);
   }
 
-  // Overview stays a summary in Phase 1 -- the KPI dashboard is Phase 2. What
-  // it does do is keep money honest: committed, paid and the ESTIMATED value of
-  // donated goods are three separate figures and are never added together.
-  function renderOverview(el, d) {
-    var t = d.totals || {};
-    function stat(label, value, note) {
-      return '<div class="card" style="min-width:180px;flex:1;">'
-        + '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;">' + esc(label) + '</div>'
-        + '<div style="font-size:22px;font-weight:700;margin-top:4px;">' + value + '</div>'
-        + (note ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:3px;">' + note + '</div>' : "") + '</div>';
-    }
-    var cards = [];
-    if (d.can_see_money) {
-      cards.push(stat("Sponsorship committed", money(t.sponsorship_committed), "Promised, not necessarily received"));
-      cards.push(stat("Sponsorship paid", money(t.sponsorship_paid), "Actually received"));
-      cards.push(stat("In-kind (estimated)", money(t.in_kind_estimate_received),
-        "Received goods, at estimated value" + (t.in_kind_items_unvalued ? " · " + t.in_kind_items_unvalued + " item(s) not yet valued" : "")));
-    }
-    cards.push(stat("Prospects", t.prospects_total || 0,
-      t.prospects_do_not_contact ? t.prospects_do_not_contact + " do not contact" : ""));
-    cards.push(stat("Vendors confirmed", (t.vendors_confirmed || 0) + " / " + (t.vendors_total || 0),
-      (t.needs_electricity || 0) + " need power · " + (t.needs_table || 0) + " need a table"));
-    cards.push(stat("Community partners", (t.partners_confirmed || 0) + " / " + (t.partners_total || 0), "confirmed"));
-    cards.push(stat("In-kind items", t.in_kind_count || 0,
-      t.awaiting_thanks ? t.awaiting_thanks + " awaiting a thank-you" : "All thanked"));
+  // ---------------------------------------------------------- dashboard
+  //
+  // Phase 2. Every number comes from /api/events/:id/dashboard so this screen
+  // and the tabs cannot disagree.
+  //
+  // Colour is doing one job here: magnitude, in one hue. The funnel is a single
+  // series, so there is no legend and no categorical palette -- each bar is
+  // named by its own label. Status colours are reserved for state and always
+  // ship with words beside them, never colour alone.
+  //
+  //   --viz-fill   #3f56b5  validated: inside the lightness band, >= 3:1 on white
+  //   --viz-track  #eef0f4  a track, not a data mark
+  //   good/warn/bad        #15803d / #b45309 / #b91c1c, all >= 3:1, always labelled
+  var VIZ = { fill: "#3f56b5", track: "#eef0f4", good: "#15803d", warn: "#b45309", bad: "#b91c1c" };
 
-    el.innerHTML = '<div style="display:flex;gap:12px;flex-wrap:wrap;">' + cards.join("") + '</div>'
-      + (d.can_see_money
-        ? '<p style="font-size:12.5px;color:var(--text-muted);margin-top:14px;max-width:760px;">'
-          + 'Cash and donated goods are kept apart on purpose. An in-kind figure is an <strong>estimate</strong> of what a '
-          + 'donated item was worth; committed is a promise; paid is money received. Adding the three together would produce '
-          + 'a number nobody can stand behind.</p>'
-        : '')
-      + '<p style="font-size:12.5px;color:var(--text-muted);margin-top:6px;max-width:760px;">'
-      + 'This is a summary. The full event dashboard is a later phase.</p>';
+  function meterHtml(m, opts) {
+    opts = opts || {};
+    var fmt = opts.money ? money : function (v) { return v == null ? "—" : Number(v).toLocaleString(); };
+    // A target nobody entered is not a target of zero. No bar is drawn at all,
+    // because a full bar or an empty one both assert something untrue.
+    if (!m.target_set) {
+      return '<div style="margin-bottom:14px;">'
+        + '<div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;">'
+        + '<span style="color:var(--text-muted);">' + esc(m.label) + '</span>'
+        + '<span style="color:var(--text-muted);">No goal set</span></div>'
+        + '<div style="font-size:15px;font-weight:700;">' + (opts.hideActual ? "—" : fmt(m.actual)) + '</div>'
+        + '<div style="font-size:11.5px;color:var(--text-muted);margin-top:2px;">Set a goal in Settings to track progress.</div>'
+        + '</div>';
+    }
+    var pct = m.percent == null ? 0 : m.percent;
+    var width = Math.max(0, Math.min(100, pct));
+    var met = pct >= 100;
+    return '<div style="margin-bottom:14px;">'
+      + '<div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;">'
+      + '<span style="color:var(--text-muted);">' + esc(m.label) + '</span>'
+      + '<span style="font-weight:600;">' + fmt(m.actual) + ' <span style="color:var(--text-muted);font-weight:400;">of ' + fmt(m.target) + '</span></span></div>'
+      + '<div style="height:10px;background:' + VIZ.track + ';border-radius:5px;overflow:hidden;">'
+      + '<div style="height:100%;width:' + width + '%;background:' + (met ? VIZ.good : VIZ.fill) + ';border-radius:5px;"></div></div>'
+      + '<div style="font-size:11.5px;color:' + (met ? VIZ.good : "var(--text-muted)") + ';margin-top:3px;">'
+      + (met ? "✓ " : "") + pct + '% of goal</div></div>';
+  }
+
+  function funnelHtml(f) {
+    var counts = f.counts || {};
+    var order = f.order || [];
+    var max = 0;
+    order.forEach(function (k) { max = Math.max(max, counts[k] || 0); });
+    (f.out_of_pipeline || []).forEach(function (k) { max = Math.max(max, counts[k] || 0); });
+    if (!max) return '<div class="empty-state">No prospects yet.</div>';
+
+    // Every bar is directly labelled, so identity never rests on colour, and a
+    // bar of zero still shows its row -- a stage nobody has reached is
+    // information, not something to hide.
+    function bar(key) {
+      var n = counts[key] || 0;
+      var w = max ? Math.round((n / max) * 100) : 0;
+      return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:5px;">'
+        + '<div style="width:170px;flex:none;font-size:12.5px;color:var(--text-muted);text-align:right;">' + esc(human(key)) + '</div>'
+        + '<div style="flex:1;min-width:0;height:18px;position:relative;">'
+        + (n > 0
+          ? '<div style="height:100%;width:' + Math.max(w, 2) + '%;background:' + VIZ.fill + ';border-radius:0 4px 4px 0;"></div>'
+          : '<div style="height:100%;width:2px;background:' + VIZ.track + ';"></div>')
+        + '</div>'
+        + '<div style="width:40px;flex:none;font-size:13px;font-weight:700;">' + n + '</div></div>';
+    }
+    var out = (f.out_of_pipeline || []).filter(function (k) { return (counts[k] || 0) > 0; });
+    return '<div>' + order.map(bar).join("") + '</div>'
+      + (out.length
+        ? '<div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border,#e5e7eb);">'
+          + '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:6px;">Out of the pipeline</div>'
+          + out.map(bar).join("") + '</div>'
+        : "");
+  }
+
+  function attentionHtml(items) {
+    if (!items || !items.length) {
+      return '<div class="empty-state">Nothing needs chasing right now.</div>';
+    }
+    var toneColor = { critical: VIZ.bad, warning: VIZ.warn, info: VIZ.fill };
+    var toneIcon = { critical: "●", warning: "▲", info: "■" };
+    return '<div style="display:grid;gap:8px;">' + items.map(function (a) {
+      var c = toneColor[a.tone] || VIZ.fill;
+      // Icon AND words: the colour is never the only thing carrying the state.
+      return '<div style="display:flex;align-items:center;gap:10px;border:1px solid var(--border,#e5e7eb);border-left:3px solid ' + c + ';border-radius:8px;padding:9px 12px;">'
+        + '<span style="color:' + c + ';font-size:11px;" aria-hidden="true">' + toneIcon[a.tone] + '</span>'
+        + '<span style="flex:1;min-width:0;font-size:13px;">' + esc(a.label) + '</span>'
+        + '<span style="font-weight:700;font-size:14px;">' + a.count + '</span></div>';
+    }).join("") + '</div>';
+  }
+
+  function renderOverview(el, d) {
+    el.innerHTML = '<div class="empty-state">Loading dashboard…</div>';
+    api("/api/events/" + STATE.eventId + "/dashboard").then(function (k) {
+      var money$ = k.can_see_money;
+      var days = k.days_until;
+      var countdown = days == null
+        ? '<div style="font-size:13px;color:var(--text-muted);">No date set yet</div>'
+        : '<div><span style="font-size:34px;font-weight:700;line-height:1;">'
+          + (days > 0 ? days : days === 0 ? "Today" : Math.abs(days))
+          + '</span><span style="font-size:13px;color:var(--text-muted);margin-left:8px;">'
+          + (days > 0 ? "day" + (days === 1 ? "" : "s") + " to go" : days === 0 ? "" : "day" + (Math.abs(days) === 1 ? "" : "s") + " ago")
+          + '</span></div>';
+
+      var m = k.meters || {};
+      var meters = [];
+      if (money$ && m.sponsorship) meters.push(meterHtml(m.sponsorship, { money: true }));
+      if (money$ && m.sponsorship_committed) meters.push(meterHtml(m.sponsorship_committed, { money: true }));
+      if (m.vendors) meters.push(meterHtml(m.vendors));
+      // Registrations and attendance have no source of truth in the CRM yet --
+      // ticketing lives on Eventbrite. Showing a meter at zero would claim
+      // nobody has registered, which is not something this system knows.
+      if (m.registrations && m.registrations.target_set) meters.push(meterHtml(m.registrations, { hideActual: true }));
+      if (m.attendance && m.attendance.target_set) meters.push(meterHtml(m.attendance, { hideActual: true }));
+
+      var mo = k.money || {};
+      function tile(label, value, note, color) {
+        return '<div class="card" style="flex:1;min-width:170px;">'
+          + '<div style="font-size:11.5px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;">' + esc(label) + '</div>'
+          + '<div style="font-size:22px;font-weight:700;margin-top:4px;' + (color ? "color:" + color + ";" : "") + '">' + value + '</div>'
+          + (note ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:3px;">' + note + '</div>' : "")
+          + '</div>';
+      }
+      var tiles = [];
+      if (money$) {
+        tiles.push(tile("Sponsorship paid", money(mo.paid), "Money received"));
+        tiles.push(tile("Committed", money(mo.committed), "Promised, not yet all in"));
+        tiles.push(tile("Outstanding", money(mo.outstanding), "Committed minus paid",
+          Number(mo.outstanding) > 0 ? VIZ.warn : null));
+        // "$0.00" beside "1 not valued" says the donated bounce house was worth
+        // nothing. When nothing has been valued yet there is no estimate to
+        // show, so the tile says so instead of printing a zero somebody would
+        // quote. A real zero (no donations at all) still reads as $0.00.
+        var inKind = Number(mo.in_kind_estimate_received) > 0
+          ? money(mo.in_kind_estimate_received)
+          : (mo.in_kind_items_unvalued > 0 ? '<span style="color:var(--text-muted);">Not valued yet</span>' : money(0));
+        tiles.push(tile("In-kind (estimated)", inKind,
+          mo.in_kind_items_unvalued
+            ? plural(mo.in_kind_items_unvalued, "item") + " received with no value recorded"
+            : "Goods received, at estimated value"));
+      }
+      var r = k.readiness || {};
+      tiles.push(tile("Prospects", (k.funnel || {}).total || 0,
+        ((k.funnel || {}).counts || {}).COMMITTED ? (k.funnel.counts.COMMITTED + " committed") : "None committed yet"));
+      tiles.push(tile("Vendors", (r.vendors_confirmed || 0) + " / " + (r.vendors_total || 0),
+        (r.needs_electricity || 0) + " need power · " + (r.needs_table || 0) + " need a table"));
+      tiles.push(tile("Community partners", (r.partners_confirmed || 0) + " / " + (r.partners_total || 0), "confirmed"));
+
+      el.innerHTML =
+        '<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-bottom:6px;">'
+        + '<div class="card" style="min-width:210px;">'
+        + '<div style="font-size:11.5px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;">'
+        + esc(k.event_date || "Date not set") + '</div>' + countdown + '</div>'
+        + '<div class="card" style="flex:2;min-width:280px;">'
+        + '<div style="font-size:11.5px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;">Goals</div>'
+        + (meters.length ? meters.join("")
+          : '<div style="font-size:13px;color:var(--text-muted);">No goals set yet. Add them in Settings.</div>')
+        + '</div></div>'
+
+        + '<div style="display:flex;gap:12px;flex-wrap:wrap;margin:14px 0;">' + tiles.join("") + '</div>'
+
+        + '<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;">'
+        + '<div class="card" style="flex:1;min-width:340px;">'
+        + '<div style="font-weight:700;font-size:14px;margin-bottom:2px;">Prospect pipeline</div>'
+        + '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">'
+        + plural((k.funnel || {}).total || 0, "business", "businesses") + ' on this event</div>'
+        + funnelHtml(k.funnel || {}) + '</div>'
+        + '<div class="card" style="flex:1;min-width:340px;">'
+        + '<div style="font-weight:700;font-size:14px;margin-bottom:2px;">Needs attention</div>'
+        + '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Things somebody has to actually do</div>'
+        + attentionHtml(k.attention) + '</div></div>'
+
+        + (money$
+          ? '<p style="font-size:12.5px;color:var(--text-muted);margin-top:14px;max-width:780px;">'
+            + 'Cash and donated goods are kept apart on purpose. In-kind is an <strong>estimate</strong> of what a donated '
+            + 'item was worth; committed is a promise; paid is money received. There is no combined "total raised" here, '
+            + 'because that number could not be stood behind.</p>'
+          : '<p style="font-size:12.5px;color:var(--text-muted);margin-top:14px;">Sponsorship amounts are not shown for your role.</p>');
+    }).catch(function (e) {
+      el.innerHTML = '<div class="empty-state">Could not load the dashboard: ' + esc(e.message) + '</div>';
+    });
   }
 
   function renderProspects(el, d) {

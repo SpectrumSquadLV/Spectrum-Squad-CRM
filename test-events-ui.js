@@ -83,6 +83,29 @@ const BASE = process.env.BASE || "http://localhost:3011";
     await page.evaluate(() => window.__renderEvents(document.querySelector(".main")));
     return settle(before);
   };
+  // Back to the event LIST, whichever view we are on. reRenderEvents() refreshes
+  // whatever is currently open, so in the detail view it redraws the detail and
+  // leaves no cards to click.
+  const backToList = async () => {
+    const before = await mainText();
+    const clicked = await page.evaluate(() => {
+      const b = document.querySelector("#ev-back");
+      if (b) { b.click(); return true; }
+      return false;
+    });
+    if (!clicked) return reRenderEvents();
+    return settle(before);
+  };
+  const openEventCard = async (id) => {
+    await backToList();
+    const before = await mainText();
+    await page.evaluate((eid) => {
+      const el = Array.from(document.querySelectorAll("[data-open-event]"))
+        .find((c) => Number(c.dataset.openEvent) === eid);
+      if (el) el.click();
+    }, id);
+    return settle(before);
+  };
 
   section("Every existing area still loads");
   // Each one is checked for real content, not just "no throw" -- a blank page
@@ -173,6 +196,77 @@ const BASE = process.env.BASE || "http://localhost:3011";
   const saved = await page.evaluate(async (id) =>
     (await (await fetch("/api/events/" + id, { credentials: "include" })).json()).event.venue_name, secondId);
   check("the venue persisted to the server", saved === "EVUI Community Hall", saved);
+
+  section("The dashboard renders, with goals, a funnel and a work queue");
+  // Seeded through the API so there is something real to draw; the point is the
+  // rendering, which the data-layer suites cannot check.
+  await page.evaluate(async (id) => {
+    const post = (p, b) => fetch(p, { method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) });
+    await fetch("/api/events/" + id, { method: "PATCH", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sponsorship_goal: 5000, vendor_goal: 6, event_date: "2027-03-01" }) });
+    const pr = await (await post("/api/events/" + id + "/prospects",
+      { business_name: "EVUI Sponsor Bank", status: "COMMITTED" })).json();
+    await post("/api/events/" + id + "/prospects", { business_name: "EVUI Ready Co", status: "READY_FOR_OUTREACH" });
+    await post("/api/events/" + id + "/prospects", { business_name: "EVUI Chased Co", status: "CONTACTED", next_follow_up: "2020-01-01" });
+    await post("/api/events/" + id + "/sponsorships",
+      { prospect_id: pr.id, amount_committed: 3000, amount_paid: 1500, payment_status: "PARTIAL", banner_placement: true });
+    await post("/api/events/" + id + "/vendors",
+      { vendor_name: "EVUI Taco Truck", status: "CONFIRMED", insurance_required: true, electricity_needed: true });
+    await post("/api/events/" + id + "/donations",
+      { donor_name: "EVUI Party Store", item_or_service: "Bounce house", received: true });
+  }, secondId);
+
+  await page.evaluate(() => {
+    const b = Array.from(document.querySelectorAll("[data-tab]")).find((x) => x.dataset.tab === "overview");
+    if (b) b.click();
+  });
+  for (let i = 0; i < 40 && !/Needs attention/.test(await mainText()); i++) await page.waitForTimeout(250);
+  text = await mainText();
+  check("the goals section renders", /goals/i.test(text), text.slice(0, 200));
+  check("a goal shows progress against its target", /of \$5,000\.00|of 6/.test(text), text.slice(0, 600));
+  check("the countdown renders", /day|Today/.test(text), text.slice(0, 300));
+  check("the prospect pipeline renders", /Prospect pipeline/.test(text), text.slice(0, 300));
+  check("the funnel names its stages", /Ready for outreach/i.test(text), text.slice(0, 900));
+  check("the work queue renders", /Needs attention/.test(text), text.slice(0, 300));
+  check("and carries real items", /insurance|thank-you|not fully paid/i.test(text), text.slice(0, 1200));
+  // Money separated, and said so in words rather than left to the reader.
+  check("cash and in-kind are shown separately",
+    /in-kind \(estimated\)/i.test(text) && /sponsorship paid/i.test(text), text.slice(0, 1200));
+  // The seeded donation has no value recorded. Printing $0.00 against it would
+  // say the donated bounce house was worth nothing -- which is a claim, not a
+  // blank. The data layer keeps valued and unvalued apart; the tile has to as
+  // well, and only a rendered screen can catch it getting that wrong.
+  check("an unvalued donation is never rendered as $0.00",
+    /not valued yet/i.test(text) && !/in-kind \(estimated\)\s*\$0\.00/i.test(text),
+    (text.match(/IN-KIND[\s\S]{0,90}/i) || [""])[0]);
+  check("and the screen says plainly why they are not added together",
+    /kept apart|estimate/i.test(text), text.slice(0, 1400));
+
+  section("A goal nobody set says so rather than drawing an empty bar");
+  const noGoal = await page.evaluate(async () => {
+    const r = await fetch("/api/events", { method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "EVUI No Goals" }) });
+    return (await r.json()).id;
+  });
+  await openEventCard(noGoal);
+  for (let i = 0; i < 40 && !/Needs attention/.test(await mainText()); i++) await page.waitForTimeout(250);
+  text = await mainText();
+  check("it says no goals are set", /No goals set yet|No goal set/.test(text), text.slice(0, 500));
+  check("and shows no percentage against a goal that does not exist",
+    !/0% of goal/.test(text), text.slice(0, 600));
+  check("nothing needs chasing on an empty event",
+    /Nothing needs chasing/.test(text), text.slice(0, 700));
+  await page.evaluate(async (id) => {
+    await fetch("/api/events/" + id, { method: "DELETE", credentials: "include" });
+  }, noGoal);
+
+  section("Screenshot for a human to eyeball");
+  await openEventCard(secondId);
+  for (let i = 0; i < 40 && !/Needs attention/.test(await mainText()); i++) await page.waitForTimeout(250);
+  const shot = process.env.EVENTS_SHOT;
+  if (shot) { await page.screenshot({ path: shot, fullPage: true }); console.log("  (screenshot: " + shot + ")"); }
 
   section("The Palooza still has its own separate data");
   // The isolation check, from the screen rather than the API.
