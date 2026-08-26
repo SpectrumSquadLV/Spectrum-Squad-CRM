@@ -701,6 +701,41 @@
   }
 
   function renderVendors(el, d) {
+    var ev = d.event || {};
+    var open = ev.vendor_applications_open === true;
+    var link = window.location.origin + "/vendor-signup/" + (ev.slug || "");
+    // The public form is closed until somebody opens it, and the panel says
+    // which it is -- an open public write endpoint should never be a surprise.
+    var signup =
+      '<div class="card" style="margin-bottom:14px;">'
+      + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
+      + '<div style="font-weight:700;font-size:14px;">Public vendor sign-up</div>'
+      + (open ? pill("Open", "ok") : pill("Closed", "grey")) + '</div>'
+      + '<div style="font-size:12px;color:var(--text-muted);margin:6px 0 10px;">'
+      + (open
+        ? 'Anyone with this link can apply. Applications arrive as <strong>Application received</strong> '
+          + 'for you to review — applying does not confirm a booth.'
+        : 'Closed. Nobody can apply until you open it.')
+      + '</div>'
+      + (open
+        ? '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+          + '<input type="text" id="v-signup-link" readonly value="' + esc(link) + '" '
+          + 'style="flex:1;min-width:260px;font-size:12.5px;" />'
+          + '<a class="btn small secondary" href="' + esc(link) + '" target="_blank" rel="noopener">Open</a></div>'
+        : "")
+      + '<div class="form-grid" style="margin-top:10px;">'
+      + field("Intro shown on the form (optional)", "v-signup-intro", ev.vendor_application_intro,
+          { type: "textarea", full: true, rows: 2 })
+      + '</div>'
+      + '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+      + '<button class="btn small' + (open ? " secondary" : "") + '" id="v-signup-toggle">'
+      + (open ? "Close sign-ups" : "Open sign-ups") + '</button>'
+      + '<button class="btn small secondary" id="v-signup-save-intro">Save intro</button>'
+      + '<span id="v-signup-msg" style="font-size:12.5px;color:var(--text-muted);"></span></div></div>';
+    renderVendorsInner(el, d, signup);
+  }
+
+  function renderVendorsInner(el, d, signupHtml) {
     var rows = (d.vendors || []).map(function (v) {
       var needs = [];
       if (v.electricity_needed) needs.push("power");
@@ -708,6 +743,7 @@
       if (v.chairs_needed) needs.push(v.chairs_needed + " chairs");
       return tr([
         td('<strong>' + esc(v.vendor_name || "—") + '</strong>'
+          + (v.source === "public" ? ' ' + pill("Applied", "none") : "")
           + (v.vendor_type ? '<div style="font-size:11.5px;color:var(--text-muted);">' + esc(v.vendor_type) + '</div>' : "")),
         td(val(v.contact_name) + (v.contact_email ? '<div style="font-size:11.5px;color:var(--text-muted);">' + esc(v.contact_email) + '</div>' : "")),
         td(val(v.booth_size)),
@@ -717,9 +753,26 @@
         td('<button class="btn small secondary" data-edit-vendor="' + v.id + '">Edit</button>'),
       ]);
     });
-    el.innerHTML = addBar("Add vendor", "ev-add-vendor")
+    el.innerHTML = (signupHtml || "") + addBar("Add vendor", "ev-add-vendor")
       + table(["Vendor", "Contact", "Booth", "Needs", "Insurance", "Status", ""], rows,
         "No vendors yet.");
+    var toggle = document.getElementById("v-signup-toggle");
+    if (toggle) toggle.addEventListener("click", function () {
+      var nowOpen = (d.event || {}).vendor_applications_open === true;
+      if (!nowOpen && !confirm("Open public vendor sign-ups?\n\nAnyone with the link will be able to apply. "
+        + "Applications arrive for you to review — nobody confirms their own booth.")) return;
+      api("/api/events/" + STATE.eventId, { method: "PATCH",
+        body: { vendor_applications_open: !nowOpen } }).then(refresh);
+    });
+    var saveIntro = document.getElementById("v-signup-save-intro");
+    if (saveIntro) saveIntro.addEventListener("click", function () {
+      var m = document.getElementById("v-signup-msg");
+      m.textContent = "Saving…";
+      api("/api/events/" + STATE.eventId, { method: "PATCH",
+        body: { vendor_application_intro: get("v-signup-intro") } })
+        .then(function () { m.textContent = "Saved."; return refresh(); })
+        .catch(function (e) { m.textContent = "Could not save: " + e.message; });
+    });
     document.getElementById("ev-add-vendor").addEventListener("click", function () { vendorModal(null); });
     wireRowButtons(el, "edit-vendor", function (id) {
       vendorModal((d.vendors || []).filter(function (v) { return v.id === id; })[0]);

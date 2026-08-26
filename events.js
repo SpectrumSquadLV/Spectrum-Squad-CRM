@@ -39,6 +39,9 @@ const { findDuplicates } = require("./prospect-match");
 const guard = require("./outreach-guard");
 // Which follow-ups are due, decided purely. See test-followup-schedule.js.
 const { dueFollowUps } = require("./followup-schedule");
+// Reading a stranger's form submission. An allowlist, not a denylist -- see
+// vendor-application.js and test-vendor-application.js.
+const vendorApp = require("./vendor-application");
 
 module.exports = function initEvents(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, readBody, json } = ctx;
@@ -148,6 +151,12 @@ module.exports = function initEvents(ctx) {
       created_at TEXT,
       updated_at TEXT
     )`).catch((e) => console.error("events:", e.message));
+
+    // Phase 5: the public vendor sign-up form. Applications are CLOSED until
+    // somebody opens them, per event -- a public write endpoint that is on by
+    // default the moment an event is created is not something to ship.
+    await dbRun("ALTER TABLE events ADD COLUMN IF NOT EXISTS vendor_applications_open BOOLEAN NOT NULL DEFAULT FALSE").catch(() => {});
+    await dbRun("ALTER TABLE events ADD COLUMN IF NOT EXISTS vendor_application_intro TEXT").catch(() => {});
 
     await dbRun(`CREATE TABLE IF NOT EXISTS event_prospects (
       id SERIAL PRIMARY KEY,
@@ -299,6 +308,10 @@ module.exports = function initEvents(ctx) {
       updated_at TEXT
     )`).catch((e) => console.error("event_vendors:", e.message));
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_event_vendors_event ON event_vendors(event_id)`).catch(() => {});
+    // Where the row came from, so a staff member can tell an application a
+    // vendor filled in themselves from one somebody typed on their behalf.
+    await dbRun("ALTER TABLE event_vendors ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'staff'").catch(() => {});
+    await dbRun("ALTER TABLE event_vendors ADD COLUMN IF NOT EXISTS applied_at TEXT").catch(() => {});
 
     await dbRun(`CREATE TABLE IF NOT EXISTS event_community_partners (
       id SERIAL PRIMARY KEY,
@@ -1133,8 +1146,20 @@ module.exports = function initEvents(ctx) {
         if (n !== before.name) put("slug", await uniqueSlug(n, id));
       }
       for (const f of ["description", "event_date", "start_time", "end_time", "venue_name", "address",
-                       "city", "state", "zip", "registration_url", "public_contact_email", "public_contact_phone"]) {
-        if (f in b) put(f, clean(b[f], f === "description" ? 8000 : 500));
+                       "city", "state", "zip", "registration_url", "public_contact_email", "public_contact_phone",
+                       "vendor_application_intro"]) {
+        if (f in b) put(f, clean(b[f], f === "description" || f === "vendor_application_intro" ? 8000 : 500));
+      }
+      // Opening a public write endpoint is not the same kind of act as editing
+      // a venue: it puts a form on the open internet that anybody can post to.
+      // So it needs the higher tier -- the same people who may send email in
+      // the company's name -- rather than everybody who can edit an event.
+      if ("vendor_applications_open" in b) {
+        if (!canOutreach(user)) {
+          json(res, 403, { error: "Only an owner or admin can open or close public vendor sign-ups." });
+          return true;
+        }
+        put("vendor_applications_open", bool(b.vendor_applications_open));
       }
       for (const f of ["registration_goal", "attendance_goal", "vendor_goal"]) if (f in b) put(f, intOrNull(b[f]));
       if ("sponsorship_goal" in b && seesMoney) put("sponsorship_goal", money(b.sponsorship_goal));
@@ -1712,6 +1737,247 @@ module.exports = function initEvents(ctx) {
     return { events: events.length, drafted };
   }
 
+  // ------------------------------------------------- public vendor sign-up
+  //
+  // Phase 5. The only place in the event system that takes input from somebody
+  // with no account, so the defences are stated rather than assumed:
+  //
+  //   CLOSED BY DEFAULT. vendor_applications_open must be switched on per
+  //   event. A public write endpoint that is live the moment an event exists
+  //   is not something to ship.
+  //   AN ALLOWLIST. vendor-application.js decides what a stranger may set.
+  //   Status is not on it, so nobody approves their own booth.
+  //   A DAILY CAP. Bounded per event, so a script cannot fill the table
+  //   overnight. Generous enough that a real vendor never meets it.
+  //   A HONEYPOT. Answered with the same page as a real submission, because
+  //   telling a bot it was caught only teaches whoever wrote it.
+  const MAX_APPLICATIONS_PER_DAY = 60;
+  // A plain HTML form posts application/x-www-form-urlencoded, and the CRM's
+  // shared readBody only parses JSON -- it would reject every submission and
+  // the form would show validation errors no matter what somebody typed. The
+  // form is deliberately a plain form rather than a fetch(), so it works with
+  // no JavaScript, so the body has to be read here.
+  //
+  // Capped: a public endpoint must never accept unbounded bytes.
+  const MAX_FORM_BYTES = 64 * 1024;
+  function readFormBody(req) {
+    return new Promise((resolve) => {
+      let raw = "", tooBig = false;
+      req.on("data", (c) => {
+        if (tooBig) return;
+        raw += c;
+        if (raw.length > MAX_FORM_BYTES) { tooBig = true; raw = ""; }
+      });
+      req.on("end", () => {
+        if (tooBig || !raw) return resolve({});
+        const type = String(req.headers["content-type"] || "");
+        if (type.includes("application/json")) {
+          try { return resolve(JSON.parse(raw)); } catch (e) { return resolve({}); }
+        }
+        const out = {};
+        try {
+          for (const [k, v] of new URLSearchParams(raw)) out[k] = v;
+        } catch (e) { /* a malformed body is an empty one, not a crash */ }
+        resolve(out);
+      });
+      req.on("error", () => resolve({}));
+    });
+  }
+
+  const escHtml = (v) => String(v == null ? "" : v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+  function signupPage({ title, body, event }) {
+    return `<!doctype html><html><head><meta charset="utf-8">`
+      + `<meta name="viewport" content="width=device-width,initial-scale=1">`
+      + `<title>${escHtml(title)}</title>`
+      + `<style>
+        body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f7f8fb;color:#201a4d;
+             margin:0;padding:5vh 16px;line-height:1.55;}
+        .wrap{max-width:640px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:28px;}
+        h1{margin:0 0 6px;font-size:24px;} .sub{color:#6b6a86;font-size:14px;margin:0 0 20px;}
+        label{display:block;font-weight:600;font-size:13.5px;margin:14px 0 4px;}
+        input[type=text],input[type=email],input[type=tel],input[type=number],textarea{
+          width:100%;padding:9px 11px;border:1px solid #d1d5db;border-radius:8px;font:inherit;box-sizing:border-box;}
+        textarea{min-height:80px;} .row{display:flex;gap:16px;flex-wrap:wrap;}
+        .row>div{flex:1;min-width:200px;}
+        .check{display:flex;align-items:center;gap:8px;font-weight:400;margin-top:10px;}
+        .check input{width:auto;}
+        button{margin-top:20px;background:#1b2a6b;color:#fff;border:0;border-radius:9px;
+               padding:11px 20px;font:inherit;font-weight:600;cursor:pointer;}
+        .err{background:#fee2e2;border:1px solid #fecaca;color:#991b1b;border-radius:9px;padding:10px 12px;margin-bottom:14px;font-size:14px;}
+        .hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;}
+        .note{color:#6b6a86;font-size:12.5px;margin-top:16px;}
+      </style></head><body><div class="wrap">${body}</div></body></html>`;
+  }
+
+  function signupForm(event, errors, prev) {
+    const p = prev || {};
+    const v = (k) => escHtml(p[k] || "");
+    const when = event.event_date
+      ? escHtml(event.event_date) + (event.venue_name ? " &middot; " + escHtml(event.venue_name) : "")
+      : (event.venue_name ? escHtml(event.venue_name) : "Date to be confirmed");
+    return `<h1>Vendor sign-up</h1>
+      <p class="sub">${escHtml(event.name)}<br>${when}</p>
+      ${event.vendor_application_intro ? `<p>${escHtml(event.vendor_application_intro)}</p>` : ""}
+      ${(errors || []).length ? `<div class="err">${errors.map(escHtml).join("<br>")}</div>` : ""}
+      <form method="POST">
+        <label>Business name *</label>
+        <input type="text" name="vendor_name" required maxlength="200" value="${v("vendor_name")}">
+        <div class="row">
+          <div><label>What do you sell or offer?</label>
+            <input type="text" name="vendor_type" maxlength="120" value="${v("vendor_type")}"></div>
+          <div><label>Website</label>
+            <input type="text" name="website" maxlength="500" value="${v("website")}"></div>
+        </div>
+        <label>Tell us about your products or services</label>
+        <textarea name="products_services" maxlength="2000">${v("products_services")}</textarea>
+        <div class="row">
+          <div><label>Your name</label>
+            <input type="text" name="contact_name" maxlength="200" value="${v("contact_name")}"></div>
+          <div><label>Email *</label>
+            <input type="email" name="contact_email" required maxlength="200" value="${v("contact_email")}"></div>
+        </div>
+        <div class="row">
+          <div><label>Phone</label>
+            <input type="tel" name="contact_phone" maxlength="60" value="${v("contact_phone")}"></div>
+          <div><label>Booth size you need</label>
+            <input type="text" name="booth_size" maxlength="60" placeholder="e.g. 10x10" value="${v("booth_size")}"></div>
+        </div>
+        <label class="check"><input type="checkbox" name="electricity_needed" value="on"> I need access to power</label>
+        <label class="check"><input type="checkbox" name="table_needed" value="on"> I need a table</label>
+        <label>Chairs needed</label>
+        <input type="number" name="chairs_needed" min="0" max="50" value="${v("chairs_needed")}">
+        <label>Anything else we should know?</label>
+        <textarea name="special_requirements" maxlength="2000">${v("special_requirements")}</textarea>
+        <div class="hp" aria-hidden="true">
+          <label>Do not fill this in</label>
+          <input type="text" name="${vendorApp.HONEYPOT_FIELD}" tabindex="-1" autocomplete="off">
+        </div>
+        <button type="submit">Send my application</button>
+        <p class="note">Applying does not confirm a booth. We will review your application and email you.</p>
+      </form>`;
+  }
+
+  // GET and POST on the same public path. No session: a vendor has no account.
+  async function serveVendorSignup(req, res, pathname, method) {
+    const m = pathname.match(/^\/vendor-signup\/([A-Za-z0-9-]{1,120})$/);
+    const send = (status, html) => {
+      res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer" });
+      res.end(html);
+      return true;
+    };
+    const closed = (title, msg) => send(404, signupPage({
+      title, body: `<h1>${escHtml(title)}</h1><p>${escHtml(msg)}</p>`,
+    }));
+    if (!m) return closed("Not found", "That sign-up link is not valid.");
+
+    const event = await dbGet("SELECT * FROM events WHERE slug = ?", [m[1]]).catch(() => null);
+    // The same answer whether the event does not exist or is not accepting
+    // applications, so the page is not a way to enumerate events.
+    if (!event || !(event.vendor_applications_open === true || event.vendor_applications_open === "t")) {
+      return closed("Sign-ups are closed",
+        "This event is not accepting vendor applications at the moment. If you think that is a mistake, please get in touch.");
+    }
+
+    if (method === "GET") {
+      return send(200, signupPage({ title: "Vendor sign-up", event, body: signupForm(event, [], {}) }));
+    }
+    if (method !== "POST") return closed("Not found", "That sign-up link is not valid.");
+
+    const body = await readFormBody(req);
+    const thanks = () => send(200, signupPage({
+      title: "Thank you", event,
+      body: `<h1>Thank you</h1><p>Your application for <strong>${escHtml(event.name)}</strong> has been received.</p>`
+        + `<p>We will review it and email you. Applying does not confirm a booth.</p>`,
+    }));
+
+    // Caught bots get the same page a real vendor gets. Nothing is written.
+    if (vendorApp.looksAutomated(body)) {
+      console.log(`[vendor-signup] discarded an automated submission for event ${event.id}`);
+      return thanks();
+    }
+
+    const parsed = vendorApp.parseApplication(body);
+    if (!parsed.ok) {
+      return send(400, signupPage({
+        title: "Vendor sign-up", event,
+        body: signupForm(event, parsed.errors, body),
+      }));
+    }
+
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const recent = await dbAll(
+      "SELECT id FROM event_vendors WHERE event_id = ? AND source = 'public' AND applied_at > ?",
+      [event.id, since]).catch(() => []);
+    if (recent.length >= MAX_APPLICATIONS_PER_DAY) {
+      console.warn(`[vendor-signup] daily cap reached for event ${event.id}`);
+      return send(429, signupPage({
+        title: "Please try again later", event,
+        body: `<h1>Please try again later</h1><p>We have had a lot of applications today. `
+          + `Please try again tomorrow, or email us directly.</p>`,
+      }));
+    }
+
+    // Somebody applying twice UPDATES their application rather than creating a
+    // second one -- a vendor who realises they forgot the power question should
+    // not become two rows a staff member has to reconcile. Only while it is
+    // still an application: once staff have moved it along, a resubmission is
+    // recorded as a fresh one so their decision is not overwritten.
+    const existing = await dbGet(
+      `SELECT * FROM event_vendors WHERE event_id = ? AND lower(contact_email) = ?
+         AND status IN ('APPLICATION_RECEIVED','INVITED','INTERESTED') ORDER BY id DESC`,
+      [event.id, parsed.value.contact_email]).catch(() => null);
+
+    const cols = ["vendor_name", "vendor_type", "products_services", "contact_name", "contact_email",
+      "contact_phone", "booth_size", "special_requirements", "electricity_needed", "table_needed", "chairs_needed"];
+    try {
+      if (existing) {
+        await dbRun(
+          `UPDATE event_vendors SET ${cols.map((c) => `${c} = ?`).join(", ")},
+             status = 'APPLICATION_RECEIVED', source = 'public', applied_at = ?, updated_at = ? WHERE id = ?`,
+          [...cols.map((c) => parsed.value[c]), nowISO(), nowISO(), existing.id]);
+        console.log(`[vendor-signup] updated application ${existing.id} for event ${event.id}`);
+      } else {
+        // No prospect row is created. A vendor who came to us is not somebody
+        // we sourced, and putting them in the prospect pipeline would sweep
+        // them into outreach sequences aimed at businesses we are approaching.
+        await dbRun(
+          `INSERT INTO event_vendors (event_id, ${cols.join(", ")}, status, source, applied_at, created_at, updated_at)
+           VALUES (?, ${cols.map(() => "?").join(", ")}, 'APPLICATION_RECEIVED', 'public', ?, ?, ?)`,
+          [event.id, ...cols.map((c) => parsed.value[c]), nowISO(), nowISO(), nowISO()]);
+        console.log(`[vendor-signup] new application for event ${event.id}`);
+      }
+    } catch (err) {
+      console.error("[vendor-signup] could not save:", err.message);
+      return send(500, signupPage({
+        title: "Something went wrong", event,
+        body: `<h1>Something went wrong</h1><p>We could not save your application. `
+          + `Please try again, or email us directly.</p>`,
+      }));
+    }
+
+    // Staff are told, and the dashboard's work queue already surfaces
+    // APPLICATION_RECEIVED as "vendors waiting on us to review their
+    // application" -- so this needs no new place to look.
+    const notify = clean(event.public_contact_email, 200);
+    if (sendEmail && notify) {
+      sendEmail({
+        to: notify,
+        subject: `Vendor application: ${parsed.value.vendor_name} — ${event.name}`,
+        html: `<p><strong>${escHtml(parsed.value.vendor_name)}</strong> has applied to be a vendor at `
+          + `${escHtml(event.name)}.</p>`
+          + `<p>Contact: ${escHtml(parsed.value.contact_name || "—")} · ${escHtml(parsed.value.contact_email)}`
+          + `${parsed.value.contact_phone ? " · " + escHtml(parsed.value.contact_phone) : ""}</p>`
+          + `<p>It is waiting for review on the event's Vendors tab.</p>`,
+        clientId: null, type: "event_vendor_application",
+      }).catch((e) => console.error("vendor application notify failed:", e.message));
+    }
+
+    return thanks();
+  }
+
   // The opt-out link in every outreach email. PUBLIC -- no session, because the
   // recipient is a business owner who has no account here and must not need one
   // to be left alone.
@@ -1779,7 +2045,7 @@ module.exports = function initEvents(ctx) {
   }
 
   return {
-    initTables, handleApi, handleUnsubscribe, followUpSweep, followUpSweepAll,
+    initTables, handleApi, handleUnsubscribe, serveVendorSignup, followUpSweep, followUpSweepAll,
     rollup, buildDashboard, daysUntil, slugify,
     canEvents, canMoney, canOutreach, outreachSettings,
     PIPELINE_ORDER, OUT_OF_PIPELINE,
