@@ -1124,6 +1124,7 @@
       + field("Vendor goal", "e-goalven", ev.vendor_goal, { type: "number" })
       + field("Status", "e-status", ev.status, { type: "select", options: (STATE.vocab || {}).event_statuses || [] })
       + '</div>'
+      + '<div id="e-registrations" style="margin-top:18px;"></div>'
       + '<div style="margin-top:14px;display:flex;gap:10px;align-items:center;">'
       + '<button class="btn" id="e-save">Save event</button>'
       + '<span id="e-status-msg" style="font-size:12.5px;color:var(--text-muted);"></span></div>'
@@ -1136,12 +1137,106 @@
         ? '<button class="btn secondary small" id="e-delete" style="color:#b91c1c;">Delete this event</button>'
         : "") + '</div>';
 
+    // Registrations (Phase 6). Two routes: a CSV export that works today, and an
+    // API adapter that has never reached the live service from here -- which the
+    // panel says out loud rather than looking connected.
+    var regBox = document.getElementById("e-registrations");
+    if (regBox) {
+      regBox.innerHTML = '<div style="font-size:12.5px;color:var(--text-muted);">Loading registrations…</div>';
+      api("/api/events/" + STATE.eventId + "/registrations").then(function (r) {
+        var last = r.latest;
+        regBox.innerHTML =
+          '<div class="card">'
+          + '<div style="font-weight:700;font-size:14px;margin-bottom:2px;">Registrations from Eventbrite</div>'
+          + '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">'
+          + (last
+            ? 'Last synced ' + esc(String(last.synced_at || "").slice(0, 16).replace("T", " "))
+              + ' from the ' + (last.source === "api" ? "API" : "CSV export") + ': <strong>'
+              + last.registrations + '</strong> registration(s), ' + last.tickets + ' ticket(s).'
+            : 'No registration figure yet. The dashboard says so rather than showing zero.')
+          + '</div>'
+          + '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:9px;padding:9px 11px;'
+          + 'font-size:12.5px;color:#92400e;margin-bottom:10px;">'
+          + esc(r.api_note || "") + '</div>'
+          + '<div class="form-grid">'
+          + field("Eventbrite event id (from the event's Eventbrite URL)", "e-ebid", r.eventbrite_event_id,
+              { full: true, placeholder: "e.g. 123456789" })
+          + '</div>'
+          + (r.connector.ready
+            ? '<div style="font-size:12.5px;color:var(--text-muted);margin-top:6px;">The API connector has what it needs.</div>'
+            : '<div style="font-size:12.5px;color:var(--text-muted);margin-top:6px;">Still needed for the API route: '
+              + (r.connector.missing || []).map(esc).join(" ") + '</div>')
+          + '<label style="display:block;font-weight:600;font-size:13px;margin:12px 0 4px;">'
+          + 'Or paste an Eventbrite attendee CSV export</label>'
+          + '<textarea id="e-reg-csv" rows="4" placeholder="Paste the whole file, including its header row" style="width:100%;"></textarea>'
+          + '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
+          + '<button class="btn small secondary" id="e-reg-preview">Preview</button>'
+          + '<button class="btn small" id="e-reg-import">Import</button>'
+          + (r.connector.ready ? '<button class="btn small secondary" id="e-reg-sync">Sync from the API</button>' : "")
+          + '<span id="e-reg-msg" style="font-size:12.5px;color:var(--text-muted);"></span></div>'
+          + '<div id="e-reg-report" style="margin-top:10px;"></div></div>';
+
+        var report = document.getElementById("e-reg-report");
+        var showReport = function (data) {
+          var rep = data.report || {}, sum = data.summary || {};
+          report.innerHTML =
+            '<div style="font-size:13px;">'
+            + '<strong>' + (sum.registrations || 0) + '</strong> registration(s), '
+            + '<strong>' + (sum.tickets || 0) + '</strong> ticket(s)'
+            + (rep.not_attending ? ' · ' + rep.not_attending + ' refunded or cancelled, not counted' : "")
+            + '</div>'
+            + ((rep.problems || []).length
+              ? '<ul style="margin:6px 0 0;padding-left:20px;font-size:12.5px;color:#92400e;">'
+                + rep.problems.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join("") + '</ul>'
+              : "")
+            + ((rep.unmapped_headers || []).length
+              ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">Columns ignored: '
+                + rep.unmapped_headers.map(esc).join(", ") + '</div>'
+              : "");
+        };
+        document.getElementById("e-reg-preview").addEventListener("click", function () {
+          api("/api/events/" + STATE.eventId + "/registrations/import", {
+            method: "POST", body: { csv: get("e-reg-csv"), dry_run: true } })
+            .then(showReport)
+            .catch(function (e) { report.innerHTML = '<div style="color:#b91c1c;font-size:12.5px;">' + esc(e.message) + '</div>'; });
+        });
+        document.getElementById("e-reg-import").addEventListener("click", function () {
+          api("/api/events/" + STATE.eventId + "/registrations/import", {
+            method: "POST", body: { csv: get("e-reg-csv") } })
+            .then(function (data) {
+              showReport(data);
+              document.getElementById("e-reg-msg").textContent = data.ok
+                ? "Imported."
+                : "Nothing usable in that file — the previous figure is unchanged.";
+              return refresh();
+            })
+            .catch(function (e) { report.innerHTML = '<div style="color:#b91c1c;font-size:12.5px;">' + esc(e.message) + '</div>'; });
+        });
+        var syncBtn = document.getElementById("e-reg-sync");
+        if (syncBtn) syncBtn.addEventListener("click", function () {
+          var m = document.getElementById("e-reg-msg");
+          m.textContent = "Syncing…";
+          api("/api/events/" + STATE.eventId + "/registrations/sync", { method: "POST", body: {} })
+            .then(function (data) {
+              m.textContent = data.ok
+                ? "Synced " + data.summary.registrations + " registration(s)."
+                : "Could not sync: " + (data.error || data.status) + " — the previous figure is unchanged.";
+              return refresh();
+            })
+            .catch(function (e) { m.textContent = "Could not sync: " + e.message; });
+        });
+      }).catch(function (e) {
+        regBox.innerHTML = '<div style="font-size:12.5px;color:#b91c1c;">Could not load registrations: ' + esc(e.message) + '</div>';
+      });
+    }
+
     document.getElementById("e-save").addEventListener("click", function () {
       var payload = {
         name: (get("e-name") || "").trim(), description: get("e-desc"), event_date: get("e-date"),
         start_time: get("e-start"), end_time: get("e-end"), venue_name: get("e-venue"),
         address: get("e-address"), city: get("e-city"), state: get("e-state"), zip: get("e-zip"),
         registration_url: get("e-regurl"), public_contact_email: get("e-pemail"),
+        eventbrite_event_id: get("e-ebid"),
         public_contact_phone: get("e-pphone"), registration_goal: get("e-goalreg"),
         attendance_goal: get("e-goalatt"), vendor_goal: get("e-goalven"), status: get("e-status"),
       };
