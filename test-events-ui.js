@@ -275,6 +275,30 @@ const BASE = process.env.BASE || "http://localhost:3011";
     await fetch("/api/events/" + id, { method: "DELETE", credentials: "include" });
   }, noGoal);
 
+  section("The registrations panel is honest about what it is");
+  // The previous section DELETED the event whose card is still on screen, so
+  // this opens a live one first -- otherwise the panel is fetching a 404 and
+  // every assertion below fails for the wrong reason.
+  await openEventCard(secondId);
+  await page.evaluate(() => {
+    const b = Array.from(document.querySelectorAll("[data-tab]")).find((x) => x.dataset.tab === "settings");
+    if (b) b.click();
+  });
+  for (let i = 0; i < 40 && !/Registrations from Eventbrite/.test(await mainText()); i++) await page.waitForTimeout(250);
+  text = await mainText();
+  check("the registrations panel renders", /Registrations from Eventbrite/.test(text), text.slice(0, 500));
+  // The claim that must never be soft-pedalled: this adapter has never reached
+  // the live service, and the screen says so where somebody will read it.
+  check("it says the API adapter is unverified",
+    /not been verified/i.test(text), (text.match(/Registrations from Eventbrite[\s\S]{0,420}/) || [""])[0]);
+  check("and that the CSV route works today",
+    /works today/i.test(text), (text.match(/Registrations from Eventbrite[\s\S]{0,420}/) || [""])[0]);
+  check("with no figure yet it says so rather than showing zero",
+    /No registration figure yet/i.test(text), (text.match(/Registrations from Eventbrite[\s\S]{0,320}/) || [""])[0]);
+  check("the CSV paste box is offered", !!(await page.$("#e-reg-csv")));
+  check("and the API sync button is NOT offered while it cannot run",
+    !(await page.$("#e-reg-sync")));
+
   section("Public vendor sign-ups are closed until somebody opens them");
   // A public write endpoint that is live the moment an event exists is the
   // thing this panel has to make impossible to switch on by accident.
