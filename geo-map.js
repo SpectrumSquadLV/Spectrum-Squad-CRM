@@ -144,8 +144,32 @@ module.exports = function initGeo(ctx) {
     return Math.round(R * 2 * Math.asin(Math.sqrt(s)) * 10) / 10;
   }
 
+  // ---- service setting -----------------------------------------------
+  // clients.service_location is a single free-text/select field whose values
+  // are "In-Clinic", "In Home" and "In-School". Rather than assume one of
+  // them, this reads what is actually stored: a record naming more than one
+  // setting is reported as `multiple` with the settings it names, and a blank
+  // or unrecognised value is `unknown`. Nothing is guessed into a category it
+  // was never put in, which is what "handle it cleanly rather than forcing
+  // incorrect data" has to mean here.
+  const SETTINGS = [
+    { key: "in_home", label: "In-Home", test: /\bin[\s-]?home\b|\bhome\b/i },
+    { key: "in_school", label: "In-School", test: /\bin[\s-]?school\b|\bschool\b/i },
+    { key: "clinic", label: "Clinic", test: /\bin[\s-]?clinic\b|\bclinic\b|\bcenter\b|\bcentre\b/i },
+  ];
+  function classifyServiceSetting(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return { key: "unknown", label: "Not specified", settings: [], raw: "" };
+    const hit = SETTINGS.filter((s) => s.test.test(text));
+    if (!hit.length) return { key: "unknown", label: "Not specified", settings: [], raw: text };
+    if (hit.length > 1) {
+      return { key: "multiple", label: "Multiple settings", settings: hit.map((h) => h.key), raw: text };
+    }
+    return { key: hit[0].key, label: hit[0].label, settings: [hit[0].key], raw: text };
+  }
+
   async function buildMap() {
-    const clientRows = await dbAll("SELECT id, child_name, address FROM clients WHERE address IS NOT NULL AND address <> '' ORDER BY child_name");
+    const clientRows = await dbAll("SELECT id, child_name, address, service_location FROM clients WHERE address IS NOT NULL AND address <> '' ORDER BY child_name");
     // Pull EVERY active employee (not just ones with an address) so the map can
     // account for all of them -- those it can't place are surfaced explicitly in
     // `unmappedClinicians` rather than silently dropped. This fixes "the map
@@ -157,8 +181,16 @@ module.exports = function initGeo(ctx) {
     let pending = 0;
     for (const c of clientRows) {
       const co = await coordFor(c.address);
-      if (co) clients.push({ id: c.id, name: c.child_name, lat: co.lat, lng: co.lng });
-      else pending++;
+      if (co) {
+        const setting = classifyServiceSetting(c.service_location);
+        clients.push({
+          id: c.id, name: c.child_name, lat: co.lat, lng: co.lng,
+          service_location: c.service_location || null,
+          setting_key: setting.key,
+          setting_label: setting.label,
+          settings: setting.settings,
+        });
+      } else pending++;
     }
     for (const e of empRows) {
       const co = await coordFor(e.address);
@@ -181,7 +213,18 @@ module.exports = function initGeo(ctx) {
       pairings[cl.id] = ranked;
     }
 
-    return { center: CENTER, clients, clinicians, unmappedClinicians, pairings, pending, totalClients: clientRows.length, totalClinicians: empRows.length };
+    // Counts per setting, so the legend can say how many of each are on the
+    // map without the browser recomputing it.
+    const settingCounts = {};
+    for (const c of clients) settingCounts[c.setting_key] = (settingCounts[c.setting_key] || 0) + 1;
+
+    return {
+      center: CENTER, clients, clinicians, unmappedClinicians, pairings, pending,
+      totalClients: clientRows.length, totalClinicians: empRows.length,
+      settingCounts,
+      settings: SETTINGS.map((s) => ({ key: s.key, label: s.label }))
+        .concat([{ key: "multiple", label: "Multiple settings" }, { key: "unknown", label: "Not specified" }]),
+    };
   }
 
   async function handleApi(req, res, pathname, method, query, user) {
@@ -207,5 +250,5 @@ module.exports = function initGeo(ctx) {
     return false;
   }
 
-  return { initTables, handleApi, geocodeSweep, buildMap, haversineMiles, canView };
+  return { initTables, handleApi, geocodeSweep, buildMap, haversineMiles, canView, classifyServiceSetting };
 };
