@@ -75,10 +75,16 @@ const BASE = process.env.BASE || "http://localhost:3009";
 
   // ---------------------------------------------------------------- dashboard
   section("Dashboard: BCBA caseloads and staff turnover");
-  // A full reload, not just a hash change: the dashboard was already rendered
-  // at sign-in, before the client above existed, and assigning the hash it is
-  // already on fires no hashchange and therefore no re-render.
-  await page.goto(BASE + "/#/dashboard", { waitUntil: "networkidle" });
+  // An explicit reload, and it has to be reload() rather than goto(). The
+  // dashboard was already rendered at sign-in, before the client above
+  // existed; navigating to "/#/dashboard" from "/" is a same-document
+  // navigation, so the browser does not reload and -- because the app was
+  // already on the dashboard -- no hashchange fires either. The assertion then
+  // reads the render from before the client was created, which is how this
+  // quietly passed against a database left over from a previous run and failed
+  // against a fresh one.
+  await page.goto(BASE + "/#/dashboard");
+  await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(3000);
   const dash = await page.textContent("#view-mount");
   check("the BCBA Caseloads section is on the dashboard", /BCBA Caseloads/.test(dash));
