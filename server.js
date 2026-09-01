@@ -4757,19 +4757,57 @@ async function handle(req, res, pathname, method, query = {}) {
         // authorization for a family who left is not a problem anyone can
         // act on, and leaving them in made the dashboard's expiry counts
         // permanently overstated.
+        //
+        // These tiles now follow alert status as well as the calendar, so an
+        // authorization somebody has already dealt with stops being counted as
+        // outstanding here the same way it stops appearing in the alerts list.
+        //
+        // "Dealt with" is deliberately narrow, and it is NOT simply "has a
+        // completed alert". Milestones fire in sequence -- 60, 30, 14, 7, then
+        // expiry -- so ticking the 60-day alert and suppressing the client from
+        // then on would hide them through every later escalation, including
+        // the day the authorization actually lapses. That is the one thing
+        // these tiles exist to prevent.
+        //
+        // So a client drops out only while BOTH hold:
+        //   * an alert against their CURRENT expiration date is completed, and
+        //   * nothing is still open against that same date.
+        // The moment the next milestone raises a fresh alert they are counted
+        // again, and a renewal that moves the expiration date supersedes the
+        // old alerts and starts the whole cycle over -- which is why this is
+        // keyed on expiration_snapshot matching the date on the record today,
+        // not merely on the client id.
         const activeAuths = await dbAll(
-          `SELECT auth_expiration_date FROM clients
-            WHERE authorization_status != 'Not Required'
-              AND auth_expiration_date IS NOT NULL
-              AND stage NOT IN ${CLOSED}`
+          `SELECT c.auth_expiration_date,
+                  COUNT(*) FILTER (
+                    WHERE aa.status = 'completed'
+                      AND aa.expiration_snapshot = c.auth_expiration_date
+                  ) AS handled_alerts,
+                  COUNT(*) FILTER (
+                    WHERE aa.status IN ('open','reviewed','renewal_started','reopened')
+                      AND aa.expiration_snapshot = c.auth_expiration_date
+                  ) AS outstanding_alerts
+             FROM clients c
+             LEFT JOIN auth_alerts aa ON aa.client_id = c.id
+            WHERE c.authorization_status != 'Not Required'
+              AND c.auth_expiration_date IS NOT NULL
+              AND c.stage NOT IN ${CLOSED}
+            GROUP BY c.id, c.auth_expiration_date`
         );
         // Cumulative buckets: a client 5 days out counts toward every window
         // it falls within (≤60, ≤30, ≤14, ≤7), matching "expiring within X
         // days" as plain English reads. Already-expired is its own bucket.
-        authCounts = { d60: 0, d30: 0, d14: 0, d7: 0, expired: 0 };
+        authCounts = { d60: 0, d30: 0, d14: 0, d7: 0, expired: 0, handled: 0 };
         for (const row of activeAuths) {
           const d = authAlerts.daysUntil(row.auth_expiration_date);
           if (d === null) continue;
+          // Reported rather than silently dropped: a tile that quietly shrinks
+          // is indistinguishable from one that is broken, and somebody has to
+          // be able to see that the number moved because work got done.
+          if (Number(row.handled_alerts) > 0 && Number(row.outstanding_alerts) === 0) {
+            authCounts.handled++;
+            continue;
+          }
           if (d < 0) {
             authCounts.expired++;
             continue;

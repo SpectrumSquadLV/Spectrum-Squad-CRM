@@ -1444,6 +1444,11 @@ function renderAuthDashboardCard(counts) {
           )
           .join("")}
       </div>
+      ${counts.handled ? `<div style="font-size:11.5px; color:var(--text-muted); border-top:1px solid var(--border,#e5e7eb); padding-top:8px; margin-top:12px;">
+        ${counts.handled} authorization${counts.handled === 1 ? " has" : "s have"} been dealt with and ${counts.handled === 1 ? "is" : "are"} no longer counted above.
+        ${counts.handled === 1 ? "It comes" : "They come"} back the moment the next milestone falls due.
+        <a href="#/auth-alerts/history" style="text-decoration:underline;">See them in history</a>.
+      </div>` : ""}
     </div>
   `;
 }

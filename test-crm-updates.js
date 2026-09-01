@@ -74,6 +74,13 @@ async function login(email, password) {
   return c;
 }
 
+// Names that must be unique per run. run-tests gives every suite its own
+// database, so this only matters when the suite is run twice by hand against
+// the same one -- but an assertion that counts rows by name is wrong the
+// second time unless the name is fresh, and a suite you cannot re-run is a
+// suite you stop trusting.
+const RUN = Math.random().toString(36).slice(2, 8);
+
 (async () => {
   const owner = await login("admin@spectrumsquadlv.com", "TestOwner123!");
   const clinical = await login("clinical@spectrumsquadlv.com", "TestStaff123!");
@@ -89,11 +96,11 @@ async function login(email, password) {
   // ================= 1. TERMINATION DATE + TURNOVER =================
   section("Termination date and staff turnover");
 
-  const leaderId = await mkStaff("Squad Lead Tester", "squadlead.test@spectrumsquadlv.com", "RBT — Squad Leader", "2024-01-08");
-  const memberA = await mkStaff("Member A Tester", "membera.test@spectrumsquadlv.com", "RBT", "2024-02-12");
-  const memberB = await mkStaff("Member B Tester", "memberb.test@spectrumsquadlv.com", "RBT", "2024-03-18");
-  const outsider = await mkStaff("Outsider Tester", "outsider.test@spectrumsquadlv.com", "RBT", "2024-04-22");
-  const leaver = await mkStaff("Leaver Tester", "leaver.test@spectrumsquadlv.com", "RBT", "2023-11-01");
+  const leaderId = await mkStaff(`Squad Lead ${RUN}`, `squadlead.${RUN}@spectrumsquadlv.com`, "RBT — Squad Leader", "2024-01-08");
+  const memberA = await mkStaff(`Member A ${RUN}`, `membera.${RUN}@spectrumsquadlv.com`, "RBT", "2024-02-12");
+  const memberB = await mkStaff(`Member B ${RUN}`, `memberb.${RUN}@spectrumsquadlv.com`, "RBT", "2024-03-18");
+  const outsider = await mkStaff(`Outsider ${RUN}`, `outsider.${RUN}@spectrumsquadlv.com`, "RBT", "2024-04-22");
+  const leaver = await mkStaff(`Leaver ${RUN}`, `leaver.${RUN}@spectrumsquadlv.com`, "RBT", "2023-11-01");
 
   const before = await owner.req("/api/hr/turnover");
   check("the turnover route answers for an elevated role", before.status === 200, before.status);
@@ -113,7 +120,7 @@ async function login(email, password) {
   // employees without deleting their historical records" requirement.
   const stillThere = await owner.req(`/api/hr/employees/${leaver}`);
   check("a terminated employee's record is kept, not deleted",
-    stillThere.status === 200 && stillThere.data.name === "Leaver Tester", stillThere.status);
+    stillThere.status === 200 && stillThere.data.name === `Leaver ${RUN}`, stillThere.status);
 
   const after = await owner.req("/api/hr/turnover");
   check("the separation is counted in the turnover window",
@@ -146,7 +153,7 @@ async function login(email, password) {
 
   // A terminated employee with no date is a separation the rate cannot see.
   // It has to be reported, not silently absorbed or invented.
-  const gapId = await mkStaff("Gap Tester", "gap.test@spectrumsquadlv.com", "RBT", "2024-05-01");
+  const gapId = await mkStaff(`Gap ${RUN}`, `gap.${RUN}@spectrumsquadlv.com`, "RBT", "2024-05-01");
   await owner.req(`/api/hr/employees/${gapId}`, { method: "PATCH", body: { status: "terminated", termination_date: "" } });
   const withGap = await owner.req("/api/hr/turnover");
   const gapNamed = (withGap.data.terminated_missing_date || []).some((r) => r.id === gapId);
@@ -212,16 +219,16 @@ async function login(email, password) {
 
   // ================= 4. BCBA CASELOADS =================
   section("BCBA caseloads");
-  await owner.req(`/api/clients/${cid}/authorization`, { method: "PATCH", body: { assigned_bcba_name: "Dr. Caseload Tester" } });
+  await owner.req(`/api/clients/${cid}/authorization`, { method: "PATCH", body: { assigned_bcba_name: `Dr. Caseload ${RUN}` } });
   const dischargeMe = await owner.req("/api/clients", {
     method: "POST",
     body: { child_name: "Discharged Case", parent_name: "P", parent_email: "disch@example.com" },
   });
-  await owner.req(`/api/clients/${dischargeMe.data.id}/authorization`, { method: "PATCH", body: { assigned_bcba_name: "Dr. Caseload Tester" } });
+  await owner.req(`/api/clients/${dischargeMe.data.id}/authorization`, { method: "PATCH", body: { assigned_bcba_name: `Dr. Caseload ${RUN}` } });
   await owner.req(`/api/clients/${dischargeMe.data.id}/discharge`, { method: "POST", body: { reason: "test" } });
 
   const dash = await owner.req("/api/dashboard");
-  const cl = (dash.data.bcbaCaseloads.bcbas || []).find((b) => b.name === "Dr. Caseload Tester");
+  const cl = (dash.data.bcbaCaseloads.bcbas || []).find((b) => b.name === `Dr. Caseload ${RUN}`);
   check("a BCBA appears on the caseload board with a count", !!cl, dash.data.bcbaCaseloads);
   check("the count comes from real assignments and excludes discharged clients",
     cl && cl.active_cases === 1, cl);
@@ -291,6 +298,66 @@ async function login(email, password) {
     check("the automatic close is written to the authorization audit trail", true);
   }
 
+  section("The dashboard expiry tiles follow alert status too");
+  // A separate client, so the alerts above cannot muddy the counts.
+  const tileClient = (await owner.req("/api/clients", {
+    method: "POST", body: { child_name: "Tile Test", parent_name: "P", parent_email: "tile.test@example.com" },
+  })).data.id;
+  const inDays = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+  const tiles = async () => (await owner.req("/api/dashboard")).data.authCounts;
+  const alertsFor = async (id) =>
+    (await owner.req("/api/auth-alerts?view=history")).data
+      .concat((await owner.req("/api/auth-alerts")).data)
+      .filter((a) => a.client_id === id);
+
+  await owner.req(`/api/clients/${tileClient}/authorization`, {
+    method: "PATCH",
+    body: { authorization_status: "Approved", auth_expiration_date: inDays(25), insurance_payer: "Tile Payer" },
+  });
+  const t0 = await tiles();
+  check("an authorization expiring in 25 days is counted in the 60- and 30-day tiles",
+    t0.d60 >= 1 && t0.d30 >= 1, t0);
+
+  await owner.req("/api/admin/check-auth-expirations", { method: "POST" });
+  const raised = (await alertsFor(tileClient)).filter((a) => a.status !== "completed");
+  check("raising its alerts does not change the tiles by itself",
+    (await tiles()).d30 === t0.d30, { before: t0, after: await tiles() });
+
+  // Completing SOME of them is not "dealt with".
+  await owner.req(`/api/auth-alerts/${raised[0].id}/status`, { method: "POST", body: { status: "completed" } });
+  check("it is still counted while another alert for the same expiration is open",
+    (await tiles()).d30 === t0.d30, await tiles());
+
+  for (const a of raised.slice(1)) {
+    await owner.req(`/api/auth-alerts/${a.id}/status`, { method: "POST", body: { status: "completed" } });
+  }
+  const cleared = await tiles();
+  check("once every alert for that expiration is completed it drops off the tiles",
+    cleared.d30 === t0.d30 - 1 && cleared.d60 === t0.d60 - 1, { before: t0, after: cleared });
+  check("and it is reported as handled rather than silently vanishing",
+    cleared.handled >= 1, cleared);
+
+  // THE ONE THAT MATTERS. Milestones fire in sequence, so suppressing on "has
+  // a completed alert" alone would hide this client through every later
+  // escalation -- including the day the authorization actually lapses.
+  const sweep = await owner.req("/api/admin/check-auth-expirations", { method: "POST" });
+  await owner.req(`/api/clients/${tileClient}/authorization`, {
+    method: "PATCH", body: { auth_expiration_date: inDays(10) },
+  });
+  await owner.req("/api/admin/check-auth-expirations", { method: "POST" });
+  const escalated = await tiles();
+  check("a NEW milestone alert puts it straight back on the tiles -- a completed alert never hides a later escalation",
+    escalated.d14 >= 1, { escalated, sweep: sweep.data });
+
+  // A renewal moves the date, which supersedes the old alerts. The completions
+  // were against a date that no longer applies, so they must not carry over.
+  await owner.req(`/api/clients/${tileClient}/authorization`, {
+    method: "PATCH", body: { auth_expiration_date: inDays(365) },
+  });
+  const renewed = await tiles();
+  check("a renewal that moves the expiration date does not inherit the old completions",
+    renewed.d60 === t0.d60 - 1 && renewed.d30 === t0.d30 - 1, renewed);
+
   // ================= 7. DUPLICATE STAGE TASKS =================
   section("One active task per stage step");
   const dupClient = (await owner.req("/api/clients", {
@@ -353,11 +420,11 @@ async function login(email, password) {
   // ================= 9. SQUAD LEADER REPORTING =================
   section("Squad Leader reporting: setup");
   const squadCreate = await owner.req("/api/squad/admin/squads", {
-    method: "POST", body: { name: "Test Squad", leader_employee_id: leaderId },
+    method: "POST", body: { name: `Test Squad ${RUN}`, leader_employee_id: leaderId },
   });
   check("an administrator can create a squad and name its leader",
-    squadCreate.status === 201 && (squadCreate.data.squads || []).some((s) => s.name === "Test Squad"), squadCreate.status);
-  const squadId = (squadCreate.data.squads || []).find((s) => s.name === "Test Squad").id;
+    squadCreate.status === 201 && (squadCreate.data.squads || []).some((s) => s.name === `Test Squad ${RUN}`), squadCreate.status);
+  const squadId = (squadCreate.data.squads || []).find((s) => s.name === `Test Squad ${RUN}`).id;
   await owner.req("/api/squad/admin/members", { method: "POST", body: { squad_id: squadId, employee_ids: [memberA, memberB] } });
 
   for (const bad of ["111111", "123456", "12ab", "1234"]) {
@@ -372,7 +439,8 @@ async function login(email, password) {
   const page = await anon.req("/squad-report", { raw: true });
   check("the QR target page loads", page.status === 200, page.status);
   check("the page carries no staff names before anyone signs in",
-    !/Squad Lead Tester|Member A Tester|Member B Tester/.test(page.text), "names found in page");
+    ![`Squad Lead ${RUN}`, `Member A ${RUN}`, `Member B ${RUN}`].some((n) => page.text.includes(n)),
+    "a staff name appears on the unauthenticated page");
   check("the page carries no PIN", !/739184/.test(page.text));
   const ctx = await anon.req("/api/squad/public/context");
   check("the unauthenticated context reveals nothing but 'not signed in'",
@@ -384,13 +452,13 @@ async function login(email, password) {
 
   section("Squad Leader reporting: authentication");
   const wrongPin = await anon.req("/api/squad/public/login", {
-    method: "POST", body: { email: "squadlead.test@spectrumsquadlv.com", pin: "000000" },
+    method: "POST", body: { email: `squadlead.${RUN}@spectrumsquadlv.com`, pin: "000000" },
   });
   const unknownEmail = await anon.req("/api/squad/public/login", {
     method: "POST", body: { email: "nobody@example.com", pin: "739184" },
   });
   const notALeader = await anon.req("/api/squad/public/login", {
-    method: "POST", body: { email: "membera.test@spectrumsquadlv.com", pin: "739184" },
+    method: "POST", body: { email: `membera.${RUN}@spectrumsquadlv.com`, pin: "739184" },
   });
   check("a wrong PIN is refused", wrongPin.status === 401, wrongPin.status);
   check("an unknown email gives the same answer as a wrong PIN -- no enumeration",
@@ -400,19 +468,19 @@ async function login(email, password) {
 
   const leaderClient = makeClient();
   const good = await leaderClient.req("/api/squad/public/login", {
-    method: "POST", body: { email: "squadlead.test@spectrumsquadlv.com", pin: "739184" },
+    method: "POST", body: { email: `squadlead.${RUN}@spectrumsquadlv.com`, pin: "739184" },
   });
   check("the correct PIN signs the leader in", good.status === 200 && good.data.ok === true, good.status);
   check("the session identifies the leader and their squad",
-    good.data.leader.name === "Squad Lead Tester" && good.data.leader.squad_name === "Test Squad", good.data.leader);
+    good.data.leader.name === `Squad Lead ${RUN}` && good.data.leader.squad_name === `Test Squad ${RUN}`, good.data.leader);
 
   section("Squad Leader reporting: a leader sees only their own squad");
   const form = await leaderClient.req("/api/squad/public/form");
   check("the form loads for a signed-in leader", form.status === 200, form.status);
   const names = (form.data.members || []).map((m) => m.name).sort();
   check("only their own squad members are listed",
-    JSON.stringify(names) === JSON.stringify(["Member A Tester", "Member B Tester"]), names);
-  check("the leader is not on their own list", !names.includes("Squad Lead Tester"));
+    JSON.stringify(names) === JSON.stringify([`Member A ${RUN}`, `Member B ${RUN}`]), names);
+  check("the leader is not on their own list", !names.includes(`Squad Lead ${RUN}`));
   const leaked = (form.data.members || []).some((m) => m.email || m.points_90 || m.discipline_level || m.hire_date || m.address);
   check("the roster carries names and titles only -- no contact details, points or standing", !leaked, form.data.members);
   check("the infraction list is the attendance policy matrix, occurrences only",
@@ -458,7 +526,7 @@ async function login(email, password) {
   check("it captures the date", flag && flag.incident_date === "2026-08-20");
   check("it captures the time", flag && flag.incident_time === "08:30", flag && flag.incident_time);
   check("it captures the notes", flag && /No contact before the session/.test(flag.notes || ""), flag && flag.notes);
-  check("it records who submitted it", flag && /Squad Lead Tester/.test(flag.created_by || ""), flag && flag.created_by);
+  check("it records who submitted it", flag && String(flag.created_by || "").includes(`Squad Lead ${RUN}`), flag && flag.created_by);
   check("it records the submission time", flag && !!flag.created_at, flag && flag.created_at);
   check("it records that it came through the squad channel",
     flag && flag.submitted_via === "squad_qr" && flag.submitted_by_employee_id === leaderId,
@@ -489,11 +557,11 @@ async function login(email, password) {
   section("Squad Leader reporting: management can see and revoke");
   const reports = await owner.req("/api/squad/admin/reports");
   check("management can see every squad-filed report",
-    reports.status === 200 && (reports.data.reports || []).some((r) => r.employee_name === "Member A Tester"),
+    reports.status === 200 && (reports.data.reports || []).some((r) => r.employee_name === `Member A ${RUN}`),
     reports.status);
-  const rep = (reports.data.reports || []).find((r) => r.employee_name === "Member A Tester");
+  const rep = (reports.data.reports || []).find((r) => r.employee_name === `Member A ${RUN}`);
   check("the management view names the submitting leader and their squad",
-    rep && rep.leader_name === "Squad Lead Tester" && rep.squad_name === "Test Squad", rep);
+    rep && rep.leader_name === `Squad Lead ${RUN}` && rep.squad_name === `Test Squad ${RUN}`, rep);
   for (const [label, c] of [["clinical", clinical], ["scheduling", scheduling]]) {
     const r = await c.req("/api/squad/admin/reports");
     check(`a ${label} account cannot read squad attendance reports`, r.status === 403, r.status);
@@ -505,7 +573,7 @@ async function login(email, password) {
   await owner.req("/api/squad/admin/pin/active", { method: "POST", body: { employee_id: leaderId, active: true } });
 
   const reLogin = makeClient();
-  await reLogin.req("/api/squad/public/login", { method: "POST", body: { email: "squadlead.test@spectrumsquadlv.com", pin: "739184" } });
+  await reLogin.req("/api/squad/public/login", { method: "POST", body: { email: `squadlead.${RUN}@spectrumsquadlv.com`, pin: "739184" } });
   check("re-enabling lets them back in", (await reLogin.req("/api/squad/public/form")).status === 200);
   await owner.req(`/api/squad/admin/squads/${squadId}`, { method: "PATCH", body: { active: false } });
   check("standing the squad down also ends the session",

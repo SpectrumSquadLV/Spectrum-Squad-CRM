@@ -95,6 +95,39 @@ const BASE = process.env.BASE || "http://localhost:3009";
   check("how the rate is calculated is stated on the card",
     /divided by average headcount/i.test(dash), dash.slice(-400));
 
+  section("Dashboard: the expiry tiles say when a count moved because work got done");
+  await page.evaluate(async () => {
+    const exp = new Date(Date.now() + 25 * 86400000).toISOString().slice(0, 10);
+    const c = await (await fetch("/api/clients", {
+      method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ child_name: "Tile UI Child", parent_name: "P", parent_email: "tile.ui@example.com" }),
+    })).json();
+    await fetch(`/api/clients/${c.id}/authorization`, {
+      method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ authorization_status: "Approved", auth_expiration_date: exp, insurance_payer: "Tile Payer" }),
+    });
+    await fetch("/api/admin/check-auth-expirations", { method: "POST", credentials: "include" });
+    const alerts = await (await fetch("/api/auth-alerts", { credentials: "include" })).json();
+    for (const a of alerts.filter((x) => x.client_id === c.id)) {
+      await fetch(`/api/auth-alerts/${a.id}/status`, {
+        method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "completed" }),
+      });
+    }
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(2500);
+  const tileCard = await page.textContent("#view-mount");
+  check("the Authorization Alerts card is still rendered", /Authorization Alerts/.test(tileCard));
+  // A tile that quietly shrinks is indistinguishable from a broken one, so the
+  // reason has to be on the card.
+  check("a handled authorization is explained rather than silently dropped",
+    /no longer counted above/.test(tileCard), tileCard.slice(0, 300));
+  check("and the card says it returns at the next milestone",
+    /comes? back the moment the next milestone/.test(tileCard));
+  check("with a link into the alert history",
+    !!(await page.$('a[href="#/auth-alerts/history"]')));
+
   // -------------------------------------------------------------- client card
   section("Client card: address, no emoji, nothing lost");
   await page.evaluate((id) => openClientModal(id), clientId);
