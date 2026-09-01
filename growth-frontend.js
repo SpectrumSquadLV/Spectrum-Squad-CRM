@@ -51,16 +51,16 @@
 
   function contractBanner(lead) {
     const c = lead.contract || {};
-    if (c.type === "month_to_month") return `<div style="padding:10px 12px; border-radius:10px; background:#e0f2fe; color:#075985; font-weight:700; font-size:13px;">🔄 Month-to-month — no fixed expiration. Renews automatically until either side gives ${lead.notice_period_days || "the agreed"} days' notice.</div>`;
+    if (c.type === "month_to_month") return `<div style="padding:10px 12px; border-radius:10px; background:#e0f2fe; color:#075985; font-weight:700; font-size:13px;">Month-to-month — no fixed expiration. Renews automatically until either side gives ${lead.notice_period_days || "the agreed"} days' notice.</div>`;
     if (c.type === "fixed_term" && c.expiresOn) {
       const bg = c.expired ? "#fee2e2" : (c.expiringSoon ? "#fef3c7" : "#dcfce7");
       const fg = c.expired ? "#a3282e" : (c.expiringSoon ? "#946213" : "#166534");
       const label = c.expired ? `Expired ${Math.abs(c.daysRemaining)} day(s) ago` : `${c.daysRemaining} day(s) remaining`;
-      return `<div style="padding:10px 12px; border-radius:10px; background:${bg}; color:${fg}; font-weight:700; font-size:13px;">📄 Fixed-term contract ends ${esc(c.expiresOn)} — ${label}.${lead.renewal_date ? " Renewal date: " + esc(lead.renewal_date) + "." : ""}</div>`;
+      return `<div style="padding:10px 12px; border-radius:10px; background:${bg}; color:${fg}; font-weight:700; font-size:13px;">Fixed-term contract ends ${esc(c.expiresOn)} — ${label}.${lead.renewal_date ? " Renewal date: " + esc(lead.renewal_date) + "." : ""}</div>`;
     }
     return "";
   }
-  function eventIcon(t) { return { note: "📝", checkin: "🤝", contract: "📄", alert: "⚠️", task: "✅", stage: "➡️" }[t] || "•"; }
+  function eventIcon(t) { return { note: "▤", checkin: "◇", contract: "▣", alert: "⚠", task: "✓", stage: "→" }[t] || "•"; }
 
   function leadModal(lead, d, mount, events) {
     lead = lead || {};
@@ -184,7 +184,7 @@
       ? `${esc(p.payment_method_brand || p.payment_method_type || "Method")}${p.payment_method_last4 ? " ····" + esc(p.payment_method_last4) : ""}`
       : "None on file";
     var statusBadge = p.failed_payment
-      ? `<span class="tag" style="background:#fee2e2;color:#a3282e;">⚠️ Payment failed</span>`
+      ? `<span class="tag" style="background:#fee2e2;color:#a3282e;">⚠ Payment failed</span>`
       : (p.payment_method_on_file ? `<span class="tag" style="background:#dcfce7;color:#166534;">Active</span>` : `<span class="tag" style="background:#eef0f5;">Not set up</span>`);
     var notConfigured = !p.configured
       ? `<div style="font-size:12px;color:#946213;background:#fef3e0;border-radius:8px;padding:8px 10px;margin-top:8px;">Stripe isn't connected on the server yet. Add <code>STRIPE_SECRET_KEY</code> (and <code>STRIPE_WEBHOOK_SECRET</code>) in your environment to enable live payments. The setup button will work as soon as it's connected.</div>`
@@ -204,7 +204,7 @@
           <button class="btn small" id="pay-setup">${p.payment_method_on_file ? "Update payment method" : "Set up payment method"}</button>
           <span id="pay-status" style="font-size:12px;color:var(--text-muted);"></span>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">🔒 Card and bank details are entered on Stripe's secure pages — this CRM only ever stores safe identifiers (brand, last 4, status), never full card or account numbers.</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Card and bank details are entered on Stripe's secure pages — this CRM only ever stores safe identifiers (brand, last 4, status), never full card or account numbers.</div>
         ${notConfigured}
       </div>`;
     var btn = mnt.querySelector("#pay-setup");
@@ -290,7 +290,7 @@
           ${ack}
         </span>
         <span class="pol-snip">${snippet(p)}</span>
-        <span class="pol-foot">${p.document ? "📘 " + esc(p.document.title) : "/policies/" + esc(p.slug)}${
+        <span class="pol-foot">${p.document ? "" + esc(p.document.title) : "/policies/" + esc(p.slug)}${
           p.effective_date ? " · eff. " + esc(String(p.effective_date).slice(0, 10)) : ""}</span>
       </button>`;
     };
@@ -302,9 +302,9 @@
       <div class="page-header">
         <div><h1>Policies, SOPs &amp; Procedures</h1><p>Staff can scan the QR code to read any policy. Print it and post it around the clinic.</p></div>
         <div style="display:flex; gap:8px; align-items:center;">
-          ${d.can_manage ? `<button class="btn" id="pol-doc-upload">⬆ Upload source document</button>
+          ${d.can_manage ? `<button class="btn" id="pol-doc-upload">⇧ Upload source document</button>
           <button class="btn secondary" id="pol-add">+ Write one</button>
-          <button class="btn secondary" id="pol-import">📥 Import policies</button>
+          <button class="btn secondary" id="pol-import">Import policies</button>
           <button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
         </div>
       </div>
@@ -346,7 +346,7 @@
           <div class="section-title" style="margin-top:0;">Printable QR code</div>
           <img src="${qr}" alt="Policies QR code" style="width:220px; height:220px; max-width:100%;" />
           <div style="font-size:12px; color:var(--text-muted); margin-top:8px; word-break:break-all;">${esc(publicUrl)}</div>
-          <button class="btn small secondary" id="pol-print" style="margin-top:10px;">🖨 Print QR</button>
+          <button class="btn small secondary" id="pol-print" style="margin-top:10px;">Print QR</button>
         </div>
       </div>`;
     const on = (sel, ev, fn) => { const el = mount.querySelector(sel); if (el) el.addEventListener(ev, fn); };
@@ -425,7 +425,7 @@
         ${esc(pol.category || "Other")} · ${esc(pol.status || "Active")} · v${esc(pol.version || "1")}${
           pol.effective_date ? " · effective " + esc(String(pol.effective_date).slice(0, 10)) : ""}${
           pol.updated_at ? " · updated " + esc(new Date(pol.updated_at).toLocaleDateString()) : ""}
-        ${pol.document ? `<div style="margin-top:3px;">📘 From <strong>${esc(pol.document.title)}</strong>${pol.section_ref ? " · " + esc(pol.section_ref) : ""}</div>` : ""}
+        ${pol.document ? `<div style="margin-top:3px;">From <strong>${esc(pol.document.title)}</strong>${pol.section_ref ? " · " + esc(pol.section_ref) : ""}</div>` : ""}
       </div>
       <div class="pol-read">${esc(pol.body || "")}</div>
       ${pol.requires_acknowledgment ? `<div id="pol-ack-box" style="margin-top:14px; padding:11px 13px; border-radius:9px; ${

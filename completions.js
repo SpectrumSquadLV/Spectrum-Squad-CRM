@@ -41,6 +41,7 @@ module.exports = function initCompletions(ctx) {
     eligibility_returned:      { label: "Eligibility check returned",             group: "Families" },
     client_stage_advanced:     { label: "Client moved to a new stage",            group: "Families" },
     client_active:             { label: "Client started therapy",                 group: "Families" },
+    first_day_email_sent:      { label: "First day of ABA confirmed to the family", group: "Families" },
     stage_task_completed:      { label: "Stage task completed",                   group: "Work" },
     staff_task_completed:      { label: "Staff to-do completed",                  group: "Work" },
     supply_request_fulfilled:  { label: "Supply request fulfilled",               group: "Work" },

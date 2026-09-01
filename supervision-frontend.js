@@ -33,9 +33,27 @@
   // Operational, not analytical: is it connected, when did it last work, who
   // could not be matched, and what does production actually return in the two
   // fields that decide whether an hour counts.
+  //
+  // This is plumbing, and it used to be the first thing on the RBT Supervision
+  // page for everybody who could open it -- BCBAs and clinical leads included,
+  // who have no reason to be looking at API filters and staff-ID matching
+  // before they get to the compliance table they came for.
+  //
+  // It is now hidden from the normal interface: only the practice owner and a
+  // super admin see it at all, and even for them it is collapsed behind a
+  // disclosure rather than sitting open above the page. THIS IS A UI CHANGE
+  // ONLY. The integration itself is untouched -- rethink.js still syncs on its
+  // schedule, still writes verified hours, and the roster below still shows
+  // "Rethink verified" against every figure it supplies.
+  const INTEGRATION_ADMIN_ROLES = ["owner", "super_admin"];
+  function canSeeIntegrationPanel() {
+    return typeof state !== "undefined" && state.user && INTEGRATION_ADMIN_ROLES.includes(state.user.role);
+  }
+
   async function renderRethinkPanel(mount) {
     const box = mount.querySelector("#rethink-panel");
     if (!box) return;
+    if (!canSeeIntegrationPanel()) { box.innerHTML = ""; return; }
     let s;
     try { s = await api("/api/rethink/status?month=" + encodeURIComponent(curM)); }
     catch (e) { box.innerHTML = ""; return; } // not permitted, or not deployed yet
@@ -58,12 +76,21 @@
       </label>`;
     }).join("") || `<span style="font-size:12px; color:var(--text-muted);">No values observed yet — run a sync.</span>`;
 
+    // Collapsed by default and only ever rendered for owner / super admin.
+    // It stays open by itself in the two states somebody actually has to act
+    // on -- credentials missing, or the completed/verified filter never
+    // confirmed -- because those stop the hours flowing and hiding them would
+    // mean a silently broken integration.
+    const needsAttention = !s.configured || !s.filter.confirmed || stale;
     box.innerHTML = `
-    <div class="card" style="margin-bottom:14px;">
-      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-        <h3 style="margin:0; font-size:14px;">${dot(connOk, s.configured && !connOk)}Rethink integration</h3>
+    <details class="card" style="margin-bottom:14px;"${needsAttention ? " open" : ""}>
+      <summary style="cursor:pointer; display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text-muted);">
+        ${dot(connOk, s.configured && !connOk)}Rethink integration${needsAttention ? ` <span style="color:#b45309; font-weight:700;">needs attention</span>` : ` <span style="font-weight:400;">— connected</span>`}
+      </summary>
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:10px;">
+        <h3 style="margin:0; font-size:14px;">Integration status</h3>
         <div style="display:flex; gap:6px;">
-          <button class="btn small secondary" id="rt-sync">⟳ Sync Rethink now</button>
+          <button class="btn small secondary" id="rt-sync">Sync Rethink now</button>
         </div>
       </div>
       ${!s.configured ? (() => {
@@ -145,7 +172,7 @@
 
       ${(s.warnings || []).length ? `<details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12.5px; color:#b45309;">${s.warnings.length} sync warning(s)</summary>
         <ul style="font-size:11.5px; color:var(--text-muted); margin:6px 0 0 16px;">${s.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></details>` : ""}
-    </div>`;
+    </details>`;
 
     const picked = (field) => Array.from(box.querySelectorAll(`[data-rt-field="${field}"]:checked`)).map((i) => i.value);
     const saveFilter = async (confirm) => {
@@ -203,7 +230,7 @@
       slot.innerHTML = live
         ? `<button class="btn small secondary" id="sup-upload" style="opacity:.65;"
              title="Only needed if the Rethink API is unavailable">Manual hours upload (fallback)</button>`
-        : `<button class="btn secondary" id="sup-upload">⬆ Upload Rethink hours</button>`;
+        : `<button class="btn secondary" id="sup-upload">⇧ Upload Rethink hours</button>`;
       slot.querySelector("#sup-upload").addEventListener("click", () => openHoursUpload(mount));
     }
     const rows = d.employees.map((e) => {
@@ -241,7 +268,7 @@
         // Live from the API: no upload banner, no "hours current through"
         // chasing, no nagging. Just where the number came from and when.
         ? `<div style="display:flex; align-items:center; gap:8px; background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; border-radius:8px; padding:9px 13px; font-size:13px; margin-bottom:12px;">
-             <span style="font-size:15px;">🔄</span>
+             <span style="font-size:15px;"></span>
              <span>Worked hours are <strong>live from Rethink</strong> for ${esc(monthLabel(d.month))} —
              completed, staff-verified appointments only, for ${d.hours_source_counts.rethink} of ${d.staff_count} staff.
              ${lastSync ? `Last synced ${esc(new Date(lastSync).toLocaleString())}.` : ""}
@@ -250,12 +277,12 @@
            ${d.hours_source_counts.none ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-bottom:12px;">
              ${d.hours_source_counts.none} staff member(s) have no Rethink hours this month — either they had no completed, verified appointments, or they still need a Rethink ID on their staff record.</div>` : ""}`
         : `<div style="display:flex; align-items:center; gap:8px; background:${d.global_hours_current_through ? "#eef4ff" : "#fff4dd"}; color:${d.global_hours_current_through ? "#1b3a7b" : "#a56b00"}; border:1px solid ${d.global_hours_current_through ? "#c7d8f5" : "#f1d9a0"}; border-radius:8px; padding:9px 13px; font-size:13px; margin-bottom:12px;">
-             <span style="font-size:15px;">🗓️</span>
+             <span style="font-size:15px;"></span>
              ${d.global_hours_current_through
                ? `<span>Uploaded worked-hours are <strong>current through ${esc(dayLabel(d.global_hours_current_through))}</strong>.${d.hours_current_through && d.hours_current_through !== d.global_hours_current_through ? ` For ${esc(monthLabel(d.month))}, through ${esc(dayLabel(d.hours_current_through))}.` : ""} Upload again to extend coverage.</span>`
                : `<span>No worked-hours have been uploaded yet — upload the Rethink export to set the “hours current through” date.</span>`}
            </div>
-           ${d.need_hours_upload ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-bottom:12px;">⬆ Upload the Rethink hours export for ${esc(monthLabel(d.month))} to calculate supervision percentages.</div>` : ""}`}
+           ${d.need_hours_upload ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-bottom:12px;">⇧ Upload the Rethink hours export for ${esc(monthLabel(d.month))} to calculate supervision percentages.</div>` : ""}`}
       <div class="card">
         <div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px; min-width:640px;">
           <thead><tr style="text-align:left; color:var(--text-muted); font-size:11px; text-transform:uppercase;">
@@ -391,7 +418,10 @@
       bd.innerHTML = `<div class="modal" style="width:min(860px,96vw); max-height:92vh; overflow:auto;">
         <div class="modal-header"><h2>${esc(d.employee.name)} — Supervision (${esc(monthLabel(month))})</h2><button class="close-btn">✕</button></div>
         <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
-          <label style="font-size:12.5px;">Monthly worked hours <input id="sup-worked" type="number" step="0.1" value="${esc(worked)}" style="width:90px;"/></label>
+          ${d.hours_source === "rethink"
+            ? `<span style="font-size:12.5px;">Monthly worked hours <strong>${esc(worked)}</strong>
+                 <span style="font-size:10.5px; color:#166534; font-weight:600;" title="Verified completed service hours from Rethink — not editable here">Rethink verified</span></span>`
+            : `<label style="font-size:12.5px;">Monthly worked hours <input id="sup-worked" type="number" step="0.1" value="${esc(worked)}" style="width:90px;"/></label>`}
           <span class="tag" style="background:${p == null ? "#fef3c7" : (p >= d.min_pct ? "#dcfce7" : "#fee2e2")}; color:${p == null ? "#92400e" : (p >= d.min_pct ? "#166534" : "#991b1b")};">Supervision: ${sup.toFixed(2)} hrs · ${p == null ? "enter worked hours" : p + "% (min " + d.min_pct + "%)"}</span>
           ${d.has_pdf ? `<a class="btn small secondary" href="/api/supervision/employee/${empId}/pdf?month=${encodeURIComponent(month)}" target="_blank" rel="noopener">Download signed PDF</a>` : ""}
         </div>
@@ -472,9 +502,15 @@
       });
     }
     async function save(silent, reasonOverride) {
-      const worked = parseFloat(bd.querySelector("#sup-worked").value) || 0;
+      // When Rethink is supplying this month's hours the box is not rendered,
+      // and hours_worked is deliberately left out of the body: that column is
+      // the typed/uploaded figure, and posting the Rethink number into it
+      // would make a synced value look like something a person entered.
+      const workedEl = bd.querySelector("#sup-worked");
+      const worked = workedEl ? (parseFloat(workedEl.value) || 0) : (d.hours_worked || 0);
       const st = bd.querySelector("#sup-status"); if (!silent) st.textContent = "Saving…";
-      const body = { month, entries, hours_worked: worked };
+      const body = { month, entries };
+      if (workedEl) body.hours_worked = worked;
       // The editor already knows the month is signed off, so ask before the
       // save rather than letting it fail and asking afterwards. The server
       // still refuses a reasonless change -- that guard is the real one, this

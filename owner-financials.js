@@ -85,7 +85,7 @@
     if (!s) {
       return (
         '<div class="ofin-compact" style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-size:10.5px;color:var(--text-muted);">' +
-          "🔒 Financials unavailable" +
+          "Financials unavailable" +
         "</div>"
       );
     }
@@ -96,7 +96,7 @@
         '<div style="display:flex;justify-content:space-between;"><span>Est. Lifetime Revenue</span><b style="color:var(--text);">' + fmtMoney(s.estLifetimeRevenue) + "</b></div>" +
         '<div style="display:flex;justify-content:space-between;"><span>Est. Lifetime Net Profit</span><b style="color:var(--text);">' + fmtMoney(s.estLifetimeNetProfit) + "</b></div>" +
         (s.hasMissing ? '<div style="margin-top:4px;color:var(--brand-gold-dark);">⚠ Some figures use incomplete data</div>' : "") +
-        '<button type="button" class="ofin-toggle" data-ofin-client="' + esc(clientId) + '" style="margin-top:6px;background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;color:var(--brand-navy,var(--brand));cursor:pointer;">🔒 Financials ▾</button>' +
+        '<button type="button" class="ofin-toggle" data-ofin-client="' + esc(clientId) + '" style="margin-top:6px;background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;color:var(--brand-navy,var(--brand));cursor:pointer;">Financials ▾</button>' +
       "</div>"
     );
   }
@@ -219,7 +219,7 @@
     return (
       '<div class="ofin-full" style="display:none;margin-top:8px;background:var(--brand-light,#edecf8);border:1px solid var(--border);border-radius:10px;">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--border);">' +
-          '<b style="font-size:11.5px;color:var(--brand-navy,var(--brand));">🔒 Financials</b>' +
+          '<b style="font-size:11.5px;color:var(--brand-navy,var(--brand));">Financials</b>' +
           '<span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#a3282e;background:#fdecec;padding:2px 6px;border-radius:999px;">Private — Owner Only</span>' +
         "</div>" +
         '<div class="ofin-full-body" style="font-size:11.5px;">Loading…</div>' +
@@ -274,11 +274,11 @@
       const isOpen = fullSection.style.display !== "none";
       if (isOpen) {
         fullSection.style.display = "none";
-        toggleBtn.textContent = "🔒 Financials ▾";
+        toggleBtn.textContent = "Financials ▾";
         return;
       }
       fullSection.style.display = "block";
-      toggleBtn.textContent = "🔒 Financials ▴";
+      toggleBtn.textContent = "Financials ▴";
       if (fullBody.dataset.ofinLoaded !== "1") {
         await renderFullBody(fullBody, clientId, false);
       }
@@ -430,7 +430,7 @@
       card = document.createElement("div");
       card.className = "stat-card ofin-dash-stat";
       card.innerHTML =
-        '<div class="label">🔒 Est. Total Monthly Net Profit</div>' +
+        '<div class="label">Est. Total Monthly Net Profit</div>' +
         '<div class="value"></div>' +
         '<div class="ofin-dash-note" style="font-size:10.5px;color:var(--text-muted,#767488);margin-top:2px;"></div>';
       grid.appendChild(card);
@@ -493,7 +493,7 @@
     const roles = (settings.financial_view_roles || "owner,super_admin").split(",").map((r) => r.trim()).filter(Boolean);
     return (
       '<div style="padding:24px 28px 60px;max-width:520px;">' +
-        '<h1 style="font-size:24px;margin:0 0 4px;font-weight:700;color:var(--brand-navy,var(--brand));">🔒 Financial Settings</h1>' +
+        '<h1 style="font-size:24px;margin:0 0 4px;font-weight:700;color:var(--brand-navy,var(--brand));">Financial Settings</h1>' +
         '<p style="margin:0 0 18px;color:var(--text-muted);font-size:13px;">Private — Owner Only. Controls the company-wide averages used to estimate revenue and net profit per client, and who is allowed to see any of it.</p>' +
 
         '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;">' +
@@ -514,7 +514,7 @@
             "</select>" +
           "</label>" +
           '<div style="font-size:12.5px;font-weight:700;margin-bottom:6px;">Who can view client financials</div>' +
-          '<div style="font-size:12px;color:var(--text-muted);background:var(--bg,#f7f7fb);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">🔒 Financials are private to you. Only the Owner (and a co-owner Super Admin) can see any financial data anywhere in the app — it is completely hidden from all other staff.</div>' +
+          '<div style="font-size:12px;color:var(--text-muted);background:var(--bg,#f7f7fb);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">Financials are private to you. Only the Owner (and a co-owner Super Admin) can see any financial data anywhere in the app — it is completely hidden from all other staff.</div>' +
           '<div class="ofin-s-error" style="display:none;font-size:11px;color:#a3282e;margin-top:10px;"></div>' +
           '<button type="button" id="ofin-s-save" style="margin-top:16px;background:var(--brand-navy,var(--brand));color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer;">Save settings</button>' +
           '<span id="ofin-s-saved" style="display:none;margin-left:10px;font-size:12px;color:#177a3c;">Saved.</span>' +

@@ -130,10 +130,14 @@
     // established therapy client omitted from the CRM, which is why the
     // priority colouring exists.
     const oc = d.rethink_only_counts || { total: 0, active: 0, pending: 0, inactive: 0 };
+    // A coloured dot, drawn rather than typed. These three priorities were
+    // //-- the same information as emoji. This keeps the colour coding
+    // and drops the pictures.
+    const dotSpan = (c) => `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c};vertical-align:middle;" aria-hidden="true"></span>`;
     const PRIORITY = [
-      { dot: "🔴", label: "Needs attention", note: "Active in Rethink with no CRM record — may be an established therapy client missing from the CRM." },
-      { dot: "🟡", label: "Review", note: "Pending Acceptance in Rethink — likely not yet an active therapy client." },
-      { dot: "⚪", label: "Informational", note: "Inactive in Rethink — historical record." },
+      { dot: dotSpan("#dc2626"), label: "Needs attention", note: "Active in Rethink with no CRM record — may be an established therapy client missing from the CRM." },
+      { dot: dotSpan("#d97706"), label: "Review", note: "Pending Acceptance in Rethink — likely not yet an active therapy client." },
+      { dot: dotSpan("#9ca3af"), label: "Informational", note: "Inactive in Rethink — historical record." },
     ];
     const rethinkOnlyTable = () => {
       const rows = (d.rethink_only || []).map((r) => {

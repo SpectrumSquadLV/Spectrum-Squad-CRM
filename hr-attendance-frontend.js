@@ -268,9 +268,10 @@
     mount.innerHTML =
       '<div class="page-header"><div><h1>Staff Attendance</h1>' +
         '<p>Points, standing and bonus eligibility under the Attendance &amp; Punctuality Policy. Rolling 90 days for standing; the last 30 days for the monthly review.</p></div>' +
-        '<div style="display:flex;gap:8px;"><button class="btn secondary small" id="att-matrix-btn">⚙ Attendance matrix</button>' +
-        '<button class="btn secondary small" id="att-import-btn">⇩ Import attendance log</button>' +
-        '<button class="btn secondary small" id="att-review-btn">✉ Send monthly review</button></div></div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn secondary small" id="att-matrix-btn">Attendance matrix</button>' +
+        '<button class="btn secondary small" id="att-squads-btn">Squad Leaders</button>' +
+        '<button class="btn secondary small" id="att-import-btn">Import attendance log</button>' +
+        '<button class="btn secondary small" id="att-review-btn">Send monthly review</button></div></div>' +
       '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;">' +
         tile(t.people || 0, "Staff tracked") +
         tile(t.with_points_90 || 0, "With points (90 days)", (t.with_points_90 ? "#b45309" : null)) +
@@ -296,6 +297,7 @@
       });
     });
     mount.querySelector("#att-matrix-btn").addEventListener("click", openMatrixEditor);
+    mount.querySelector("#att-squads-btn").addEventListener("click", function () { openSquadManager(mount); });
     mount.querySelector("#att-import-btn").addEventListener("click", function () { openImporter(mount); });
     mount.querySelector("#att-review-btn").addEventListener("click", async function () {
       var st = mount.querySelector("#att-review-status");
@@ -310,6 +312,210 @@
       } catch (e) { st.textContent = e.message || "Could not send."; }
     });
     return true;
+  }
+
+  // ---- Squad Leaders: squads, membership, PINs and the printable QR --------
+  //
+  // The whole management surface for the QR reporting channel. Nothing here
+  // ever displays a PIN that has already been set -- the only time a PIN is
+  // visible is the moment an administrator types a new one, because it is
+  // stored as a hash and cannot be read back.
+  async function openSquadManager(pageMount) {
+    var d;
+    try { d = await api("/api/squad/admin/overview"); }
+    catch (e) { alert(e.message || "Could not load squads."); return; }
+
+    var bd = document.createElement("div");
+    bd.className = "modal-backdrop";
+    document.body.appendChild(bd);
+
+    // The QR encodes this one static path. No id, no token, no name -- so
+    // printing it and putting it on a wall gives away nothing at all.
+    var reportUrl = d.report_url;
+    var qrSrc = "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=" + encodeURIComponent(reportUrl);
+
+    function draw() {
+      var staff = d.staff || [];
+      var staffOptions = function (selected) {
+        return '<option value="">—</option>' + staff.map(function (p) {
+          return '<option value="' + p.id + '"' + (String(selected) === String(p.id) ? " selected" : "") + ">" + esc(p.name) + (p.role_title ? " — " + esc(p.role_title) : "") + "</option>";
+        }).join("");
+      };
+
+      var squadCards = (d.squads || []).map(function (sq) {
+        var leaderState = !sq.leader_employee_id
+          ? '<span style="color:#946213;">No leader set</span>'
+          : !sq.leader_has_pin
+            ? '<span style="color:#946213;">' + esc(sq.leader_name) + " — no PIN yet</span>"
+            : (sq.leader_pin_active === false || sq.leader_pin_active === "f")
+              ? '<span style="color:#991b1b;">' + esc(sq.leader_name) + " — access switched off</span>"
+              : '<span style="color:#166534;">' + esc(sq.leader_name) + " — can report</span>" +
+                (sq.locked ? ' <span class="tag" style="background:#fee2e2;color:#991b1b;">locked out</span>' : "") +
+                (sq.last_used_at ? '<span style="color:var(--text-muted);"> · last used ' + esc(String(sq.last_used_at).slice(0, 10)) + "</span>" : "");
+
+        return '<div class="card" style="margin:0 0 12px;">' +
+          '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:space-between;">' +
+            '<div><strong style="font-size:14px;">' + esc(sq.name) + "</strong>" +
+              (sq.active ? "" : ' <span class="tag" style="background:#e5e7eb;color:#374151;">stood down</span>') +
+              '<div style="font-size:12px;margin-top:2px;">' + leaderState + "</div></div>" +
+            '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+              '<button class="btn small secondary" data-sq-active="' + sq.id + '" data-to="' + (sq.active ? "0" : "1") + '">' +
+                (sq.active ? "Stand down" : "Reactivate") + "</button>" +
+            "</div>" +
+          "</div>" +
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">' +
+            '<label style="font-size:12px;">Squad leader<br><select data-sq-leader="' + sq.id + '">' + staffOptions(sq.leader_employee_id) + "</select></label>" +
+            (sq.leader_employee_id
+              ? '<label style="font-size:12px;">Set a new PIN<br><input data-sq-pin="' + sq.id + '" type="text" inputmode="numeric" placeholder="' + d.pin_min_length + '–12 digits" style="width:150px;" /></label>' +
+                '<button class="btn small" data-sq-setpin="' + sq.id + '">Save PIN</button>' +
+                (sq.leader_has_pin
+                  ? '<button class="btn small secondary" data-sq-toggle="' + sq.id + '" data-to="' + ((sq.leader_pin_active === false || sq.leader_pin_active === "f") ? "1" : "0") + '">' +
+                      ((sq.leader_pin_active === false || sq.leader_pin_active === "f") ? "Re-enable reporting" : "Switch reporting off") + "</button>"
+                  : "")
+              : "") +
+          "</div>" +
+          '<div style="font-size:12px;color:var(--text-muted);margin-top:8px;">Squad members (' + (sq.members || []).length + ") — a leader can only report these people</div>" +
+          '<div class="opt-row" style="margin-top:6px;">' +
+            ((sq.members || []).map(function (m) {
+              return '<span class="tag" style="background:#eef2ff;color:#3f56b5;">' + esc(m.name) +
+                ' <button class="link-x" data-sq-remove="' + m.id + '" title="Take off this squad" style="background:none;border:none;cursor:pointer;color:#3f56b5;font-weight:700;padding:0 0 0 4px;">×</button></span>';
+            }).join("") || '<span style="font-size:12px;color:var(--text-muted);">Nobody assigned yet.</span>') +
+          "</div>" +
+          '<div style="display:flex;gap:8px;align-items:flex-end;margin-top:10px;flex-wrap:wrap;">' +
+            '<label style="font-size:12px;">Add a staff member<br><select data-sq-add="' + sq.id + '">' +
+              '<option value="">Choose…</option>' +
+              staff.filter(function (p) { return String(p.squad_id || "") !== String(sq.id) && String(p.id) !== String(sq.leader_employee_id); })
+                .map(function (p) { return '<option value="' + p.id + '">' + esc(p.name) + (p.squad_id ? " (moving from another squad)" : "") + "</option>"; }).join("") +
+            "</select></label>" +
+            '<button class="btn small secondary" data-sq-addgo="' + sq.id + '">Add to squad</button>' +
+          "</div>" +
+          "</div>";
+      }).join("") || '<div class="empty-state">No squads yet. Create one below.</div>';
+
+      bd.innerHTML = '<div class="modal" style="width:min(820px,96vw);max-height:92vh;overflow:auto;">' +
+        '<div class="modal-header"><h2>Squad Leaders &amp; attendance reporting</h2><button class="close-btn">✕</button></div>' +
+        '<p style="font-size:13px;color:var(--text-muted);margin-top:0;">' +
+          "Squad Leaders report attendance infractions for their own squad by scanning the QR code and entering their PIN. " +
+          "They sign in with their work email, so every leader needs an email address on file. " +
+          "Scanning the code on its own shows nothing about any employee, and reporting gives a leader no access to HR records." +
+        "</p>" +
+        '<div id="sq-status" style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px;"></div>' +
+        squadCards +
+        '<div class="card" style="margin:0 0 12px;">' +
+          '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">' +
+            '<label style="font-size:12px;">New squad name<br><input id="sq-new-name" placeholder="e.g. Squad Alpha" style="width:200px;" /></label>' +
+            '<label style="font-size:12px;">Leader<br><select id="sq-new-leader">' + staffOptions("") + "</select></label>" +
+            '<button class="btn small" id="sq-new-go">Create squad</button>' +
+          "</div>" +
+        "</div>" +
+        '<div class="card" style="margin:0;text-align:center;">' +
+          '<div class="section-title" style="margin-top:0;">Printable QR code</div>' +
+          '<img src="' + qrSrc + '" alt="Attendance reporting QR code" style="width:220px;height:220px;max-width:100%;" />' +
+          '<div style="font-size:12px;color:var(--text-muted);margin-top:6px;word-break:break-all;">' + esc(reportUrl) + "</div>" +
+          '<div style="font-size:12px;color:var(--text-muted);margin-top:6px;">This code carries only the address above — no names, no ids, no PIN. Anyone scanning it sees a PIN prompt.</div>' +
+          '<button class="btn small secondary" id="sq-print" style="margin-top:10px;">Print QR</button>' +
+        "</div>" +
+        "</div>";
+
+      bd.querySelector(".close-btn").addEventListener("click", function () { bd.remove(); if (pageMount) renderRoster(pageMount); });
+      wire();
+    }
+
+    function status(msg, bad) {
+      var el = bd.querySelector("#sq-status");
+      if (el) { el.textContent = msg || ""; el.style.color = bad ? "#991b1b" : "var(--text-muted)"; }
+    }
+    async function call(path, body, method) {
+      try {
+        var r = await api(path, { method: method || "POST", body: body });
+        // Every admin route answers with the refreshed overview, so one shape
+        // of response keeps this screen in step with the server.
+        d = r && r.squads ? r : (r && r.overview ? r.overview : d);
+        return r;
+      } catch (e) { status(e.message || "Could not save.", true); return null; }
+    }
+
+    function wire() {
+      bd.querySelectorAll("[data-sq-leader]").forEach(function (sel) {
+        sel.addEventListener("change", async function () {
+          var r = await call("/api/squad/admin/squads/" + sel.getAttribute("data-sq-leader"),
+            { leader_employee_id: sel.value || null }, "PATCH");
+          if (r) { status("Leader updated. They need a PIN before they can report."); draw(); }
+        });
+      });
+      bd.querySelectorAll("[data-sq-active]").forEach(function (b) {
+        b.addEventListener("click", async function () {
+          var r = await call("/api/squad/admin/squads/" + b.getAttribute("data-sq-active"),
+            { active: b.getAttribute("data-to") === "1" }, "PATCH");
+          if (r) { status("Squad updated."); draw(); }
+        });
+      });
+      bd.querySelectorAll("[data-sq-setpin]").forEach(function (b) {
+        b.addEventListener("click", async function () {
+          var id = b.getAttribute("data-sq-setpin");
+          var sq = (d.squads || []).filter(function (x) { return String(x.id) === String(id); })[0];
+          var input = bd.querySelector('[data-sq-pin="' + id + '"]');
+          var pin = (input && input.value || "").trim();
+          if (!pin) { status("Type the PIN you want to give them.", true); return; }
+          var r = await call("/api/squad/admin/pin", { employee_id: sq.leader_employee_id, pin: pin });
+          if (r && r.ok) {
+            // Shown once, here, because this is the only moment it exists in
+            // readable form. It is never stored or displayed again.
+            status("PIN set. Give " + (sq.leader_name || "them") + " this PIN now — it cannot be looked up later. They sign in with " + r.sign_in_email + ".");
+            draw();
+          }
+        });
+      });
+      bd.querySelectorAll("[data-sq-toggle]").forEach(function (b) {
+        b.addEventListener("click", async function () {
+          var id = b.getAttribute("data-sq-toggle");
+          var sq = (d.squads || []).filter(function (x) { return String(x.id) === String(id); })[0];
+          var r = await call("/api/squad/admin/pin/active",
+            { employee_id: sq.leader_employee_id, active: b.getAttribute("data-to") === "1" });
+          if (r) { status("Reporting access updated."); draw(); }
+        });
+      });
+      bd.querySelectorAll("[data-sq-addgo]").forEach(function (b) {
+        b.addEventListener("click", async function () {
+          var id = b.getAttribute("data-sq-addgo");
+          var sel = bd.querySelector('[data-sq-add="' + id + '"]');
+          if (!sel || !sel.value) { status("Choose who to add.", true); return; }
+          var r = await call("/api/squad/admin/members", { squad_id: Number(id), employee_ids: [Number(sel.value)] });
+          if (r) { status("Added to the squad."); draw(); }
+        });
+      });
+      bd.querySelectorAll("[data-sq-remove]").forEach(function (b) {
+        b.addEventListener("click", async function () {
+          var r = await call("/api/squad/admin/members", { squad_id: null, employee_ids: [Number(b.getAttribute("data-sq-remove"))] });
+          if (r) { status("Taken off the squad."); draw(); }
+        });
+      });
+      var mk = bd.querySelector("#sq-new-go");
+      if (mk) mk.addEventListener("click", async function () {
+        var name = (bd.querySelector("#sq-new-name").value || "").trim();
+        if (!name) { status("Give the squad a name.", true); return; }
+        var r = await call("/api/squad/admin/squads",
+          { name: name, leader_employee_id: bd.querySelector("#sq-new-leader").value || null });
+        if (r) { status("Squad created."); draw(); }
+      });
+      var pr = bd.querySelector("#sq-print");
+      if (pr) pr.addEventListener("click", function () {
+        var w = window.open("", "_blank");
+        if (!w) return;
+        w.document.write('<html><head><title>Attendance Reporting QR — Spectrum Squad</title></head>' +
+          '<body style="text-align:center;font-family:sans-serif;padding:40px;">' +
+          "<h2>Spectrum Squad — Attendance Reporting</h2>" +
+          "<p>Squad Leaders: scan to report an attendance infraction.<br>You will be asked for your PIN.</p>" +
+          '<img src="' + qrSrc + '" style="width:320px;height:320px;"/>' +
+          '<p style="color:#555;">' + esc(reportUrl) + "</p></body></html>");
+        w.document.close(); w.focus(); setTimeout(function () { w.print(); }, 400);
+      });
+    }
+
+    bd.addEventListener("click", function (e) {
+      if (e.target === bd) { bd.remove(); if (pageMount) renderRoster(pageMount); }
+    });
+    draw();
   }
 
   async function openMatrixEditor() {

@@ -77,7 +77,7 @@
 
       + (!data.sync_ok
         ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:11px 13px;margin-bottom:14px;font-size:13px;color:#92400e;">'
-          + '⚠️ The Rethink sync for ' + esc(data.period_label) + ' has not completed successfully, so these hours are not final. '
+          + '⚠ The Rethink sync for ' + esc(data.period_label) + ' has not completed successfully, so these hours are not final. '
           + 'Nothing will be emailed until it has.</div>'
         : "")
 

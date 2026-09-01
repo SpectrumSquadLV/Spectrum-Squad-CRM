@@ -62,8 +62,16 @@ const BASE = process.env.BASE || "http://localhost:3009";
   await openCard();
 
   section("Every section is there, and every one folds");
+  // "firstday" is the First Day of ABA section. The date it holds was already a
+  // field on the client record and already drove the dashboard's Upcoming First
+  // Days list, but there was no way to enter it anywhere in the app -- and it
+  // is the trigger for the parent's confirmation email, so it needed one.
+  //
+  // Note this suite signs in as the owner. "eligibility" and "financial" are
+  // now limited to administrative/billing roles, so a clinical or scheduling
+  // account legitimately sees fifteen sections here, not seventeen.
   const EXPECTED = ["authorization", "emergency", "bip", "services", "assessment", "notes", "packet",
-    "documents", "docrequests", "eligibility", "financial", "schedulereq", "attendance", "tasks",
+    "documents", "docrequests", "eligibility", "financial", "firstday", "schedulereq", "attendance", "tasks",
     "waitlist", "closeout", "comms"];
   const found = await page.$$eval("details.cs", (ds) => ds.map((d) => d.dataset.cs));
   for (const key of EXPECTED) check(`"${key}" is on the card`, found.includes(key), found.join(","));

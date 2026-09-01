@@ -91,7 +91,7 @@
 
       + (estimated
         ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:11px 13px;margin:12px 0;font-size:13px;color:#92400e;">'
-          + '⚠️ <strong>' + estimated + ' balance' + (estimated === 1 ? " is" : "s are") + ' an estimate.</strong> '
+          + '⚠ <strong>' + estimated + ' balance' + (estimated === 1 ? " is" : "s are") + ' an estimate.</strong> '
           + 'Accrual is per hour worked, and salaried staff do not clock hours — where there are no approved timecards, '
           + 'their standard week is assumed instead. Those rows are marked. Treat them as indicative, not as a figure to quote at somebody.'
           + '</div>'

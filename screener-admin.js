@@ -60,7 +60,7 @@
     bd.style.zIndex = "1000";
     bd.innerHTML =
       '<div class="modal" style="max-width:640px;">'+
-        '<div class="modal-header"><div><h2>🌈 Clinical Screener</h2>'+
+        '<div class="modal-header"><div><h2>Clinical Screener</h2>'+
         (when?'<div style="color:#7a7796;font-size:13px;">Submitted '+when+'</div>':'')+
         '</div><button class="close-btn" id="scr-close">✕</button></div>'+
         '<table style="width:100%;border-collapse:collapse;font-size:14px;">'+rows+'</table>'+
@@ -136,8 +136,8 @@
       return getJson("/api/screener/status/" + id)
         .then(function(st){
           renderStrip(strip, st);
-          sendBtn.textContent = st.completed ? "📨 Send Screener again"
-            : (st.last_sent_at ? "📨 Resend Screener" : "📨 Send Screener");
+          sendBtn.textContent = st.completed ? "Send Screener again"
+            : (st.last_sent_at ? "Resend Screener" : "Send Screener");
           sendBtn.disabled = !st.has_parent_email;
           sendBtn.title = st.has_parent_email
             ? "Email the clinical screener to " + (st.parent_email || "the parent/guardian")
@@ -189,7 +189,7 @@
     var btn = document.createElement("button");
     btn.id = "screener-view-btn";
     btn.type = "button";
-    btn.textContent = "🌈 View Screener";
+    btn.textContent = "View Screener";
     btn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#edecf8;color:#1b2a6b;padding:8px 14px;border-radius:10px;cursor:pointer;";
     btn.addEventListener("click", onClick);
     bar.appendChild(btn);
@@ -197,7 +197,7 @@
     var sendBtn = document.createElement("button");
     sendBtn.id = "screener-send-btn";
     sendBtn.type = "button";
-    sendBtn.textContent = "📨 Send Screener";
+    sendBtn.textContent = "Send Screener";
     sendBtn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#1b2a6b;color:#fff;padding:8px 14px;border-radius:10px;cursor:pointer;";
     bar.appendChild(sendBtn);
 
@@ -208,7 +208,7 @@
     var pdfBtn = document.createElement("button");
     pdfBtn.id = "screener-pdf-btn";
     pdfBtn.type = "button";
-    pdfBtn.textContent = "⬇ Download PDF";
+    pdfBtn.textContent = "⇩ Download PDF";
     pdfBtn.title = "The screener as a document, with every question the parent was asked and their answer under it.";
     pdfBtn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#edecf8;color:#1b2a6b;padding:8px 14px;border-radius:10px;cursor:pointer;";
     pdfBtn.addEventListener("click", function(){

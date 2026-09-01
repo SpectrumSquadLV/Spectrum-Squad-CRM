@@ -383,6 +383,15 @@ ALTER TABLE enrollment_packets ADD COLUMN IF NOT EXISTS paused_ms BIGINT NOT NUL
 -- received and would be closed out for not signing it. The timestamp is the
 -- flag; who and why are recorded alongside so the hold can be audited and
 -- safely lifted rather than becoming permanent silence. See intake-chasing.js.
+-- The confirmed-first-day parent email. One stamp per client, written the
+-- moment the email is accepted for sending, so re-saving or re-ticking the
+-- first-day task can never send it twice. The date it was sent FOR is kept
+-- alongside, so if the start date later moves it is obvious what the family
+-- was actually told -- and no second email goes out on its own.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS first_day_email_sent_at TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS first_day_email_date TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS first_day_email_bcba TEXT;
+
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_chasing_paused_at TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_chasing_paused_by TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS intake_chasing_pause_note TEXT;
@@ -520,6 +529,37 @@ UPDATE stage_tasks SET assignable = false WHERE stage_key = 'clinical_screener';
 -- silently marked done on someone's behalf. Idempotent: after the first run
 -- there is nothing left to match.
 UPDATE clients SET stage = 'assessment_scheduling', updated_at = to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') WHERE stage = 'intake_packet';
+-- Duplicate OPEN stage tasks, left behind by enterStage() before it checked
+-- whether the work was already on the client's list. The visible symptom was
+-- two "Schedule First Day of ABA" tasks on the same client. enterStage no
+-- longer creates them; this clears the ones already there.
+--
+-- Deliberately narrow. It only touches rows that are:
+--   * duplicates of another row for the SAME client and the SAME stage task,
+--   * still open (never completed, never silently completed),
+--   * with no completion history at all (completed_at and last_completed_at
+--     both null), so nothing that was ever ticked can be caught by it,
+-- and it always keeps the OLDEST row, which is the one carrying whatever due
+-- date and history the office has been working to. No completed task, and no
+-- task that is the only one of its kind, is ever removed. Idempotent: after
+-- the first run there is nothing left to match.
+DELETE FROM client_tasks ct
+ WHERE ct.status <> 'completed'
+   AND ct.completed_at IS NULL
+   AND ct.last_completed_at IS NULL
+   AND EXISTS (
+     SELECT 1 FROM client_tasks keep
+      WHERE keep.client_id = ct.client_id
+        AND keep.stage_task_id = ct.stage_task_id
+        AND keep.id < ct.id
+        -- The kept row must itself be an untouched open task. If the older
+        -- row was completed, this newer one is the second pass through the
+        -- stage, not a duplicate of it, and it stays.
+        AND keep.status <> 'completed'
+        AND keep.completed_at IS NULL
+        AND keep.last_completed_at IS NULL
+   );
+
 ALTER TABLE users ADD COLUMN IF NOT EXISTS can_view_financials BOOLEAN NOT NULL DEFAULT false;
 -- Per-user granular module access overrides: JSON map { moduleKey: bool }.
 -- Absent key = fall back to the role default. Lets the owner grant or restrict
@@ -1251,6 +1291,35 @@ function canAccessClients(user) {
   return !!user && CLIENT_ACCESS_ROLES.includes(user.role);
 }
 
+// Who may see staff turnover. Turnover is derived from who left and when, so
+// it is HR information about identifiable people, not a general operations
+// metric -- clinical, scheduling, intake and billing staff are deliberately
+// out. This mirrors the HR module's MANAGE tier (hr.js HR_MANAGE_ROLES) rather
+// than inventing a second permission structure, and is checked on the server
+// so the data never reaches a browser that shouldn't have it.
+const TURNOVER_VIEW_ROLES = ["owner", "super_admin", "admin", "hr_admin"];
+function canViewTurnover(user) {
+  return !!user && TURNOVER_VIEW_ROLES.includes(user.role);
+}
+
+// Who may see, or act on, what a family owes and what their plan covers:
+// the Financial Obligation form and the Benefits & Eligibility Check. Both
+// concern the family's money and insurance rather than the child's care, so
+// they belong to the administrative / documentation side of the practice --
+// the owner, a super admin, an admin, and the intake and billing staff who
+// run benefits. Clinical (BCBA) and scheduling accounts have client access
+// but not this. Mirrors CF_FINANCIAL_ROLES in client-forms.js, which is the
+// same list on the routes that module owns; both are the existing role
+// system, not a second permission structure.
+//
+// Note this is separate from FINANCIAL_VIEW_ROLES (owner-only), which guards
+// the practice's OWN revenue and profit figures. Different data, different
+// question, deliberately different list.
+const BENEFITS_VIEW_ROLES = ["owner", "super_admin", "admin", "intake", "billing"];
+function canViewBenefits(user) {
+  return !!user && BENEFITS_VIEW_ROLES.includes(user.role);
+}
+
 // ---- Communication privacy (Phase 4, items 6 / 16 / 17) ----
 // Owner, super_admin and admin see all communications org-wide. Everyone else
 // is scoped to the clients they are assigned to.
@@ -1331,6 +1400,13 @@ const EMAIL_TEMPLATE_DEFS = [
     category: "Parent Milestone Emails",
     description: "No longer sent automatically. This used to fire when the authorization request was SUBMITTED, which told parents the authorization was already in. It has been replaced by 'Treatment Plan Submitted for Authorization' (on submit) and 'Authorization Approved' (on approval). Kept so past sends still render.",
     fields: ["parent_name", "child_name", "today"],
+  },
+  {
+    key: "milestone_first_day_confirmed",
+    label: "First Day of ABA Confirmed",
+    category: "Parent Milestone Emails",
+    description: "Sent to the parent once a first day of ABA has actually been entered on the client record AND a BCBA is assigned. Confirms the child's name, the confirmed start date and who their BCBA is. Sent once only — changing the start date afterwards does not re-send it.",
+    fields: ["parent_name", "child_name", "first_day_date", "assigned_bcba_name", "today"],
   },
   {
     key: "milestone_active",
@@ -1523,6 +1599,20 @@ const EMAIL_TEMPLATE_DEFAULTS = {
   milestone_first_day_scheduled: {
     subject: "Let's get a first day scheduled! — Spectrum Squad",
     body: "<p>Hi {{parent_name}},</p><p>{{child_name}}'s authorization is in and we're ready to schedule a first day of ABA therapy. Our scheduling team will be in touch shortly.</p>",
+  },
+  milestone_first_day_confirmed: {
+    subject: "{{child_name}}'s first day of ABA is confirmed — {{first_day_date}}",
+    body:
+      "<p>Hi {{parent_name}},</p>" +
+      "<p>Great news — {{child_name}}'s first day of ABA therapy is confirmed.</p>" +
+      "<ul>" +
+        "<li><strong>Child:</strong> {{child_name}}</li>" +
+        "<li><strong>First day of ABA:</strong> {{first_day_date}}</li>" +
+        "<li><strong>Assigned BCBA:</strong> {{assigned_bcba_name}}</li>" +
+      "</ul>" +
+      "<p>{{assigned_bcba_name}} will be leading {{child_name}}'s program and will be in touch before the first session to walk you through what to expect and answer anything you're wondering about.</p>" +
+      "<p>If anything about that date no longer works for your family, just reply to this email and we'll sort it out.</p>" +
+      "<p>Warmly,<br>The Spectrum Squad Team</p>",
   },
   milestone_active: {
     subject: "Welcome to Spectrum Squad, {{child_name}}!",
@@ -1976,6 +2066,27 @@ async function enterStage(clientId, stageKey, { silent = false } = {}) {
 
   const tasks = await dbAll("SELECT * FROM stage_tasks WHERE stage_key = ?", [stageKey]);
   for (const task of tasks) {
+    // A client can land in the same stage more than once -- dragged back on
+    // the board, advanced explicitly, moved to scheduling, reactivated -- and
+    // this INSERT used to fire every single time with nothing stopping it.
+    // That is where the two "Schedule First Day of ABA" tasks came from: one
+    // stage_tasks row, two client_tasks rows, both open, both nagging.
+    //
+    // So: if this stage task ALREADY has an open item on this client, that item
+    // is the work, and a second copy of it is not new work. The existing one is
+    // left exactly as it is -- its due date, its assignee and its history are
+    // somebody's, not this function's to reset -- and no second department
+    // alert goes out for a task that was already sitting in their queue.
+    //
+    // A stage task whose only rows are COMPLETED still gets a fresh one: a
+    // genuine second pass through a stage is real work, and the completed row
+    // stays as the historical record of the first pass.
+    const openAlready = await dbGet(
+      "SELECT id FROM client_tasks WHERE client_id = ? AND stage_task_id = ? AND status <> 'completed'",
+      [clientId, task.id]
+    ).catch(() => null);
+    if (openAlready) continue;
+
     const dueDate = addBusinessDays(new Date(), task.sla_days).toISOString();
     await dbRun(
       `INSERT INTO client_tasks (client_id, stage_task_id, status, due_date, created_at)
@@ -2051,6 +2162,7 @@ function parentMilestoneFields(client) {
     today: new Date().toLocaleDateString(),
     treatment_plan_submitted_date: fmtDateLong(client.treatment_plan_submitted_date),
     authorization_approved_date: fmtDateLong(client.authorization_approved_date),
+    first_day_date: fmtDateLong(client.first_day_date),
     auth_start_date: fmtDateLong(client.auth_start_date),
     auth_expiration_date: fmtDateLong(client.auth_expiration_date),
     insurance_payer: client.insurance_payer || "your insurance",
@@ -2081,6 +2193,95 @@ async function sendParentTemplate(client, templateKey) {
     type: "parent_milestone",
   }).catch((e) => console.error("sendEmail failed:", e));
   return { sent: true };
+}
+
+// ---- First Day of ABA confirmed -> parent email --------------------------
+//
+//   Enter ABA start date -> save / complete -> retrieve assigned BCBA -> email
+//
+// Called from every route that can put a first_day_date on a client (the
+// details save, the first-day scheduling save, and ticking the first-day
+// stage task) so there is one implementation of the rules rather than three.
+//
+// It refuses to send unless all of these hold, and says which one stopped it:
+//   * a real calendar date is on the record        -- never on a blank or half-typed date
+//   * a BCBA is assigned                           -- the email names them, so it cannot go without one
+//   * the parent has an email address
+//   * this client has not already been sent it     -- the stamp is the guard
+//
+// A start date that CHANGES after the email has gone does NOT re-send: there
+// is no start-date-change notification in this CRM, and inventing one would
+// mean a family getting a second "your first day is confirmed" for a date that
+// was moved. The change is recorded on the client's note history instead, so
+// somebody can decide what to tell them.
+async function maybeSendFirstDayEmail(clientId, actor) {
+  const client = await dbGet("SELECT * FROM clients WHERE id = ?", [clientId]);
+  if (!client) return { sent: false, reason: "no_client" };
+
+  const date = String(client.first_day_date || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return { sent: false, reason: "no_start_date" };
+  }
+  if (client.first_day_email_sent_at) {
+    // Already told. If the date has since moved, note it once on the record --
+    // that is a human decision, not an automatic second email.
+    if (client.first_day_email_date && client.first_day_email_date !== date) {
+      const already = await dbGet(
+        "SELECT id FROM client_notes WHERE client_id = ? AND body LIKE ? LIMIT 1",
+        [clientId, `%first day of ABA moved from ${client.first_day_email_date} to ${date}%`]
+      ).catch(() => null);
+      if (!already) {
+        await addSystemClientNote(
+          clientId,
+          { name: actor || "system", email: actor || "system" },
+          `Confirmed first day of ABA moved from ${client.first_day_email_date} to ${date} after the parent had already been emailed. ` +
+          "No second confirmation was sent automatically — tell the family the new date by hand."
+        ).catch((e) => console.error("first-day change note failed:", e.message));
+      }
+    }
+    return { sent: false, reason: "already_sent", sent_at: client.first_day_email_sent_at };
+  }
+  const bcba = String(client.assigned_bcba_name || "").trim();
+  if (!bcba) return { sent: false, reason: "no_bcba" };
+  if (!client.parent_email) return { sent: false, reason: "no_parent_email" };
+
+  // The stamp is written BEFORE the send, and it is conditional on still being
+  // empty. Two saves landing at once therefore produce exactly one email: the
+  // second update matches no row and bails out. Stamping afterwards would
+  // leave the window open that the "prevent duplicate emails" requirement is
+  // about.
+  const claim = await dbRun(
+    `UPDATE clients SET first_day_email_sent_at = ?, first_day_email_date = ?, first_day_email_bcba = ?
+      WHERE id = ? AND first_day_email_sent_at IS NULL`,
+    [nowISO(), date, bcba, clientId]
+  );
+  if (!claim || !claim.rowCount) return { sent: false, reason: "already_sent" };
+
+  const result = await sendParentTemplate(client, "milestone_first_day_confirmed");
+  if (!result.sent) {
+    // Nothing went out, so the stamp is released rather than left behind
+    // permanently suppressing an email the family never received.
+    await dbRun(
+      "UPDATE clients SET first_day_email_sent_at = NULL, first_day_email_date = NULL, first_day_email_bcba = NULL WHERE id = ?",
+      [clientId]
+    ).catch(() => {});
+    return { sent: false, reason: result.reason || "send_failed" };
+  }
+
+  await addSystemClientNote(
+    clientId,
+    { name: actor || "system", email: actor || "system" },
+    `First-day-of-ABA confirmation emailed to ${client.parent_email}: first day ${date}, assigned BCBA ${bcba}.`
+  ).catch((e) => console.error("first-day note failed:", e.message));
+  completions.record("first_day_email_sent", {
+    subject: client.child_name,
+    detail: `First day ${date} confirmed to the family — BCBA ${bcba}`,
+    clientId,
+    dedupeKey: `first_day_email:${clientId}`,
+    link: `${APP_BASE_URL}/#/pipeline/${clientId}`,
+  });
+  console.log(`[client ${clientId}] first-day confirmation sent (date=${date}, bcba set) by ${actor || "system"}`);
+  return { sent: true, first_day_date: date, assigned_bcba_name: bcba };
 }
 
 async function completeTask(taskId, completedByUserId, opts = {}) {
@@ -2117,6 +2318,25 @@ async function completeTask(taskId, completedByUserId, opts = {}) {
     const date = explicit || (existing && existing.treatment_plan_submitted_date) || todayISODate();
     await dbRun("UPDATE clients SET treatment_plan_submitted_date = ?, authorization_submitted = true, updated_at = ? WHERE id = ?",
       [date, nowISO(), task.client_id]);
+
+    // The authorization task is done, so any alert still chasing that work
+    // closes with it rather than staying on the board as live work. Status
+    // change only -- the alerts and their history are kept.
+    await clearActiveAuthAlerts(
+      task.client_id,
+      opts.actor || "system",
+      `Closed automatically: "${taskLabel.label}" was marked complete`
+    ).catch((e) => console.error("auth alert auto-clear failed:", e.message));
+  }
+
+  // Ticking "Schedule First Day of ABA" is the other way the first day gets
+  // confirmed, so it fires the same parent email as saving the date does.
+  // Nothing is sent unless the date is actually on the record and a BCBA is
+  // assigned -- completing the task alone is not enough, and the guard for
+  // that is inside maybeSendFirstDayEmail rather than duplicated here.
+  if (taskLabel && taskLabel.stage_key === "first_day_scheduled" && !silent) {
+    await maybeSendFirstDayEmail(task.client_id, opts.actor || "system")
+      .catch((e) => console.error("first-day email failed:", e.message));
   }
 
   // If all tasks for the client's current stage are complete, auto-advance.
@@ -3311,6 +3531,7 @@ setTimeout(() => {
   retryFailedEnrollmentPackets().catch((e) => console.error("retryFailedEnrollmentPackets failed:", e));
   ot.reminderSweep().catch((e) => console.error("OT reminderSweep failed:", e));
   attendance.dailySweep().catch((e) => console.error("Attendance dailySweep failed:", e));
+  squad.sweepSessions().catch((e) => console.error("Squad session sweep failed:", e));
   geoMap.geocodeSweep().catch((e) => console.error("Geo geocodeSweep failed:", e));
 }, 30 * 1000);
 setInterval(() => {
@@ -3318,6 +3539,7 @@ setInterval(() => {
   retryFailedEnrollmentPackets().catch((e) => console.error("retryFailedEnrollmentPackets failed:", e));
   ot.reminderSweep().catch((e) => console.error("OT reminderSweep failed:", e));
   attendance.dailySweep().catch((e) => console.error("Attendance dailySweep failed:", e));
+  squad.sweepSessions().catch((e) => console.error("Squad session sweep failed:", e));
   geoMap.geocodeSweep().catch((e) => console.error("Geo geocodeSweep failed:", e));
 }, 60 * 60 * 1000);
 
@@ -3400,6 +3622,33 @@ async function logAuthAudit(clientId, alertId, action, actor, previousValue, new
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [clientId, alertId, action, actor || "system", previousValue ?? null, newValue ?? null, detail ?? null, nowISO()]
   );
+}
+
+// An authorization alert exists to get somebody to do the renewal work. Once
+// that work is recorded as done, the alert has served its purpose and should
+// stop presenting itself as outstanding -- which it did not, so the list kept
+// showing alerts for authorizations that had already been dealt with.
+//
+// Closing is a STATUS CHANGE, never a delete: the row, its milestone, its
+// expiration snapshot and its email history all stay exactly where they are,
+// and the transition is written to auth_audit_log like every other change.
+// Only alerts that are still open are touched -- an alert already completed or
+// superseded is left alone so nothing is restated.
+async function clearActiveAuthAlerts(clientId, actor, detail) {
+  const open = await dbAll(
+    "SELECT id, status FROM auth_alerts WHERE client_id = ? AND status IN ('open','reviewed','renewal_started','reopened')",
+    [clientId]
+  ).catch(() => []);
+  if (!open.length) return 0;
+  await dbRun(
+    "UPDATE auth_alerts SET status = 'completed', updated_at = ? WHERE client_id = ? AND status IN ('open','reviewed','renewal_started','reopened')",
+    [nowISO(), clientId]
+  );
+  for (const a of open) {
+    await logAuthAudit(clientId, a.id, "alert_auto_completed", actor || "system", a.status, "completed", detail || null)
+      .catch((e) => console.error("auth alert auto-complete audit failed:", e.message));
+  }
+  return open.length;
 }
 
 async function authAlertEmailContent(client, milestone, daysRemaining) {
@@ -3537,6 +3786,7 @@ const authAlerts = {
   daysUntil,
   canViewAuth,
   canEditAuth,
+  clearActiveAuthAlerts,
   sanitizeClientForRole,
   logAuthAudit,
   checkAuthExpirations,
@@ -4173,6 +4423,11 @@ async function handle(req, res, pathname, method, query = {}) {
         // staff directory's. A grant or a block on "staff" no longer silently
         // decides who can see attendance points and discipline levels.
         pathname.startsWith("/api/attendance") ? "attendance" :
+        // Squad Leader reporting administration follows the attendance
+        // section: it is who may discipline whom, decided in the same place.
+        // Its /public/ routes are exempt from this gate entirely (see above),
+        // which is what lets a Squad Leader with no CRM account use it.
+        pathname.startsWith("/api/squad/") ? "attendance" :
         // The sections below were listed in the Access editor but never
         // enforced server-side, so switching them off only hid the sidebar
         // button -- the data was still reachable by URL.
@@ -4265,6 +4520,16 @@ async function handle(req, res, pathname, method, query = {}) {
   // internally; a self "/me" endpoint lets an employee read their own standing).
   if (pathname.startsWith("/api/attendance/")) {
     const handled = await attendance.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  // Squad Leader attendance reporting owns /api/squad/*. Dispatched before the
+  // global 401 gate because its /public/* routes authenticate with a PIN-issued
+  // squad session rather than a CRM login -- a Squad Leader files a report from
+  // their phone and never has a CRM account. Its admin routes check the CRM
+  // user themselves.
+  if (pathname.startsWith("/api/squad/")) {
+    const handled = await squad.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -4492,19 +4757,57 @@ async function handle(req, res, pathname, method, query = {}) {
         // authorization for a family who left is not a problem anyone can
         // act on, and leaving them in made the dashboard's expiry counts
         // permanently overstated.
+        //
+        // These tiles now follow alert status as well as the calendar, so an
+        // authorization somebody has already dealt with stops being counted as
+        // outstanding here the same way it stops appearing in the alerts list.
+        //
+        // "Dealt with" is deliberately narrow, and it is NOT simply "has a
+        // completed alert". Milestones fire in sequence -- 60, 30, 14, 7, then
+        // expiry -- so ticking the 60-day alert and suppressing the client from
+        // then on would hide them through every later escalation, including
+        // the day the authorization actually lapses. That is the one thing
+        // these tiles exist to prevent.
+        //
+        // So a client drops out only while BOTH hold:
+        //   * an alert against their CURRENT expiration date is completed, and
+        //   * nothing is still open against that same date.
+        // The moment the next milestone raises a fresh alert they are counted
+        // again, and a renewal that moves the expiration date supersedes the
+        // old alerts and starts the whole cycle over -- which is why this is
+        // keyed on expiration_snapshot matching the date on the record today,
+        // not merely on the client id.
         const activeAuths = await dbAll(
-          `SELECT auth_expiration_date FROM clients
-            WHERE authorization_status != 'Not Required'
-              AND auth_expiration_date IS NOT NULL
-              AND stage NOT IN ${CLOSED}`
+          `SELECT c.auth_expiration_date,
+                  COUNT(*) FILTER (
+                    WHERE aa.status = 'completed'
+                      AND aa.expiration_snapshot = c.auth_expiration_date
+                  ) AS handled_alerts,
+                  COUNT(*) FILTER (
+                    WHERE aa.status IN ('open','reviewed','renewal_started','reopened')
+                      AND aa.expiration_snapshot = c.auth_expiration_date
+                  ) AS outstanding_alerts
+             FROM clients c
+             LEFT JOIN auth_alerts aa ON aa.client_id = c.id
+            WHERE c.authorization_status != 'Not Required'
+              AND c.auth_expiration_date IS NOT NULL
+              AND c.stage NOT IN ${CLOSED}
+            GROUP BY c.id, c.auth_expiration_date`
         );
         // Cumulative buckets: a client 5 days out counts toward every window
         // it falls within (≤60, ≤30, ≤14, ≤7), matching "expiring within X
         // days" as plain English reads. Already-expired is its own bucket.
-        authCounts = { d60: 0, d30: 0, d14: 0, d7: 0, expired: 0 };
+        authCounts = { d60: 0, d30: 0, d14: 0, d7: 0, expired: 0, handled: 0 };
         for (const row of activeAuths) {
           const d = authAlerts.daysUntil(row.auth_expiration_date);
           if (d === null) continue;
+          // Reported rather than silently dropped: a tile that quietly shrinks
+          // is indistinguishable from one that is broken, and somebody has to
+          // be able to see that the number moved because work got done.
+          if (Number(row.handled_alerts) > 0 && Number(row.outstanding_alerts) === 0) {
+            authCounts.handled++;
+            continue;
+          }
           if (d < 0) {
             authCounts.expired++;
             continue;
@@ -4514,6 +4817,59 @@ async function handle(req, res, pathname, method, query = {}) {
           if (d <= 14) authCounts.d14++;
           if (d <= 7) authCounts.d7++;
         }
+      }
+
+      // ---- BCBA caseloads (item 7) ----
+      // Real current assignments: one row per BCBA named on a client record.
+      // "Active case" uses the definition the rest of this dashboard already
+      // uses -- a client in the live pipeline, i.e. not discharged and not
+      // marked not-moving-forward. Waitlisted clients are still that BCBA's to
+      // carry, so they are counted and also reported separately rather than
+      // being silently dropped or silently merged in.
+      //
+      // Visible to anyone who can see client records at all; it is a workload
+      // view, not an HR one, and it exposes no PHI (names of staff + counts).
+      let bcbaCaseloads = null;
+      if (canAccessClients(user)) {
+        const rows = await dbAll(
+          `SELECT TRIM(assigned_bcba_name) AS bcba,
+                  COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE stage = 'active') AS in_therapy,
+                  COUNT(*) FILTER (WHERE COALESCE(waitlisted, false) = true) AS waitlisted
+             FROM clients
+            WHERE assigned_bcba_name IS NOT NULL AND TRIM(assigned_bcba_name) <> ''
+              AND stage NOT IN ('discharged','not_moving_forward')
+            GROUP BY TRIM(assigned_bcba_name)
+            ORDER BY COUNT(*) DESC, TRIM(assigned_bcba_name) ASC`
+        ).catch(() => []);
+        // Live-pipeline clients with nobody assigned. Surfaced because a
+        // caseload board that silently omits them reads as "everyone is
+        // covered" when they are not.
+        const unassigned = Number((await dbGet(
+          `SELECT COUNT(*) AS n FROM clients
+            WHERE (assigned_bcba_name IS NULL OR TRIM(assigned_bcba_name) = '')
+              AND stage NOT IN ('discharged','not_moving_forward')`
+        ).catch(() => ({ n: 0 }))).n);
+        bcbaCaseloads = {
+          bcbas: rows.map((r) => ({
+            name: r.bcba,
+            active_cases: Number(r.total),
+            in_therapy: Number(r.in_therapy),
+            waitlisted: Number(r.waitlisted),
+          })),
+          unassigned,
+        };
+      }
+
+      // ---- Staff turnover (item 1) ----
+      // Elevated roles only. Regular staff never receive this key at all, so
+      // there is nothing on the wire for the browser to reveal.
+      let turnover = null;
+      if (canViewTurnover(user)) {
+        turnover = await hr.turnover({ months: 12 }).catch((e) => {
+          console.error("turnover failed:", e.message);
+          return null;
+        });
       }
 
       // Supervision widget (owner/admin/clinical see it on the dashboard).
@@ -4536,6 +4892,8 @@ async function handle(req, res, pathname, method, query = {}) {
         stages: pipeline.STAGES,
         byInsurance,
         authCounts,
+        bcbaCaseloads,
+        turnover,
         supervision: supervisionWidget,
       });
     }
@@ -4754,9 +5112,17 @@ async function handle(req, res, pathname, method, query = {}) {
       if (query.status) {
         conditions.push("aa.status = ?");
         params.push(query.status);
+      } else if (query.view === "history") {
+        // Explicitly asking for the closed ones. Nothing is deleted -- a
+        // completed or superseded alert stays on the record forever and is
+        // reachable here and through the client's authorization history.
+        conditions.push("aa.status IN ('completed','superseded')");
       } else {
-        // default view: hide superseded (stale) alerts unless explicitly asked for
-        conditions.push("aa.status != 'superseded'");
+        // The default view is ACTIVE alerts. 'superseded' was already hidden;
+        // 'completed' was not, so an alert somebody had finished with went on
+        // sitting in the list looking like outstanding work. Both are closed
+        // states and neither belongs in a list of things still to do.
+        conditions.push("aa.status NOT IN ('completed','superseded')");
       }
       const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
       const rows = await dbAll(
@@ -5149,8 +5515,16 @@ async function handle(req, res, pathname, method, query = {}) {
       if (Object.prototype.hasOwnProperty.call(updates, "in_clinic_assessment_date")) {
         await recomputeTreatmentPlanDueDate(id).catch((e) => console.error("TP due date recompute failed:", e.message));
       }
+      // The first day of ABA has been entered (or re-entered) and saved. That
+      // is the trigger for the parent confirmation; every guard -- valid date,
+      // BCBA assigned, not already sent -- lives inside the helper.
+      let firstDayEmail = null;
+      if (Object.prototype.hasOwnProperty.call(updates, "first_day_date")) {
+        firstDayEmail = await maybeSendFirstDayEmail(id, user.email || user.name || "user")
+          .catch((e) => { console.error("first-day email failed:", e.message); return { sent: false, reason: "error" }; });
+      }
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
-      return json(res, 200, authAlerts.sanitizeClientForRole(user, client));
+      return json(res, 200, { ...authAlerts.sanitizeClientForRole(user, client), first_day_email: firstDayEmail });
     }
 
     const advanceMatch = pathname.match(/^\/api\/clients\/(\d+)\/advance$/);
@@ -5999,6 +6373,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         // "Already done": tick it, tell nobody. For catching the CRM up on work
         // that happened outside it.
         silent: !!(body && body.silent),
+        actor: user.email || user.name || "user",
       });
       return json(res, result.ok ? 200 : 400, result);
     }
@@ -6020,7 +6395,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const results = [];
       for (const id of ids) {
         if (status === "completed") {
-          results.push(await pipeline.completeTask(id, user.id));
+          results.push(await pipeline.completeTask(id, user.id, { actor: user.email || user.name || "user" }));
         } else {
           results.push(await reopenClientTask(id, user));
         }
@@ -6124,6 +6499,13 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     // once the insurance card has been uploaded, so billing gets the attachment.
     const eligibilityMatch = pathname.match(/^\/api\/clients\/(\d+)\/eligibility-check$/);
     if (eligibilityMatch && method === "POST") {
+      // A benefits & eligibility check emails the child's demographics AND
+      // their insurance card out to the billing vendor. It had no role check
+      // at all, so any logged-in account could fire one. Same tier as the
+      // financial obligation form: administrative / billing staff.
+      if (!canViewBenefits(user)) {
+        return json(res, 403, { error: "Benefits & eligibility checks are limited to administrative and billing staff." });
+      }
       const client = await dbGet("SELECT * FROM clients WHERE id = ?", [eligibilityMatch[1]]);
       if (!client) return json(res, 404, { error: "Not found" });
       const result = await sendEligibilityCheck(client, user.email);
@@ -7174,6 +7556,23 @@ try {
   console.error("hr-attendance module not found — Employee Attendance features disabled until hr-attendance.js is added:", e.message);
   attendance = { initTables: async () => {}, handleApi: async () => false, dailySweep: async () => {} };
 }
+
+// ===== SQUAD LEADER ATTENDANCE REPORTING add-on =====
+// QR -> PIN -> form -> the report lands on the employee's staff record. Owns
+// /api/squad/* and the public /squad-report page. Built on top of the
+// attendance module above rather than beside it: the same policy matrix, the
+// same hr_attendance_flags table, the same staff records.
+let squad;
+try {
+  squad = require("./squad-attendance")({
+    dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
+    getAppSetting,
+    attendance,
+  });
+} catch (e) {
+  console.error("squad-attendance module not found — Squad Leader reporting disabled:", e.message);
+  squad = { initTables: async () => {}, handleApi: async () => false, servePage: () => false, sweepSessions: async () => {} };
+}
 // ===== CLINIC SUPPLY / SHOPPING REQUESTS add-on: public submit link, tokenized
 // tracking, full status flow with requester email updates. Owns /api/supply/*. =====
 const supply = require("./supply-requests")({
@@ -7192,6 +7591,7 @@ const supervision = require("./supervision")({
   // Verified completed hours from Rethink, when the filter has been confirmed.
   // Returns {} until then, so the tracker keeps using the uploaded figure.
   rethinkVerifiedHours: (month) => rethink.verifiedHoursByEmployee(month),
+  rethinkVerifiedHoursForMonths: (employeeId, months) => rethink.verifiedHoursForMonths(employeeId, months),
 });
 // ===== RETHINK INTEGRATION: the one place that talks to the Rethink API.
 // Owns /api/rethink/*. Supplies verified monthly service hours to the
@@ -7425,6 +7825,12 @@ const server = http.createServer(async (req, res) => {
     if (attendance.servePage && await attendance.servePage(req, res, pathname)) return;
   }
 
+  // Squad Leader attendance reporting page -- the QR code's target. Serving it
+  // reveals nothing: it is a PIN prompt until somebody authenticates.
+  if (pathname === "/squad-report" || pathname.startsWith("/squad-report/")) {
+    if (squad.servePage && squad.servePage(req, res, pathname)) return;
+  }
+
   // Public policies/SOPs viewer (QR-code target).
   if (pathname === "/policies" || pathname.startsWith("/policies/")) {
     if (growth.servePage && growth.servePage(req, res, pathname)) return;
@@ -7470,6 +7876,7 @@ async function start() {
   await clientForms.initTables().catch((e) => console.error("Client Forms initTables failed:", e));
   await ot.initTables().catch((e) => console.error("OT initTables failed:", e));
   await attendance.initTables().catch((e) => console.error("Attendance initTables failed:", e));
+  await squad.initTables().catch((e) => console.error("Squad attendance initTables failed:", e));
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
   await pto.initTables().catch((e) => console.error("PTO initTables failed:", e));

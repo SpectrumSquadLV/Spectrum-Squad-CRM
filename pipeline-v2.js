@@ -133,7 +133,7 @@
             ? ' <span title="' + esc(waitlistTitle(c)) + '" style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#fef3c7;color:#92400e;vertical-align:middle;white-space:nowrap;">WAITLIST</span>'
             : "") +
           (c.transportation_services
-            ? ' <span title="Spectrum Squad provides transportation for this client" style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#e6f4f1;color:#2f6f68;vertical-align:middle;white-space:nowrap;">🚐 TRANSPORT</span>'
+            ? ' <span title="Spectrum Squad provides transportation for this client" style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#e6f4f1;color:#2f6f68;vertical-align:middle;white-space:nowrap;">TRANSPORT</span>'
             : "") +
         "</div>" +
         '<div style="display:flex;justify-content:space-between;font-size:12px;color:#767488;margin-bottom:2px;"><span>Owner</span><b style="color:#2b2a35;">' + esc(c.owner || "Unassigned") + "</b></div>" +

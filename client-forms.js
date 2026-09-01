@@ -835,10 +835,31 @@ module.exports = function initClientForms(ctx) {
     // deductible / out-of-pocket figures the caller sends and email it to the
     // family for signature, so "any logged-in account" was too broad.
     if (!user) { json(res, 401, { error: "Not authenticated" }); return true; }
+    // Who may use this module at all: schedule requests and parent document
+    // requests are ordinary coordination work.
     const CF_ROLES = ["owner", "super_admin", "admin", "intake", "billing", "scheduling", "clinical"];
     if (!CF_ROLES.includes(user.role)) { json(res, 403, { error: "Not permitted" }); return true; }
 
+    // The financial-responsibility form is a different matter. It carries the
+    // family's copay, coinsurance, deductible, out-of-pocket maximum and what
+    // they will personally owe -- and creating one emails those figures to the
+    // family for signature. That is administrative / documentation work, not
+    // clinical or scheduling work, so the tier is narrower than the module:
+    // the owner, a super admin, an admin, and the intake and billing staff who
+    // actually run benefits. Clinical (BCBA) and scheduling accounts are
+    // deliberately out.
+    //
+    // Enforced HERE, on the route, not by hiding a section in the browser --
+    // the UI check is a courtesy, this is the control.
+    const CF_FINANCIAL_ROLES = ["owner", "super_admin", "admin", "intake", "billing"];
+    const canFinancial = CF_FINANCIAL_ROLES.includes(user.role);
+    const denyFinancial = () => {
+      json(res, 403, { error: "Financial obligation information is limited to administrative and billing staff." });
+      return true;
+    };
+
     if (pathname === "/api/client-forms/financial" && method === "POST") {
+      if (!canFinancial) return denyFinancial();
       const body = await readBody(req);
       const result = await createFinancialForm(body, user.email);
       json(res, result.ok ? 201 : (result.status || 400), result);
@@ -846,6 +867,7 @@ module.exports = function initClientForms(ctx) {
     }
     const listMatch = pathname.match(/^\/api\/client-forms\/financial\/(\d+)$/);
     if (listMatch && method === "GET") {
+      if (!canFinancial) return denyFinancial();
       json(res, 200, await listFinancialForms(Number(listMatch[1])));
       return true;
     }
