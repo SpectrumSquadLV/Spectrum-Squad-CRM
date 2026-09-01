@@ -208,7 +208,7 @@
     var pdfBtn = document.createElement("button");
     pdfBtn.id = "screener-pdf-btn";
     pdfBtn.type = "button";
-    pdfBtn.textContent = "⬇ Download PDF";
+    pdfBtn.textContent = "⇩ Download PDF";
     pdfBtn.title = "The screener as a document, with every question the parent was asked and their answer under it.";
     pdfBtn.style.cssText = "font-family:inherit;font-weight:700;font-size:13px;border:none;background:#edecf8;color:#1b2a6b;padding:8px 14px;border-radius:10px;cursor:pointer;";
     pdfBtn.addEventListener("click", function(){

@@ -32,7 +32,7 @@
     const btn = document.createElement("button");
     btn.className = "nav-item";
     btn.id = "ot-nav-btn";
-    btn.innerHTML = '<span>🧩</span> Occupational Therapy';
+    btn.innerHTML = '<span>◑</span> Occupational Therapy';
     btn.addEventListener("click", () => { location.hash = HASH; });
     nav.appendChild(btn);
   }
@@ -74,7 +74,7 @@
     mount.innerHTML =
       '<div style="padding:24px 28px 60px;">' +
         '<div style="display:flex;align-items:center;gap:10px;margin:0 0 4px;justify-content:space-between;">' +
-          '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:22px;">🧩</span><h1 style="font-size:24px;margin:0;font-weight:700;color:' + ACCENT + ';">Occupational Therapy</h1></div>' +
+          '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:22px;"></span><h1 style="font-size:24px;margin:0;font-weight:700;color:' + ACCENT + ';">Occupational Therapy</h1></div>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
             '<button class="btn small" id="ot-add-btn">+ Add enrollment</button>' +
             '<button class="btn small secondary" id="ot-outbox-btn">✉ Messages</button>' +

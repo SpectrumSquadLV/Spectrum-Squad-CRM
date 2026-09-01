@@ -248,7 +248,7 @@
     return `<div class="sc-sess" draggable="true" data-session="${s.id}"
         style="background:${st.bg}; color:${st.fg};"
         title="${esc(s.client_display)} with ${esc(s.staff_display)} · ${esc(s.start_label)}–${esc(s.end_label)} · ${esc(st.label)}">
-      <div class="t"><span aria-hidden="true" style="color:${st.dot};">${st.glyph}</span>${esc(who)}${(s.transportation_services === true || s.transportation_services === "t") ? ` <span title="Transportation provided — coordinate a ride" aria-label="Transportation provided">🚐</span>` : ""}</div>
+      <div class="t"><span aria-hidden="true" style="color:${st.dot};">${st.glyph}</span>${esc(who)}${(s.transportation_services === true || s.transportation_services === "t") ? ` <span title="Transportation provided — coordinate a ride" aria-label="Transportation provided"></span>` : ""}</div>
       <div class="m">${esc(s.start_label)} – ${esc(s.end_label)}${s.location_name ? " · " + esc(s.location_name) : ""}</div>
       ${s.status !== "scheduled" ? `<span class="b" style="background:rgba(255,255,255,.65);">${esc(st.label)}</span>` : ""}
       ${note ? `<span class="b" style="background:${note.bg}; color:${note.fg}; margin-left:4px;">${esc(note.label)}</span>` : ""}

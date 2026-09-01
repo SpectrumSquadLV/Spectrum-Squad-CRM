@@ -701,24 +701,24 @@ const MODULE_CATALOG = {
   dashboard: { label: "Dashboard", icon: "◧" },
   pipeline: { label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" },
   tasks: { label: "Tasks & Alerts", icon: "✓" },
-  staff: { label: "Staff", icon: "🧑‍⚕️" },
-  attendance: { label: "Staff Attendance", icon: "🕒" },
-  billable: { label: "Billable Requirements", icon: "⏱️" },
-  pto: { label: "PTO Balances", icon: "🌴" },
-  supervision: { label: "RBT Supervision", icon: "📋" },
-  "rethink-clients": { label: "Rethink Client Matching", icon: "🔗", hash: "#/rethink-clients" },
-  leads: { label: "Lead Management", icon: "🎯" },
-  events: { label: "Events", icon: "🎪" },
-  policies: { label: "Policies & SOPs", icon: "📚" },
-  map: { label: "Map", icon: "🗺️" },
-  hr: { label: "HR & Recruiting", icon: "👥" },
+  staff: { label: "Staff", icon: "◉" },
+  attendance: { label: "Staff Attendance", icon: "◷" },
+  billable: { label: "Billable Requirements", icon: "◵" },
+  pto: { label: "PTO Balances", icon: "◇" },
+  supervision: { label: "RBT Supervision", icon: "▥" },
+  "rethink-clients": { label: "Rethink Client Matching", icon: "⧉", hash: "#/rethink-clients" },
+  leads: { label: "Lead Management", icon: "◎" },
+  events: { label: "Events", icon: "▽" },
+  policies: { label: "Policies & SOPs", icon: "▦" },
+  map: { label: "Map", icon: "◈" },
+  hr: { label: "HR & Recruiting", icon: "◐" },
   outbox: { label: "Message Outbox", icon: "✉" },
-  "financial-center": { label: "Financial Center", icon: "💰" },
+  "financial-center": { label: "Financial Center", icon: "▧" },
   "signnow-import": { label: "SignNow Import", icon: "⇩" },
   "email-templates": { label: "Email Templates", icon: "✎" },
   "failed-emails": { label: "Failed Emails", icon: "⚠" },
-  grants: { label: "Grant Finder", icon: "💵" },
-  "auth-alerts": { label: "Authorization Alerts", icon: "⏰" },
+  grants: { label: "Grant Finder", icon: "▨" },
+  "auth-alerts": { label: "Authorization Alerts", icon: "⧗" },
   admin: { label: "Admin Settings", icon: "⚙" },
 };
 // Roles allowed to see client (family) records at all. HR-side roles such as
@@ -777,47 +777,47 @@ function renderShell(active) {
   // server). Roles with no client access don't see it at all.
   if (!OT_ONLY && canAccessClients())
     navItems.push({ key: "outbox", label: "Message Outbox", icon: "✉" });
-  if (canViewAuth()) navItems.push({ key: "auth-alerts", label: "Authorization Alerts", icon: "⏰" });
+  if (canViewAuth()) navItems.push({ key: "auth-alerts", label: "Authorization Alerts", icon: "⧗" });
   if (["owner", "admin", "super_admin", "hr_admin", "hiring_manager", "interviewer"].includes(state.user.role))
-    navItems.push({ key: "hr", label: "HR & Recruiting", icon: "👥" });
+    navItems.push({ key: "hr", label: "HR & Recruiting", icon: "◐" });
   if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
-    navItems.push({ key: "staff", label: "Staff", icon: "🧑‍⚕️" });
+    navItems.push({ key: "staff", label: "Staff", icon: "◉" });
   // Staff attendance points, discipline levels and bonus eligibility. Same
   // roles the /api/attendance routes accept -- the nav entry hides it, the
   // module's own canManage() is what enforces it.
   if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
-    navItems.push({ key: "attendance", label: "Staff Attendance", icon: "🕒" });
+    navItems.push({ key: "attendance", label: "Staff Attendance", icon: "◷" });
   // Per-BCBA monthly billable requirements and the monthly summary email. Same
   // roles the /api/billable routes accept -- the nav entry hides it, the
   // module's own canManage() is what enforces it.
   if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
-    navItems.push({ key: "billable", label: "Billable Requirements", icon: "⏱️" });
+    navItems.push({ key: "billable", label: "Billable Requirements", icon: "◵" });
   // PTO accrual and balances. Same roles the /api/pto routes accept.
   if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
-    navItems.push({ key: "pto", label: "PTO Balances", icon: "🌴" });
+    navItems.push({ key: "pto", label: "PTO Balances", icon: "◇" });
   if (["owner", "admin", "super_admin", "hr_admin", "clinical"].includes(state.user.role))
-    navItems.push({ key: "supervision", label: "RBT Supervision", icon: "📋" });
+    navItems.push({ key: "supervision", label: "RBT Supervision", icon: "▥" });
   // Rethink client matching. Owner/admin only, matching the server-side role
   // check on /api/rethink/client-match -- the nav entry hides it, the route
   // guard is what actually enforces it.
   if (["owner", "admin", "super_admin"].includes(state.user.role))
-    navItems.push({ key: "rethink-clients", label: "Rethink Client Matching", icon: "🔗", hash: "#/rethink-clients" });
+    navItems.push({ key: "rethink-clients", label: "Rethink Client Matching", icon: "⧉", hash: "#/rethink-clients" });
   if (["owner", "super_admin", "admin", "intake", "scheduling"].includes(state.user.role))
-    navItems.push({ key: "leads", label: "Lead Management", icon: "🎯" });
+    navItems.push({ key: "leads", label: "Lead Management", icon: "◎" });
   // Events: the reusable community-event system. The nav entry is deliberately
   // generic -- an individual event (the Halloween Palooza) is a row inside it,
   // never a permanent menu item of its own.
   if (["owner", "super_admin", "admin", "intake", "scheduling"].includes(state.user.role))
-    navItems.push({ key: "events", label: "Events", icon: "🎪" });
-  navItems.push({ key: "policies", label: "Policies & SOPs", icon: "📚" });
+    navItems.push({ key: "events", label: "Events", icon: "▽" });
+  navItems.push({ key: "policies", label: "Policies & SOPs", icon: "▦" });
   if (["owner", "super_admin", "admin", "scheduling"].includes(state.user.role))
-    navItems.push({ key: "map", label: "Map", icon: "🗺️" });
+    navItems.push({ key: "map", label: "Map", icon: "◈" });
   if (["owner", "super_admin"].includes(state.user.role))
-    navItems.push({ key: "financial-center", label: "Financial Center", icon: "💰" });
+    navItems.push({ key: "financial-center", label: "Financial Center", icon: "▧" });
   // Grant Finder. Same roles the /api/grants/* routes accept -- the nav entry
   // hides it, the route guard is what actually enforces it.
   if (["owner", "super_admin", "admin"].includes(state.user.role))
-    navItems.push({ key: "grants", label: "Grant Finder", icon: "💵" });
+    navItems.push({ key: "grants", label: "Grant Finder", icon: "▨" });
   if (["owner", "admin", "super_admin"].includes(state.user.role)) {
     navItems.push({ key: "signnow-import", label: "SignNow Import", icon: "⇩" });
     navItems.push({ key: "email-templates", label: "Email Templates", icon: "✎" });
@@ -972,7 +972,7 @@ async function renderDashboard(mount) {
     </div>
     <div class="card" id="task-center" style="margin-top:20px;">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-        <div class="section-title" style="margin:0; display:flex; align-items:center; gap:8px;">🗂️ My Task Center</div>
+        <div class="section-title" style="margin:0; display:flex; align-items:center; gap:8px;">My Task Center</div>
         <div class="tc-tabs" id="tc-tabs">
           <button class="tc-tab active" data-tc="today">Today <span class="tc-n" data-tc-n="today"></span></button>
           <button class="tc-tab" data-tc="upcoming">Upcoming <span class="tc-n" data-tc-n="upcoming"></span></button>
@@ -1133,8 +1133,8 @@ function _tcRenderList(body) {
   const rows = _tcTasks.filter((t) => _tcBucket(t) === _tcFilter);
   if (!rows.length) {
     const msg = _tcFilter === "completed" ? "No completed tasks yet." :
-      _tcFilter === "overdue" ? "Nothing overdue — nice. 🎉" :
-      _tcFilter === "today" ? "Nothing due today. You're clear. ✨" : "Nothing coming up.";
+      _tcFilter === "overdue" ? "Nothing overdue — nice. " :
+      _tcFilter === "today" ? "Nothing due today. You're clear. " : "Nothing coming up.";
     body.innerHTML = `<div class="empty-state">${msg}</div>`;
     return;
   }
@@ -1149,9 +1149,9 @@ function _tcRenderList(body) {
         <div class="tc-title${done ? " done" : ""}">${staffEsc(t.title)}</div>
         <div class="tc-meta">
           <span class="tc-pill" style="background:${pr.bg}; color:${pr.fg};">${pr.label}</span>
-          <span class="tc-due${overdue ? " overdue" : ""}">${overdue ? "⚠ " : "📅 "}${staffEsc(due)}</span>
-          ${t.child_name ? `<a href="#" class="tc-client" data-tc-client="${t.client_id}">👤 ${staffEsc(t.child_name)}</a>` : ""}
-          ${t.reminder_sent_at ? `<span class="tc-reminded" title="A reminder was emailed to you">🔔 reminded</span>` : ""}
+          <span class="tc-due${overdue ? " overdue" : ""}">${overdue ? "⚠ " : ""}${staffEsc(due)}</span>
+          ${t.child_name ? `<a href="#" class="tc-client" data-tc-client="${t.client_id}">${staffEsc(t.child_name)}</a>` : ""}
+          ${t.reminder_sent_at ? `<span class="tc-reminded" title="A reminder was emailed to you">reminded</span>` : ""}
         </div>
         ${t.description ? `<div class="tc-desc">${staffEsc(t.description)}</div>` : ""}
         ${taskHistoryLine(t)}
@@ -1293,7 +1293,7 @@ function renderSupervisionWidget(s) {
       ${tile(`${s.signed_count}/${s.staff_count}`, "Signed off")}
       ${tile(s.need_hours_upload, "Missing worked hours", s.need_hours_upload ? "#b45309" : "var(--brand-navy,#1b2a6b)")}
     </div>
-    ${s.need_hours_upload && !s.rethink_hours_active ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">⬆ Upload this month's Rethink hours export on the <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a> page to calculate percentages.</div>` : ""}
+    ${s.need_hours_upload && !s.rethink_hours_active ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">⇧ Upload this month's Rethink hours export on the <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a> page to calculate percentages.</div>` : ""}
     ${s.need_hours_upload && s.rethink_hours_active ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;">${s.need_hours_upload} staff member(s) have no live Rethink hours this month — check <a href="#/supervision" style="color:#a56b00;"><strong>RBT Supervision</strong></a>.</div>` : ""}
     <div style="margin-top:10px;"><a href="#/supervision" class="btn small secondary">Open supervision tracker</a></div>`;
 }
@@ -1616,10 +1616,10 @@ async function renderPipeline(mount) {
 
 // ---------------- Document helpers ----------------
 function docIcon(mimeType) {
-  if (!mimeType) return "📄";
-  if (mimeType.includes("pdf")) return "📕";
-  if (mimeType.includes("image")) return "🖼";
-  return "📄";
+  if (!mimeType) return "FILE";
+  if (mimeType.includes("pdf")) return "PDF";
+  if (mimeType.includes("image")) return "IMG";
+  return "FILE";
 }
 
 function docLinkHtml(d) {
@@ -1660,7 +1660,7 @@ function treatmentPlanDeadlineHtml(client) {
   if (days < 0) { bg = "#fdecec"; fg = "#a3282e"; label = `${Math.abs(days)} day(s) OVERDUE`; }
   else if (days <= 3) { bg = "#fef3e0"; fg = "#946213"; }
   return `<div style="margin-top:10px; padding:10px 12px; border-radius:10px; background:${bg}; color:${fg}; font-size:13px; font-weight:700;">
-    🗓️ Treatment plan due ${fmtDate(due)} — ${label}
+    Treatment plan due ${fmtDate(due)} — ${label}
     <div style="font-weight:500; font-size:12px; margin-top:2px; opacity:.9;">14 days after the in-person assessment. The assigned BCBA${client.assigned_bcba_name ? " (" + staffEsc(client.assigned_bcba_name) + ")" : ""} gets escalating reminders until it's submitted.</div>
   </div>`;
 }
@@ -1714,7 +1714,7 @@ function authSectionHtml(client) {
       ${(client.auth_start_date && !["first_day_scheduled", "active", "discharged", "not_moving_forward"].includes(client.stage)) ? `
       <div style="margin-top:12px; padding:11px 13px; border:1px solid #d7e9e6; background:#f0fbf8; border-radius:12px; display:flex; align-items:center; gap:9px; flex-wrap:wrap;">
         <span style="font-weight:700; color:#1b2a6b;">Authorization is in hand ✓</span>
-        <button class="btn small" id="move-to-scheduling-btn">➡ Move to First Day Scheduling</button>
+        <button class="btn small" id="move-to-scheduling-btn">Move to First Day Scheduling</button>
         ${hint("This notifies the scheduling team and creates their scheduling task. The authorization stays exactly as entered.")}
         <span id="move-sched-result" style="font-size:12px; color:var(--text-muted);"></span>
       </div>` : ""}
@@ -2084,7 +2084,7 @@ async function renderDocRequestSection(backdrop, clientId) {
     <div class="opt-grid">${(d.items || []).map(itemRow).join("")}</div>
     <div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
       <button class="btn small" id="doc-req-send"${d.status === "complete" ? " disabled" : ""}>${d.requested ? "✉ Resend request to parent" : "✉ Request documents from parent"}</button>
-      ${d.link ? `<button class="btn small secondary" id="doc-req-copy">🔗 Copy parent link</button>` : ""}
+      ${d.link ? `<button class="btn small secondary" id="doc-req-copy">Copy parent link</button>` : ""}
       <span id="doc-req-status" style="font-size:12.5px; color:var(--text-muted);"></span>
     </div>
     ${d.link ? `<div id="doc-req-link" style="display:none; font-size:12px; margin-top:6px; background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:8px 10px;"><code style="user-select:all;">${esc(d.link)}</code></div>` : ""}`;
@@ -2259,7 +2259,7 @@ function csRemember(key, open) {
 // section; after that their own choice wins.
 //
 // The second argument used to be a decorative emoji per section. The emoji are
-// gone -- a client record is a clinical document and a row of 🧩🚐💵 does not
+// gone -- a client record is a clinical document and a row of does not
 // belong on one -- and each header now carries a plain accent marker instead,
 // so the sections still line up and scan the way they did. The argument is
 // kept in the signature (and ignored) so every call site stays readable as a
@@ -2477,7 +2477,7 @@ async function openClientModal(id) {
             ${p && p.attempts ? `<span style="font-size:12px;color:var(--text-muted);">${p.attempts} attempt(s)</span>` : ""}
             <button class="btn small secondary" id="send-packet-btn">${p && p.status === "sent" ? "Resend" : "Send now"}</button>
             ${p && p.status === "completed" ? "" : `<button class="btn small secondary" id="packet-already-btn" title="For a family who signed on paper, or in SignNow before the CRM was watching. Stops the daily chase and releases the clinical screener.">Already signed</button>`}
-            ${chasing.on_hold ? "" : `<button class="btn small secondary" id="chasing-hold-btn" title="${ea("Stops the daily reminder emails to this family about the enrollment packet and the clinical screener, and stops the 7-day packet deadline. Nothing is sent or cancelled in SignNow. Use this when a packet is stuck and the family shouldn't be chased for it.")}">⏸️ Pause reminders</button>`}
+            ${chasing.on_hold ? "" : `<button class="btn small secondary" id="chasing-hold-btn" title="${ea("Stops the daily reminder emails to this family about the enrollment packet and the clinical screener, and stops the 7-day packet deadline. Nothing is sent or cancelled in SignNow. Use this when a packet is stuck and the family shouldn't be chased for it.")}">⏸ Pause reminders</button>`}
             <span id="send-packet-result" style="font-size:12px; color:var(--text-muted);"></span>
           </div>${detail}${cfgWarn}${
             chasing.on_hold
@@ -3873,7 +3873,7 @@ function wireScheduleGrid(mount, sessions) {
         start_time: block.dataset.start, end_time: block.dataset.end, session_type: block.dataset.type,
         dur: durationMin(block.dataset.start, block.dataset.end),
       };
-      setHint("📋 Copied. Click an empty slot to place the copy (or click here to cancel).");
+      setHint("Copied. Click an empty slot to place the copy (or click here to cancel).");
     });
   });
   if (pasteHint) pasteHint.addEventListener("click", () => { clipboard = null; setHint(""); });
@@ -4207,8 +4207,8 @@ async function renderStaff(mount) {
     <div class="page-header">
       <div><h1>Staff</h1><p>Team directory — contact info, documents, certifications, timecards, and length of employment.</p></div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button class="btn secondary" id="payroll-import-btn">🧾 Import payroll → timecards</button>
-        <button class="btn secondary" id="staff-import-btn">⬆ Import Rethink sheet</button>
+        <button class="btn secondary" id="payroll-import-btn">Import payroll → timecards</button>
+        <button class="btn secondary" id="staff-import-btn">⇧ Import Rethink sheet</button>
         <button class="btn" id="staff-add-btn">+ Add Staff</button>
       </div>
     </div>
@@ -4257,8 +4257,8 @@ async function renderStaff(mount) {
     const el = mount.querySelector("#docs-outstanding");
     if (el && oc && oc.count != null) {
       const mw = oc.milestones_this_week || 0;
-      el.innerHTML = `<span class="tag" style="background:${oc.count ? "#fef3c7" : "#dcfce7"}; color:${oc.count ? "#92400e" : "#166534"}; font-size:13px; padding:6px 12px;">📄 Documents outstanding: <strong>${oc.count}</strong></span>`
-        + `<span class="tag" style="background:#eef0fb; color:#1b2a6b; font-size:13px; padding:6px 12px; margin-left:8px;">🎉 Milestone check-ins this week: <strong>${mw}</strong></span>`;
+      el.innerHTML = `<span class="tag" style="background:${oc.count ? "#fef3c7" : "#dcfce7"}; color:${oc.count ? "#92400e" : "#166534"}; font-size:13px; padding:6px 12px;">Documents outstanding: <strong>${oc.count}</strong></span>`
+        + `<span class="tag" style="background:#eef0fb; color:#1b2a6b; font-size:13px; padding:6px 12px; margin-left:8px;">Milestone check-ins this week: <strong>${mw}</strong></span>`;
     }
   } catch (e) {}
   // Lazy-load photo thumbnails for staff who have one. Kept on the shared
@@ -4578,7 +4578,7 @@ function openOfferAcceptedModal(id, emp, onDone) {
   const hire = (emp.hr_hire_date || emp.hire_date || "").slice(0, 10) || today;
   backdrop.innerHTML = `
     <div class="modal" style="width:560px;">
-      <div class="modal-header"><h2>🎉 Offer accepted — start onboarding</h2><button class="close-btn">✕</button></div>
+      <div class="modal-header"><h2>Offer accepted — start onboarding</h2><button class="close-btn">✕</button></div>
       <p style="font-size:13px; color:var(--text-muted); margin-top:0;">Choose what to send <strong>${staffEsc(emp.name)}</strong> now. Uncheck anything you'd rather handle later.</p>
       <div class="field"><label>Start / hire date</label><input id="oa-hire" type="date" value="${staffEsc(hire)}" /></div>
       <div class="opt-grid" style="margin-top:12px;">
@@ -4783,7 +4783,7 @@ function openPayrollImportModal(pageMount) {
       </div>
       ${warn.join("")}
       <div style="margin-top:14px; display:flex; gap:8px; align-items:center;">
-        <button class="btn" id="payroll-review" ${res.matched ? "" : "disabled"}>👀 Preview &amp; send ${res.matched} timecard(s) →</button>
+        <button class="btn" id="payroll-review" ${res.matched ? "" : "disabled"}>Preview &amp; send ${res.matched} timecard(s) →</button>
         <button class="btn secondary" id="payroll-done">Close</button>
       </div>`;
     previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); renderStaff(pageMount); });
@@ -4896,7 +4896,7 @@ async function openTimecardReviewModal({ ids, payPeriodEnd, pageMount }) {
         ${list.map(rowHtml).join("") || `<div style="padding:16px; color:var(--text-muted);">No timecards found for this pay period.</div>`}
       </div>
       <div style="margin-top:14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <button class="btn" id="tcr-send" ${picked.size ? "" : "disabled"}>📧 Send ${picked.size} timecard(s)</button>
+        <button class="btn" id="tcr-send" ${picked.size ? "" : "disabled"}>Send ${picked.size} timecard(s)</button>
         <button class="btn secondary" id="tcr-close">Close without sending</button>
         <span id="tcr-status" style="font-size:12.5px; color:var(--text-muted);"></span>
       </div>`;
@@ -4963,9 +4963,9 @@ async function openTimecardReviewModal({ ids, payPeriodEnd, pageMount }) {
     const isDirty = dirty.get(tc.id) && dirty.get(tc.id).size;
     return `
       <div style="padding:2px 12px 14px 40px; background:#fbfbfd;">
-        ${section("💙 Billable", groups.b, t.billable, "#1b2a6b")}
-        ${section("🗂 Non-billable", groups.n, t.non_billable, "#92400e")}
-        ${section("❓ Not labeled", groups.u, t.unclassified, "#6b6a86")}
+        ${section("Billable", groups.b, t.billable, "#1b2a6b")}
+        ${section("Non-billable", groups.n, t.non_billable, "#92400e")}
+        ${section("Not labeled", groups.u, t.unclassified, "#6b6a86")}
         <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
           <button class="btn" data-tcsave="${tc.id}" style="padding:5px 12px; font-size:12px;" ${isDirty ? "" : "disabled"}>Save changes</button>
           <button class="btn secondary" data-tcemail="${tc.id}" style="padding:5px 12px; font-size:12px;">✉ Preview their email</button>

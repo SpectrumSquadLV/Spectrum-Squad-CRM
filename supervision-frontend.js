@@ -230,7 +230,7 @@
       slot.innerHTML = live
         ? `<button class="btn small secondary" id="sup-upload" style="opacity:.65;"
              title="Only needed if the Rethink API is unavailable">Manual hours upload (fallback)</button>`
-        : `<button class="btn secondary" id="sup-upload">⬆ Upload Rethink hours</button>`;
+        : `<button class="btn secondary" id="sup-upload">⇧ Upload Rethink hours</button>`;
       slot.querySelector("#sup-upload").addEventListener("click", () => openHoursUpload(mount));
     }
     const rows = d.employees.map((e) => {
@@ -268,7 +268,7 @@
         // Live from the API: no upload banner, no "hours current through"
         // chasing, no nagging. Just where the number came from and when.
         ? `<div style="display:flex; align-items:center; gap:8px; background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; border-radius:8px; padding:9px 13px; font-size:13px; margin-bottom:12px;">
-             <span style="font-size:15px;">🔄</span>
+             <span style="font-size:15px;"></span>
              <span>Worked hours are <strong>live from Rethink</strong> for ${esc(monthLabel(d.month))} —
              completed, staff-verified appointments only, for ${d.hours_source_counts.rethink} of ${d.staff_count} staff.
              ${lastSync ? `Last synced ${esc(new Date(lastSync).toLocaleString())}.` : ""}
@@ -277,12 +277,12 @@
            ${d.hours_source_counts.none ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-bottom:12px;">
              ${d.hours_source_counts.none} staff member(s) have no Rethink hours this month — either they had no completed, verified appointments, or they still need a Rethink ID on their staff record.</div>` : ""}`
         : `<div style="display:flex; align-items:center; gap:8px; background:${d.global_hours_current_through ? "#eef4ff" : "#fff4dd"}; color:${d.global_hours_current_through ? "#1b3a7b" : "#a56b00"}; border:1px solid ${d.global_hours_current_through ? "#c7d8f5" : "#f1d9a0"}; border-radius:8px; padding:9px 13px; font-size:13px; margin-bottom:12px;">
-             <span style="font-size:15px;">🗓️</span>
+             <span style="font-size:15px;"></span>
              ${d.global_hours_current_through
                ? `<span>Uploaded worked-hours are <strong>current through ${esc(dayLabel(d.global_hours_current_through))}</strong>.${d.hours_current_through && d.hours_current_through !== d.global_hours_current_through ? ` For ${esc(monthLabel(d.month))}, through ${esc(dayLabel(d.hours_current_through))}.` : ""} Upload again to extend coverage.</span>`
                : `<span>No worked-hours have been uploaded yet — upload the Rethink export to set the “hours current through” date.</span>`}
            </div>
-           ${d.need_hours_upload ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-bottom:12px;">⬆ Upload the Rethink hours export for ${esc(monthLabel(d.month))} to calculate supervision percentages.</div>` : ""}`}
+           ${d.need_hours_upload ? `<div style="background:#fff4dd; color:#a56b00; border-radius:8px; padding:8px 12px; font-size:12.5px; margin-bottom:12px;">⇧ Upload the Rethink hours export for ${esc(monthLabel(d.month))} to calculate supervision percentages.</div>` : ""}`}
       <div class="card">
         <div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px; min-width:640px;">
           <thead><tr style="text-align:left; color:var(--text-muted); font-size:11px; text-transform:uppercase;">

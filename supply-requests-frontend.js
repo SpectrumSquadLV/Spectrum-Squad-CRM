@@ -52,7 +52,7 @@
     const btn = document.createElement("button");
     btn.className = "nav-item";
     btn.id = "supply-nav-btn";
-    btn.innerHTML = "<span>📦</span> Supply Requests";
+    btn.innerHTML = "<span>▩</span> Supply Requests";
     btn.addEventListener("click", () => { location.hash = HASH; });
     nav.appendChild(btn);
   }
@@ -74,7 +74,7 @@
     const rows = data.rows.map((r) =>
       '<tr class="sup-row" data-id="' + r.id + '" style="cursor:pointer;border-bottom:1px solid #f0ede3;">' +
       '<td style="padding:10px 12px;"><div style="font-weight:700;">' + esc(r.item_name) + (r.priority === "Urgent" ? ' <span style="color:#dc2626;font-size:11px;">● Urgent</span>' : "") + "</div>" +
-        '<div style="font-size:11.5px;color:#8a8797;">' + (r.quantity ? esc(r.quantity) + " · " : "") + (r.has_photo ? "📷 · " : "") + (r.item_url ? "🔗 · " : "") + esc(r.location || "") + "</div></td>" +
+        '<div style="font-size:11.5px;color:#8a8797;">' + (r.quantity ? esc(r.quantity) + " · " : "") + (r.has_photo ? "· " : "") + (r.item_url ? "· " : "") + esc(r.location || "") + "</div></td>" +
       '<td style="padding:10px 12px;">' + esc(r.requester_name || "—") + '<div style="font-size:11.5px;color:#8a8797;">' + esc(r.requester_email || "") + "</div></td>" +
       '<td style="padding:10px 12px;color:#8a8797;font-size:12.5px;">' + fmt(r.created_at) + "</td>" +
       '<td style="padding:10px 12px;"><span style="display:inline-block;background:' + statusColor(r.status) + ';color:#fff;font-weight:700;font-size:11.5px;padding:3px 10px;border-radius:20px;">' + esc(r.status) + "</span></td>" +
@@ -86,8 +86,8 @@
     mount.innerHTML =
       '<div style="padding:24px 28px 60px;max-width:1000px;">' +
         '<div style="display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap;margin-bottom:6px;">' +
-          '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:22px;">📦</span><h1 style="font-size:24px;margin:0;font-weight:800;color:' + ACCENT + ';">Supply Requests</h1></div>' +
-          '<div style="display:flex;gap:8px;"><button class="btn small secondary" id="sup-share">🔗 Copy staff link</button><button class="btn small secondary" id="sup-settings">⚙ Settings</button></div>' +
+          '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:22px;"></span><h1 style="font-size:24px;margin:0;font-weight:800;color:' + ACCENT + ';">Supply Requests</h1></div>' +
+          '<div style="display:flex;gap:8px;"><button class="btn small secondary" id="sup-share">Copy staff link</button><button class="btn small secondary" id="sup-settings">⚙ Settings</button></div>' +
         "</div>" +
         '<p style="margin:0 0 14px;color:#767488;font-size:13.5px;">Staff submit from the public link (no login). Move each request through the flow — the requester is emailed automatically on every change.</p>' +
         '<div id="sup-share-box" style="display:none;background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:13px;">Share this link with staff: <code style="user-select:all;">' + esc(shareLink) + "</code></div>" +
@@ -127,7 +127,7 @@
     const rows = (data.rows || []).map((r) =>
       '<tr class="sup-row" data-id="' + r.id + '" style="cursor:pointer;border-bottom:1px solid #f0ede3;">' +
       '<td style="padding:10px 12px;"><div style="font-weight:700;">' + esc(r.item_name) + (r.priority === "Urgent" ? ' <span style="color:#dc2626;font-size:11px;">● Urgent</span>' : "") + "</div>" +
-        '<div style="font-size:11.5px;color:#8a8797;">' + (r.quantity ? esc(r.quantity) + " · " : "") + (r.has_photo ? "📷 · " : "") + esc(r.location || "") + "</div></td>" +
+        '<div style="font-size:11.5px;color:#8a8797;">' + (r.quantity ? esc(r.quantity) + " · " : "") + (r.has_photo ? "· " : "") + esc(r.location || "") + "</div></td>" +
       '<td style="padding:10px 12px;color:#8a8797;font-size:12.5px;">' + fmt(r.created_at) + "</td>" +
       '<td style="padding:10px 12px;"><span style="display:inline-block;background:' + statusColor(r.status) + ';color:#fff;font-weight:700;font-size:11.5px;padding:3px 10px;border-radius:20px;">' + esc(r.status) + "</span></td>" +
       "</tr>"
@@ -138,7 +138,7 @@
 
     mount.innerHTML =
       '<div style="padding:24px 28px 60px;max-width:900px;">' +
-        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="font-size:22px;">📦</span><h1 style="font-size:24px;margin:0;font-weight:800;color:' + ACCENT + ';">Supply Requests</h1></div>' +
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="font-size:22px;"></span><h1 style="font-size:24px;margin:0;font-weight:800;color:' + ACCENT + ';">Supply Requests</h1></div>' +
         '<p style="margin:0 0 16px;color:#767488;font-size:13.5px;">Ask for anything the clinic needs — materials, reinforcers, office supplies. You\'ll get an email at every step, and you can follow it here.</p>' +
         '<div style="background:#fff;border:1px solid #e6e1d4;border-radius:12px;padding:16px 18px;margin-bottom:22px;">' +
           '<div style="font-weight:800;font-size:15px;margin-bottom:10px;">New request</div>' +

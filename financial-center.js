@@ -37,7 +37,7 @@ function canViewFinancial() {
 
   function shell(inner) {
     return `<div class="page-header">
-        <div><h1>💰 Financial Center</h1><p>Owner-only. Upload your bank, QuickBooks, and payroll exports to see where the money goes — in plain English.</p></div>
+        <div><h1>Financial Center</h1><p>Owner-only. Upload your bank, QuickBooks, and payroll exports to see where the money goes — in plain English.</p></div>
         <input type="month" id="fc-month" value="${month}" />
       </div>
       <div style="display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--border,#e5e7eb); margin-bottom:16px;">
@@ -100,8 +100,8 @@ function canViewFinancial() {
         ${tile(money(d.net), d.net >= 0 ? "Kept (profit)" : "Shortfall", d.net >= 0 ? "#166534" : "#991b1b")}
       </div>
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;">
-        <button class="btn secondary" id="fc-up-bank">⬆ Upload bank / QuickBooks (CSV or PDF)</button>
-        <button class="btn secondary" id="fc-up-payroll">⬆ Upload Rethink payroll (.xlsx)</button>
+        <button class="btn secondary" id="fc-up-bank">⇧ Upload bank / QuickBooks (CSV or PDF)</button>
+        <button class="btn secondary" id="fc-up-payroll">⇧ Upload Rethink payroll (.xlsx)</button>
         <span id="fc-up-status" style="font-size:12.5px; color:var(--text-muted); align-self:center;"></span>
       </div>
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
@@ -478,7 +478,7 @@ function canViewFinancial() {
           PDF, CSV and Excel. I work out what each one is, pull the rows out, and tell you what I couldn't read — nothing gets quietly dropped.
         </p>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <button class="btn" id="fc-doc-upload">⬆ Upload documents</button>
+          <button class="btn" id="fc-doc-upload">⇧ Upload documents</button>
           <span id="fc-doc-status" style="font-size:12.5px; color:var(--text-muted);"></span>
         </div>
       </div>

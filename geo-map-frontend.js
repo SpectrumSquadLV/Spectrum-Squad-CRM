@@ -99,7 +99,7 @@
     const btn = document.createElement("button");
     btn.className = "nav-item";
     btn.id = "map-nav-btn";
-    btn.innerHTML = "<span>🗺️</span> Map";
+    btn.innerHTML = "<span>◈</span> Map";
     btn.addEventListener("click", () => { location.hash = HASH; });
     nav.appendChild(btn);
   }
@@ -114,7 +114,7 @@
     mount.innerHTML =
       '<div style="padding:20px 24px 10px;">' +
         '<div style="display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap;">' +
-          '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:22px;">🗺️</span><h1 style="font-size:24px;margin:0;font-weight:800;color:' + ACCENT + ';">Clients & Clinicians Map</h1></div>' +
+          '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:22px;"></span><h1 style="font-size:24px;margin:0;font-weight:800;color:' + ACCENT + ';">Clients & Clinicians Map</h1></div>' +
           '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
             '<label style="font-size:12.5px;display:flex;align-items:center;gap:5px;"><input type="checkbox" id="map-show-clients" checked /> <span style="font-weight:700;">Clients</span></label>' +
             '<label style="font-size:12.5px;display:flex;align-items:center;gap:5px;"><input type="checkbox" id="map-show-clin" checked /> <span style="color:' + CLINICIAN_COLOR + ';font-weight:700;">● Clinicians</span></label>' +
