@@ -22,6 +22,17 @@ module.exports = function initSupervision(ctx) {
   // admin has confirmed the completed/verified filter, so the payroll-upload
   // denominator stays in force until the API figure is trustworthy.
   const rethinkVerifiedHours = ctx.rethinkVerifiedHours || (async () => ({}));
+  // Same source, batched for one employee across several months (the staff
+  // card's 12-month history). Falls back to per-month lookups if the host
+  // hasn't wired the batched form in.
+  const rethinkVerifiedHoursForMonths = ctx.rethinkVerifiedHoursForMonths || (async (empId, months) => {
+    const out = {};
+    for (const m of months || []) {
+      const map = await rethinkVerifiedHours(m).catch(() => ({}));
+      if (map && map[empId] != null) out[m] = map[empId];
+    }
+    return out;
+  });
 
   const DATA_DIR = path.join(__dirname, "data");
   const SUP_DIR = path.join(DATA_DIR, "supervision");
@@ -158,6 +169,33 @@ module.exports = function initSupervision(ctx) {
     // Derived from nowISO() so it stays resume-safe (no Date.now()).
     return nowISO().slice(0, 7);
   }
+
+  // THE DENOMINATOR, RESOLVED IN ONE PLACE.
+  //
+  // Two things can supply a month's worked hours: Rethink's verified
+  // completed-service hours (authoritative once an admin has confirmed the
+  // filter) and the typed / uploaded payroll figure in hours_worked. The
+  // precedence lived only inside monthSummary(), so the roster showed the
+  // Rethink figure while the staff card, the 12-month history, the sign-off
+  // PDF and the compliance email all read hours_worked straight off the row --
+  // a value the Rethink sync seeds once and never updates, i.e. a partial
+  // month frozen at whatever the first sync of it happened to see. That is
+  // where the "random numbers" came from: two screens, two different answers
+  // for the same month.
+  //
+  // Nothing is estimated or back-filled here. If neither source has hours the
+  // answer is 0 with source "none", which every screen already renders as
+  // "worked hours not uploaded".
+  async function verifiedHoursForMonths(employeeId, months) {
+    return await rethinkVerifiedHoursForMonths(employeeId, months).catch(() => ({}));
+  }
+
+  function resolveWorked(employeeId, log, verifiedMap) {
+    const uploaded = log ? num(log.hours_worked) : 0;
+    const verified = num((verifiedMap || {})[employeeId]);
+    if (verified > 0) return { hours: verified, source: "rethink", verified };
+    return { hours: uploaded, source: uploaded ? "upload" : "none", verified: null };
+  }
   // The date an hours upload for month 'YYYY-MM' is current through. Uses an
   // explicit through-date if provided; otherwise the last day of that month,
   // but never past today (so an in-progress month reads "through today").
@@ -272,9 +310,9 @@ module.exports = function initSupervision(ctx) {
       // uploaded payroll figure. Only a positive Rethink value takes over --
       // a provider with no synced hours keeps whatever was already there.
       const uploaded = l ? num(l.hours_worked) : 0;
-      const verified = num(rethinkHours[e.id]);
-      const useRethink = verified > 0;
-      const worked = useRethink ? verified : uploaded;
+      const resolved = resolveWorked(e.id, l, rethinkHours);
+      const useRethink = resolved.source === "rethink";
+      const worked = resolved.hours;
       const p = pct(sup, worked);
       const through = l ? dstr(l.hours_current_through) : null;
       if (through && (!monthThrough || through > monthThrough)) monthThrough = through;
@@ -285,8 +323,8 @@ module.exports = function initSupervision(ctx) {
       return {
         employee_id: e.id, name: e.name, role_title: e.role_title || "",
         sup_hours: sup, hours_worked: worked, pct: p,
-        hours_source: useRethink ? "rethink" : (uploaded ? "upload" : "none"),
-        rethink_verified_hours: useRethink ? verified : null,
+        hours_source: resolved.source,
+        rethink_verified_hours: resolved.verified,
         rethink_synced_at: (l && l.rethink_synced_at) || null,
         meets: p != null ? p >= BACB_MIN_PCT : false,
         signed_off: !!(l && l.signed_off), signed_by: l && l.signed_by, signed_at: l && l.signed_at,
@@ -410,11 +448,18 @@ module.exports = function initSupervision(ctx) {
         if (!emp) return json(res, 404, { error: "Not found" });
         const log = await dbGet("SELECT * FROM hr_supervision_logs WHERE employee_id = ? AND month = ?", [empId, month]);
         let entries = []; try { entries = log && log.entries ? JSON.parse(log.entries) : []; } catch (x) {}
-        const worked = log ? num(log.hours_worked) : 0; const sup = supHours(entries);
-        // Recent history (last 12 months).
+        // Same precedence the roster uses, so this card and the roster can no
+        // longer report different worked hours for the same month.
+        const resolved = resolveWorked(empId, log, await rethinkVerifiedHours(month).catch(() => ({})));
+        const worked = resolved.hours; const sup = supHours(entries);
+        // Recent history (last 12 months), each month resolved the same way --
+        // a Rethink-supplied month used to display the stale seeded figure here.
         const hist = await dbAll("SELECT month, entries, hours_worked, signed_off FROM hr_supervision_logs WHERE employee_id = ? ORDER BY month DESC LIMIT 12", [empId]);
+        const histVerified = await verifiedHoursForMonths(empId, hist.map((h) => h.month));
         return json(res, 200, {
           employee: emp, month, entries, hours_worked: worked, sup_hours: sup, pct: pct(sup, worked),
+          hours_source: resolved.source,
+          rethink_verified_hours: resolved.verified,
           hours_current_through: dstr(log && log.hours_current_through),
           min_pct: BACB_MIN_PCT, signed_off: !!(log && log.signed_off), signed_by: log && log.signed_by, signed_at: log && log.signed_at,
           has_pdf: !!(log && log.pdf_stored),
@@ -424,7 +469,12 @@ module.exports = function initSupervision(ctx) {
             "SELECT action, reason, changed_by, changed_at, previous_signed_by FROM hr_supervision_amendments WHERE employee_id = ? AND month = ? ORDER BY id DESC",
             [empId, month]
           ).catch(() => []),
-          history: hist.map((h) => { let en = []; try { en = JSON.parse(h.entries || "[]"); } catch (x) {} const s = supHours(en); return { month: h.month, sup_hours: s, hours_worked: num(h.hours_worked), pct: pct(s, num(h.hours_worked)), signed_off: !!h.signed_off }; }),
+          history: hist.map((h) => {
+            let en = []; try { en = JSON.parse(h.entries || "[]"); } catch (x) {}
+            const s = supHours(en);
+            const w = resolveWorked(empId, h, { [empId]: histVerified[h.month] });
+            return { month: h.month, sup_hours: s, hours_worked: w.hours, hours_source: w.source, pct: pct(s, w.hours), signed_off: !!h.signed_off };
+          }),
         });
       }
 
@@ -565,21 +615,27 @@ module.exports = function initSupervision(ctx) {
         if (!log) return json(res, 404, { error: "No supervision log for that month yet." });
         const emp = await dbGet("SELECT id, name, email FROM hr_employees WHERE id = ?", [empId]);
         let entries = []; try { entries = JSON.parse(log.entries || "[]"); } catch (x) {}
+        // The signed PDF and the email that goes with it are the compliance
+        // record, so they use the resolved denominator rather than the raw
+        // hours_worked column -- otherwise a Rethink-supplied month is signed
+        // off against a figure nobody on screen ever saw.
+        const workedResolved = resolveWorked(empId, log, await rethinkVerifiedHours(mo).catch(() => ({})));
+        const workedHours = workedResolved.hours;
         const signedAt = nowISO();
         let stored = null;
         try {
-          const pdf = buildPdf(emp, mo, entries, num(log.hours_worked), supervisor, signedAt);
+          const pdf = buildPdf(emp, mo, entries, workedHours, supervisor, signedAt);
           stored = `sup_${empId}_${mo}_${crypto.randomBytes(4).toString("hex")}.pdf`;
           fs.writeFileSync(path.join(SUP_DIR, stored), pdf);
         } catch (e) { console.error("supervision PDF failed:", e.message); }
         await dbRun("UPDATE hr_supervision_logs SET signed_off = TRUE, signed_by = ?, signed_at = ?, pdf_stored = ?, emailed_at = ? WHERE id = ?",
           [supervisor, signedAt, stored, signedAt, log.id]);
         // Auto-email staff + the signing BCBA.
-        const sup = supHours(entries); const p = pct(sup, num(log.hours_worked));
+        const sup = supHours(entries); const p = pct(sup, workedHours);
         const body = `<p>Supervision summary for <strong>${escLite(emp.name)}</strong> — <strong>${escLite(mo)}</strong>:</p>
           <ul>
             <li>Supervision hours: <strong>${sup}</strong></li>
-            <li>Monthly worked hours: <strong>${num(log.hours_worked)}</strong></li>
+            <li>Monthly worked hours: <strong>${workedHours}</strong></li>
             <li>Percentage: <strong>${p == null ? "n/a" : p + "%"}</strong> (BACB minimum ${BACB_MIN_PCT}%)</li>
             <li>Signed off by (BCBA): <strong>${escLite(supervisor)}</strong> on ${escLite(signedAt.slice(0, 10))}</li>
           </ul>

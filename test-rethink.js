@@ -100,7 +100,31 @@ function makeDb(seed) {
       return;
     }
     if (/INSERT INTO hr_supervision_logs/i.test(sql)) {
-      state.supervisionWrites.push({ employeeId: p[0], month: p[1], hours: p[3] });
+      // Read by COLUMN NAME, not by parameter position. The write used to put
+      // the same figure in both hours_worked and rethink_verified_hours, and
+      // this fake read position 3 to get it. hours_worked is no longer written
+      // by the sync at all -- it is the typed/uploaded number, and seeding it
+      // here is what froze a partial month onto the row -- so a positional
+      // read now picks up a timestamp. Mapping the placeholders back to their
+      // columns means this assertion tests the hours that were actually
+      // recorded, whichever column ends up carrying them.
+      const cols = (sql.match(/INSERT INTO hr_supervision_logs\s*\(([^)]*)\)/i) || [])[1] || "";
+      const names = cols.split(",").map((c) => c.trim());
+      const values = ((sql.match(/VALUES\s*\(([^)]*)\)/i) || [])[1] || "").split(",").map((v) => v.trim());
+      const row = {};
+      let pi = 0;
+      names.forEach((name, i) => {
+        const v = values[i];
+        row[name] = v === "?" ? p[pi++] : v.replace(/^'|'$/g, "");
+      });
+      state.supervisionWrites.push({
+        employeeId: row.employee_id,
+        month: row.month,
+        // What the sync recorded as this provider's verified hours.
+        hours: Number(row.rethink_verified_hours),
+        // Kept so a test can assert the sync does NOT touch the manual column.
+        hours_worked: row.hours_worked === undefined ? undefined : Number(row.hours_worked),
+      });
       return;
     }
     if (/INSERT INTO rethink_client_authorizations/i.test(sql)) {
@@ -171,6 +195,15 @@ const initRethink = require("./rethink");
     check("a provider with no sessions gets no row", !state.providerMonth.find((p) => p.staffId === "S200"));
     check("hours reach the supervision tracker for a matched provider",
       state.supervisionWrites.some((w) => w.employeeId === 1 && w.hours === 3.75),
+      JSON.stringify(state.supervisionWrites));
+    // The sync must never seed hours_worked. That column is the typed/uploaded
+    // payroll figure; the sync used to set it on INSERT and then never update
+    // it on later syncs, so a row kept whatever partial-month total the first
+    // sync of that month saw -- and every screen reading the column directly
+    // (the staff supervision card, the 12-month history, the signed PDF)
+    // reported that stale number while the roster showed the live one.
+    check("the sync does not write the typed/uploaded hours_worked column",
+      state.supervisionWrites.every((w) => w.hours_worked === 0 || w.hours_worked === undefined),
       JSON.stringify(state.supervisionWrites));
     check("distinct field values are recorded for confirmation",
       state.observed.some((o) => o.field === "appointmentStatus" && o.norm === "cancelled"),

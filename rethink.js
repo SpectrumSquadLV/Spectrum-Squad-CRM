@@ -990,15 +990,23 @@ module.exports = function initRethink(ctx) {
         if (!emp) continue;
         const hours = round2(agg.hours);
         if (!(hours >= 0)) continue; // never write a non-number over a good one
+        // hours_worked is deliberately NOT written here. It is the typed /
+        // uploaded payroll figure, and this INSERT used to seed it with the
+        // Rethink total while the ON CONFLICT branch never updated it -- so
+        // the row kept, forever, whatever partial-month number the FIRST sync
+        // of that month happened to see, and any screen reading the column
+        // directly reported that stale figure. Rethink's own value lives in
+        // rethink_verified_hours (and rethink_provider_month) and the readers
+        // resolve the precedence; see resolveWorked() in supervision.js.
         await dbRun(
           `INSERT INTO hr_supervision_logs
              (employee_id, month, entries, hours_worked, rethink_verified_hours, rethink_synced_at, created_at, updated_at)
-           VALUES (?, ?, '[]', ?, ?, ?, ?, ?)
+           VALUES (?, ?, '[]', 0, ?, ?, ?, ?)
            ON CONFLICT (employee_id, month) DO UPDATE SET
              rethink_verified_hours = EXCLUDED.rethink_verified_hours,
              rethink_synced_at = EXCLUDED.rethink_synced_at,
              updated_at = EXCLUDED.updated_at`,
-          [emp.id, month, hours, hours, nowISO(), nowISO(), nowISO()]
+          [emp.id, month, hours, nowISO(), nowISO(), nowISO()]
         ).catch((e) => warnings.push(`Could not write supervision hours for employee ${emp.id}: ${e.message}`));
         wrote = true;
       }
@@ -1517,6 +1525,26 @@ module.exports = function initRethink(ctx) {
     return out;
   }
 
+  // The same figures as verifiedHoursByEmployee, for ONE employee across many
+  // months, in a single query. The supervision staff card shows a 12-month
+  // history and resolving each month separately would be twelve round trips.
+  // Returns { 'YYYY-MM': hours } and, like its sibling, an empty map until the
+  // filter is confirmed -- a provisional number is never a compliance figure.
+  async function verifiedHoursForMonths(employeeId, months) {
+    const list = (months || []).filter((m) => /^\d{4}-\d{2}$/.test(String(m || "")));
+    if (!employeeId || !list.length) return {};
+    const cfg = await getConfig();
+    if (!cfg.filter_confirmed) return {};
+    const rows = await dbAll(
+      `SELECT month, verified_hours FROM rethink_provider_month
+        WHERE employee_id = ? AND provisional = FALSE AND month IN (${list.map(() => "?").join(",")})`,
+      [employeeId, ...list]
+    ).catch(() => []);
+    const out = {};
+    for (const r of rows) out[r.month] = num(r.verified_hours);
+    return out;
+  }
+
   return {
     initTables,
     handleApi,
@@ -1524,6 +1552,7 @@ module.exports = function initRethink(ctx) {
     syncAuthorizations,
     integrationStatus,
     verifiedHoursByEmployee,
+    verifiedHoursForMonths,
     getConfig,
     scanClientMatches,
     clientMatchReview,
