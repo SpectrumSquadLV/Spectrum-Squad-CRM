@@ -293,6 +293,28 @@ tr:last-child td { border-bottom: none; }
 
 /* ---------- Forms ---------- */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+/* A set of related choices, laid out across the row instead of stacked one
+   per line. Options that fit side by side sit side by side; on a narrow
+   screen they wrap onto the next line rather than overflowing or squashing.
+   `.opt-row` is for short labels (a handful of words); `.opt-grid` is for
+   options that carry a line of explanation and therefore need a minimum
+   width to stay readable. Neither changes what any option does. */
+.opt-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.opt-row > label, .opt-row > .opt { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; white-space: nowrap; }
+.opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; align-items: start; }
+.opt-grid > * { min-width: 0; }
+/* One option inside .opt-grid: a bordered cell so a wrapped row still reads
+   as a set of choices rather than loose text. */
+.opt-card {
+  display: flex; gap: 8px; align-items: flex-start; margin: 0;
+  border: 1px solid var(--border, #e5e7eb); border-radius: 10px;
+  padding: 9px 11px; font-size: 12.5px; cursor: pointer;
+}
+.opt-card:hover { background: var(--hover, #f8fafc); }
+.opt-card input { flex: none; margin-top: 2px; width: auto; }
+@media (max-width: 560px) {
+  .opt-grid { grid-template-columns: 1fr; }
+}
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field.full { grid-column: 1 / -1; }
 .field label { font-size: 12px; font-weight: 600; color: var(--text-muted); }
@@ -353,7 +375,13 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-light
 }
 .cs[open] > summary::after { transform: rotate(180deg); }
 .cs[open] > summary { border-bottom: 1px solid var(--border, #e5e7eb); border-radius: 10px 10px 0 0; }
-.cs-ico { font-size: 14.5px; line-height: 1; width: 18px; text-align: center; flex: none; }
+/* Section accent marker. Replaced the per-section emoji: same left rail and
+   the same alignment, without decoration on a clinical record. */
+.cs-ico {
+  width: 4px; height: 14px; border-radius: 2px; flex: none;
+  background: var(--brand-navy, #1b2a6b); opacity: .35;
+}
+.cs[open] > summary .cs-ico { opacity: .75; }
 .cs-body { padding: 12px 13px 14px; }
 /* Status chip on the header: state without opening the section. */
 .cs-chip {
@@ -474,6 +502,18 @@ function canViewAuth() {
 }
 function canEditAuth() {
   return state.user && ["owner", "super_admin", "admin", "billing"].includes(state.user.role);
+}
+
+// Can this role see what the family owes and what their plan covers -- the
+// Financial Obligation form and the Benefits & Eligibility Check?
+//
+// Mirrors BENEFITS_VIEW_ROLES on the server, which is where the actual control
+// is: both routes refuse a request from anyone outside this list regardless of
+// what the browser does. This only decides whether to draw the sections, so a
+// BCBA or a scheduler isn't shown two panels that would 403 the moment they
+// touched them.
+function canViewBenefits() {
+  return !!state.user && ["owner", "super_admin", "admin", "intake", "billing"].includes(state.user.role);
 }
 
 // ---------------- Small in-app prompt (replaces native window.prompt/confirm,
@@ -995,6 +1035,14 @@ async function renderDashboard(mount) {
         <div id="dash-staffing"><div class="empty-state">Calculating…</div></div>
       </div>
     </div>
+    ${dash.bcbaCaseloads ? `<div class="card" style="margin-top:20px;">
+      <div class="section-title" style="margin-top:0;">BCBA Caseloads</div>
+      ${renderBcbaCaseloads(dash.bcbaCaseloads)}
+    </div>` : ""}
+    ${dash.turnover ? `<div class="card" style="margin-top:20px;">
+      <div class="section-title" style="margin-top:0;">Staff Turnover</div>
+      ${renderTurnover(dash.turnover)}
+    </div>` : ""}
     ${dash.supervision ? `<div class="card" style="margin-top:20px;">
       <div class="section-title" style="margin-top:0;">RBT Supervision — this month</div>
       ${renderSupervisionWidget(dash.supervision)}
@@ -1149,6 +1197,88 @@ function _tcRenderList(body) {
   body.querySelectorAll("[data-tc-client]").forEach((a) => {
     a.addEventListener("click", (ev) => { ev.preventDefault(); openClientModal(a.dataset.tcClient); });
   });
+}
+
+// BCBA caseloads, straight from current client/BCBA assignments. Sorted
+// heaviest first so the board is scannable, with the two numbers that change
+// what the count means (in therapy now, waiting) shown underneath rather than
+// folded into it.
+function renderBcbaCaseloads(d) {
+  const list = (d && d.bcbas) || [];
+  if (!list.length) {
+    return `<div class="empty-state">No BCBA is assigned to any client in the pipeline yet.${
+      d && d.unassigned ? ` ${d.unassigned} client${d.unassigned === 1 ? " has" : "s have"} no BCBA assigned.` : ""
+    }</div>`;
+  }
+  const max = Math.max(...list.map((b) => b.active_cases), 1);
+  return `
+    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:10px;">
+      ${list.map((b) => `
+        <div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:11px 13px; min-width:0;">
+          <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
+            <strong style="font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${ea(b.name)}">${ea(b.name)}</strong>
+            <span style="font-size:20px; font-weight:800; color:var(--brand-navy,#1b2a6b); line-height:1;">${b.active_cases}</span>
+          </div>
+          <div style="background:#eef0f5; border-radius:999px; height:5px; margin:7px 0 6px;">
+            <div style="width:${Math.round((b.active_cases / max) * 100)}%; background:#3f56b5; height:5px; border-radius:999px;"></div>
+          </div>
+          <div style="font-size:11.5px; color:var(--text-muted);">
+            ${b.active_cases} active case${b.active_cases === 1 ? "" : "s"}${b.in_therapy ? ` · ${b.in_therapy} in therapy` : ""}${b.waitlisted ? ` · ${b.waitlisted} waitlisted` : ""}
+          </div>
+        </div>`).join("")}
+    </div>
+    <div style="font-size:11.5px; color:var(--text-muted); border-top:1px solid var(--border,#e5e7eb); padding-top:8px; margin-top:10px;">
+      Counts clients in the live pipeline. Discharged and not-moving-forward clients are not counted.${
+        d.unassigned ? ` <strong>${d.unassigned}</strong> pipeline client${d.unassigned === 1 ? " has" : "s have"} no BCBA assigned.` : ""
+      }
+    </div>`;
+}
+
+// Staff turnover, computed from real termination dates. Shown only to roles
+// that are allowed it -- the server omits the whole key otherwise, so this
+// never renders for anyone else.
+function renderTurnover(t) {
+  const gaps = [];
+  if ((t.terminated_missing_date || []).length) {
+    gaps.push(`${t.terminated_missing_date.length} terminated staff member${t.terminated_missing_date.length === 1 ? " has" : "s have"} no termination date on file and ${t.terminated_missing_date.length === 1 ? "is" : "are"} not counted — add the date on their profile.`);
+  }
+  if ((t.no_hire_date || []).length) {
+    gaps.push(`${t.no_hire_date.length} current staff member${t.no_hire_date.length === 1 ? " has" : "s have"} no hire date, so ${t.no_hire_date.length === 1 ? "they are" : "they are"} left out of the headcount.`);
+  }
+  const byType = t.separations_by_type || {};
+  const typeBits = ["voluntary", "involuntary", "unknown"]
+    .filter((k) => byType[k])
+    .map((k) => `${byType[k]} ${k}`)
+    .join(" · ");
+  return `
+    <div class="stat-grid" style="margin-bottom:10px;">
+      <div class="stat-card">
+        <div class="label">Turnover — last ${t.window_months} months</div>
+        <div class="value">${t.computable && t.rate_pct != null ? t.rate_pct + "%" : "—"}</div>
+        ${t.computable ? "" : `<div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Not enough staffing history yet</div>`}
+      </div>
+      <div class="stat-card">
+        <div class="label">Separations</div>
+        <div class="value">${t.separations}</div>
+        ${typeBits ? `<div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${ea(typeBits)}</div>` : ""}
+      </div>
+      <div class="stat-card">
+        <div class="label">Current headcount</div>
+        <div class="value">${t.headcount_now}</div>
+        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${t.headcount_start} a year ago</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Average headcount</div>
+        <div class="value">${t.average_headcount}</div>
+        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">The rate\u2019s denominator</div>
+      </div>
+    </div>
+    ${(t.recent || []).length ? `<div style="font-size:12.5px; color:var(--text-muted); margin-bottom:4px;">Most recent departures</div>
+      ${t.recent.map((r) => `<div class="task-row"><div class="info"><strong>${ea(r.name)}</strong><div class="due">${ea(r.role_title || "—")}${r.termination_type ? ` · ${ea(r.termination_type)}` : ""}</div></div><div>${fmtDate(r.termination_date)}</div></div>`).join("")}` : `<div class="empty-state">No staff departures recorded in this window.</div>`}
+    ${gaps.length ? `<div style="font-size:11.5px; color:#946213; background:#fef8ec; border:1px solid #f3e2bd; border-radius:8px; padding:8px 10px; margin-top:10px;">${gaps.map(ea).join("<br>")}</div>` : ""}
+    <div style="font-size:11.5px; color:var(--text-muted); border-top:1px solid var(--border,#e5e7eb); padding-top:8px; margin-top:10px;">
+      Separations since ${fmtDate(t.window_from)} divided by average headcount over the same period. Calculated from recorded termination dates only.
+    </div>`;
 }
 
 function renderSupervisionWidget(s) {
@@ -1373,8 +1503,8 @@ async function renderPipeline(mount) {
     </div>
     <div style="display:flex; gap:8px; margin-bottom:14px;">
       <button class="btn ${view === "active" ? "" : "secondary"} small" id="filter-all-btn">All clients</button>
-      <button class="btn ${view === "waitlist" ? "" : "secondary"} small" id="filter-waitlist-btn">⏳ Waitlist (${waitlistCount})</button>
-      <button class="btn ${view === "discharged" ? "" : "secondary"} small" id="filter-discharged-btn">🗂 Discharged (${dischargedCount})</button>
+      <button class="btn ${view === "waitlist" ? "" : "secondary"} small" id="filter-waitlist-btn">Waitlist (${waitlistCount})</button>
+      <button class="btn ${view === "discharged" ? "" : "secondary"} small" id="filter-discharged-btn">Discharged (${dischargedCount})</button>
     </div>
     <div class="kanban" id="kanban"></div>
   `;
@@ -1414,7 +1544,7 @@ async function renderPipeline(mount) {
         ${clients
           .map(
             (c) => `<div class="client-card" draggable="true" style="border-left-color:${phase.color}" data-client="${c.id}">
-              <div class="name">${c.child_name} ${c.waitlisted ? `<span class="tag" style="background:#fef3c7; color:#92400e;">⏳ Waitlist</span>` : ""}${c.intake_chasing_paused_at ? `<span class="tag" title="Automatic intake reminders are on hold for this family." style="background:#e5e7eb; color:#374151;">⏸️ On hold</span>` : ""}</div>
+              <div class="name">${c.child_name} ${c.waitlisted ? `<span class="tag" style="background:#fef3c7; color:#92400e;">Waitlist</span>` : ""}${c.intake_chasing_paused_at ? `<span class="tag" title="Automatic intake reminders are on hold for this family." style="background:#e5e7eb; color:#374151;">On hold</span>` : ""}</div>
               <div class="meta">${c.parent_name || "—"} · ${c.service_location || "—"}</div>
               <div class="tags">
                 ${multi ? `<span class="tag" style="background:#eef2ff; color:#3f56b5;">${stageLabelOf(c.stage)}</span>` : ""}
@@ -1551,7 +1681,7 @@ function authSectionHtml(client) {
     : null;
 
   if (editable) {
-    return cs("authorization", "🔑", "Authorization", `
+    return cs("authorization", "", "Authorization", `
       <div class="form-grid">
         <div class="field"><label>Insurance Payer</label><input id="auth-insurance_payer" value="${client.insurance_payer || ""}" /></div>
         <div class="field"><label>Authorization Status</label>
@@ -1587,7 +1717,7 @@ function authSectionHtml(client) {
   }
 
   // Clinical (BCBA): read-only fields + editable notes only.
-  return cs("authorization", "🔑", "Authorization", `
+  return cs("authorization", "", "Authorization", `
     <div class="form-grid">
       <div class="field"><label>Insurance Payer</label><div>${client.insurance_payer || "—"}</div></div>
       <div class="field"><label>Authorization Status</label><div>${client.authorization_status || "—"}</div></div>
@@ -1923,10 +2053,13 @@ async function renderDocRequestSection(backdrop, clientId) {
   try { d = await api(`/api/client-forms/documents/${clientId}`); }
   catch (e) { section.innerHTML = `<div class="empty-state">Couldn't load: ${esc(e.message)}</div>`; return; }
 
-  const itemRow = (it) => `<div class="task-row">
-      <div class="info">
-        <span class="status-dot ${it.received ? "completed" : "pending"}"></span><strong>${esc(it.label)}</strong>
-        <div class="due">${it.received ? `Received ${fmtWhen(it.received_at)}${it.filename ? ` · ${esc(it.filename)}` : ""}` : "Not received yet"}</div>
+  // Three short items that used to stack one per line down the card. They sit
+  // across the row now and wrap on a narrow screen; each still shows the same
+  // status, the same received-at line and the same View link.
+  const itemRow = (it) => `<div style="border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:9px 11px; min-width:0; display:flex; gap:8px; align-items:flex-start; justify-content:space-between;">
+      <div style="min-width:0;">
+        <div style="font-size:12.5px; font-weight:700;"><span class="status-dot ${it.received ? "completed" : "pending"}"></span>${esc(it.label)}</div>
+        <div class="due" style="margin-top:2px;">${it.received ? `Received ${fmtWhen(it.received_at)}${it.filename ? ` · ${esc(it.filename)}` : ""}` : "Not received yet"}</div>
       </div>
       ${it.received && it.document_id
         ? `<a class="btn small secondary" href="/api/documents/${it.document_id}/download" target="_blank" rel="noopener">View</a>`
@@ -1943,7 +2076,7 @@ async function renderDocRequestSection(backdrop, clientId) {
 
   section.innerHTML = `
     ${header}
-    ${(d.items || []).map(itemRow).join("")}
+    <div class="opt-grid">${(d.items || []).map(itemRow).join("")}</div>
     <div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
       <button class="btn small" id="doc-req-send"${d.status === "complete" ? " disabled" : ""}>${d.requested ? "✉ Resend request to parent" : "✉ Request documents from parent"}</button>
       ${d.link ? `<button class="btn small secondary" id="doc-req-copy">🔗 Copy parent link</button>` : ""}
@@ -2119,12 +2252,19 @@ function csRemember(key, open) {
 // header, so the card can be read without opening anything.
 // `defaultOpen` applies only until this person has an opinion about this
 // section; after that their own choice wins.
-function cs(key, icon, title, bodyHtml, { chip = null, defaultOpen = false } = {}) {
+//
+// The second argument used to be a decorative emoji per section. The emoji are
+// gone -- a client record is a clinical document and a row of 🧩🚐💵 does not
+// belong on one -- and each header now carries a plain accent marker instead,
+// so the sections still line up and scan the way they did. The argument is
+// kept in the signature (and ignored) so every call site stays readable as a
+// list of sections rather than needing a sweep of positional edits.
+function cs(key, _legacyIcon, title, bodyHtml, { chip = null, defaultOpen = false } = {}) {
   const prefs = csPrefs();
   const open = Object.prototype.hasOwnProperty.call(prefs, key) ? !!prefs[key] : defaultOpen;
   const [chipText, chipTone] = chip || [];
   return `<details class="cs" data-cs="${key}"${open ? " open" : ""}>
-    <summary><span class="cs-ico">${icon}</span>${title}${
+    <summary><span class="cs-ico" aria-hidden="true"></span>${title}${
       chipText ? `<span class="cs-chip ${chipTone || "none"}">${chipText}</span>` : ""
     }</summary>
     <div class="cs-body">${bodyHtml}</div>
@@ -2149,6 +2289,7 @@ function clientDetailsHtml(client, editing) {
       <div class="form-grid">
         <div class="field"><label>Parent / Guardian</label><div>${client.parent_name || "—"} (${client.parent_relationship || "—"})</div></div>
         <div class="field"><label>Contact</label><div>${client.parent_email || "—"} · ${client.parent_phone || "—"}</div></div>
+        <div class="field full"><label>Address</label><div>${client.address ? ea(client.address) : "—"}</div></div>
         <div class="field"><label>Date of Birth</label><div>${client.dob || "—"}</div></div>
         <div class="field"><label>Service Location</label><div>${client.service_location || "—"}</div></div>
         <div class="field"><label>Insurance</label><div>${client.insurance_provider || "—"}</div></div>
@@ -2224,11 +2365,11 @@ async function openClientModal(id) {
         <div>
           <h2>${client.child_name}</h2>
           <span class="badge" style="background:${stage.color}">${stage.label}</span>
-          ${client.waitlisted ? `<span class="badge" style="background:#c98a1b;">⏳ Waitlist</span>` : ""}
-          ${chasing.on_hold ? `<span class="badge" title="${ea("Automatic intake reminders are on hold for this family. Nothing is being emailed to them about the enrollment packet or the clinical screener, and the 7-day packet deadline is stopped.")}" style="background:#6b7280;">⏸️ Reminders on hold</span>` : ""}
-          ${client.transportation_services ? `<span class="badge" title="Spectrum Squad provides transportation for this client" style="background:#3f8f89;">🚐 Transportation</span>` : ""}
+          ${client.waitlisted ? `<span class="badge" style="background:#c98a1b;">Waitlist</span>` : ""}
+          ${chasing.on_hold ? `<span class="badge" title="${ea("Automatic intake reminders are on hold for this family. Nothing is being emailed to them about the enrollment packet or the clinical screener, and the 7-day packet deadline is stopped.")}" style="background:#6b7280;">Reminders on hold</span>` : ""}
+          ${client.transportation_services ? `<span class="badge" title="Spectrum Squad provides transportation for this client" style="background:#3f8f89;">Transportation</span>` : ""}
           ${client.needs_aba_termination_letter && !client.aba_termination_letter_received_at
-            ? `<span class="badge" title="${ea("The parent reported on the clinical screener that this child already receives ABA" + (client.current_aba_provider ? " from " + client.current_aba_provider : "") + ". A child can only be authorised with one ABA provider at a time, so a termination letter is needed before services can start.")}" style="background:#b45309;">📄 Termination letter needed${client.current_aba_provider ? " — " + ea(client.current_aba_provider) : ""}</span>`
+            ? `<span class="badge" title="${ea("The parent reported on the clinical screener that this child already receives ABA" + (client.current_aba_provider ? " from " + client.current_aba_provider : "") + ". A child can only be authorised with one ABA provider at a time, so a termination letter is needed before services can start.")}" style="background:#b45309;">Termination letter needed${client.current_aba_provider ? " — " + ea(client.current_aba_provider) : ""}</span>`
             : ""}
         </div>
         <button class="close-btn">✕</button>
@@ -2236,7 +2377,7 @@ async function openClientModal(id) {
 
       ${chasing.on_hold ? `
       <div style="background:#f3f4f6; border:1px solid #d1d5db; border-left:4px solid #6b7280; border-radius:8px; padding:11px 13px; margin:0 0 12px; font-size:13px; color:#374151;">
-        <strong>⏸️ Automatic intake reminders are on hold.</strong>
+        <strong>Automatic intake reminders are on hold.</strong>
         Nothing is being emailed to this family about the enrollment packet or the clinical screener, and the 7-day packet
         deadline is stopped — they can't be closed out for not signing while the hold is on.
         ${chasing.held_at ? `<div style="margin-top:5px; font-size:12.5px; color:#6b7280;">Held ${fmtDate(chasing.held_at)}${chasing.held_by ? ` by ${ea(chasing.held_by)}` : ""}${chasing.note ? ` — ${ea(chasing.note)}` : ""}</div>` : ""}
@@ -2247,11 +2388,11 @@ async function openClientModal(id) {
 
       ${authSectionHtml(client)}
 
-      ${cs("emergency", "🚨", "Emergency Contacts", `<div id="emergency-mount"></div>`)}
+      ${cs("emergency", "", "Emergency Contacts", `<div id="emergency-mount"></div>`)}
 
-      ${cs("bip", "🧩", "Behavior Intervention Plan", `<div id="bip-mount"></div>`, { defaultOpen: true })}
+      ${cs("bip", "", "Behavior Intervention Plan", `<div id="bip-mount"></div>`, { defaultOpen: true })}
 
-      ${cs("services", "🚐", "Transportation", `
+      ${cs("services", "", "Transportation", `
         <label style="display:flex; align-items:center; gap:10px; font-size:13.5px; font-weight:600; cursor:pointer;">
           <input type="checkbox" id="cd-transportation" ${client.transportation_services ? "checked" : ""} />
           Spectrum Squad provides transportation for this client
@@ -2265,7 +2406,7 @@ async function openClientModal(id) {
         </div>`,
         { chip: client.transportation_services ? ["Provided", "ok"] : null })}
 
-      ${cs("assessment", "📋", "Assessment", `
+      ${cs("assessment", "", "Assessment", `
       <div class="form-grid" style="gap:10px;">
         <div class="field"><label>Assessment date ${hint("Used to observe " + (client.child_name || "the child") + " and build the treatment plan. If no date is set, a reminder is emailed to the parent automatically.")}</label><input type="date" id="asmt-date" value="${(client.in_clinic_assessment_date || "").slice(0, 10)}" /></div>
         <div class="field"><label>Location</label>
@@ -2296,12 +2437,12 @@ async function openClientModal(id) {
       </div>
       <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         <button class="btn small" id="save-assessment-btn">Save</button>
-        <button class="btn small secondary" id="post-assessment-email-btn" title="Send the post-assessment / next steps email to the parent">✉️ Next steps email</button>
+        <button class="btn small secondary" id="post-assessment-email-btn" title="Send the post-assessment / next steps email to the parent">Next steps email</button>
         <span id="assessment-status" style="font-size:12.5px; color:var(--text-muted);"></span>
       </div>`,
         { chip: client.in_clinic_assessment_date ? [fmtDate(client.in_clinic_assessment_date), "ok"] : ["Not scheduled", "warn"] })}
 
-      ${cs("notes", "📝", "Case Notes", `
+      ${cs("notes", "", "Case Notes", `
       <div class="field full" style="margin-bottom:10px;">
         <textarea id="case-note-input" rows="3" placeholder="Add a case update, call summary, or note about this family..."></textarea>
       </div>
@@ -2325,8 +2466,8 @@ async function openClientModal(id) {
           }[p.status] || [p.status, "none"];
           if ((p.status === "failed" || p.status === "blocked") && p.error_detail) detail = `<div style="font-size:12px;color:#a3282e;margin-top:4px;">${p.error_detail}</div>`;
         }
-        const cfgWarn = !signnowConfigured ? `<div style="font-size:12px;color:#946213;background:#fef3e0;border-radius:8px;padding:8px 10px;margin-top:6px;">⚠️ SignNow isn't configured on the server, so packets can't send until that's set.</div>` : "";
-        return cs("packet", "✍️", "Enrollment Packet", `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        const cfgWarn = !signnowConfigured ? `<div style="font-size:12px;color:#946213;background:#fef3e0;border-radius:8px;padding:8px 10px;margin-top:6px;">SignNow isn't configured on the server, so packets can't send until that's set.</div>` : "";
+        return cs("packet", "", "Enrollment Packet", `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
             <span class="tag" style="background:${statusColor}; color:#fff;">${statusLabel}</span>
             ${p && p.attempts ? `<span style="font-size:12px;color:var(--text-muted);">${p.attempts} attempt(s)</span>` : ""}
             <button class="btn small secondary" id="send-packet-btn">${p && p.status === "sent" ? "Resend" : "Send now"}</button>
@@ -2335,9 +2476,9 @@ async function openClientModal(id) {
             <span id="send-packet-result" style="font-size:12px; color:var(--text-muted);"></span>
           </div>${detail}${cfgWarn}${
             chasing.on_hold
-              ? `<div style="font-size:12px; color:#6b7280; margin-top:6px;">⏸️ Reminders for this family are on hold — see the note at the top of this card.</div>`
+              ? `<div style="font-size:12px; color:#6b7280; margin-top:6px;">Reminders for this family are on hold — see the note at the top of this card.</div>`
               : chasing.paused
-                ? `<div style="font-size:12px; color:#946213; margin-top:6px;">⏸️ ${ea(chasing.reason || "")}</div>`
+                ? `<div style="font-size:12px; color:#946213; margin-top:6px;">${ea(chasing.reason || "")}</div>`
                 : ""
           }`, { chip,
           // A stuck packet with the chase held is exactly the state somebody
@@ -2345,7 +2486,7 @@ async function openClientModal(id) {
           defaultOpen: chasing.on_hold && !!p && p.status === "sent" });
       })()}
 
-      ${cs("documents", "📎", "Documents", `${
+      ${cs("documents", "", "Documents", `${
         (documents || []).length
           ? documents
               .map(
@@ -2361,17 +2502,17 @@ async function openClientModal(id) {
         <input type="file" id="doc-file-input" style="font-size:12.5px;" />
         <input type="text" id="doc-label-input" placeholder="Label (optional)" style="width:160px;" />
         <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text-muted); cursor:pointer;" title="Marks this upload as the insurance card, which is what the benefits check needs">
-          <input type="checkbox" id="doc-is-card" style="width:auto;" /> 💳 Insurance card
+          <input type="checkbox" id="doc-is-card" style="width:auto;" /> Insurance card
         </label>
         <button class="btn small" id="upload-doc-btn">Upload</button>
         <span id="upload-doc-status" style="font-size:12.5px; color:var(--text-muted);"></span>
       </div>`,
         { chip: (documents || []).length ? [String(documents.length), "none"] : ["None", "warn"] })}
 
-      ${cs("docrequests", "📨", "Documents Requested from Parent", `<div id="doc-request-section"><div class="empty-state">Loading…</div></div>`)}
+      ${cs("docrequests", "", "Documents Requested from Parent", `<div id="doc-request-section"><div class="empty-state">Loading…</div></div>`)}
 
-      ${cs("eligibility", "🩺", "Benefits &amp; Eligibility Check", `
-        <button class="btn small secondary" id="send-eligibility-btn"${hasInsuranceCard ? "" : " disabled"}>✉️ Send benefits check</button>
+      ${!canViewBenefits() ? "" : cs("eligibility", "", "Benefits &amp; Eligibility Check", `
+        <button class="btn small secondary" id="send-eligibility-btn"${hasInsuranceCard ? "" : " disabled"}>Send benefits check</button>
         <span id="eligibility-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
         ${client.eligibility_check_sent_at
           ? `<div style="font-size:12px; color:#166534; margin-top:6px;">✓ Sent ${fmtDate(client.eligibility_check_sent_at)} ${hint("Sending again replaces nothing — it just re-notifies billing.")}</div>`
@@ -2379,15 +2520,39 @@ async function openClientModal(id) {
         <div style="font-size:12px; color:${hasInsuranceCard ? "var(--text-muted)" : "#946213"}; margin-top:6px;">
           ${hasInsuranceCard
             ? `Sends the patient's details and insurance card to billing. ${hint("This also sends by itself the moment a card is uploaded.")}`
-            : `⚠️ No insurance card on file. ${hint("A benefits check without the card is not actionable. Use 'Documents Requested from Parent' above to ask the family for the front and back. The check then sends itself the moment the card arrives.")}`}
+            : `No insurance card on file. ${hint("A benefits check without the card is not actionable. Use 'Documents Requested from Parent' above to ask the family for the front and back. The check then sends itself the moment the card arrives.")}`}
         </div>`,
         { chip: client.eligibility_check_sent_at ? ["Sent", "ok"] : hasInsuranceCard ? ["Ready", "none"] : ["Needs card", "warn"] })}
 
-      ${cs("financial", "💵", "Financial Obligation Form", `<div id="financial-form-section"><div class="empty-state">Loading…</div></div>`)}
+      ${!canViewBenefits() ? "" : cs("financial", "", "Financial Obligation Form", `<div id="financial-form-section"><div class="empty-state">Loading…</div></div>`)}
 
-      ${cs("schedulereq", "🗓️", "Parent Schedule Request", `<div id="schedule-req-section"><div class="empty-state">Loading…</div></div>`)}
+      ${cs("firstday", "", "First Day of ABA", `
+        <div class="form-grid" style="gap:10px;">
+          <div class="field"><label>First day of ABA ${hint("Entering a date and saving emails the parent a confirmation naming the child, the date and their assigned BCBA. It is sent once. Changing the date afterwards does not send a second email — tell the family by hand.")}</label>
+            <input type="date" id="firstday-date" value="${(client.first_day_date || "").slice(0, 10)}" /></div>
+          <div class="field"><label>Assigned BCBA</label><div style="padding-top:6px;">${client.assigned_bcba_name ? ea(client.assigned_bcba_name) : `<span style="color:#946213;">Not assigned yet</span>`}</div></div>
+        </div>
+        <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <button class="btn small" id="firstday-save">Save first day</button>
+          <span id="firstday-status" style="font-size:12.5px; color:var(--text-muted);"></span>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:8px;">
+          ${client.first_day_email_sent_at
+            ? `<span style="color:#166534;">Confirmation emailed to the family on ${fmtDate(client.first_day_email_sent_at)} for ${fmtDate(client.first_day_email_date)}${client.first_day_email_bcba ? ` with ${ea(client.first_day_email_bcba)}` : ""}.</span>${
+                client.first_day_email_date && (client.first_day_date || "").slice(0, 10) !== client.first_day_email_date
+                  ? `<br><span style="color:#946213;">The date has changed since. No second email was sent automatically.</span>`
+                  : ""}`
+            : !client.assigned_bcba_name
+              ? "No confirmation will be sent until a BCBA is assigned to this client."
+              : !client.parent_email
+                ? "No confirmation can be sent — there is no parent email on file."
+                : "No confirmation sent yet. It goes out once a date is saved."}
+        </div>`,
+        { chip: client.first_day_date ? [fmtDate(client.first_day_date), "ok"] : ["Not set", "none"] })}
 
-      ${cs("attendance", "📊", "Attendance", `
+      ${cs("schedulereq", "", "Parent Schedule Request", `<div id="schedule-req-section"><div class="empty-state">Loading…</div></div>`)}
+
+      ${cs("attendance", "", "Attendance", `
       <div style="margin-bottom:8px;">
         <button class="btn small" id="send-attendance-btn">Send attendance alert</button>
         <span id="attendance-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
@@ -2413,13 +2578,13 @@ async function openClientModal(id) {
         const done = tasks.filter((t) => t.status === "completed").length;
         const chip = overdue ? [overdue + " overdue", "bad"]
           : tasks.length ? [done + "/" + tasks.length, done === tasks.length ? "ok" : "none"] : null;
-        return cs("tasks", "✅", `Stage Tasks ${hint("Ticking the last task in a stage moves the client on. Undo puts a task back to not done — it does not move the client back.")}`, `${
+        return cs("tasks", "", `Stage Tasks ${hint("Ticking the last task in a stage moves the client on. Undo puts a task back to not done — it does not move the client back.")}`, `${
         tasks.length
           ? tasks
               .map(
                 (t) => `<div class="task-row">
                   <div class="info">
-                    <span class="status-dot ${t.status}"></span><strong>${t.label}</strong>${t.assignable === false ? ` <span title="This step runs automatically — the screener is sent, reminded, and marked complete by the system. It is never assigned to staff." style="font-size:11px;">🤖</span>` : ""}
+                    <span class="status-dot ${t.status}"></span><strong>${t.label}</strong>${t.assignable === false ? ` <span title="This step runs automatically — the screener is sent, reminded, and marked complete by the system. It is never assigned to staff." style="font-size:10px; font-weight:700; color:#3f56b5; background:#eef2ff; border-radius:999px; padding:1px 6px;">Automatic</span>` : ""}
                     <div class="due">${t.department_name} · due ${fmtDate(t.due_date)} ${t.status === "overdue" ? "· <span style='color:#b91c1c;font-weight:700;'>OVERDUE</span>" : ""}</div>
                     ${taskHistoryLine(t)}
                   </div>
@@ -2441,7 +2606,7 @@ async function openClientModal(id) {
       }`, { chip, defaultOpen: true });
       })()}
 
-      ${cs("waitlist", "⏳", "Waitlist", `
+      ${cs("waitlist", "", "Waitlist", `
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         ${
           client.waitlisted
@@ -2450,7 +2615,7 @@ async function openClientModal(id) {
             : `<button class="btn secondary small" id="waitlist-add-btn">Place on waitlist</button>`
         }
         ${client.waitlisted ? "" : hint("While a client is on the waitlist, automated reminders to the family are paused and the 7-day enrollment packet deadline stops.")}
-        ${client.parent_email ? "" : `<span style="font-size:12.5px; color:var(--text-muted);" title="No parent email on file — no automated email will be sent.">✉️❌</span>`}
+        ${client.parent_email ? "" : `<span style="font-size:12.5px; color:var(--text-muted);" title="No parent email on file — no automated email will be sent.">No parent email</span>`}
       </div>
       ${
         client.waitlisted && client.waitlist_reason
@@ -2459,7 +2624,7 @@ async function openClientModal(id) {
       }
       ${client.waitlisted
         ? `<div style="font-size:12.5px; color:#92400e; background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:9px 11px; margin-top:8px;">
-             ⏸️ Automated reminders to this family are paused — enrollment packet, clinical screener and assessment nudges.
+             Automated reminders to this family are paused — enrollment packet, clinical screener and assessment nudges.
              The 7-day packet deadline is stopped too, so they can't be closed out for not signing while they wait.
              Everything resumes, with the time they had left, when you remove them from the waitlist.
            </div>`
@@ -2470,7 +2635,7 @@ async function openClientModal(id) {
           // So this one opens itself rather than hiding behind a fold.
           defaultOpen: !!client.waitlisted })}
 
-      ${cs("closeout", "🔀", "Advance / Close Out", `${isClosedOut ? `
+      ${cs("closeout", "", "Advance / Close Out", `${isClosedOut ? `
       <div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:12px 14px; margin-bottom:10px;">
         <div style="font-weight:700; color:#9a3412; font-size:13.5px;">${client.stage === "not_moving_forward" ? "Marked Not Moving Forward" : "Discharged"}${client.discharge_reason ? ` — ${escapeHtml(client.discharge_reason)}` : ""}</div>
         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;">
@@ -2479,7 +2644,7 @@ async function openClientModal(id) {
               ${REACTIVATABLE_STAGES.map((k) => `<option value="${k}">${escapeHtml(stageLabelOf(k))}</option>`).join("")}
             </select>
           </label>
-          <button class="btn small" id="reactivate-btn" style="background:#16a34a; border-color:#16a34a;">↩ Reactivate</button>
+          <button class="btn small" id="reactivate-btn" style="background:#16a34a; border-color:#16a34a;">Reactivate</button>
           <span id="reactivate-status" style="font-size:12.5px; color:#7c2d12;"></span>
           ${hint("Bringing this family back keeps this same record — every note, document, task and message stays exactly where it is, and the closure above is written into their notes so it is never lost.")}
         </div>
@@ -2502,8 +2667,8 @@ async function openClientModal(id) {
            gone, so restoring it is deleting this comment and putting the
            template back. -->
 
-      ${cs("comms", "💬", "Communications Sent to Parents", `${commsRestricted
-        ? `<div class="empty-state" style="text-align:left;">🔒 You can only see communications for clients assigned to you. An owner or administrator can see it.</div>`
+      ${cs("comms", "", "Communications Sent to Parents", `${commsRestricted
+        ? `<div class="empty-state" style="text-align:left;">You can only see communications for clients assigned to you. An owner or administrator can see it.</div>`
         : `${
         notifications.length
           ? notifications
@@ -2586,6 +2751,40 @@ async function openClientModal(id) {
         clientSaveBtn.disabled = false;
         clientSaveBtn.textContent = "Save details";
         alert(err.message || "Could not save those details. Please try again.");
+      }
+    });
+  }
+
+  // First day of ABA. Saving the date is the trigger for the parent
+  // confirmation email; the server decides whether it actually goes and says
+  // why not, and that answer is shown here rather than swallowed.
+  const firstDaySaveBtn = backdrop.querySelector("#firstday-save");
+  if (firstDaySaveBtn) {
+    firstDaySaveBtn.addEventListener("click", async () => {
+      const dateEl = backdrop.querySelector("#firstday-date");
+      const statusEl = backdrop.querySelector("#firstday-status");
+      firstDaySaveBtn.disabled = true;
+      statusEl.textContent = "Saving…";
+      try {
+        const r = await api(`/api/clients/${id}`, { method: "PATCH", body: { first_day_date: dateEl.value || null } });
+        const fe = r && r.first_day_email;
+        const why = {
+          no_start_date: "Saved. No email — enter a first day of ABA first.",
+          no_bcba: "Saved. No email — assign a BCBA to this client first.",
+          no_parent_email: "Saved. No email — there is no parent email on file.",
+          already_sent: "Saved. The family was already sent the confirmation, so nothing was re-sent.",
+          no_template: "Saved, but the confirmation template is missing.",
+          send_failed: "Saved, but the confirmation could not be sent.",
+          error: "Saved, but the confirmation could not be sent.",
+        };
+        statusEl.textContent = fe && fe.sent
+          ? "Saved. Confirmation emailed to the family."
+          : (fe && why[fe.reason]) || "Saved.";
+        await loadClients();
+        setTimeout(() => { backdrop.remove(); openClientModal(id); }, 1400);
+      } catch (e) {
+        firstDaySaveBtn.disabled = false;
+        statusEl.textContent = e.message || "Could not save.";
       }
     });
   }
@@ -3389,15 +3588,23 @@ async function renderAuthAlerts(mount, bucketParam) {
     mount.innerHTML = `<div class="page-header"><div><h1>Authorization Alerts</h1></div></div><div class="empty-state">You don't have permission to view this page.</div>`;
     return;
   }
-  const level = bucketParam ? AUTH_BUCKET_TO_LEVEL[bucketParam] : null;
-  const qs = level ? `?level=${encodeURIComponent(level)}` : "";
-  const alerts = await api(`/api/auth-alerts${qs}`);
+  const level = bucketParam === "history" ? null : (bucketParam ? AUTH_BUCKET_TO_LEVEL[bucketParam] : null);
+  const history = bucketParam === "history";
+  const params = [];
+  if (level) params.push(`level=${encodeURIComponent(level)}`);
+  if (history) params.push("view=history");
+  const alerts = await api(`/api/auth-alerts${params.length ? `?${params.join("&")}` : ""}`);
 
   mount.innerHTML = `
     <div class="page-header">
-      <div><h1>Authorization Alerts</h1><p>${level ? `Filtered to ${level} alerts.` : "All open authorization alerts, most urgent first."}</p></div>
+      <div><h1>Authorization Alerts</h1><p>${
+        history
+          ? "Alerts that have been completed or superseded. Kept as history — nothing is deleted."
+          : level ? `Filtered to ${level} alerts.` : "Active authorization alerts, most urgent first. Completed ones move to History."
+      }</p></div>
       <div style="display:flex; gap:8px;">
-        ${level ? `<button class="btn secondary" id="clear-filter-btn">Clear filter</button>` : ""}
+        ${level || history ? `<button class="btn secondary" id="clear-filter-btn">${history ? "Back to active" : "Clear filter"}</button>` : ""}
+        ${history ? "" : `<button class="btn secondary" id="auth-history-btn">History</button>`}
         ${canEditAuth() ? `<button class="btn" id="run-auth-check-btn">Run check now</button>` : ""}
       </div>
     </div>
@@ -3434,7 +3641,11 @@ async function renderAuthAlerts(mount, bucketParam) {
                   </tr>`
                   )
                   .join("")
-              : `<tr><td colspan="9"><div class="empty-state">No alerts here yet. ${canEditAuth() ? "Try “Run check now” after entering an expiration date." : ""}</div></td></tr>`
+              : `<tr><td colspan="9"><div class="empty-state">${
+                  history
+                    ? "No completed or superseded alerts yet."
+                    : `No active alerts. ${canEditAuth() ? "Try “Run check now” after entering an expiration date." : ""}`
+                }</div></td></tr>`
           }
         </tbody>
       </table>
@@ -3443,6 +3654,8 @@ async function renderAuthAlerts(mount, bucketParam) {
 
   const clearBtn = mount.querySelector("#clear-filter-btn");
   if (clearBtn) clearBtn.addEventListener("click", () => (location.hash = "#/auth-alerts"));
+  const histBtn = mount.querySelector("#auth-history-btn");
+  if (histBtn) histBtn.addEventListener("click", () => (location.hash = "#/auth-alerts/history"));
 
   const runBtn = mount.querySelector("#run-auth-check-btn");
   if (runBtn) {
@@ -4094,10 +4307,17 @@ async function openStaffModal(id, pageMount) {
           ${HR_STAGES.map((s) => `<option value="${s}" ${emp.hr_stage === s ? "selected" : ""}>${s}</option>`).join("")}
         </select></div>
         <div class="field"><label>Hire date (start)</label><input data-f="hr_hire_date" type="date" value="${staffEsc((emp.hr_hire_date || emp.hire_date || "").slice(0,10))}" /></div>
-        <div class="field"><label>Employment status</label><select data-f="status">
+        <div class="field"><label>Employment status</label><select data-f="status" id="staff-status">
           ${["active", "onboarding", "leave", "terminated"].map((s) => `<option value="${s}" ${emp.status === s ? "selected" : ""}>${s}</option>`).join("")}
         </select></div>
+        <div class="field"><label>Termination date</label><input data-f="termination_date" id="staff-term-date" type="date" value="${staffEsc((emp.termination_date || "").slice(0, 10))}" /></div>
+        <div class="field"><label>Termination type</label><select data-f="termination_type" id="staff-term-type">
+          <option value="">—</option>
+          ${[["voluntary", "Voluntary"], ["involuntary", "Involuntary"], ["unknown", "Unknown"]].map(([v, l]) => `<option value="${v}" ${emp.termination_type === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select></div>
+        <div class="field full"><label>Termination reason</label><input data-f="termination_reason" id="staff-term-reason" value="${staffEsc(emp.termination_reason || "")}" placeholder="Optional — kept on the record" /></div>
       </div>
+      <div id="staff-term-note" style="font-size:12px; color:var(--text-muted); margin-top:4px;"></div>
       ${id ? `<div style="font-size:12.5px; color:var(--text-muted); margin-top:6px;">Length of employment: <strong>${tenureFrom(emp.hr_hire_date || emp.hire_date)}</strong></div>` : ""}
       <div style="margin-top:16px; display:flex; gap:8px;">
         <button class="btn" id="staff-save">${id ? "Save" : "Add"}</button>
@@ -4117,6 +4337,34 @@ async function openStaffModal(id, pageMount) {
   const close = () => backdrop.remove();
   backdrop.querySelector(".close-btn").addEventListener("click", close);
   backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+  // Only show the termination fields when they mean something, and say what
+  // will happen if the date is left blank. Terminated staff are never deleted:
+  // the record, its documents, attendance and supervision history all stay.
+  const termFields = ["staff-term-date", "staff-term-type", "staff-term-reason"];
+  const syncTermFields = () => {
+    const statusEl = backdrop.querySelector("#staff-status");
+    if (!statusEl) return;
+    const terminated = statusEl.value === "terminated";
+    termFields.forEach((fid) => {
+      const el = backdrop.querySelector("#" + fid);
+      if (el && el.closest(".field")) el.closest(".field").style.display = terminated ? "" : "none";
+    });
+    const note = backdrop.querySelector("#staff-term-note");
+    if (note) {
+      const dateEl = backdrop.querySelector("#staff-term-date");
+      note.textContent = !terminated
+        ? ""
+        : (dateEl && dateEl.value)
+          ? "The record is kept in full — documents, attendance and supervision history all stay on file."
+          : "No date entered: today's date will be recorded so this separation is counted in the turnover rate.";
+    }
+  };
+  const statusSel = backdrop.querySelector("#staff-status");
+  if (statusSel) statusSel.addEventListener("change", syncTermFields);
+  const termDateEl = backdrop.querySelector("#staff-term-date");
+  if (termDateEl) termDateEl.addEventListener("change", syncTermFields);
+  syncTermFields();
+
   backdrop.querySelector("#staff-save").addEventListener("click", async () => {
     const body = {};
     backdrop.querySelectorAll("[data-f]").forEach((el) => { body[el.dataset.f] = el.value || null; });
@@ -4328,14 +4576,18 @@ function openOfferAcceptedModal(id, emp, onDone) {
       <div class="modal-header"><h2>🎉 Offer accepted — start onboarding</h2><button class="close-btn">✕</button></div>
       <p style="font-size:13px; color:var(--text-muted); margin-top:0;">Choose what to send <strong>${staffEsc(emp.name)}</strong> now. Uncheck anything you'd rather handle later.</p>
       <div class="field"><label>Start / hire date</label><input id="oa-hire" type="date" value="${staffEsc(hire)}" /></div>
-      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:10px;"><input type="checkbox" data-oa="newhire_packet" checked /><span><strong>New hire employment packet (SignNow)</strong><br><span style="font-size:12px; color:var(--text-muted);">Sends their packet to sign. If they already received it when they accepted online, it won't be sent twice.</span></span></label>
-      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="dojo" checked /><span><strong>Class Dojo welcome email</strong><br><span style="font-size:12px; color:var(--text-muted);">Warm welcome + start date.</span></span></label>
-      <div class="field" style="margin:6px 0 6px 26px;"><label>Class Dojo invite link (optional)</label><input id="oa-dojo-link" placeholder="https://…" /></div>
-      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="rethink" checked /><span><strong>Rethink credentials email</strong><br><span style="font-size:12px; color:var(--text-muted);">Username only — send the password by a separate secure channel.</span></span></label>
-      <div class="field" style="margin:6px 0 6px 26px;"><label>Rethink username (optional)</label><input id="oa-rethink-user" placeholder="jsmith" /></div>
-      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="scheduling" checked /><span><strong>Availability / scheduling email</strong><br><span style="font-size:12px; color:var(--text-muted);">Sends a personal link to submit their weekly availability.</span></span></label>
-      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="task_homebase" checked /><span><strong>Task: add to Homebase</strong></span></label>
-      <label class="chk-row" style="display:flex; gap:8px; align-items:flex-start; margin-top:6px;"><input type="checkbox" data-oa="task_rethink" checked /><span><strong>Task: add to Rethink</strong></span></label>
+      <div class="opt-grid" style="margin-top:12px;">
+        <label class="opt-card"><input type="checkbox" data-oa="newhire_packet" checked /><span><strong>New hire employment packet (SignNow)</strong><br><span style="font-size:12px; color:var(--text-muted);">Sends their packet to sign. If they already received it when they accepted online, it won't be sent twice.</span></span></label>
+        <label class="opt-card"><input type="checkbox" data-oa="dojo" checked /><span><strong>Class Dojo welcome email</strong><br><span style="font-size:12px; color:var(--text-muted);">Warm welcome + start date.</span></span></label>
+        <label class="opt-card"><input type="checkbox" data-oa="rethink" checked /><span><strong>Rethink credentials email</strong><br><span style="font-size:12px; color:var(--text-muted);">Username only — send the password by a separate secure channel.</span></span></label>
+        <label class="opt-card"><input type="checkbox" data-oa="scheduling" checked /><span><strong>Availability / scheduling email</strong><br><span style="font-size:12px; color:var(--text-muted);">Sends a personal link to submit their weekly availability.</span></span></label>
+        <label class="opt-card"><input type="checkbox" data-oa="task_homebase" checked /><span><strong>Task: add to Homebase</strong></span></label>
+        <label class="opt-card"><input type="checkbox" data-oa="task_rethink" checked /><span><strong>Task: add to Rethink</strong></span></label>
+      </div>
+      <div class="form-grid" style="margin-top:10px;">
+        <div class="field"><label>Class Dojo invite link (optional)</label><input id="oa-dojo-link" placeholder="https://…" /></div>
+        <div class="field"><label>Rethink username (optional)</label><input id="oa-rethink-user" placeholder="jsmith" /></div>
+      </div>
       <div style="margin-top:16px; display:flex; gap:8px;">
         <button class="btn" id="oa-go">Confirm &amp; send</button>
         <button class="btn secondary" id="oa-skip">Just set the stage</button>
