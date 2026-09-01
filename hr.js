@@ -507,6 +507,18 @@ module.exports = function initHr(ctx) {
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_stipulations TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_milestones_sent TEXT`).catch(() => {}); // JSON: {30:ts,60:ts,90:ts}
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_activity TEXT`).catch(() => {});       // JSON array of {at, text}
+    // Termination. `status = 'terminated'` already existed but carried no DATE,
+    // so there was no way to say when somebody left -- and therefore no way to
+    // work out a turnover rate from real records. Additive: every existing
+    // terminated employee reads as "date unknown" and is reported as such
+    // rather than being given a guessed one. The employee row itself is never
+    // deleted, so their history, documents, attendance and supervision records
+    // all stay exactly where they are.
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS termination_date TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS termination_reason TEXT`).catch(() => {});
+    // voluntary | involuntary | unknown. Kept separate from the free-text
+    // reason because turnover is normally reported split both ways.
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS termination_type TEXT`).catch(() => {});
     // Schedule preferences shown on the staff card (owner/HR-entered).
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_pref_hours TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_pref_location TEXT`).catch(() => {});
@@ -1206,6 +1218,125 @@ module.exports = function initHr(ctx) {
     try { arr = JSON.parse(emp && emp.hr_activity ? emp.hr_activity : "[]"); } catch (e) { arr = []; }
     arr.unshift({ at: nowISO(), text });
     await dbRun("UPDATE hr_employees SET hr_activity = ? WHERE id = ?", [JSON.stringify(arr.slice(0, 200)), employeeId]);
+  }
+
+  // ===================== STAFF TURNOVER =====================
+  // The standard separations-over-average-headcount rate, computed from the
+  // real hr_employees rows and nothing else. There is no seed data, no sample
+  // and no fallback: if nobody has a termination date on file the answer is
+  // zero separations, and the payload says how many terminated staff are
+  // missing a date so the number is never quietly wrong.
+  //
+  //   rate = separations in the window / average headcount over it  x 100
+  //   average headcount = (headcount on the first day + on the last day) / 2
+  //
+  // Headcount on a date means: hired on or before that date, and either still
+  // here or terminated after it. An employee with no hire date at all cannot
+  // be placed in time, so they are excluded from the headcount and counted in
+  // `no_hire_date` rather than being assumed to have always been here.
+  const TERMINATION_TYPES = ["voluntary", "involuntary", "unknown"];
+
+  function ymd(v) {
+    if (!v) return null;
+    const s = String(v).slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  }
+  function addMonths(dateStr, delta) {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1 + delta, d));
+    return dt.toISOString().slice(0, 10);
+  }
+
+  async function turnover(opts = {}) {
+    const months = Math.min(60, Math.max(1, Number(opts.months) || 12));
+    const asOf = ymd(opts.as_of) || nowISO().slice(0, 10);
+    const from = addMonths(asOf, -months);
+
+    const rows = await dbAll(
+      `SELECT id, name, role_title, status,
+              COALESCE(NULLIF(hr_hire_date, ''), NULLIF(hire_date, '')) AS hired,
+              NULLIF(termination_date, '') AS terminated,
+              termination_type, termination_reason
+         FROM hr_employees`
+    ).catch(() => []);
+
+    const headcountOn = (date) => rows.filter((r) => {
+      const h = ymd(r.hired);
+      if (!h || h > date) return false;
+      const t = ymd(r.terminated);
+      return !t || t > date;
+    }).length;
+
+    const separations = rows.filter((r) => {
+      const t = ymd(r.terminated);
+      return !!t && t > from && t <= asOf;
+    });
+
+    const startHeadcount = headcountOn(from);
+    const endHeadcount = headcountOn(asOf);
+    const avgHeadcount = (startHeadcount + endHeadcount) / 2;
+    const rate = avgHeadcount > 0
+      ? Math.round((separations.length / avgHeadcount) * 1000) / 10
+      : null;
+
+    // Terminated staff whose leaving date was never recorded. They are real
+    // separations that the rate above cannot count, so they are reported
+    // instead of being estimated into it.
+    const missingDate = rows.filter(
+      (r) => String(r.status || "").toLowerCase() === "terminated" && !ymd(r.terminated)
+    );
+    const noHireDate = rows.filter(
+      (r) => !ymd(r.hired) && String(r.status || "active").toLowerCase() !== "terminated"
+    );
+
+    const byType = {};
+    for (const t of TERMINATION_TYPES) byType[t] = 0;
+    for (const s of separations) {
+      const k = TERMINATION_TYPES.includes(String(s.termination_type)) ? String(s.termination_type) : "unknown";
+      byType[k]++;
+    }
+
+    // Month-by-month separations across the window, so a spike is visible
+    // rather than averaged away.
+    const byMonth = [];
+    for (let i = months - 1; i >= 0; i--) {
+      const monthEnd = addMonths(asOf, -i);
+      const monthStart = addMonths(monthEnd, -1);
+      byMonth.push({
+        through: monthEnd,
+        separations: separations.filter((s) => {
+          const t = ymd(s.terminated);
+          return t > monthStart && t <= monthEnd;
+        }).length,
+      });
+    }
+
+    return {
+      as_of: asOf,
+      window_months: months,
+      window_from: from,
+      rate_pct: rate,
+      separations: separations.length,
+      separations_by_type: byType,
+      headcount_start: startHeadcount,
+      headcount_now: endHeadcount,
+      average_headcount: Math.round(avgHeadcount * 10) / 10,
+      by_month: byMonth,
+      // Everything the number could not account for, named rather than hidden.
+      terminated_missing_date: missingDate.map((r) => ({ id: r.id, name: r.name })),
+      no_hire_date: noHireDate.map((r) => ({ id: r.id, name: r.name })),
+      // Nothing to divide by yet -- shown as "not enough history" rather than 0%.
+      computable: avgHeadcount > 0,
+      recent: separations
+        .slice()
+        .sort((a, b) => String(b.terminated).localeCompare(String(a.terminated)))
+        .slice(0, 10)
+        .map((r) => ({
+          id: r.id, name: r.name, role_title: r.role_title || "",
+          termination_date: ymd(r.terminated),
+          termination_type: r.termination_type || null,
+        })),
+    };
   }
 
   // A candidate who accepts an offer becomes a staff record, because that is
@@ -2558,6 +2689,17 @@ module.exports = function initHr(ctx) {
         return json(res, 200, { ok: true });
       }
 
+      // ---- staff turnover ----
+      // Elevated only. hrCanAccess() lets hiring managers and interviewers
+      // into this module, and a per-user Access grant lets others in too --
+      // neither should see who left and why, so this checks the MANAGE tier
+      // (owner / super_admin / admin / hr_admin) directly rather than relying
+      // on the module gate above.
+      if (pathname === "/api/hr/turnover" && method === "GET") {
+        if (!canManage) return json(res, 403, { error: "Not permitted to view turnover data." });
+        return json(res, 200, await turnover({ months: query.months, as_of: query.as_of }));
+      }
+
       // ---- employees (future HR) ----
       if (pathname === "/api/hr/employees" && method === "GET") {
         const rows = await dbAll("SELECT * FROM hr_employees ORDER BY name");
@@ -2603,12 +2745,54 @@ module.exports = function initHr(ctx) {
         const b = await readBody(req);
         const allowed = ["name", "email", "role_title", "employment_type", "hire_date", "phone", "address", "certifications", "status", "rethink_id",
           "hr_stage", "hr_hire_date", "hr_offer_accepted_date", "hr_availability", "hr_stipulations",
-          "hr_pref_hours", "hr_pref_location", "hr_pref_language", "hr_pref_notes"];
+          "hr_pref_hours", "hr_pref_location", "hr_pref_language", "hr_pref_notes",
+          "termination_date", "termination_reason", "termination_type"];
+        const empId = Number(empDetailMatch[1]);
+        const before = await dbGet("SELECT status, termination_date FROM hr_employees WHERE id = ?", [empId]);
+        if (!before) return json(res, 404, { error: "Not found" });
         const fields = Object.keys(b).filter((k) => allowed.includes(k));
         if (!fields.length) return json(res, 400, { error: "Nothing to update" });
-        await dbRun(`UPDATE hr_employees SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`, [...fields.map((f) => b[f]), Number(empDetailMatch[1])]);
-        await audit(actor, "employee_updated", "employee", Number(empDetailMatch[1]), fields.join(","));
-        return json(res, 200, await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empDetailMatch[1]]));
+
+        if (Object.prototype.hasOwnProperty.call(b, "termination_date") && b.termination_date) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.termination_date).slice(0, 10))) {
+            return json(res, 400, { error: "Termination date must be a calendar date (YYYY-MM-DD)." });
+          }
+          b.termination_date = String(b.termination_date).slice(0, 10);
+        }
+        if (Object.prototype.hasOwnProperty.call(b, "termination_type") && b.termination_type
+            && !["voluntary", "involuntary", "unknown"].includes(String(b.termination_type))) {
+          return json(res, 400, { error: "Termination type must be voluntary, involuntary or unknown." });
+        }
+
+        await dbRun(`UPDATE hr_employees SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`, [...fields.map((f) => b[f]), empId]);
+
+        // Keep status and termination date from drifting apart -- the turnover
+        // rate is computed from the date, so a "terminated" row with no date is
+        // a separation the numbers cannot see.
+        const after = await dbGet("SELECT status, termination_date FROM hr_employees WHERE id = ?", [empId]);
+        const nowTerminated = String(after.status || "").toLowerCase() === "terminated";
+        const wasTerminated = String(before.status || "").toLowerCase() === "terminated";
+        if (nowTerminated && !after.termination_date) {
+          // Only ever stamped when somebody actually moves the status to
+          // terminated in the app, and only when they didn't supply a date --
+          // it is never back-filled onto historical rows, which would be
+          // inventing a separation date.
+          const d = nowISO().slice(0, 10);
+          await dbRun("UPDATE hr_employees SET termination_date = ? WHERE id = ?", [d, empId]);
+          await logEmpActivity(empId, `Marked terminated by ${actor}. Termination date recorded as ${d}.`);
+        } else if (!nowTerminated && wasTerminated && before.termination_date
+                   && !Object.prototype.hasOwnProperty.call(b, "termination_date")) {
+          // Back on staff. The old date would otherwise keep counting them as a
+          // separation forever, so it is cleared -- but written into the
+          // activity log first, so the fact that they once left survives.
+          await dbRun("UPDATE hr_employees SET termination_date = NULL WHERE id = ?", [empId]);
+          await logEmpActivity(empId, `Returned to ${after.status || "active"} by ${actor}. Previous termination date ${before.termination_date} cleared (kept here as history).`);
+        } else if (nowTerminated && !wasTerminated) {
+          await logEmpActivity(empId, `Marked terminated by ${actor}, effective ${after.termination_date}.`);
+        }
+
+        await audit(actor, "employee_updated", "employee", empId, fields.join(","));
+        return json(res, 200, await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empId]));
       }
 
       // Bulk edit staff: apply the same field(s) to many employees at once, or
@@ -6069,6 +6253,10 @@ Write body as plain text with line breaks (no HTML).`;
     processHrDocFollowups,
     processHrMilestones,
     milestonesThisWeek,
+    // The dashboard tile asks for this directly; the route above owns the
+    // permission check, and the dashboard applies its own before calling.
+    turnover,
+    hrCanManage,
     // exposed for tests / future phases
     _internal: {
       evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,
