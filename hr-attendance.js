@@ -1506,6 +1506,14 @@ module.exports = function initHrAttendance(ctx) {
   return {
     initTables, handleApi, servePage, dailySweep,
     runMonthlyReview, scoreEmployee,
+    // The attendance matrix and the staff activity log, shared with the Squad
+    // Leader reporting channel (squad-attendance.js) so a report filed from a
+    // phone resolves its points from the same policy table the office uses,
+    // and lands on the same staff record. Exported rather than reimplemented
+    // there: two copies of a points matrix would drift the first time the
+    // policy is revised, and the policy is dated and has already been revised
+    // once.
+    matrixTypes, typeByKey, logEmpActivity,
     _internal: {
       buildAckPdf, REASONS, ATTENDANCE_MATRIX, DISCIPLINE_STEPS, MONTHLY_REVIEW,
       scoreEmployee, disciplineFor, monthlyReviewFor, bonusCycle, noticeHours,
