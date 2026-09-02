@@ -133,7 +133,7 @@
             ? ' <span title="' + esc(waitlistTitle(c)) + '" style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#fef3c7;color:#92400e;vertical-align:middle;white-space:nowrap;">WAITLIST</span>'
             : "") +
           (c.transportation_services
-            ? ' <span title="Spectrum Squad provides transportation for this client" style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#e6f4f1;color:#2f6f68;vertical-align:middle;white-space:nowrap;">TRANSPORT</span>'
+            ? ' <span role="img" title="Spectrum Squad provides transportation for this client" aria-label="Transportation provided" style="padding:2px 6px;border-radius:20px;background:#e6f4f1;color:#2f6f68;vertical-align:middle;display:inline-flex;align-items:center;"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true" focusable="false" style="vertical-align:-2px;"><path d="M18.92 6.51A1.5 1.5 0 0 0 17.5 5.5h-11a1.5 1.5 0 0 0-1.42 1.01L3.2 12v6.5a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1h11.6v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1V12zM6.85 15.2a1.35 1.35 0 1 1 0-2.7 1.35 1.35 0 0 1 0 2.7zm10.3 0a1.35 1.35 0 1 1 0-2.7 1.35 1.35 0 0 1 0 2.7zM5.1 11l1.4-4.03a.5.5 0 0 1 .47-.34h10.06a.5.5 0 0 1 .47.34L18.9 11z"/></svg></span>'
             : "") +
         "</div>" +
         '<div style="display:flex;justify-content:space-between;font-size:12px;color:#767488;margin-bottom:2px;"><span>Owner</span><b style="color:#2b2a35;">' + esc(c.owner || "Unassigned") + "</b></div>" +
