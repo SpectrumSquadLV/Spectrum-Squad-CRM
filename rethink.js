@@ -272,6 +272,15 @@ module.exports = function initRethink(ctx) {
     await dbRun("ALTER TABLE rethink_client_match_candidates ADD COLUMN IF NOT EXISTS rethink_status TEXT")
       .catch((e) => console.error("rethink_status column:", e.message));
 
+    // What the Clients endpoint actually returned last scan, and which CRM
+    // demographic field each Rethink property was matched to. Stored so the
+    // mapping is auditable and visible on screen instead of living only in a
+    // log line that scrolls away.
+    await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS client_keys_seen TEXT")
+      .catch((e) => console.error("client_keys_seen column:", e.message));
+    await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS client_demographic_map TEXT")
+      .catch((e) => console.error("client_demographic_map column:", e.message));
+
     // Rethink clients the scan saw that have no CRM counterpart. Populated from
     // the same 69-client fetch the matcher already performs -- no extra API
     // call -- and rebuilt on every scan. Read-only: nothing here creates or
@@ -355,6 +364,67 @@ module.exports = function initRethink(ctx) {
     return `Rethink status is "${v}"`;
   }
 
+  // ===================== DEMOGRAPHICS FROM RETHINK =====================
+  // Rethink holds the family's own details -- where they live, how to reach
+  // them, who pays -- and the CRM often has gaps in them. Filling those gaps
+  // is the point of this block.
+  //
+  // The hard part is that the Clients endpoint's full field list is not
+  // documented to us. Only five properties are (see CLIENT_FIELDS below), and
+  // an earlier version of this file sniffed keys and was deliberately rewritten
+  // to stop guessing. So this does not guess either: it maps a CRM field to
+  // whichever of several PLAUSIBLE Rethink names is ACTUALLY PRESENT in the
+  // response, records every key the endpoint returned, and reports which CRM
+  // fields it could and could not fill. One scan turns the unknown into a
+  // known, on screen, without anybody reading Swagger.
+  //
+  // `funder` is the strongest of these: the Appointments endpoint already
+  // returns `funder` and `clientFunderId`, so that is demonstrably Rethink's
+  // word for who pays, not a hopeful guess.
+  const DEMOGRAPHIC_CANDIDATES = {
+    address:            ["address", "addressLine1", "address1", "streetAddress", "homeAddress", "street"],
+    city:               ["city", "addressCity", "homeCity"],
+    state:              ["state", "addressState", "stateCode", "homeState"],
+    zip:                ["zip", "zipCode", "postalCode", "addressZip", "homeZip"],
+    parent_phone:       ["guardianPhone", "parentPhone", "primaryPhone", "homePhone", "mobilePhone",
+                         "cellPhone", "phoneNumber", "phone", "contactPhone"],
+    parent_email:       ["guardianEmail", "parentEmail", "primaryEmail", "emailAddress", "email", "contactEmail"],
+    parent_name:        ["guardianName", "parentName", "primaryContactName", "responsibleParty",
+                         "primaryGuardian", "contactName"],
+    insurance_provider: ["funder", "funderName", "primaryInsurance", "insuranceName", "insurance",
+                         "payer", "payerName", "primaryFunder"],
+  };
+
+  // Address is stored as one line on the CRM client, so the parts are joined
+  // when Rethink returns them separately. Any part that is missing is simply
+  // left out rather than producing "123 Main St, , NV ".
+  function composeAddress(row, map) {
+    const part = (k) => {
+      const src = map[k];
+      const v = src ? row[src] : null;
+      return v == null ? "" : String(v).trim();
+    };
+    const street = part("address");
+    if (!street) return "";
+    const city = part("city"), state = part("state"), zip = part("zip");
+    const tail = [city, [state, zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+    return tail ? `${street}, ${tail}` : street;
+  }
+
+  // Which Rethink key, if any, backs each CRM field -- decided from the keys
+  // the endpoint actually returned. Case-insensitive, because a vendor
+  // renaming `zipCode` to `zipcode` should not silently drop an address.
+  function resolveDemographicMap(keysSeen) {
+    const byLower = new Map((keysSeen || []).map((k) => [String(k).toLowerCase(), k]));
+    const map = {}, unmapped = [];
+    for (const [crmField, candidates] of Object.entries(DEMOGRAPHIC_CANDIDATES)) {
+      const hit = candidates.map((c) => byLower.get(c.toLowerCase())).find(Boolean);
+      if (hit) map[crmField] = hit;
+      else unmapped.push(crmField);
+    }
+    return { map, unmapped };
+  }
+
   // The documented GET /api/Clients schema. These are the exact property names
   // from the DWH Swagger, not a guess and not auto-detected -- earlier versions
   // sniffed the keys because the schema had not been published to us.
@@ -377,6 +447,66 @@ module.exports = function initRethink(ctx) {
       .filter((role) => !keys.includes(CLIENT_FIELDS[role]))
       .map((role) => CLIENT_FIELDS[role]);
     return { missing, keys_seen: keys };
+  }
+
+  // Fill a linked CRM client's blank demographics from their Rethink record.
+  //
+  // THE RULE THAT MATTERS: it only ever fills a field that is EMPTY. It never
+  // overwrites anything a person typed. If the office corrected an address
+  // because the family moved and Rethink still has the old one, the office
+  // wins -- silently replacing their correction on a nightly sync is how a
+  // therapist drives to the wrong house. Every fill is recorded, so a wrong
+  // value can be traced back to Rethink rather than blamed on staff.
+  //
+  // Returns what it changed rather than writing quietly, so the scan can
+  // report totals and the screen can show them.
+  async function fillDemographics(crmClientId, rethinkRow, map, opts = {}) {
+    const existing = await dbGet(
+      `SELECT id, child_name, dob, address, parent_phone, parent_email, parent_name, insurance_provider
+         FROM clients WHERE id = ?`, [crmClientId]
+    ).catch(() => null);
+    if (!existing) return { filled: [], skipped: [] };
+
+    const blank = (v) => v == null || String(v).trim() === "";
+    const value = (crmField) => {
+      if (crmField === "address") return composeAddress(rethinkRow, map);
+      const src = map[crmField];
+      if (!src) return "";
+      const v = rethinkRow[src];
+      return v == null ? "" : String(v).trim();
+    };
+
+    const filled = [], skipped = [];
+    for (const crmField of ["address", "parent_phone", "parent_email", "parent_name", "insurance_provider"]) {
+      const incoming = value(crmField);
+      if (!incoming) continue;                                  // Rethink has nothing to offer
+      if (!blank(existing[crmField])) { skipped.push(crmField); continue; }  // the CRM already knows
+      if (!opts.dryRun) {
+        await dbRun(`UPDATE clients SET ${crmField} = ?, updated_at = ? WHERE id = ?`,
+          [incoming, nowISO(), crmClientId]).catch((e) => client.log("demographic_fill_failed", { field: crmField, error: e.message }));
+      }
+      filled.push(crmField);
+    }
+
+    // DOB is handled apart from the rest: it is an identity field, not contact
+    // detail, and the matcher may have linked these two records on a name hit
+    // with no DOB on the CRM side. Filling it from Rethink is exactly right;
+    // changing one that disagrees is not, and is worth a human looking at.
+    const rDob = dateOnly(rethinkRow[CLIENT_FIELDS.dob]);
+    const cDob = dateOnly(existing.dob);
+    if (rDob && !cDob) {
+      if (!opts.dryRun) {
+        await dbRun("UPDATE clients SET dob = ?, updated_at = ? WHERE id = ?", [rDob, nowISO(), crmClientId]).catch(() => {});
+      }
+      filled.push("dob");
+    } else if (rDob && cDob && rDob !== cDob) {
+      skipped.push("dob (differs from Rethink -- not overwritten)");
+    }
+
+    if (filled.length && !opts.dryRun) {
+      client.log("demographics_filled", { crm_client_id: crmClientId, fields: filled.join(",") });
+    }
+    return { filled, skipped };
   }
 
   // Pull the Rethink client list, compare against active CRM clients, and store
@@ -442,6 +572,21 @@ module.exports = function initRethink(ctx) {
         keys_seen,
       };
     }
+
+    // What the endpoint actually returned. Recorded so the demographic mapping
+    // is driven by reality and so the screen can show which CRM fields Rethink
+    // can and cannot fill, rather than anybody guessing from documentation.
+    const { map: demoMap, unmapped: demoUnmapped } = resolveDemographicMap(keys_seen);
+    client.log("clients_schema", {
+      endpoint: DWH_CLIENTS,
+      keys: keys_seen.join(","),
+      demographic_map: Object.entries(demoMap).map(([k, v]) => `${k}<-${v}`).join(",") || "(none)",
+      unmapped: demoUnmapped.join(",") || "(none)",
+    });
+    await dbRun(
+      "UPDATE rethink_config SET client_keys_seen = ?, client_demographic_map = ? WHERE id = 1",
+      [keys_seen.join(","), JSON.stringify(demoMap)]
+    ).catch(() => {});
 
     const crmClients = await dbAll(
       "SELECT id, child_name, dob, rethink_client_id FROM clients WHERE stage NOT IN ('discharged','not_moving_forward')"
@@ -571,10 +716,44 @@ module.exports = function initRethink(ctx) {
       rethink_only_active: orphans.filter((o) => statusAllowsReady(o.status)).length,
     });
 
+    // ---- fill blank demographics on clients already linked ---------------
+    // Only linked clients: an unapproved candidate is a proposal, and writing a
+    // family's address onto a child from a match nobody has confirmed is how
+    // two children get merged.
+    const rowsById = new Map(rows.map((r) => [String(r[CLIENT_FIELDS.id] == null ? "" : r[CLIENT_FIELDS.id]).trim(), r]));
+    let demoFilled = 0, demoClients = 0;
+    const linked = await dbAll(
+      "SELECT id, rethink_client_id FROM clients WHERE rethink_client_id IS NOT NULL AND TRIM(rethink_client_id) <> ''"
+    ).catch(() => []);
+    for (const l of linked) {
+      const row = rowsById.get(String(l.rethink_client_id).trim());
+      if (!row) continue;
+      // The status Rethink holds for this child, kept on the CRM record so the
+      // two systems can be compared without opening both.
+      const st = row[CLIENT_FIELDS.status];
+      if (st != null && String(st).trim()) {
+        await dbRun("UPDATE clients SET rethink_status = ? WHERE id = ?", [String(st).trim(), l.id]).catch(() => {});
+      }
+      const r = await fillDemographics(l.id, row, demoMap);
+      if (r.filled.length) { demoFilled += r.filled.length; demoClients++; }
+    }
+
+    // ---- create the active ones the CRM has never heard of ---------------
+    const auto = await autoCreateActiveClients(rowsById, demoMap);
+
     await dbRun("UPDATE rethink_config SET last_client_scan_at = ? WHERE id = 1", [nowISO()]).catch(() => {});
 
     return {
       ok: true,
+      demographics: {
+        map: demoMap,
+        unmapped: demoUnmapped,
+        keys_seen,
+        clients_updated: demoClients,
+        fields_filled: demoFilled,
+      },
+      auto_created: auto.created,
+      auto_create_refused: auto.refused,
       rethink_clients: rethinkClients.length,
       rethink_only: orphans.length,
       rethink_only_active: orphans.filter((o) => statusAllowsReady(o.status)).length,
@@ -585,6 +764,122 @@ module.exports = function initRethink(ctx) {
       no_match: none,
       field_map: CLIENT_FIELDS,
     };
+  }
+
+  // ================= AUTO-CREATE ACTIVE RETHINK CLIENTS =================
+  // A child who is ACTIVE in Rethink is receiving therapy right now. If the CRM
+  // has no record of them, the CRM is wrong, and this creates one.
+  //
+  // WHAT MAKES THIS SAFE TO DO AUTOMATICALLY
+  //
+  // 1. It is SILENT. It goes through createClientBackfill, the path built for
+  //    importing people who already exist in the real world. The ordinary
+  //    creation path fires a parent welcome email, a SignNow ENROLLMENT PACKET
+  //    and a billing eligibility check -- so using it here would ask families
+  //    who have been in therapy for a year to sign their intake paperwork
+  //    again, and would email the billing vendor once per child. Nothing here
+  //    sends anything to anybody.
+  //
+  // 2. It only ever creates somebody the matcher could not place. A Rethink
+  //    client with ANY candidate against an open CRM client is a LINK waiting
+  //    for approval, not a missing child, and creating them would duplicate a
+  //    record that is already there. `rethink_unmatched_clients` holds exactly
+  //    the ones with no candidate and no existing link.
+  //
+  // 3. It refuses anyone who looks like a DISCHARGED client. The scan already
+  //    flags those (possible_closed_crm_client_id) because a discharged child
+  //    returning is a decision with clinical and billing consequences --
+  //    reactivating their existing record, not silently starting a second one.
+  //
+  // 4. It is CAPPED per run. A misconfiguration, or the first run against a
+  //    tenant with hundreds of historical clients, creates a reviewable batch
+  //    rather than flooding the pipeline.
+  //
+  // 5. Every record it creates is stamped, noted and audited: rethink_client_id
+  //    set immediately (so the next run cannot create them twice), a client
+  //    note saying where they came from and what to check, and a row in
+  //    rethink_client_link_log attributed to the automation rather than a
+  //    person.
+  //
+  // Stage is "active", which is the true statement -- they are in therapy. The
+  // silent fast-forward marks the earlier stages' tasks historical rather than
+  // leaving a child in intake whose intake happened months ago.
+  const AUTO_CREATE_CAP = 25;
+
+  async function autoCreateActiveClients(rethinkRowsById, demoMap, opts = {}) {
+    const created = [], refused = [];
+    if (!ctx.createClientBackfill) {
+      return { created, refused, unavailable: true };
+    }
+
+    const orphans = await dbAll(
+      "SELECT * FROM rethink_unmatched_clients ORDER BY last_name, first_name"
+    ).catch(() => []);
+
+    for (const o of orphans) {
+      const why = (reason) => refused.push({
+        rethink_client_id: o.rethink_client_id,
+        name: `${o.first_name || ""} ${o.last_name || ""}`.trim(),
+        reason,
+      });
+
+      if (!statusAllowsReady(o.status)) { why(`Rethink status is "${o.status || "(none)"}", not Active`); continue; }
+      if (o.possible_closed_crm_client_id) {
+        why(`looks like discharged CRM client "${o.possible_closed_crm_name}" -- reactivate that record instead`);
+        continue;
+      }
+      const name = `${o.first_name || ""} ${o.last_name || ""}`.trim();
+      if (!name) { why("Rethink record has no name"); continue; }
+
+      // Belt and braces against a stale orphan row: never create somebody whose
+      // Rethink id is already on a CRM client.
+      const already = await dbGet("SELECT id FROM clients WHERE rethink_client_id = ?", [o.rethink_client_id]).catch(() => null);
+      if (already) { why("already linked to a CRM client"); continue; }
+
+      if (created.length >= AUTO_CREATE_CAP) {
+        why(`per-run limit of ${AUTO_CREATE_CAP} reached -- will be created on the next scan`);
+        continue;
+      }
+      if (opts.dryRun) { created.push({ rethink_client_id: o.rethink_client_id, name, dry_run: true }); continue; }
+
+      const row = rethinkRowsById.get(o.rethink_client_id) || {};
+      const payload = {
+        child_name: name,
+        dob: o.dob || null,
+        rethink_status: o.status || null,
+        stage: "active",
+        notes: "Created automatically from Rethink: this child is an active client there and had no CRM record. "
+             + "Contact details and insurance are whatever Rethink held; anything blank still needs filling in.",
+      };
+      // Demographics come along at creation rather than on a later pass, so the
+      // record is useful the moment it appears.
+      if (demoMap.address) payload.address = composeAddress(row, demoMap) || null;
+      for (const f of ["parent_phone", "parent_email", "parent_name", "insurance_provider"]) {
+        const src = demoMap[f];
+        if (src && row[src] != null && String(row[src]).trim()) payload[f] = String(row[src]).trim();
+      }
+
+      let client_row;
+      try {
+        client_row = await ctx.createClientBackfill(payload);
+      } catch (e) {
+        why(`could not be created: ${e.message}`);
+        continue;
+      }
+
+      await dbRun("UPDATE clients SET rethink_client_id = ? WHERE id = ?", [o.rethink_client_id, client_row.id]).catch(() => {});
+      await dbRun(
+        `INSERT INTO rethink_client_link_log (crm_client_id, rethink_client_id, previous_value, confidence, approved_by, approved_at)
+         VALUES (?, ?, NULL, 'auto_created', ?, ?)`,
+        [client_row.id, o.rethink_client_id, "automation (active in Rethink, absent from CRM)", nowISO()]
+      ).catch(() => {});
+      await dbRun("DELETE FROM rethink_unmatched_clients WHERE rethink_client_id = ?", [o.rethink_client_id]).catch(() => {});
+
+      client.log("client_auto_created", { crm_client_id: client_row.id, rethink_client_id: o.rethink_client_id });
+      created.push({ crm_client_id: client_row.id, rethink_client_id: o.rethink_client_id, name });
+    }
+
+    return { created, refused };
   }
 
   // The review screen's data: one entry per unlinked active CRM client.
@@ -1557,6 +1852,7 @@ module.exports = function initRethink(ctx) {
     scanClientMatches,
     clientMatchReview,
     approveClientLink,
+    _demographics: { resolveDemographicMap, composeAddress, fillDemographics, autoCreateActiveClients, DEMOGRAPHIC_CANDIDATES, AUTO_CREATE_CAP },
     _internal: { decide, norm, monthWindow, standingOf, is97153, dateOnly, normName, splitName, validateClientFields, CLIENT_FIELDS },
   };
 };

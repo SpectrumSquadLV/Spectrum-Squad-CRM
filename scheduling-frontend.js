@@ -248,7 +248,7 @@
     return `<div class="sc-sess" draggable="true" data-session="${s.id}"
         style="background:${st.bg}; color:${st.fg};"
         title="${esc(s.client_display)} with ${esc(s.staff_display)} · ${esc(s.start_label)}–${esc(s.end_label)} · ${esc(st.label)}">
-      <div class="t"><span aria-hidden="true" style="color:${st.dot};">${st.glyph}</span>${esc(who)}${(s.transportation_services === true || s.transportation_services === "t") ? ` <span title="Transportation provided — coordinate a ride" aria-label="Transportation provided"></span>` : ""}</div>
+      <div class="t"><span aria-hidden="true" style="color:${st.dot};">${st.glyph}</span>${esc(who)}${(s.transportation_services === true || s.transportation_services === "t") ? ` <span role="img" title="Transportation provided — coordinate a ride" aria-label="Transportation provided"><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true" focusable="false" style="vertical-align:-2px;"><path d="M18.92 6.51A1.5 1.5 0 0 0 17.5 5.5h-11a1.5 1.5 0 0 0-1.42 1.01L3.2 12v6.5a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1h11.6v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1V12zM6.85 15.2a1.35 1.35 0 1 1 0-2.7 1.35 1.35 0 0 1 0 2.7zm10.3 0a1.35 1.35 0 1 1 0-2.7 1.35 1.35 0 0 1 0 2.7zM5.1 11l1.4-4.03a.5.5 0 0 1 .47-.34h10.06a.5.5 0 0 1 .47.34L18.9 11z"/></svg></span>` : ""}</div>
       <div class="m">${esc(s.start_label)} – ${esc(s.end_label)}${s.location_name ? " · " + esc(s.location_name) : ""}</div>
       ${s.status !== "scheduled" ? `<span class="b" style="background:rgba(255,255,255,.65);">${esc(st.label)}</span>` : ""}
       ${note ? `<span class="b" style="background:${note.bg}; color:${note.fg}; margin-left:4px;">${esc(note.label)}</span>` : ""}

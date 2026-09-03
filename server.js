@@ -7605,6 +7605,13 @@ const rethink = require("./rethink")({
   // Rethink ID -- BCBAs, the clinical director, the owner -- none of whom are
   // supervisees. Passed lazily so there is no construction-order coupling.
   isSupervisionTracked: (emp) => supervision.isTracked(emp),
+  // Creating a CRM client for a child who is active in Rethink but absent
+  // here. Deliberately the BACKFILL path, not createClientFromPayload: the
+  // ordinary one emails the parent a welcome, sends a SignNow enrollment
+  // packet and fires a billing eligibility check, and these are families who
+  // have been in therapy for months. Nothing about importing them should reach
+  // a parent's inbox.
+  createClientBackfill: (payload) => createClientBackfill(payload),
 });
 // ===== COMPLETIONS: one recorder for every "X finished" event, a dashboard
 // feed, and a single daily digest email. Constructed early so every module
