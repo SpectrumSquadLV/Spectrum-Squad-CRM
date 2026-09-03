@@ -81,6 +81,12 @@ module.exports = function initRethink(ctx) {
   // includes every client on the books, and narrowed only if that proves noisy.
   const CLIENTS_FROM = process.env.RETHINK_CLIENTS_FROM || "2000-01-01";
 
+  // How far back the appointment-activity fallback looks when deciding who is
+  // currently in therapy. Ninety days rather than thirty: a child on a school
+  // break, or between authorizations, is not a discharged child, and reporting
+  // them as inactive would be worse than saying nothing.
+  const ACTIVITY_DAYS = Math.max(1, Number(process.env.RETHINK_ACTIVITY_DAYS) || 90);
+
   // The CPT this tracker cares about. Other codes are deliberately not imported.
   const TARGET_BILLING_CODE = "97153";
   // Fallback identity for 97153 when billingCode comes back empty. Comma-
@@ -251,6 +257,22 @@ module.exports = function initRethink(ctx) {
       .catch((e) => console.error("clients.auth_dates_source column:", e.message));
     await dbRun("ALTER TABLE clients ADD COLUMN IF NOT EXISTS auth_dates_synced_at TEXT")
       .catch((e) => console.error("clients.auth_dates_synced_at column:", e.message));
+
+    // ---- appointment activity -------------------------------------------
+    // Rethink's /api/Clients returns HTTP 200 with no rows on this account
+    // while /api/Appointments returns data, so who is actually in therapy has
+    // to be read from the schedule instead of from a client list. These record
+    // what the schedule said, kept apart from anything a person typed.
+    await dbRun("ALTER TABLE clients ADD COLUMN IF NOT EXISTS rethink_last_appointment_date TEXT")
+      .catch((e) => console.error("clients.rethink_last_appointment_date column:", e.message));
+    await dbRun("ALTER TABLE clients ADD COLUMN IF NOT EXISTS rethink_appointment_count INTEGER")
+      .catch((e) => console.error("clients.rethink_appointment_count column:", e.message));
+    await dbRun("ALTER TABLE clients ADD COLUMN IF NOT EXISTS rethink_activity_synced_at TEXT")
+      .catch((e) => console.error("clients.rethink_activity_synced_at column:", e.message));
+    await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS last_activity_scan_at TEXT")
+      .catch((e) => console.error("last_activity_scan_at column:", e.message));
+    await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS last_activity_window_days INTEGER")
+      .catch((e) => console.error("last_activity_window_days column:", e.message));
 
     // ---- client matching staging ---------------------------------------
     // Proposals only. Nothing here is authoritative and nothing here writes to
@@ -882,10 +904,204 @@ module.exports = function initRethink(ctx) {
     return { created, refused };
   }
 
+  // ---- appointment activity fallback ------------------------------------
+  // Rethink's /api/Clients returns HTTP 200 with an empty result on this
+  // account, and so does /api/ClientAuthorization, while /api/Appointments
+  // returns rows on the same token. So the client list we wanted is not
+  // available and this reads the schedule instead: a child with sessions on
+  // the books is in therapy, whatever a client endpoint we cannot see says.
+  //
+  // WHAT THIS CANNOT DO, because Appointments carries no name and no DOB:
+  // it cannot identify a Rethink client the CRM has never linked. It can only
+  // COUNT them. Naming them needs the Clients endpoint. Nothing here creates a
+  // client, and nothing here guesses at one.
+  async function scanAppointmentActivity(opts = {}) {
+    if (!client.configured()) {
+      return { ok: false, kind: "config", error: "Rethink credentials are not configured on the server." };
+    }
+
+    const days = Math.max(1, Number(opts.days) || ACTIVITY_DAYS);
+    const to = today();
+    const from = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+
+    client.log("activity_scan_start", { endpoint: DWH_APPOINTMENTS, from, to, days });
+
+    let fetched;
+    try {
+      fetched = await client.dwhGetAllPages(DWH_APPOINTMENTS, {
+        From: from,
+        To: to,
+        FilterByAppointmentDate: true,
+        IncludeDeleted: false,
+        IncludeCanceled: false,
+      }, { nowMs: nowMs(), pageSize: 500 });
+    } catch (e) {
+      client.log("sync_failed", {
+        kind: "appointment_activity", endpoint: e.endpoint || DWH_APPOINTMENTS,
+        status: e.status, stage: e.stage, error: e.message,
+      });
+      return {
+        ok: false, kind: e.kind || "http", status: e.status || null, detail_in_server_logs: true,
+        error: e.safe || client.redact(e.message),
+      };
+    }
+
+    const rows = fetched.rows || [];
+    const warnings = [];
+    if (fetched.truncated) warnings.push(`Stopped at the page limit — the ${from}–${to} window may be incomplete.`);
+
+    if (!rows.length) {
+      client.log("activity_empty", { endpoint: DWH_APPOINTMENTS, from, to });
+      return {
+        ok: false, kind: "empty", detail_in_server_logs: true,
+        error: `The Rethink "${DWH_APPOINTMENTS}" endpoint returned no appointments between ${from} and ${to}. ` +
+          `Appointments is the one endpoint this account can read, so an empty window here means either there really were ` +
+          `no sessions in that period or the account has lost the access it had.`,
+      };
+    }
+
+    // ---- aggregate per Rethink client -----------------------------------
+    // One row per child, built from their sessions. Funders are collected as a
+    // set rather than last-one-wins: a child whose appointments disagree about
+    // who pays is a question for billing, not something to write silently.
+    const byClient = new Map();
+    let skippedNoClient = 0, upcoming = 0;
+    for (const row of rows) {
+      try {
+        const rid = String(row.clientId == null ? "" : row.clientId).trim();
+        if (!rid) { skippedNoClient++; continue; }
+        const date = String(row.appointmentDate || "").slice(0, 10);
+        // Belt and braces, exactly as the supervision sync does it: the To
+        // bound should already exclude these, and when it does not, a session
+        // that has not happened yet must not be reported as the last one.
+        if (date && date > to) { upcoming++; continue; }
+        const cur = byClient.get(rid) || { count: 0, last: null, funders: new Map() };
+        cur.count += 1;
+        if (date && (!cur.last || date > cur.last)) cur.last = date;
+        const funder = String(row.funder == null ? "" : row.funder).trim();
+        if (funder) cur.funders.set(norm(funder), funder);
+        byClient.set(rid, cur);
+      } catch (e) {
+        warnings.push(`An appointment row could not be read: ${client.redact(e.message)}`);
+      }
+    }
+    if (skippedNoClient) warnings.push(`${skippedNoClient} appointment(s) had no clientId and were skipped.`);
+    if (upcoming) warnings.push(`${upcoming} appointment(s) are dated after today and were not counted as sessions held.`);
+
+    // ---- the CRM side ----------------------------------------------------
+    // Every client carrying a Rethink id, DISCHARGED ONES INCLUDED. The open
+    // ones drive the active/idle reporting below; the closed ones are here so
+    // that a discharged child who still has sessions on the books is reported
+    // as exactly that, rather than counted as a stranger the CRM has never
+    // heard of. Those are different problems with different answers.
+    const allLinked = await dbAll(
+      `SELECT id, child_name, stage, insurance_provider, rethink_client_id
+         FROM clients
+        WHERE rethink_client_id IS NOT NULL AND TRIM(rethink_client_id) <> ''
+        ORDER BY child_name`
+    ).catch(() => []);
+    const closedStages = ["discharged", "not_moving_forward"];
+    const linked = allLinked.filter((c) => !closedStages.includes(c.stage));
+
+    const claimed = new Set();
+    const closedButActive = [];
+    for (const c of allLinked) {
+      if (!closedStages.includes(c.stage)) continue;
+      const rid = String(c.rethink_client_id).trim();
+      claimed.add(rid);                       // never report them as unaccounted for
+      const agg = byClient.get(rid);
+      if (agg) closedButActive.push({ crm_client_id: c.id, name: c.child_name, stage: c.stage, last: agg.last, appointments: agg.count });
+    }
+
+    const idle = [];
+    const conflicts = [];
+    let active = 0, insuranceFilled = 0;
+
+    for (const c of linked) {
+      const rid = String(c.rethink_client_id).trim();
+      const agg = byClient.get(rid);
+      if (!agg) {
+        idle.push({ crm_client_id: c.id, name: c.child_name });
+        continue;
+      }
+      claimed.add(rid);
+      active++;
+
+      if (!opts.dryRun) {
+        await dbRun(
+          `UPDATE clients SET rethink_last_appointment_date = ?, rethink_appointment_count = ?,
+                              rethink_activity_synced_at = ? WHERE id = ?`,
+          [agg.last, agg.count, nowISO(), c.id]
+        ).catch((e) => client.log("activity_write_failed", { crm_client_id: c.id, error: e.message }));
+      }
+
+      // Insurance is the one demographic Appointments can actually supply, and
+      // it is filled under exactly the rule the client scan uses: only into an
+      // empty field, never over something a person typed. Addresses on this
+      // endpoint are appointment and EVV locations rather than a family's home
+      // address, so they are deliberately not written anywhere.
+      const funders = [...agg.funders.values()];
+      if (funders.length > 1) {
+        conflicts.push({ crm_client_id: c.id, name: c.child_name, funders });
+      } else if (funders.length === 1) {
+        const blank = c.insurance_provider == null || String(c.insurance_provider).trim() === "";
+        if (blank) {
+          if (!opts.dryRun) {
+            await dbRun("UPDATE clients SET insurance_provider = ?, updated_at = ? WHERE id = ?",
+              [funders[0], nowISO(), c.id]).catch(() => {});
+          }
+          insuranceFilled++;
+        }
+      }
+    }
+
+    // Rethink clients with sessions on the books that no CRM record claims.
+    // This is the number that answers "how many children are we not tracking",
+    // and it is the most this endpoint can honestly say: the ids are real, the
+    // people behind them are not identifiable without the Clients endpoint.
+    const unclaimed = [...byClient.entries()]
+      .filter(([rid]) => !claimed.has(rid))
+      .sort((a, b) => (b[1].count - a[1].count))
+      .map(([rid, agg]) => ({ rethink_client_id: rid, appointments: agg.count, last: agg.last }));
+
+    if (!opts.dryRun) {
+      await dbRun("UPDATE rethink_config SET last_activity_scan_at = ?, last_activity_window_days = ? WHERE id = 1",
+        [nowISO(), days]).catch(() => {});
+    }
+
+    client.log("activity_scan_done", {
+      from, to, appointments: rows.length, rethink_clients: byClient.size,
+      linked_total: linked.length, linked_active: active, linked_idle: idle.length,
+      unlinked_active: unclaimed.length, closed_but_active: closedButActive.length,
+      insurance_filled: insuranceFilled,
+    });
+
+    return {
+      ok: true,
+      window: { from, to, days },
+      appointments: rows.length,
+      rethink_clients_with_activity: byClient.size,
+      linked_total: linked.length,
+      linked_active: active,
+      linked_idle: idle.length,
+      idle: idle.slice(0, 50),
+      insurance_filled: insuranceFilled,
+      insurance_conflict_count: conflicts.length,
+      insurance_conflicts: conflicts.slice(0, 50),
+      unlinked_active_count: unclaimed.length,
+      unlinked_active: unclaimed.slice(0, 50),
+      closed_but_active_count: closedButActive.length,
+      closed_but_active: closedButActive.slice(0, 50),
+      warnings,
+    };
+  }
+
   // The review screen's data: one entry per unlinked active CRM client.
   async function clientMatchReview() {
     const crmClients = await dbAll(
-      `SELECT id, child_name, dob, rethink_client_id FROM clients
+      `SELECT id, child_name, dob, rethink_client_id,
+              rethink_last_appointment_date, rethink_appointment_count
+         FROM clients
         WHERE stage NOT IN ('discharged','not_moving_forward') ORDER BY child_name`
     ).catch(() => []);
     const cands = await dbAll(
@@ -913,6 +1129,10 @@ module.exports = function initRethink(ctx) {
         crm_name: c.child_name,
         crm_dob: dateOnly(c.dob),
         linked_rethink_client_id: c.rethink_client_id || null,
+        // From the appointment-activity fallback, not from the client list --
+        // null simply means that scan has not run for this client.
+        last_appointment: c.rethink_last_appointment_date || null,
+        appointment_count: c.rethink_appointment_count == null ? null : Number(c.rethink_appointment_count),
         status,
         candidates: list.map((x) => ({
           rethink_client_id: x.rethink_client_id,
@@ -933,7 +1153,9 @@ module.exports = function initRethink(ctx) {
     // The scan's own timestamp, not one inferred from rows that approving
     // deletes. Falls back to the old derivation for a database that has not
     // recorded a scan since this column was added.
-    const cfgRow = await dbGet("SELECT last_client_scan_at FROM rethink_config WHERE id = 1").catch(() => null);
+    const cfgRow = await dbGet(
+      "SELECT last_client_scan_at, last_activity_scan_at, last_activity_window_days FROM rethink_config WHERE id = 1"
+    ).catch(() => null);
     const last = (cfgRow && cfgRow.last_client_scan_at)
       ? { m: cfgRow.last_client_scan_at }
       : await dbGet("SELECT MAX(scanned_at) AS m FROM rethink_client_match_candidates").catch(() => null);
@@ -965,6 +1187,8 @@ module.exports = function initRethink(ctx) {
         inactive: rethinkOnly.filter((r) => r.priority === 2).length,
       },
       last_scanned_at: (last && last.m) || null,
+      last_activity_scan_at: (cfgRow && cfgRow.last_activity_scan_at) || null,
+      last_activity_window_days: (cfgRow && cfgRow.last_activity_window_days) || null,
       counts: {
         linked: items.filter((i) => i.status === "linked").length,
         ready: items.filter((i) => i.status === "ready").length,
@@ -1763,6 +1987,16 @@ module.exports = function initRethink(ctx) {
         return true;
       }
 
+      // The fallback for an account whose /api/Clients comes back empty.
+      // Reads the schedule instead of the client list; fills nothing but a
+      // blank insurance field and creates nobody.
+      if (pathname === "/api/rethink/client-match/activity-scan" && method === "POST") {
+        const b = await readBody(req).catch(() => ({}));
+        const out = await scanAppointmentActivity({ days: b.days });
+        json(res, out.ok ? 200 : 502, out);
+        return true;
+      }
+
       if (pathname === "/api/rethink/client-match/approve" && method === "POST") {
         const b = await readBody(req).catch(() => ({}));
         const actor = (user && (user.email || user.name)) || "unknown";
@@ -1853,6 +2087,7 @@ module.exports = function initRethink(ctx) {
     clientMatchReview,
     approveClientLink,
     _demographics: { resolveDemographicMap, composeAddress, fillDemographics, autoCreateActiveClients, DEMOGRAPHIC_CANDIDATES, AUTO_CREATE_CAP },
+    _activity: { scanAppointmentActivity, ACTIVITY_DAYS },
     _internal: { decide, norm, monthWindow, standingOf, is97153, dateOnly, normName, splitName, validateClientFields, CLIENT_FIELDS },
   };
 };

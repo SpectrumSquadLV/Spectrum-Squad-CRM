@@ -672,7 +672,7 @@ const initRethink = require("./rethink");
     const ctx = {
       // The candidates table is deliberately empty here -- the state after
       // every candidate has been approved.
-      dbGet: async (sql) => (/last_client_scan_at FROM rethink_config/i.test(sql)
+      dbGet: async (sql) => (/last_client_scan_at.*FROM rethink_config/is.test(sql)
         ? { last_client_scan_at: "2026-08-15T09:00:00.000Z" }
         : /FROM rethink_config/i.test(sql) ? CONFIRMED
         : /MAX\(scanned_at\)/i.test(sql) ? { m: null } : null),
