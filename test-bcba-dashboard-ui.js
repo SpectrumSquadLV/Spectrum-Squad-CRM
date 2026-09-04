@@ -80,12 +80,18 @@ const { chromium } = require("playwright");
     return `${p[1]}/${p[2]}/${p[0]}`;   // the sheet's own mm/dd/yyyy
   })());
   const mig = await page.evaluate(async () => {
+    // Built from named columns rather than by counting pipes. Hand-writing the
+    // row put the date in Auth End and the analyst in Tx Updates, which looked
+    // plausible and tested nothing.
+    const COLS = ["Client Name", "BCBA", "Insurance", "Auth Start", "Auth End",
+                  "Treatment Plan Due", "Tx Updates", "Student Analyst", "Schedule"];
+    const line = (o) => "| " + COLS.map((c) => o[c] || "").join(" | ") + " |";
     const text = [
-      "| Client Name | BCBA | Insurance | Auth Start | Auth End | Treatment Plan Due | Tx Updates | Student Analyst | Schedule |",
-      "| :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |",
-      `| Caseload Alpha | Clinical | | | ${window.__overdueDate} | | Intake |`,
-      "| Caseload Beta | Clinical | | | | | | Intake |",
-      "| Nobody Real Here | Clinical | | | | | | Intake |",
+      "| " + COLS.join(" | ") + " |",
+      "| " + COLS.map(() => ":-:").join(" | ") + " |",
+      line({ "Client Name": "Caseload Alpha", BCBA: "Clinical", "Treatment Plan Due": window.__overdueDate, "Student Analyst": "Intake" }),
+      line({ "Client Name": "Caseload Beta", BCBA: "Clinical", "Student Analyst": "Intake" }),
+      line({ "Client Name": "Nobody Real Here", BCBA: "Clinical", "Student Analyst": "Intake" }),
     ].join("\n");
     const prev = await (await fetch("/api/caseload/migration/preview", {
       method: "POST", credentials: "include",

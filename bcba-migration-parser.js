@@ -86,7 +86,10 @@ function splitRow(line) {
   return null;
 }
 
-const isSeparator = (cells) => cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c) || c === "");
+// A markdown alignment row. ONE dash is legal -- ":-:" is what Google's export
+// writes -- so requiring two made the separator look like a merged heading and
+// set every following row's section to ":-:".
+const isSeparator = (cells) => cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c) || c === "");
 
 // A heading row in this sheet is a merged cell: the same non-empty text
 // repeated across every column. "Pending", "Needs assessment", and so on.

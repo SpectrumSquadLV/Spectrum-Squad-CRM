@@ -66,6 +66,23 @@ section("Reading the sheet");
     r.ok === false, r);
   check("and says what it needed", /Client Name/.test(r.reason || ""), r.reason);
 }
+{
+  // The alignment row is not a section heading. A single-dash form (":-:") is
+  // what Google writes, and reading it as a merged heading labelled every row
+  // that followed with ":-:".
+  const r = parseAssignmentSheet(sheet(row({ name: "Robin Aster", bcba: "Wren" })));
+  check("A ':-:' ALIGNMENT ROW IS A SEPARATOR, NOT A SECTION",
+    r.rows[0].section === "", JSON.stringify(r.rows[0].section));
+  check("and it is not read as a client either",
+    r.rows.length === 1, r.rows.map((x) => x.client_name));
+  const wide = parseAssignmentSheet([
+    "| Client Name | BCBA | Student Analyst |",
+    "| :--- | ---: | :---: |",
+    "| Robin Aster | Wren | Juniper |",
+  ].join("\n"));
+  check("longer alignment forms are separators too",
+    wide.ok && wide.rows.length === 1 && wide.rows[0].section === "", wide.rows);
+}
 check("empty input is refused", parseAssignmentSheet("").ok === false);
 check("so is text with no table", parseAssignmentSheet("just some words").ok === false);
 
