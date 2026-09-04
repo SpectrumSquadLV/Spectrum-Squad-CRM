@@ -25,6 +25,7 @@ module.exports = function initBcbaHub(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, readBody, json } = ctx;
 
   const CHEATSHEET = require("./bcba-cheatsheet-data.js");
+  const edits = require("./bcba-cheatsheet-edits.js");
 
   // Reading the hub. "clinical" is the BCBA role; billing is included because
   // the cheat sheet is about what an AUTHORIZATION REQUEST needs, which is the
@@ -108,7 +109,85 @@ module.exports = function initBcbaHub(ctx) {
       updated_by TEXT,
       updated_at TEXT
     )`).catch((e) => console.error("[bcba] payer meta table:", e.message));
+    for (const col of [
+      "preauth_required TEXT",     // required | not_required | unknown
+      "preauth_note TEXT",
+      "preauth_source TEXT",       // document | setup | edited
+      "preauth_updated_by TEXT",
+      "preauth_updated_at TEXT",
+    ]) {
+      await dbRun(`ALTER TABLE bcba_payer_meta ADD COLUMN IF NOT EXISTS ${col}`)
+        .catch((e) => console.error("[bcba] payer meta column:", e.message));
+    }
+    await seedPreauth();
+
+    // Corrections to the converted cheat sheet. See bcba-cheatsheet-edits.js
+    // for why an edit is keyed by the HASH of the text it replaced rather than
+    // by its position.
+    await dbRun(`CREATE TABLE IF NOT EXISTS bcba_cheatsheet_edits (
+      id SERIAL PRIMARY KEY,
+      payer_key TEXT NOT NULL,
+      list_key TEXT NOT NULL,
+      op TEXT NOT NULL,                -- edit | remove | add
+      original_hash TEXT,
+      original_text TEXT,
+      text TEXT,
+      updated_by TEXT,
+      updated_at TEXT
+    )`).catch((e) => console.error("[bcba] cheatsheet edits table:", e.message));
+    // One live change per line. A second edit of the same line replaces the
+    // first rather than stacking, or the overlay order would decide what a
+    // payer requires.
+    await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bcba_edits_line
+                 ON bcba_cheatsheet_edits (payer_key, list_key, original_hash)
+                 WHERE original_hash IS NOT NULL`)
+      .catch((e) => console.error("[bcba] cheatsheet edits index:", e.message));
+
     try { fs.mkdirSync(LOGO_DIR, { recursive: true }); } catch (e) { /* volume not mounted yet */ }
+  }
+
+  // WHETHER A PAYER NEEDS A PRE-AUTHORIZATION BEFORE THE ASSESSMENT.
+  //
+  // Three payers are answered by the cheat sheet in words -- "Authorization for
+  // assessment is not required for 97151" -- and those are transcribed, quoting
+  // the sentence.
+  //
+  // The other four the document does not answer either way. It lists what the
+  // authorization request needs, which is not the same as saying one is
+  // required, so these are marked at the practice's direction and RECORDED AS
+  // SUCH: source "setup" rather than "document". That distinction is shown on
+  // screen, because a marker that says "the cheat sheet states this" and one
+  // that says "we believe this" carry different weight when a claim is denied,
+  // and merging them would launder the second into the first.
+  //
+  // Seeded ONCE. An existing value is never overwritten -- the whole point of
+  // this being editable is that the practice keeps up with payers changing
+  // their minds, and a redeploy that reset those corrections would be worse
+  // than not having them.
+  const PREAUTH_SEED = {
+    "nv-medicaid":  ["not_required", "The cheat sheet: authorization for assessment is not required for 97151 (limited to every 180 days).", "document"],
+    "caresource":   ["not_required", "The cheat sheet: authorization for assessment is not required for 97151 (limited to every 180 days).", "document"],
+    "molina":       ["not_required", "The cheat sheet: authorization for assessment is not required for 97151 (limited to every 180 days).", "document"],
+    "aetna":        ["required", "Set at setup. The cheat sheet does not say this in words -- it lists what the authorization request needs.", "setup"],
+    "tricare":      ["required", "Set at setup. The cheat sheet does not say this in words -- it lists what the authorization request needs.", "setup"],
+    "anthem-bcbs":  ["required", "Set at setup. The cheat sheet does not say this in words -- it lists what the authorization request needs.", "setup"],
+    "silversummit": ["required", "Set at setup. The cheat sheet does not say this in words -- it lists what the authorization request needs.", "setup"],
+  };
+
+  async function seedPreauth() {
+    for (const [key, [required, note, source]] of Object.entries(PREAUTH_SEED)) {
+      await dbRun(
+        `INSERT INTO bcba_payer_meta (payer_key, preauth_required, preauth_note, preauth_source, preauth_updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (payer_key) DO UPDATE
+           SET preauth_required = EXCLUDED.preauth_required,
+               preauth_note = EXCLUDED.preauth_note,
+               preauth_source = EXCLUDED.preauth_source,
+               preauth_updated_at = EXCLUDED.preauth_updated_at
+         WHERE bcba_payer_meta.preauth_required IS NULL`,
+        [key, required, note, source, nowISO()]
+      ).catch((e) => console.error("[bcba] preauth seed:", e.message));
+    }
   }
 
   const parseJson = (v, fallback) => {
@@ -123,6 +202,16 @@ module.exports = function initBcbaHub(ctx) {
       links: parseJson(r.links, []),
       denial_reasons: parseJson(r.denial_reasons, []),
       logo_url: r.logo_stored ? "/api/bcba/payers/" + encodeURIComponent(r.payer_key) + "/logo" : null,
+      preauth: {
+        // "unknown" rather than null when nothing is recorded, so the page can
+        // say "not recorded" out loud. A payer with no marker at all is
+        // indistinguishable from one that needs no pre-authorization.
+        required: r.preauth_required || "unknown",
+        note: r.preauth_note || null,
+        source: r.preauth_source || null,
+        updated_by: r.preauth_updated_by || null,
+        updated_at: r.preauth_updated_at || null,
+      },
     }));
     return out;
   }
@@ -166,12 +255,24 @@ module.exports = function initBcbaHub(ctx) {
   }
   const normCode = (v) => clean(v).toUpperCase().replace(/\s+/g, "").replace(/^FA(?!-)/, "FA-");
 
+  // A line arrives either as a plain string (the conversion's own text) or as an
+  // object, once somebody has corrected it -- carrying the original wording and
+  // who changed it. Both have to come out as { text, form, ...whatever the
+  // overlay added }.
+  //
+  // Wrapping without unpacking is what this got wrong first: an edited line
+  // became { text: { text: "...", edited: true }, form: null }, which renders
+  // as "[object Object]" on the requirement a BCBA reads. Spreading the entry
+  // keeps the edit marks and the form side by side.
   function attachForms(lines, formsByCode) {
-    return (lines || []).map((text) => {
+    return (lines || []).map((entry) => {
+      const isObj = entry && typeof entry === "object";
+      const text = isObj ? entry.text : entry;
       const hit = codesIn(text).map((c) => formsByCode.get(c)).find(Boolean);
-      return hit
-        ? { text, form: { id: hit.id, name: hit.name, editable: !!hit.editable, code: hit.form_code } }
-        : { text, form: null };
+      const form = hit
+        ? { id: hit.id, name: hit.name, editable: !!hit.editable, code: hit.form_code }
+        : null;
+      return isObj ? { ...entry, text, form } : { text, form };
     });
   }
 
@@ -244,8 +345,19 @@ module.exports = function initBcbaHub(ctx) {
     if (pathname === "/api/bcba/cheatsheet" && method === "GET") {
       const byCode = await formsByCodeMap();
       const meta = await payerMetaMap();
+      const editRows = await dbAll(
+        "SELECT * FROM bcba_cheatsheet_edits ORDER BY id"
+      ).catch(() => []);
+      const orphaned = [];
       json(res, 200, {
-        payers: CHEATSHEET.payers.map((p) => ({
+        payers: CHEATSHEET.payers.map((raw) => {
+          // The overlay is applied FIRST, so a form named in an edited
+          // requirement is attached to the edited text -- not to the wording
+          // the document used to carry.
+          const applied = edits.applyEdits(raw, editRows);
+          orphaned.push(...applied.orphaned);
+          const p = applied.payer;
+          return {
           ...p,
           // Empty arrays until an admin fills them in. The page renders an
           // empty state that says what the panel is for rather than hiding it,
@@ -255,11 +367,20 @@ module.exports = function initBcbaHub(ctx) {
           logo_url: (meta.get(p.key) || {}).logo_url || null,
           // Requirements that name a form get that form attached, so the
           // download comes from the Form Library rather than a copy.
+          preauth: (meta.get(p.key) || {}).preauth || { required: "unknown", note: null, source: null },
           required_documents: attachForms(p.required_documents, byCode),
           assessment_authorization: attachForms(p.assessment_authorization, byCode),
-        })),
+          };
+        }),
         categories: CATEGORIES,
         can_manage_forms: canManage(user),
+        // Editing a payer requirement changes what every BCBA is told to
+        // submit, so it is the same set that maintains the Form Library.
+        can_edit_requirements: canManage(user),
+        // Changes whose original line is no longer in the converted document.
+        // Surfaced rather than dropped: an edit that stops applying without
+        // anybody being told is a requirement quietly reverting.
+        orphaned_edits: canManage(user) ? orphaned : [],
       });
       return true;
     }
@@ -319,9 +440,11 @@ module.exports = function initBcbaHub(ctx) {
       return true;
     }
 
-    // Everything below changes the library.
+    // Everything below changes what the Hub shows -- the Form Library, a
+    // payer's links, its pre-authorization marker, and the payer requirements
+    // themselves. A BCBA reads all of it and changes none of it.
     if (!canManage(user)) {
-      if (method !== "GET") { json(res, 403, { error: "Only an owner or admin can change the Form Library." }); return true; }
+      if (method !== "GET") { json(res, 403, { error: "Only an owner or admin can change what the Hub shows." }); return true; }
       json(res, 404, { error: "Not found" });
       return true;
     }
@@ -349,6 +472,119 @@ module.exports = function initBcbaHub(ctx) {
         [key, JSON.stringify(links), JSON.stringify(denials), user.email || user.name || "unknown", nowISO()]
       );
       json(res, 200, { ok: true, links, denial_reasons: denials });
+      return true;
+    }
+
+    // ---- whether this payer needs a pre-authorization --------------------
+    const preauthMatch = pathname.match(/^\/api\/bcba\/payers\/([^/]+)\/preauth$/);
+    if (preauthMatch && method === "PUT") {
+      const key = decodeURIComponent(preauthMatch[1]);
+      if (!CHEATSHEET.payers.some((x) => x.key === key)) { json(res, 404, { error: "Unknown payer" }); return true; }
+      const b = await readBody(req);
+      const required = clean(b.required);
+      if (!["required", "not_required", "unknown"].includes(required)) {
+        json(res, 400, { error: "Say whether a pre-authorization is required, is not required, or is not known." });
+        return true;
+      }
+      // Anything a person sets is marked "edited", never "document". The
+      // provenance of a marker is the point of recording it: a claim denied
+      // over a pre-auth is a different conversation depending on whether the
+      // cheat sheet said so or somebody here decided it.
+      await dbRun(
+        `INSERT INTO bcba_payer_meta (payer_key, preauth_required, preauth_note, preauth_source, preauth_updated_by, preauth_updated_at)
+         VALUES (?, ?, ?, 'edited', ?, ?)
+         ON CONFLICT (payer_key) DO UPDATE SET
+           preauth_required = EXCLUDED.preauth_required,
+           preauth_note = EXCLUDED.preauth_note,
+           preauth_source = 'edited',
+           preauth_updated_by = EXCLUDED.preauth_updated_by,
+           preauth_updated_at = EXCLUDED.preauth_updated_at`,
+        [key, required, clean(b.note).slice(0, 500) || null,
+         user.email || user.name || "unknown", nowISO()]
+      );
+      json(res, 200, { ok: true, payer_key: key, required, source: "edited" });
+      return true;
+    }
+
+    // ---- correcting a payer requirement ----------------------------------
+    // The converted document is never modified. What is stored is the change
+    // ON TOP of it, keyed by the text it replaced, so the original stays
+    // recoverable and a reconversion cannot silently reapply a stale edit to a
+    // different line. See bcba-cheatsheet-edits.js.
+    if (pathname === "/api/bcba/requirements" && method === "POST") {
+      const b = await readBody(req);
+      const payer = CHEATSHEET.payers.find((x) => x.key === clean(b.payer_key));
+      if (!payer) { json(res, 404, { error: "Unknown payer" }); return true; }
+      const listKey = clean(b.list_key);
+      if (!edits.listExists(payer, listKey)) {
+        json(res, 400, { error: "That payer has no such list of requirements." });
+        return true;
+      }
+      const op = clean(b.op);
+      if (!["edit", "remove", "add"].includes(op)) { json(res, 400, { error: "Unknown change." }); return true; }
+      const text = clean(b.text).slice(0, 2000);
+      if (op !== "remove" && !text) {
+        json(res, 400, { error: "A requirement needs some text." });
+        return true;
+      }
+
+      const actor = user.email || user.name || "unknown";
+      if (op === "add") {
+        await dbRun(
+          `INSERT INTO bcba_cheatsheet_edits (payer_key, list_key, op, text, updated_by, updated_at)
+           VALUES (?, ?, 'add', ?, ?, ?)`,
+          [payer.key, listKey, text, actor, nowISO()]
+        );
+        json(res, 200, { ok: true });
+        return true;
+      }
+
+      // Edit and remove name the line by ITS ORIGINAL WORDING, and the hash is
+      // computed here. The browser could send a hash instead, but then the
+      // identity rule would have two implementations and the day they drifted
+      // an edit would silently match nothing.
+      //
+      // Refusing an unmatched line here is what stops a change becoming an
+      // orphan nobody can explain later.
+      const hash = edits.itemHash(clean(b.original_text));
+      const originalText = edits.findByHash(payer, listKey, hash);
+      if (originalText === null) {
+        json(res, 409, { error: "That requirement has changed in the cheat sheet since this page was opened. Reload and try again." });
+        return true;
+      }
+      if (op === "edit" && edits.normalize(text) === edits.normalize(originalText)) {
+        // Storing a change that changes nothing would put an "edited" mark on a
+        // line that still reads exactly as the document wrote it.
+        json(res, 200, { ok: true, unchanged: true });
+        return true;
+      }
+      await dbRun(
+        `INSERT INTO bcba_cheatsheet_edits (payer_key, list_key, op, original_hash, original_text, text, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (payer_key, list_key, original_hash) WHERE original_hash IS NOT NULL
+         DO UPDATE SET op = EXCLUDED.op, text = EXCLUDED.text,
+           updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
+        [payer.key, listKey, op, hash, originalText, op === "remove" ? null : text, actor, nowISO()]
+      );
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    // Put a line back to what the document says, or drop an addition.
+    const revertMatch = pathname.match(/^\/api\/bcba\/requirements\/(\d+)$/);
+    if (revertMatch && method === "DELETE") {
+      const row = await dbGet("SELECT * FROM bcba_cheatsheet_edits WHERE id = ?", [Number(revertMatch[1])]);
+      if (!row) { json(res, 404, { error: "That change is not on file." }); return true; }
+      await dbRun("DELETE FROM bcba_cheatsheet_edits WHERE id = ?", [row.id]);
+      json(res, 200, { ok: true, reverted_to: row.original_text || null });
+      return true;
+    }
+
+    // Every change on file, for a person reviewing what has drifted from the
+    // document.
+    if (pathname === "/api/bcba/requirements" && method === "GET") {
+      const rows = await dbAll("SELECT * FROM bcba_cheatsheet_edits ORDER BY payer_key, list_key, id").catch(() => []);
+      json(res, 200, { edits: rows });
       return true;
     }
 
