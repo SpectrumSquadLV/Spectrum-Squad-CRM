@@ -307,6 +307,22 @@
     .bh-tag.arch { background: #e5e7eb; color: #4b5563; }
     .bh-tag.pay { background: #eefaf3; color: #1c6b45; }
 
+    /* Wraps rather than nowrap: this sits in a card about 200px wide on a
+       phone, and an unbreakable pill there takes the whole page sideways. */
+    .bh-preauth { display: inline-flex; align-items: center; gap: 4px; font-weight: 800; padding: 3px 10px;
+      border-radius: 999px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+    .bh-preauth-note { font-size: 11.5px; color: var(--text-muted, #6b6a86); margin: -6px 0 12px;
+      padding-left: 2px; }
+    /* A changed requirement is marked where it is read, not only on an audit
+       screen. A correction that looks identical to the payer's own published
+       wording is how somebody submits against it without knowing. */
+    .bh-edited { border-left: 2px solid #c98f22; padding-left: 7px; }
+    .bh-edited-note { font-size: 10.5px; color: var(--text-muted, #6b6a86); display: block; margin-top: 2px; }
+    .bh-reqacts { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: middle; flex-wrap: wrap; max-width: 100%; }
+    .bh-reqacts button { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border, #e5e7eb);
+      background: #fff; color: var(--text-muted, #6b6a86); cursor: pointer; }
+    .bh-reqacts button:hover { color: var(--brand-navy, #1b2a6b); border-color: #c9c6e2; }
+
     .bh-cmp .scroll { overflow-x: auto; }
     .bh-cmp table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 460px; }
     .bh-cmp th, .bh-cmp td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--border, #e5e7eb); }
@@ -389,6 +405,7 @@
         payerMarkHtml(p, i) +
         '<div class="nm">' + esc(p.name) + "</div>" +
         '<div class="ct">' + (n ? n + " requirement" + (n === 1 ? "" : "s") : "No components listed") + "</div>" +
+        '<div style="margin-top:5px;">' + preauthTagHtml(p, true) + "</div>" +
       "</button>";
     }).join("");
     // Only offered once the list is long enough to be worth searching.
@@ -403,12 +420,101 @@
       '<div class="bh-payers">' + (cards || '<div class="bh-none">No payer matches that.</div>') + "</div></div>";
   }
 
-  function qrList(entries, emptyText) {
-    if (!entries || !entries.length) return '<div class="bh-none">' + esc(emptyText) + "</div>";
+  // A line is a plain string until somebody edits it, at which point it
+  // becomes an object carrying the original wording and who changed it.
+  function txt(v) { return v && typeof v === "object" ? v.text : v; }
+
+  // WHETHER THIS PAYER NEEDS A PRE-AUTHORIZATION, as a marker you can see
+  // without reading anything.
+  //
+  // Three states, not two. "Not recorded" is its own answer: a payer with no
+  // marker at all is indistinguishable from one that needs no pre-auth, and
+  // guessing wrong in that direction is a denied claim.
+  const PREAUTH = {
+    // Two labels each. The app keeps a fixed 240px sidebar at every screen
+    // size, so the payer cards are about 200px wide on a phone -- "No pre-auth
+    // for assessment" is 159px of unbreakable text there and pushed the whole
+    // page sideways. The short form is used wherever the space is a card.
+    required:     { label: "Pre-auth required", short: "Pre-auth", bg: "#fef3c7", fg: "#92400e" },
+    not_required: { label: "No pre-auth for assessment", short: "No pre-auth", bg: "#dcfce7", fg: "#166534" },
+    unknown:      { label: "Pre-auth not recorded", short: "Not recorded", bg: "#f1f5f9", fg: "#475569" },
+  };
+
+  function preauthTagHtml(p, small) {
+    const pa = p.preauth || { required: "unknown" };
+    const t = PREAUTH[pa.required] || PREAUTH.unknown;
+    // The provenance is part of the marker. "The cheat sheet says so" and
+    // "we decided this at setup" carry different weight when a claim is
+    // denied, and showing them identically would launder the second into the
+    // first.
+    const src = pa.source === "document" ? "from the cheat sheet"
+      : pa.source === "setup" ? "set at setup"
+      : pa.source === "edited" ? "set by the practice" : "";
+    return '<span class="bh-preauth" title="' + attr((pa.note || "") + (src ? " (" + src + ")" : "")) + '"' +
+      ' style="background:' + t.bg + ";color:" + t.fg + ';font-size:' + (small ? "10.5px" : "11.5px") + ';">' +
+      esc(small ? t.short : t.label) +
+      (small || !src ? "" : ' <em style="opacity:.75;font-style:normal;">· ' + esc(src) + "</em>") +
+    "</span>";
+  }
+
+  // The server addresses a line by a hash of the text it is replacing, so the
+  // page has to send the ORIGINAL wording back, not the hash -- computing SHA-1
+  // in the browser to match the server's would be a second implementation of an
+  // identity rule, and the day they disagreed an edit would silently miss.
+  function originalOf(e) {
+    if (e && typeof e === "object") return e.original_text != null ? e.original_text : e.text;
+    return e;
+  }
+
+  // Edit / remove, on the line itself. Only drawn for someone who may change
+  // them; the API refuses the rest regardless of what is on screen.
+  function reqActsHtml(listKey, entry) {
+    if (!state.canEditRequirements) return "";
+    const payerKey = state.payerKey;
+    if (entry && entry.added) {
+      return '<span class="bh-reqacts bh-noprint">' +
+        '<button data-req-undo="' + attr(String(entry.edit_id)) + '" title="Remove this addition">Undo</button></span>';
+    }
+    const orig = attr(originalOf(entry));
+    const common = ' data-req-payer="' + attr(payerKey) + '" data-req-list="' + attr(listKey) + '" data-req-orig="' + orig + '"';
+    return '<span class="bh-reqacts bh-noprint">' +
+      "<button data-req-edit=\"1\"" + common + ">Edit</button>" +
+      "<button data-req-remove=\"1\"" + common + ">Remove</button>" +
+      (entry && entry.edited
+        ? '<button data-req-undo="' + attr(String(entry.edit_id)) + '" title="Put back the cheat sheet wording">Revert</button>'
+        : "") +
+    "</span>";
+  }
+
+  // "Changed on 4 Sep by someone" under a line somebody corrected.
+  function editedNoteHtml(entry) {
+    if (!entry || typeof entry !== "object") return "";
+    if (entry.added) {
+      return '<span class="bh-edited-note">Added by ' + esc(entry.edited_by || "the practice") +
+        ". Not in the cheat sheet.</span>";
+    }
+    if (entry.edited) {
+      return '<span class="bh-edited-note">Changed by ' + esc(entry.edited_by || "the practice") +
+        ". The cheat sheet says: " + esc(entry.original_text || "") + "</span>";
+    }
+    return "";
+  }
+
+  function addReqHtml(listKey, label) {
+    if (!state.canEditRequirements) return "";
+    return '<button class="bh-btn sm bh-noprint" style="margin-top:8px;" data-req-add="' + attr(listKey) +
+      '" data-req-payer="' + attr(state.payerKey) + '">+ ' + esc(label || "Add a requirement") + "</button>";
+  }
+
+  function qrList(entries, emptyText, listKey) {
+    if (!entries || !entries.length) {
+      return '<div class="bh-none">' + esc(emptyText) + "</div>" + addReqHtml(listKey);
+    }
     return "<ul>" + entries.map((e) => {
       const text = typeof e === "string" ? e : e.text;
       const form = typeof e === "string" ? null : e.form;
-      return "<li>" + esc(text) +
+      const marked = e && typeof e === "object" && (e.edited || e.added);
+      return '<li' + (marked ? ' class="bh-edited"' : "") + ">" + esc(text) + reqActsHtml(listKey, e) + editedNoteHtml(e) +
         (form
           // The cheat sheet named a form and the Form Library has it, so the
           // download comes from there. One copy, one place to update it.
@@ -416,17 +522,17 @@
             icon("download", 13) + (form.editable ? "Download Editable" : "Download Form") + "</a>"
           : "") +
       "</li>";
-    }).join("") + "</ul>";
+    }).join("") + "</ul>" + addReqHtml(listKey);
   }
 
   function quickRefHtml(p) {
     return '<div class="bh-grid3">' +
       '<div class="bh-qr a"><h4>' + icon("shield", 15) + "Assessment Authorization</h4>" +
-        qrList(p.assessment_authorization, "The cheat sheet does not list assessment authorization requirements for this payer.") + "</div>" +
+        qrList(p.assessment_authorization, "The cheat sheet does not list assessment authorization requirements for this payer.", "assessment_authorization") + "</div>" +
       '<div class="bh-qr b"><h4>' + icon("clock", 15) + "Assessment Units</h4>" +
-        qrList(p.assessment_units, "The cheat sheet does not list assessment units for this payer.") + "</div>" +
+        qrList(p.assessment_units, "The cheat sheet does not list assessment units for this payer.", "assessment_units") + "</div>" +
       '<div class="bh-qr c"><h4>' + icon("doc", 15) + "Required Documents</h4>" +
-        qrList(p.required_documents, "The cheat sheet does not list documents for this payer.") + "</div>" +
+        qrList(p.required_documents, "The cheat sheet does not list documents for this payer.", "required_documents") + "</div>" +
     "</div>";
   }
 
@@ -439,14 +545,17 @@
     if (p.hot_buttons) {
       out += '<div class="bh-callout hot"><h4>' + icon("alert", 15) + "Reviewer Hot Button</h4>" +
         (p.hot_buttons.lead ? "<p>" + esc(p.hot_buttons.lead) + "</p>" : "") +
-        "<ul>" + p.hot_buttons.points.map((t) => "<li>" + esc(t) + "</li>").join("") + "</ul></div>";
+        "<ul>" + p.hot_buttons.points.map((t) => "<li>" + esc(txt(t)) + "</li>").join("") + "</ul></div>";
     }
     // Restrictions and billing instructions sit inside the quick-reference
     // text where they are easy to skim past, so they are repeated as a
     // "Don't Forget" -- quoted, not paraphrased.
     const notes = []
-      .concat(p.assessment_authorization.map((e) => (typeof e === "string" ? e : e.text)))
-      .concat(p.assessment_units)
+      .concat(p.assessment_authorization.map(txt))
+      // .map(txt) on both, not just the first: an EDITED unit is an object
+      // carrying who changed it, and the regex below would otherwise be run
+      // against "[object Object]" and quietly match nothing.
+      .concat((p.assessment_units || []).map(txt))
       .filter((t) => /\b\d+\s*days?\b|billed|increment|separately|same day|different days/i.test(t));
     if (notes.length) {
       out += '<div class="bh-callout tip"><h4>' + icon("bulb", 15) + "Don't Forget</h4>" +
@@ -497,16 +606,16 @@
         if (state.mode !== "reauth" && it.reauth_only) return "";
         const id = itemId(s, idx);
         const on = checks.has(id);
-        return '<label class="bh-item d' + it.depth + (on ? " done" : "") + '">' +
+        return '<label class="bh-item d' + it.depth + (on ? " done" : "") + (it.edited || it.added ? " bh-edited" : "") + '">' +
           '<input type="checkbox" data-check="' + attr(id) + '"' + (on ? " checked" : "") + " />" +
-          "<span>" + esc(it.text) + "</span></label>";
+          "<span>" + esc(it.text) + reqActsHtml("section:" + s.key, it) + editedNoteHtml(it) + "</span></label>";
       }).join("");
       return '<details class="bh-sect"' + (done && done === items.length ? "" : " open") + ">" +
         "<summary>" + esc(s.title) +
           (s.group === "reauth" ? ' <span class="reauth-tag">Reauthorization</span>' : "") +
           ' <span class="cnt">' + done + "/" + items.length + "</span>" +
           '<span class="chev">&#9656;</span></summary>' +
-        '<div class="body">' + rows + "</div></details>";
+        '<div class="body">' + rows + addReqHtml("section:" + s.key, "Add to this section") + "</div></details>";
     }).join("");
     return '<div style="margin-bottom:16px;">' +
       '<div class="bh-sec-title">Treatment Plan Checklist</div>' +
@@ -556,7 +665,14 @@
         payerMarkHtml(p, i, 38) +
         "<div><div style=\"font-size:18px;font-weight:800;color:var(--brand-navy,#1b2a6b);\">" + esc(p.name) + "</div>" +
         '<div style="font-size:12px;color:var(--text-muted,#6b6a86);">Quick reference for assessment authorization and treatment plan requirements.</div></div>' +
+        '<div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">' +
+          preauthTagHtml(p) +
+          (state.canEditRequirements
+            ? '<button class="bh-btn sm bh-noprint" data-preauth="' + attr(p.key) + '">Change</button>' : "") +
+        "</div>" +
       "</div>" +
+      (p.preauth && p.preauth.note
+        ? '<div class="bh-preauth-note">' + esc(p.preauth.note) + "</div>" : "") +
       '<div class="bh-toggle bh-noprint" role="tablist">' +
         '<button data-mode="initial"' + (state.mode === "initial" ? ' class="on"' : "") + ">Initial Authorization</button>" +
         '<button data-mode="reauth"' + (state.mode === "reauth" ? ' class="on"' : "") + ">Reauthorization</button>" +
@@ -698,6 +814,79 @@
   }
 
   // ---- add / edit a form -------------------------------------------------
+  // One text box. A requirement is a sentence, and an editor with a rich
+  // toolbar would invite formatting that the payer's own document does not use.
+  function requirementDialog(opts) {
+    const wrap = document.createElement("div");
+    wrap.className = "bh-modal";
+    wrap.innerHTML = '<div class="box">' +
+      "<h3>" + esc(opts.title) + "</h3>" +
+      '<div class="bh-err" id="bh-rq-err" style="display:none;"></div>' +
+      (opts.original
+        ? '<div style="font-size:12px;color:var(--text-muted,#6b6a86);margin-bottom:10px;">' +
+          "The cheat sheet says: <em>" + esc(opts.original) + "</em></div>"
+        : "") +
+      '<div class="bh-fld"><label>Requirement</label>' +
+        '<textarea id="bh-rq-text" rows="4">' + esc(opts.value || "") + "</textarea>" +
+        '<div class="hint">Written as the payer words it. This replaces what BCBAs see for this payer only.</div></div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">' +
+        '<button class="bh-btn sm" id="bh-rq-cancel">Cancel</button>' +
+        '<button class="bh-btn primary sm" id="bh-rq-save">Save</button>' +
+      "</div></div>";
+    document.body.appendChild(wrap);
+    const close = () => wrap.remove();
+    wrap.addEventListener("click", (e) => { if (e.target === wrap) close(); });
+    wrap.querySelector("#bh-rq-cancel").addEventListener("click", close);
+    const err = wrap.querySelector("#bh-rq-err");
+    wrap.querySelector("#bh-rq-save").addEventListener("click", async () => {
+      const text = wrap.querySelector("#bh-rq-text").value.trim();
+      if (!text) { err.style.display = "block"; err.textContent = "A requirement needs some text."; return; }
+      try { await opts.onSave(text); close(); }
+      catch (e) { err.style.display = "block"; err.textContent = e.message; }
+    });
+    setTimeout(() => { const t = wrap.querySelector("#bh-rq-text"); if (t) t.focus(); }, 30);
+  }
+
+  function preauthDialog(p, after) {
+    const cur = (p.preauth && p.preauth.required) || "unknown";
+    const opt = (v, label) =>
+      '<label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;font-size:13.5px;">' +
+      '<input type="radio" name="bh-pa" value="' + v + '"' + (cur === v ? " checked" : "") + " />" +
+      "<span>" + esc(label) + "</span></label>";
+    const wrap = document.createElement("div");
+    wrap.className = "bh-modal";
+    wrap.innerHTML = '<div class="box">' +
+      "<h3>Pre-authorization &mdash; " + esc(p.name) + "</h3>" +
+      '<div class="bh-err" id="bh-pa-err" style="display:none;"></div>' +
+      opt("required", "A pre-authorization is required before the assessment") +
+      opt("not_required", "No pre-authorization is required for the assessment") +
+      opt("unknown", "Not known / not recorded") +
+      '<div class="bh-fld" style="margin-top:10px;"><label>Note</label>' +
+        '<textarea id="bh-pa-note" rows="3">' + esc((p.preauth && p.preauth.note) || "") + "</textarea>" +
+        '<div class="hint">What the payer actually says, and where it came from. This is shown under the marker.</div></div>' +
+      '<p style="font-size:11.5px;color:var(--text-muted,#6b6a86);margin:8px 0 0;">Saving records this as set by the practice rather than quoted from the cheat sheet.</p>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">' +
+        '<button class="bh-btn sm" id="bh-pa-cancel">Cancel</button>' +
+        '<button class="bh-btn primary sm" id="bh-pa-save">Save</button>' +
+      "</div></div>";
+    document.body.appendChild(wrap);
+    const close = () => wrap.remove();
+    wrap.addEventListener("click", (e) => { if (e.target === wrap) close(); });
+    wrap.querySelector("#bh-pa-cancel").addEventListener("click", close);
+    const err = wrap.querySelector("#bh-pa-err");
+    wrap.querySelector("#bh-pa-save").addEventListener("click", async () => {
+      const sel = wrap.querySelector('input[name="bh-pa"]:checked');
+      try {
+        await api("/api/bcba/payers/" + encodeURIComponent(p.key) + "/preauth", {
+          method: "PUT",
+          body: { required: sel ? sel.value : "unknown", note: wrap.querySelector("#bh-pa-note").value.trim() },
+        });
+        close();
+        await after();
+      } catch (e) { err.style.display = "block"; err.textContent = e.message; }
+    });
+  }
+
   function formDialog(existing) {
     const f = existing || {};
     const cats = state.categories.map((c) =>
@@ -845,6 +1034,69 @@
       savePlace();
       render();
     }));
+    // ---- editing a payer's requirements ---------------------------------
+    // Every one of these reloads the cheat sheet from the server afterwards
+    // rather than patching the page. The overlay is applied server-side, and a
+    // page that guessed at the result would drift from what the next person to
+    // open it sees.
+    const reloadCheatsheet = async () => { await loadCheatsheet(); render(); };
+
+    mountEl.querySelectorAll("[data-req-edit]").forEach((b) => b.addEventListener("click", (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      requirementDialog({
+        title: "Change this requirement",
+        value: b.dataset.reqOrig,
+        original: b.dataset.reqOrig,
+        onSave: async (text) => {
+          await api("/api/bcba/requirements", { method: "POST", body: {
+            payer_key: b.dataset.reqPayer, list_key: b.dataset.reqList,
+            op: "edit", original_text: b.dataset.reqOrig, text,
+          } });
+          await reloadCheatsheet();
+        },
+      });
+    }));
+
+    mountEl.querySelectorAll("[data-req-remove]").forEach((b) => b.addEventListener("click", async (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      // Confirmed, because it takes a line off what every BCBA is told to
+      // submit. It is recoverable -- the original is kept and Revert puts it
+      // back -- and the wording says so, so nobody is scared off a correction.
+      if (!window.confirm("Take this requirement off " + b.dataset.reqPayer + "'s list?\n\n" +
+        b.dataset.reqOrig + "\n\nThe cheat sheet's wording is kept and you can put it back.")) return;
+      await api("/api/bcba/requirements", { method: "POST", body: {
+        payer_key: b.dataset.reqPayer, list_key: b.dataset.reqList,
+        op: "remove", original_text: b.dataset.reqOrig,
+      } });
+      await reloadCheatsheet();
+    }));
+
+    mountEl.querySelectorAll("[data-req-add]").forEach((b) => b.addEventListener("click", (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      requirementDialog({
+        title: "Add a requirement",
+        value: "",
+        onSave: async (text) => {
+          await api("/api/bcba/requirements", { method: "POST", body: {
+            payer_key: b.dataset.reqPayer, list_key: b.dataset.reqAdd, op: "add", text,
+          } });
+          await reloadCheatsheet();
+        },
+      });
+    }));
+
+    mountEl.querySelectorAll("[data-req-undo]").forEach((b) => b.addEventListener("click", async (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      await api("/api/bcba/requirements/" + encodeURIComponent(b.dataset.reqUndo), { method: "DELETE" });
+      await reloadCheatsheet();
+    }));
+
+    mountEl.querySelectorAll("[data-preauth]").forEach((b) => b.addEventListener("click", (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const p = state.payers.find((x) => x.key === b.dataset.preauth);
+      preauthDialog(p, reloadCheatsheet);
+    }));
+
     mountEl.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
       state.mode = b.dataset.mode;
       savePlace();
@@ -952,6 +1204,8 @@
     state.payers = d.payers || [];
     state.categories = d.categories || state.categories;
     state.canManageForms = !!d.can_manage_forms;
+    state.canEditRequirements = !!d.can_edit_requirements;
+    state.orphanedEdits = d.orphaned_edits || [];
   }
 
   // The two halves are joined by the form codes, so a change to the library
