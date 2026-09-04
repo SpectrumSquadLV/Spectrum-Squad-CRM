@@ -91,6 +91,29 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TEXT NOT NULL
 );
 
+-- Forgotten-password links.
+--
+-- WHAT IS STORED IS A HASH, NOT THE LINK. The token in the email is 32 random
+-- bytes; only its SHA-256 lands here. A leaked backup, or anyone who can read
+-- this table, therefore holds nothing they can sign in with -- the same reason
+-- passwords are not stored either.
+--
+-- Rows are kept after use rather than deleted. Who asked for a reset, from
+-- which address, when, and whether the link was ever opened is a record of
+-- something that happened to an account, and it is the only place that record
+-- exists.
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  token_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  invalidated_at TEXT,
+  requested_email TEXT,
+  requested_ip TEXT
+);
+
 CREATE TABLE IF NOT EXISTS clients (
   id SERIAL PRIMARY KEY,
   child_name TEXT NOT NULL,
@@ -602,6 +625,13 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS module_access TEXT;
   INSERT INTO app_settings (key, value, updated_at)
   VALUES ('eligibility_check_email', 'vb@cubetherapybilling.com', now()::text)
   ON CONFLICT (key) DO NOTHING;
+
+  -- A reset link is looked up by its hash on every attempt, so the lookup is
+  -- indexed. The index is NOT unique: two rows could in principle carry the
+  -- same hash, and a unique index would turn that into a 500 on an endpoint
+  -- anyone can reach.
+  CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens (token_hash);
+  CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens (user_id);
 `;
 
 async function initSchema() {
@@ -744,6 +774,86 @@ function parseCookies(req) {
   return out;
 }
 
+// ---- Forgotten-password links -------------------------------------------
+// A link is 32 random bytes, good for one hour and one use.
+//
+// THE RAW TOKEN IS NEVER STORED. It exists in the email and in the URL the
+// person clicks, and nowhere else; the database holds only its SHA-256. So
+// reading `password_reset_tokens` -- a backup, a support query, a leak -- hands
+// over nothing that can sign in as anybody. This is the same reason the users
+// table holds a password hash rather than a password, and it costs one line.
+//
+// SHA-256 rather than scrypt on purpose: a password is short, low-entropy and
+// worth grinding at, which is what a slow KDF defends against. A 256-bit random
+// token has nothing to grind, and this hash runs on an endpoint anyone can
+// reach, so a deliberately slow one would be a way to exhaust the server.
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+function hashResetToken(rawToken) {
+  return crypto.createHash("sha256").update(String(rawToken)).digest("hex");
+}
+
+// Issue a link for a user who exists. Any link already outstanding for that
+// account is invalidated first, so asking twice does not leave two working
+// keys to the same door -- only the newest email is live.
+async function createPasswordResetToken(user, { requestedEmail = null, ip = null } = {}) {
+  const rawToken = crypto.randomBytes(32).toString("hex");
+  await dbRun(
+    "UPDATE password_reset_tokens SET invalidated_at = ? WHERE user_id = ? AND used_at IS NULL AND invalidated_at IS NULL",
+    [nowISO(), user.id]
+  );
+  await dbRun(
+    `INSERT INTO password_reset_tokens (user_id, token_hash, created_at, expires_at, requested_email, requested_ip)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      user.id,
+      hashResetToken(rawToken),
+      nowISO(),
+      new Date(Date.now() + RESET_TOKEN_TTL_MS).toISOString(),
+      requestedEmail || user.email,
+      ip || null,
+    ]
+  );
+  return rawToken;
+}
+
+// Look a token up without spending it, so the page can say "this link has
+// expired" before somebody types a new password twice. Returns the row and the
+// user, or null with a reason.
+async function findPasswordResetToken(rawToken) {
+  const raw = String(rawToken || "");
+  // A token is 64 hex characters. Anything else never reaches the database.
+  if (!/^[a-f0-9]{64}$/i.test(raw)) return { ok: false, reason: "invalid" };
+  const row = await dbGet(
+    "SELECT * FROM password_reset_tokens WHERE token_hash = ? ORDER BY id DESC LIMIT 1",
+    [hashResetToken(raw)]
+  );
+  if (!row) return { ok: false, reason: "invalid" };
+  if (row.used_at) return { ok: false, reason: "used" };
+  if (row.invalidated_at) return { ok: false, reason: "superseded" };
+  if (new Date(row.expires_at) < new Date()) return { ok: false, reason: "expired" };
+  const user = await dbGet("SELECT * FROM users WHERE id = ?", [row.user_id]);
+  if (!user) return { ok: false, reason: "invalid" };
+  return { ok: true, row, user };
+}
+
+// Set the password and spend the link.
+//
+// EVERY SESSION FOR THAT ACCOUNT IS ENDED. Somebody resetting a password may be
+// doing it because they think someone else is in their account; leaving that
+// someone else signed in would defeat the entire exercise. It also matches what
+// people expect a password change to mean.
+async function completePasswordReset(row, user, newPassword) {
+  const { hash, salt } = hashPassword(String(newPassword));
+  await dbRun("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?", [hash, salt, user.id]);
+  await dbRun("UPDATE password_reset_tokens SET used_at = ? WHERE id = ?", [nowISO(), row.id]);
+  await dbRun(
+    "UPDATE password_reset_tokens SET invalidated_at = ? WHERE user_id = ? AND used_at IS NULL AND invalidated_at IS NULL",
+    [nowISO(), user.id]
+  );
+  await dbRun("DELETE FROM sessions WHERE user_id = ?", [user.id]);
+}
+
 const auth = { createUser, findUserByEmail, login, logout, getUserFromToken, parseCookies, sanitizeUser };
 
 // ============================== EMAIL ==============================
@@ -856,6 +966,57 @@ async function sendEmail({ to, subject, html, clientId = null, type = "parent_mi
     [clientId, type, to, subject, branded, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : "")]
   );
 
+  return { delivered, errorMsg };
+}
+
+// Minimal HTML escaping for values interpolated into an email body.
+function escapeHtml(str) {
+  return String(str == null ? "" : str)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// ---- Password reset email --------------------------------------------------
+// Deliberately NOT sent through sendEmail().
+//
+// sendEmail writes the html it sent into notifications_log, and the Message
+// Outbox renders that table to every owner and admin. A reset link stored there
+// is a working key to somebody else's account sitting on a screen -- an admin
+// could take over the owner's login without ever knowing the password, and
+// "resend" would happily mail that key again.
+//
+// So the send happens directly and the LOG ROW CARRIES NO LINK. The record that
+// a reset was requested and whether it went out is kept, because that is worth
+// having when somebody asks why they got an email; the credential in it is not.
+async function sendPasswordResetEmail(user, rawToken) {
+  const link = `${APP_BASE_URL}/#/reset-password?token=${rawToken}`;
+  const subject = "Reset your Spectrum Squad CRM password";
+  const html = `
+    <p>Hi ${escapeHtml(user.name || "there")},</p>
+    <p>Someone asked to reset the password for the Spectrum Squad CRM account registered to this address. If that was you, use the button below.</p>
+    <p style="text-align:center;margin:26px 0;">
+      <a href="${link}" style="background:#e0a430;color:#1b2a6b;font-weight:700;text-decoration:none;padding:12px 26px;border-radius:999px;font-size:15px;display:inline-block;">Choose a new password</a>
+    </p>
+    <p style="font-size:13px;color:#555;">This link works once and expires in one hour. If the button does not work, paste this into your browser:</p>
+    <p style="font-size:12px;word-break:break-all;color:#555;">${link}</p>
+    <p style="font-size:13px;color:#555;">If you did not ask for this, you can ignore this email &mdash; your password has not changed and nobody has been given access to your account.</p>
+    <p>Spectrum Squad</p>
+  `;
+  const { delivered, errorMsg } = await deliverEmail({ to: user.email, subject, html: brandedEmail(html) });
+
+  await dbRun(
+    `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      null,
+      "password_reset",
+      user.email,
+      subject,
+      "<p>A password reset link was emailed to this address. The link itself is deliberately not recorded here.</p>",
+      nowISO(),
+      delivered + (errorMsg ? `: ${errorMsg}` : ""),
+    ]
+  );
   return { delivered, errorMsg };
 }
 
@@ -4245,6 +4406,11 @@ const stripeClient = require("./stripe-client");
 const PUBLIC_ROUTES = new Set([
   "/api/stripe/webhook",
   "/api/auth/login",
+  // Forgotten-password endpoints are reachable without a session, which is the
+  // entire point: the person using them cannot sign in.
+  "/api/auth/forgot-password",
+  "/api/auth/reset-password",
+  "/api/auth/reset-password/check",
   "/api/webhook/enrollment",
   "/api/admin/backfill-import",
   "/api/admin/purge-demo",
@@ -4395,6 +4561,43 @@ setInterval(() => {
   const cutoff = Date.now() - LOGIN_LOCK_MS;
   for (const [k, v] of loginAttempts) if (v.last < cutoff) loginAttempts.delete(k);
 }, LOGIN_LOCK_MS).unref?.();
+
+// ---- Reset-request throttling -----------------------------------------
+// Separate from login throttling, because the abuse is different. Nobody is
+// guessing a password here: the endpoint MAILS somebody, so an unlimited one is
+// a way to bury a colleague's inbox, and a way to burn through the email
+// provider's quota. Counted per IP and per address independently -- one
+// attacker hitting many addresses is capped by the IP, and many machines aimed
+// at one address are capped by the address.
+// Per ADDRESS, which is what actually protects an inbox: five links to one
+// mailbox in an hour is already more than anybody needs.
+const RESET_MAX_PER_WINDOW = 5;
+// Per IP, deliberately looser. A practice shares one office connection, so a
+// tight per-IP cap would mean the fifth person that morning to forget their
+// password is told to come back later -- punishing the office for being an
+// office. This is a backstop against a script, not the real limit.
+const RESET_MAX_PER_IP = 15;
+const RESET_WINDOW_MS = 60 * 60 * 1000;
+const resetRequests = new Map();
+
+function requestIp(req) {
+  const fwd = (req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return fwd || (req.socket && req.socket.remoteAddress) || "unknown";
+}
+// Returns true when this key is over its limit. Counts the attempt either way,
+// so hammering a throttled key keeps it throttled.
+function noteResetRequest(key, max = RESET_MAX_PER_WINDOW) {
+  const now = Date.now();
+  const rec = resetRequests.get(key) || { count: 0, first: now };
+  if (now - rec.first > RESET_WINDOW_MS) { rec.count = 0; rec.first = now; }
+  rec.count += 1;
+  resetRequests.set(key, rec);
+  return rec.count > max;
+}
+setInterval(() => {
+  const cutoff = Date.now() - RESET_WINDOW_MS;
+  for (const [k, v] of resetRequests) if (v.first < cutoff) resetRequests.delete(k);
+}, RESET_WINDOW_MS).unref?.();
 
 // Returns true if the route was handled.
 async function handle(req, res, pathname, method, query = {}) {
@@ -4584,6 +4787,11 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  if (pathname.startsWith("/api/drive-notes/")) {
+    const handled = await driveNotes.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/grants/")) {
     const handled = await grants.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -4725,6 +4933,101 @@ async function handle(req, res, pathname, method, query = {}) {
 
     if (pathname === "/api/auth/me" && method === "GET") {
       return json(res, 200, { user });
+    }
+
+    // ---------- FORGOTTEN PASSWORD ----------
+    // THE ANSWER IS THE SAME WHETHER OR NOT THE ADDRESS HAS AN ACCOUNT.
+    // A different message, a different status code, or a visibly different
+    // response time each turn this endpoint into a way to ask "does this person
+    // work here?" -- and the addresses are staff addresses at a named practice,
+    // so that question has an answer worth protecting. Anyone who genuinely has
+    // an account gets the email; anyone who does not gets the same sentence.
+    if (pathname === "/api/auth/forgot-password" && method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const typed = String(body.email || "").trim().toLowerCase();
+      const NEUTRAL = "If that address has an account, we have sent it a link to reset the password.";
+
+      const ip = requestIp(req);
+      // Both counters are advanced on every call, so a throttled caller cannot
+      // learn anything from which limit it hit.
+      const overIp = noteResetRequest("ip:" + ip, RESET_MAX_PER_IP);
+      const overEmail = typed ? noteResetRequest("email:" + typed) : false;
+      if (overIp || overEmail) {
+        return json(res, 429, { error: "Too many reset requests. Please try again later." });
+      }
+      if (!typed || !typed.includes("@")) {
+        // Still the neutral answer: "that is not an email address" is only
+        // useful to somebody probing, and a real person mistypes into the login
+        // box, not into this one.
+        return json(res, 200, { ok: true, message: NEUTRAL });
+      }
+
+      const target = await auth.findUserByEmail(typed).catch(() => null);
+      let rawToken = null;
+      if (target) rawToken = await createPasswordResetToken(target, { requestedEmail: typed, ip });
+
+      // Answer BEFORE the email goes out. Waiting on the provider would make a
+      // known address measurably slower than an unknown one, which is the
+      // enumeration this endpoint just went to the trouble of preventing.
+      json(res, 200, { ok: true, message: NEUTRAL });
+      if (target && rawToken) {
+        sendPasswordResetEmail(target, rawToken).catch((e) =>
+          console.error("[password-reset] could not send:", e && e.message)
+        );
+      }
+      return true;
+    }
+
+    // Check a link before asking somebody to type a new password into it.
+    // Spends nothing: the token is still usable afterwards.
+    //
+    // A POST, and the token travels in the BODY, for a reason a browser test
+    // caught: this started out as GET /api/auth/reset-password?token=... and a
+    // query string is written to the HTTP access log by every proxy it passes
+    // through. That would have put a live key to somebody's account into
+    // Railway's request log for the whole retention window -- readable by
+    // anyone with project access, and nowhere near the database where the
+    // rest of this feature is careful never to store one. A request body is
+    // not logged. It is not a read in the REST sense either way; it is
+    // presenting a secret.
+    if (pathname === "/api/auth/reset-password/check" && method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const found = await findPasswordResetToken(body.token);
+      if (!found.ok) return json(res, 200, { valid: false, reason: found.reason });
+      // The masked address confirms WHICH account is being reset, for anyone
+      // who has more than one. It is only reachable by holding a secret that
+      // was mailed to that address, so it discloses nothing to anybody else.
+      const [local, domain] = String(found.user.email || "").split("@");
+      const masked = `${(local || "").slice(0, 2)}${"*".repeat(Math.max(1, (local || "").length - 2))}@${domain || ""}`;
+      return json(res, 200, { valid: true, email_hint: masked });
+    }
+
+    if (pathname === "/api/auth/reset-password" && method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      // A far looser cap than requesting a link. The token is 256 random bits,
+      // so this is not defending against guessing -- it is only here so a
+      // broken client cannot hammer the endpoint. A whole office sharing one
+      // office IP has to fit under it, and five would not have been enough.
+      if (noteResetRequest("use:" + requestIp(req), 60)) {
+        return json(res, 429, { error: "Too many attempts. Please try again later." });
+      }
+      const password = String(body.password || "");
+      // The same rule the admin "set a password" form applies. One policy, in
+      // both places, or the weaker door is the one that gets used.
+      if (password.length < 8) {
+        return json(res, 400, { error: "New password must be at least 8 characters." });
+      }
+      const found = await findPasswordResetToken(body.token);
+      if (!found.ok) {
+        const why = {
+          expired: "That link has expired. Please request a new one.",
+          used: "That link has already been used. Please request a new one.",
+          superseded: "A newer reset link was sent. Please use the most recent email.",
+        };
+        return json(res, 400, { error: why[found.reason] || "That reset link is not valid. Please request a new one." });
+      }
+      await completePasswordReset(found.row, found.user, password);
+      return json(res, 200, { ok: true, message: "Your password has been updated. You can sign in with it now." });
     }
 
     // ---------- DASHBOARD ----------
@@ -7477,6 +7780,10 @@ const PUBLIC_FILES = new Set([
   "/geo-map-frontend.js",
   "/bip-frontend.js",
   "/client-behavior-frontend.js",
+  // The Drive notes import screen. Same trap as the two entries below: leave it
+  // off the allowlist and the file 404s, window.__renderDriveNotesImport never
+  // defines, and #/drive-notes-import silently falls back to Admin Settings.
+  "/drive-notes-frontend.js",
   "/people-frontend.js",
   "/signnow-import-frontend.js",
   "/new-hire.html",
@@ -7747,6 +8054,17 @@ const bcbaHub = require("./bcba-hub")({
 // staff_tasks, auth_alerts, hr_employees, supervision_logs and Rethink -- and
 // keeps no caseload table of its own, so it cannot disagree with the client
 // card. The schedule is read from Rethink and never written back. =====
+// ===== DRIVE NOTES: the one-time import of each client's Google Drive folder,
+// shown in Programming. A SNAPSHOT, and labelled as one everywhere it appears:
+// the practice keeps working in Drive, so every row carries the date it was
+// taken. Owns /api/drive-notes/*. It writes only to its own table -- the plan,
+// client_notes and bip_notes are untouched -- and a folder whose initials match
+// two children, or none, is filed as unmatched for a person to resolve rather
+// than guessed at. =====
+const driveNotes = require("./drive-notes")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, canAccessClients,
+});
+
 const bcbaDashboard = require("./bcba-dashboard")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, canAccessClients,
   // Read-only, unstored: see the note on fetchAppointments in rethink.js.
@@ -7967,6 +8285,7 @@ async function start() {
   await bip.initTables().catch((e) => console.error("BIP initTables failed:", e));
   await bcbaHub.initTables().catch((e) => console.error("BCBA Hub initTables failed:", e));
   await bcbaDashboard.initTables().catch((e) => console.error("BCBA dashboard initTables failed:", e));
+  await driveNotes.initTables().catch((e) => console.error("Drive notes initTables failed:", e));
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
   await grants.initTables().catch((e) => console.error("Grants initTables failed:", e));
   await scheduling.initTables().catch((e) => console.error("Scheduling initTables failed:", e));
