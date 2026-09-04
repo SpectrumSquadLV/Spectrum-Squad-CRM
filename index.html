@@ -976,17 +976,21 @@ const NAV_GROUPS = [
     members: ["pipeline", "client-behavior", "auth-alerts", "outbox", "leads"] },
   { key: "grp-staff", label: "Staff",
     members: ["staff", "attendance", "supervision", "billable", "pto", "hr"] },
+  // Map is deliberately NOT in here. Grouping put it behind a heading that
+  // renders collapsed, and from the outside that is indistinguishable from the
+  // Map having been removed -- which is exactly how it was reported. It goes
+  // back to the top level, where it was before the sidebar was grouped.
   { key: "grp-practice", label: "Practice",
-    members: ["events", "policies", "map", "financial-center", "grants", "supply", "ot"] },
+    members: ["events", "policies", "financial-center", "grants", "supply", "ot"] },
   { key: "grp-admin", label: "Admin",
     members: ["admin", "rethink-clients", "signnow-import", "email-templates", "failed-emails"] },
 ];
 const NAV_GROUP_OF = new Map();
 NAV_GROUPS.forEach((g) => g.members.forEach((k) => NAV_GROUP_OF.set(k, g.key)));
-// Where each top-level unit sits before an admin rearranges anything. The three
+// Where each top-level unit sits before an admin rearranges anything. The
 // entries that stay loose are the ones you reach for constantly and would not
 // want to open a group to find.
-const NAV_UNIT_ORDER = ["dashboard", "grp-clients", "bcba-hub", "tasks", "grp-staff", "grp-practice", "grp-admin"];
+const NAV_UNIT_ORDER = ["dashboard", "grp-clients", "bcba-hub", "tasks", "map", "grp-staff", "grp-practice", "grp-admin"];
 
 const MODULE_CATALOG = {
   dashboard: { label: "Dashboard", icon: "◧" },
