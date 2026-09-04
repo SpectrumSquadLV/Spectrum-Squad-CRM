@@ -177,6 +177,71 @@ const feed = (rows, extra = {}) => { stub.dwhGetAllPages = async () => ({ rows, 
     check("and only the fill is counted", out.insurance_filled === 1, out.insurance_filled);
   }
 
+  // Production ran this and flagged two children as funder conflicts whose
+  // appointments read "Molina" and "Molina MCO" -- one payer spelled two ways.
+  // Refusing to fill on that is over-cautious in the most ordinary case there
+  // is, so spellings of one payer now collapse.
+  section("Two spellings of one payer are not a conflict");
+  {
+    const s = freshState();
+    s.clients.push({ id: 1, child_name: "David", rethink_client_id: "R-100", insurance_provider: null });
+    const r = initRethink(makeCtx(s));
+    feed([
+      { clientId: "R-100", appointmentDate: "2026-08-01T00:00:00", funder: "Molina" },
+      { clientId: "R-100", appointmentDate: "2026-09-01T00:00:00", funder: "Molina MCO" },
+    ]);
+    const out = await r._activity.scanAppointmentActivity();
+    check("it is not reported as a conflict", out.insurance_conflict_count === 0, out.insurance_conflicts);
+    check("the payer on the MOST RECENT session wins -- the one billing is using now",
+      s.clients[0].insurance_provider === "Molina MCO", s.clients[0].insurance_provider);
+    check("and it counts as a fill", out.insurance_filled === 1, out.insurance_filled);
+  }
+  {
+    const s = freshState();
+    s.clients.push({ id: 1, child_name: "Lexie", rethink_client_id: "R-100", insurance_provider: null });
+    const r = initRethink(makeCtx(s));
+    // The same two spellings, arriving in the other order.
+    feed([
+      { clientId: "R-100", appointmentDate: "2026-09-01T00:00:00", funder: "Molina" },
+      { clientId: "R-100", appointmentDate: "2026-08-01T00:00:00", funder: "Molina MCO" },
+    ]);
+    await r._activity.scanAppointmentActivity();
+    check("order of arrival does not decide it -- the date does",
+      s.clients[0].insurance_provider === "Molina", s.clients[0].insurance_provider);
+  }
+
+  // The reason containment is compared on whole tokens and never on raw
+  // substrings. "VA" sits inside "Nevada", and merging those two would put the
+  // wrong payer on a claim.
+  section("A short name inside a longer word is NOT the same payer");
+  {
+    const s = freshState();
+    s.clients.push({ id: 1, child_name: "Ada", rethink_client_id: "R-100", insurance_provider: null });
+    const r = initRethink(makeCtx(s));
+    feed([
+      { clientId: "R-100", appointmentDate: "2026-08-01T00:00:00", funder: "VA" },
+      { clientId: "R-100", appointmentDate: "2026-09-01T00:00:00", funder: "Nevada Medicaid" },
+    ]);
+    const out = await r._activity.scanAppointmentActivity();
+    check("VA and Nevada Medicaid stay a conflict", out.insurance_conflict_count === 1, out.insurance_conflicts);
+    check("and NOTHING is written", s.clients[0].insurance_provider === null, s.clients[0].insurance_provider);
+  }
+  {
+    const s = freshState();
+    s.clients.push({ id: 1, child_name: "Ada", rethink_client_id: "R-100", insurance_provider: null });
+    const r = initRethink(makeCtx(s));
+    // Three names, two of them one payer and one of them not.
+    feed([
+      { clientId: "R-100", appointmentDate: "2026-08-01T00:00:00", funder: "Molina" },
+      { clientId: "R-100", appointmentDate: "2026-08-15T00:00:00", funder: "Molina MCO" },
+      { clientId: "R-100", appointmentDate: "2026-09-01T00:00:00", funder: "Anthem" },
+    ]);
+    const out = await r._activity.scanAppointmentActivity();
+    check("one odd name out still makes the whole thing a conflict",
+      out.insurance_conflict_count === 1 && out.insurance_conflicts[0].funders.length === 3, out.insurance_conflicts);
+    check("and nothing is written", s.clients[0].insurance_provider === null, s.clients[0].insurance_provider);
+  }
+
   section("Disagreeing funders are reported, not guessed at");
   {
     const s = freshState();
@@ -190,7 +255,7 @@ const feed = (rows, extra = {}) => { stub.dwhGetAllPages = async () => ({ rows, 
     check("NOTHING is written when the appointments name two funders",
       s.clients[0].insurance_provider === null, s.clients[0].insurance_provider);
     check("the conflict is surfaced with both names so billing can settle it",
-      out.insurance_conflicts.length === 1 && out.insurance_conflicts[0].funders.length === 2,
+      out.insurance_conflict_count === 1 && out.insurance_conflicts[0].funders.length === 2,
       out.insurance_conflicts);
     check("and it is not counted as a fill", out.insurance_filled === 0, out.insurance_filled);
   }
