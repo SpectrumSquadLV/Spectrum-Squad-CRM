@@ -849,6 +849,7 @@ async function route() {
   else if (hash.startsWith("#/pto")) { if (window.__renderPto) await window.__renderPto(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/client-behavior")) { if (window.__renderClientBehavior) await window.__renderClientBehavior(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/bcba-hub")) { if (window.__renderBcbaHub) await window.__renderBcbaHub(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/rethink-clients")) { if (window.__renderRethinkMatch) await window.__renderRethinkMatch(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/events")) { if (window.__renderEvents) await window.__renderEvents(mount); else await renderDashboard(mount); }
@@ -890,6 +891,7 @@ const MODULE_CATALOG = {
   pto: { label: "PTO Balances", icon: "◇" },
   supervision: { label: "RBT Supervision", icon: "▥" },
   "client-behavior": { label: "Client Behavior", icon: "◑", hash: "#/client-behavior" },
+  "bcba-hub": { label: "BCBA Hub", icon: "◑", hash: "#/bcba-hub" },
   "rethink-clients": { label: "Rethink Client Matching", icon: "⧉", hash: "#/rethink-clients" },
   leads: { label: "Lead Management", icon: "◎" },
   events: { label: "Events", icon: "▽" },
@@ -959,6 +961,13 @@ function renderShell(active) {
   // what actually enforces it.
   if (!OT_ONLY && canAccessClients())
     navItems.push({ key: "client-behavior", label: "Client Behavior", icon: "◑", hash: "#/client-behavior" });
+  // The BCBA Hub: payer requirements and blank forms. It holds NO client
+  // information, so its access rule is about who does clinical and
+  // authorization work rather than who may see a child's record -- billing is
+  // included because submitting the authorization request is their job.
+  // Same list bcba-hub.js enforces; the nav entry only hides it.
+  if (!OT_ONLY && ["owner", "super_admin", "admin", "clinical", "billing"].includes(state.user.role))
+    navItems.push({ key: "bcba-hub", label: "BCBA Hub", icon: "◑", hash: "#/bcba-hub" });
   if (!OT_ONLY) {
     navItems.push({ key: "tasks", label: "Tasks & Alerts", icon: "✓" });
   }
@@ -6059,6 +6068,7 @@ function openAccessModal(u, onDone) {
   <script src="geo-map-frontend.js"></script>
   <script src="bip-frontend.js"></script>
   <script src="client-behavior-frontend.js"></script>
+  <script src="bcba-hub-frontend.js"></script>
   <script src="people-frontend.js"></script>
   <script src="signnow-import-frontend.js"></script>
 
