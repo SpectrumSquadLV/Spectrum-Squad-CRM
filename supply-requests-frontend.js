@@ -52,7 +52,7 @@
     const btn = document.createElement("button");
     btn.className = "nav-item";
     btn.id = "supply-nav-btn";
-    btn.innerHTML = "<span>▩</span> Supply Requests";
+    btn.innerHTML = "Supply Requests";
     btn.addEventListener("click", () => { location.hash = HASH; });
     nav.appendChild(btn);
   }

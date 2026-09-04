@@ -458,7 +458,7 @@
     const btn = document.createElement("button");
     btn.className = "nav-item";
     btn.id = "ofin-settings-nav-btn";
-    btn.textContent = "⚙ Financial Settings";
+    btn.textContent = "Financial Settings";
     btn.addEventListener("click", () => {
       location.hash = SETTINGS_HASH;
     });

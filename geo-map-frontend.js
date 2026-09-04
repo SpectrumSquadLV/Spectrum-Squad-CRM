@@ -99,7 +99,7 @@
     const btn = document.createElement("button");
     btn.className = "nav-item";
     btn.id = "map-nav-btn";
-    btn.innerHTML = "<span>◈</span> Map";
+    btn.innerHTML = "Map";
     btn.addEventListener("click", () => { location.hash = HASH; });
     nav.appendChild(btn);
   }

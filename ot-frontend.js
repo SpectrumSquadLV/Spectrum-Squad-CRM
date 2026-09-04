@@ -32,7 +32,7 @@
     const btn = document.createElement("button");
     btn.className = "nav-item";
     btn.id = "ot-nav-btn";
-    btn.innerHTML = '<span>◑</span> Occupational Therapy';
+    btn.innerHTML = 'Occupational Therapy';
     btn.addEventListener("click", () => { location.hash = HASH; });
     nav.appendChild(btn);
   }
