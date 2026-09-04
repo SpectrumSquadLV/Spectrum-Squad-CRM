@@ -186,8 +186,20 @@ function parseBipDoc(raw, opts = {}) {
   }
 
   const behaviors = [];
+  const width = rows[headerAt].length;
   for (let i = headerAt + 1; i < rows.length; i++) {
     const cells = rows[i];
+    // The plan table ends where the next table begins. Real documents carry a
+    // second table after the plan -- an empty data-collection log with columns
+    // Date / RBT / Duration / Comments -- and reading straight through it
+    // turned that log's HEADER into a target behaviour called "RBT", with
+    // every field blank, sitting in a child's plan looking like clinical
+    // content. A differing column count, or a row that reads as a header in
+    // its own right, ends the table.
+    if (cells.length !== width) break;
+    const again = readHeader(cells);
+    if (again.behavior !== undefined
+        && (again.prevention_strategies !== undefined || again.response_strategy !== undefined)) break;
     const parsed = splitBehaviorCell(cells[cols.behavior] || "");
     if (!parsed) {
       const any = cells.map(tidy).join("").trim();

@@ -135,6 +135,28 @@ const DOC = [
     v.behaviors[0].prevention_strategies === "- Warn first"
       && v.behaviors[0].response_strategy === "- Block attempts", v.behaviors[0]);
 
+  // Found on a real document, which carries the plan table and then an EMPTY
+  // data-collection log. Reading straight through turned that log's header row
+  // into a target behaviour named "RBT" with every field blank -- a junk entry
+  // sitting in a child's plan looking like clinical content.
+  section("A second table in the document is not read as more behaviours");
+  const TWO_TABLES = [
+    "| \\*\\*Antecedent Strategies:\\*\\* | \\*\\*Behavior:\\*\\* | \\*\\*Consequence Intervention:\\*\\* |",
+    "| - Set firm expectations | \\*\\*Non-Compliance:\\*\\* - Does not follow the first redirection. | - Remain neutral |",
+    "|   |   |   |",
+    "",
+    "| \\*\\*Date:\\*\\* | \\*\\*RBT:\\*\\* | \\*\\*Duration of non-compliance:\\*\\* | \\*\\*Comments:\\*\\* |",
+    "|   |   |   |   |",
+  ].join("\n");
+  const tt = parseBipDoc(TWO_TABLES, {});
+  check("only the plan table is read", tt.ok && tt.behaviors.length === 1, tt.behaviors.map((b) => b.name));
+  check("THE LOG TABLE'S HEADER DOES NOT BECOME A BEHAVIOUR CALLED \"RBT\"",
+    !tt.behaviors.some((b) => /^(RBT|Date|Comments|Duration)/i.test(b.name)), tt.behaviors.map((b) => b.name));
+  check("the real behaviour is still complete",
+    tt.behaviors[0].name === "Non-Compliance"
+      && /first redirection/.test(tt.behaviors[0].operational_definition)
+      && tt.behaviors[0].prevention_strategies === "- Set firm expectations", tt.behaviors[0]);
+
   section("It cannot hand the matcher a confident match");
   // bip.js scores full name 100 + initials 55 = 155, and calls >= 135
   // "confident" -- which skips human confirmation. Emitting only initials and a
