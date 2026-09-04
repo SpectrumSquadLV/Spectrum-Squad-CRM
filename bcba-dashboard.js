@@ -784,16 +784,153 @@ module.exports = function initBcbaDashboard(ctx) {
 
     // The picker's options, and only ever people who are actually assigned as a
     // BCBA on a client. Not a staff directory.
+    // ---- one person, one row -------------------------------------------
+    //
+    // assigned_bcba_name and the two beside it are FREE TEXT, typed by whoever
+    // filed the client. So the same person arrives as "Marissa" on some records
+    // and "Marissa Gaut" on others, and every screen that groups by that string
+    // shows her twice with her caseload split between the halves. That is what
+    // was reported, and no amount of care on future records fixes the ones
+    // already typed.
+    //
+    // These two endpoints find those pairs and let a person merge them. The
+    // rule for what counts as the same person is deliberately narrow, and the
+    // narrowness matters more than the coverage: merging two people who merely
+    // share a first name would move one clinician's caseload onto another's
+    // name, which is far worse than leaving a duplicate on screen.
+    const MERGEABLE_FIELDS = {
+      assigned_bcba_name: { label: "BCBA", email_col: "assigned_bcba_email" },
+      assigned_student_analyst_name: { label: "Student Analyst", email_col: "assigned_student_analyst_email" },
+      squad_leader_name: { label: "Squad Leader", email_col: "squad_leader_email" },
+    };
+
+    const normName = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+    // "marissa" is a word-prefix of "marissa gaut". "mari" is not a prefix of
+    // "marissa": comparing on whole words rather than characters is what keeps
+    // "Chris" away from "Christina".
+    function isWordPrefix(short, long) {
+      const a = normName(short).split(" "), b = normName(long).split(" ");
+      if (!a[0] || a.length >= b.length) return false;
+      return a.every((w, i) => w === b[i]);
+    }
+
+    async function nameDuplicates() {
+      const out = [];
+      for (const [col, meta] of Object.entries(MERGEABLE_FIELDS)) {
+        let rows;
+        try {
+          rows = await dbAll(
+            `SELECT TRIM(${col}) AS name, COUNT(*) AS clients
+               FROM clients
+              WHERE ${col} IS NOT NULL AND TRIM(${col}) <> ''
+                AND stage NOT IN ('discharged','not_moving_forward')
+              GROUP BY TRIM(${col}) ORDER BY TRIM(${col})`);
+        } catch (e) { continue; }   // the column may not exist on an old database
+        const names = rows.map((r) => ({ name: r.name, clients: Number(r.clients) || 0 }));
+
+        for (const shortOne of names) {
+          const longer = names.filter((n) => isWordPrefix(shortOne.name, n.name));
+          const sameNormalised = names.filter((n) => n.name !== shortOne.name && normName(n.name) === normName(shortOne.name));
+
+          // Differs only by case or spacing: not a judgement call at all.
+          sameNormalised.forEach((n) => {
+            if (shortOne.name < n.name) {
+              out.push({ field: col, label: meta.label, from: n.name, to: shortOne.name,
+                from_clients: n.clients, to_clients: shortOne.clients,
+                reason: "The same name, differing only in spacing or capitalisation.", confident: true });
+            }
+          });
+
+          if (longer.length === 1) {
+            out.push({ field: col, label: meta.label, from: shortOne.name, to: longer[0].name,
+              from_clients: shortOne.clients, to_clients: longer[0].clients,
+              reason: `"${shortOne.name}" is how somebody typed "${longer[0].name}" on other records.`,
+              confident: true });
+          } else if (longer.length > 1) {
+            // REFUSED, not guessed. A first name matching two full names is
+            // exactly the case where merging picks the wrong clinician.
+            out.push({ field: col, label: meta.label, from: shortOne.name, to: null,
+              from_clients: shortOne.clients, candidates: longer.map((n) => n.name),
+              reason: `"${shortOne.name}" could be any of ${longer.length} people. Somebody has to say which.`,
+              confident: false });
+          }
+        }
+      }
+      return out;
+    }
+
+    if (pathname === "/api/caseload/name-duplicates" && method === "GET") {
+      if (!canPick(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      json(res, 200, { duplicates: await nameDuplicates() });
+      return true;
+    }
+
+    if (pathname === "/api/caseload/merge-name" && method === "POST") {
+      if (!canPick(user)) { json(res, 403, { error: "Only an owner or admin can merge staff names." }); return true; }
+      const body = await readBody(req);
+      const field = String(body.field || "");
+      const meta = MERGEABLE_FIELDS[field];
+      // An allowlist, never the posted string: this value goes into a column
+      // position in the UPDATE below.
+      if (!meta) { json(res, 400, { error: "That is not a field that can be merged." }); return true; }
+      const from = clean(body.from), to = clean(body.to);
+      if (!from || !to) { json(res, 400, { error: "Both names are needed." }); return true; }
+      if (from === to) { json(res, 400, { error: "Those are already the same name." }); return true; }
+
+      const before = await dbGet(
+        `SELECT COUNT(*) AS n FROM clients WHERE TRIM(${field}) = ?`, [from]);
+      if (!Number(before && before.n)) {
+        json(res, 404, { error: `No client is filed under "${from}".` });
+        return true;
+      }
+      await dbRun(`UPDATE clients SET ${field} = ? WHERE TRIM(${field}) = ?`, [to, from]);
+
+      // Carry the email across too, but ONLY when the target name has exactly
+      // one on file. Matching elsewhere prefers email over name, so a merged
+      // record with the old name's blank email would still be treated as a
+      // different person -- and guessing between two addresses would file a
+      // caseload under the wrong mailbox.
+      let email_applied = null;
+      try {
+        const emails = await dbAll(
+          `SELECT DISTINCT LOWER(TRIM(${meta.email_col})) AS email
+             FROM clients
+            WHERE TRIM(${field}) = ? AND ${meta.email_col} IS NOT NULL AND TRIM(${meta.email_col}) <> ''`,
+          [to]);
+        if (emails.length === 1) {
+          await dbRun(
+            `UPDATE clients SET ${meta.email_col} = ?
+              WHERE TRIM(${field}) = ? AND (${meta.email_col} IS NULL OR TRIM(${meta.email_col}) = '')`,
+            [emails[0].email, to]);
+          email_applied = emails[0].email;
+        }
+      } catch (e) { /* the email column may not exist for this field */ }
+
+      const after = await dbGet(`SELECT COUNT(*) AS n FROM clients WHERE TRIM(${field}) = ?`, [to]);
+      json(res, 200, {
+        ok: true, field, from, to,
+        moved: Number(before.n) || 0,
+        now_on: Number(after && after.n) || 0,
+        email_applied,
+      });
+      return true;
+    }
+
     if (pathname === "/api/caseload/bcbas" && method === "GET") {
       if (!canPick(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      // GROUPED BY NAME ALONE. It used to group by name AND email, so a BCBA
+      // with an address on some of her clients and none on the others came back
+      // as two entries with the same name and her caseload split between them.
+      // The email is reported as whichever one is on file; a person is one row.
       const rows = await dbAll(
         `SELECT TRIM(assigned_bcba_name) AS name,
-                LOWER(TRIM(COALESCE(assigned_bcba_email,''))) AS email,
+                MIN(NULLIF(LOWER(TRIM(COALESCE(assigned_bcba_email,''))), '')) AS email,
                 COUNT(*) AS clients
            FROM clients
           WHERE assigned_bcba_name IS NOT NULL AND TRIM(assigned_bcba_name) <> ''
             AND stage NOT IN ('discharged','not_moving_forward')
-          GROUP BY TRIM(assigned_bcba_name), LOWER(TRIM(COALESCE(assigned_bcba_email,'')))
+          GROUP BY TRIM(assigned_bcba_name)
           ORDER BY TRIM(assigned_bcba_name)`).catch(() => []);
       json(res, 200, { bcbas: rows.map((r) => ({ name: r.name, email: r.email || null, clients: Number(r.clients) || 0 })) });
       return true;
