@@ -2433,6 +2433,80 @@ function ea(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
+// ---------------- Service location ----------------
+// A client can be seen in more than one setting, so this is a set of choices
+// rather than one. It stays in the single `service_location` TEXT column as a
+// comma-separated list -- the map's classifier already reads a value naming
+// several settings and reports them all, so nothing downstream had to change
+// and no historical value had to be migrated.
+const SERVICE_LOCATIONS = ["In-Clinic", "In Home", "In-School"];
+
+// What is already stored is not necessarily one of the three. It is whatever
+// was typed, imported or written before this was a multi-select: "In Home /
+// In-School", "Telehealth", a note somebody left. So parsing reports BOTH --
+// the settings it recognises, and the rest of the string verbatim -- and the
+// editor keeps the remainder in a field of its own. Opening a client and
+// pressing Save must not quietly delete something a person put there.
+function parseServiceLocation(raw) {
+  const flat = (v) => String(v).toLowerCase().replace(/[^a-z]/g, "");
+  const parts = String(raw == null ? "" : raw).split(/[,/;|]+|\band\b/i).map((x) => x.trim()).filter(Boolean);
+  const chosen = [], extra = [];
+  parts.forEach((p) => {
+    const hit = SERVICE_LOCATIONS.find((o) => flat(o) === flat(p));
+    if (hit) { if (chosen.indexOf(hit) === -1) chosen.push(hit); }
+    else extra.push(p);
+  });
+  return { chosen: chosen, extra: extra.join(", ") };
+}
+
+// Written back in the canonical order rather than the order the boxes were
+// ticked, so the same set of settings always reads the same way.
+function formatServiceLocation(chosen, extra) {
+  const list = SERVICE_LOCATIONS.filter((o) => (chosen || []).indexOf(o) !== -1);
+  const rest = String(extra == null ? "" : extra).trim();
+  if (rest) list.push(rest);
+  return list.join(", ");
+}
+
+// Does this stored value name that setting? Used for filtering, where a plain
+// equality test would stop matching the moment a client is seen in two places.
+function serviceLocationHas(raw, setting) {
+  return parseServiceLocation(raw).chosen.indexOf(setting) !== -1;
+}
+
+// Exposed for pipeline-v2.js, which filters on the same field and must read it
+// the same way. One parser, not two that agree until one is edited.
+window.__serviceLocations = SERVICE_LOCATIONS;
+window.__serviceLocationHas = serviceLocationHas;
+window.__parseServiceLocation = parseServiceLocation;
+
+function cdServiceLocation(current) {
+  const parsed = parseServiceLocation(current);
+  return (
+    `<div id="cd-service_location">` +
+      `<div class="opt-row">` +
+        SERVICE_LOCATIONS.map((o) =>
+          `<label><input type="checkbox" class="svc-opt" value="${ea(o)}"${parsed.chosen.indexOf(o) !== -1 ? " checked" : ""} /> ${ea(o)}</label>`
+        ).join("") +
+      `</div>` +
+      // Only drawn when there IS something else on the record. There is no
+      // reason to invite free text into a field with three settled answers --
+      // this exists to hold on to what is already there.
+      (parsed.extra
+        ? `<label style="display:block; margin-top:6px; font-size:11.5px; color:var(--text-muted);">Also recorded
+             <input class="svc-other" value="${ea(parsed.extra)}" style="margin-top:3px;" /></label>`
+        : "") +
+    `</div>`
+  );
+}
+
+function readServiceLocation(box) {
+  if (!box) return "";
+  const chosen = Array.from(box.querySelectorAll("input.svc-opt")).filter((i) => i.checked).map((i) => i.value);
+  const other = box.querySelector(".svc-other");
+  return formatServiceLocation(chosen, other ? other.value : "");
+}
+
 function cdSelect(id, options, current) {
   return (
     `<select id="cd-${id}">` +
@@ -2544,7 +2618,7 @@ function clientDetailsHtml(client, editing) {
       <div class="field"><label>Parent Email</label><input id="cd-parent_email" type="email" value="${ea(client.parent_email)}" /></div>
       <div class="field"><label>Parent Phone</label><input id="cd-parent_phone" value="${ea(client.parent_phone)}" /></div>
       <div class="field full"><label>Address</label><input id="cd-address" value="${ea(client.address)}" /></div>
-      <div class="field"><label>Service Location</label>${cdSelect("service_location", ["In-Clinic", "In Home", "In-School"], client.service_location)}</div>
+      <div class="field"><label>Service Location</label>${cdServiceLocation(client.service_location)}</div>
       <div class="field"><label>Insurance Provider</label><input id="cd-insurance_provider" value="${ea(client.insurance_provider)}" /></div>
       <div class="field"><label>Desired Schedule</label>${cdSelect("desired_schedule", ["Full-Time", "Part Time AM", "Part Time PM"], client.desired_schedule)}</div>
       <div class="field"><label>ASD Diagnosis</label>${cdSelect("has_asd_diagnosis", ["Yes", "No"], client.has_asd_diagnosis)}</div>
@@ -2967,6 +3041,10 @@ async function openClientModal(id) {
         const el = backdrop.querySelector(`#cd-${f}`);
         if (el) body[f] = el.value;
       });
+      // Service location is a set of checkboxes rather than one control, so it
+      // is read on its own. Unticking everything writes an empty value, which
+      // is the honest answer for a client whose setting is not known.
+      body.service_location = readServiceLocation(backdrop.querySelector("#cd-service_location"));
       clientSaveBtn.disabled = true;
       clientSaveBtn.textContent = "Saving…";
       try {
@@ -3526,7 +3604,11 @@ function openNewClientModal() {
           <div class="field full"><label>Address</label><input name="address" /></div>
           <div class="field">
             <label>Service Location</label>
-            <select name="service_location"><option>In-Clinic</option><option>In Home</option><option>In-School</option></select>
+            <div class="opt-row" id="new-client-service">
+              <label><input type="checkbox" class="svc-opt" name="service_location" value="In-Clinic" /> In-Clinic</label>
+              <label><input type="checkbox" class="svc-opt" name="service_location" value="In Home" /> In Home</label>
+              <label><input type="checkbox" class="svc-opt" name="service_location" value="In-School" /> In-School</label>
+            </div>
           </div>
           <div class="field">
             <label>Desired Schedule</label>
@@ -3554,6 +3636,9 @@ function openNewClientModal() {
     e.preventDefault();
     const fd = new FormData(e.target);
     const body = Object.fromEntries(fd.entries());
+    // Object.fromEntries keeps only the LAST value of a repeated field name, so
+    // ticking two settings would have submitted one. Read them all.
+    body.service_location = formatServiceLocation(fd.getAll("service_location"), "");
     await api("/api/clients", { method: "POST", body });
     close();
     await loadClients();

@@ -71,6 +71,31 @@
     return [...new Set(allClients.map((c) => c[key]).filter(Boolean))].sort();
   }
 
+  // Service location holds a SET now ("In-Clinic, In Home"), so the filter
+  // cannot be a list of stored strings compared with ===. Both halves read the
+  // field through the shell's parser -- the same one the editor writes with --
+  // so a client seen in two settings appears under each of them.
+  function serviceValues() {
+    const parse = window.__parseServiceLocation;
+    if (!parse) return uniqueValues("service_location");
+    const settings = new Set(), extras = new Set();
+    allClients.forEach((c) => {
+      const p = parse(c.service_location);
+      p.chosen.forEach((v) => settings.add(v));
+      // Anything that is not one of the settings is still offered, so a value
+      // typed before this was a multi-select stays filterable.
+      if (p.extra) extras.add(p.extra);
+    });
+    const order = window.__serviceLocations || [];
+    return order.filter((v) => settings.has(v)).concat([...extras].sort());
+  }
+  function serviceMatches(raw, wanted) {
+    const has = window.__serviceLocationHas;
+    if (!has) return raw === wanted;
+    return has(raw, wanted) || String(raw || "") === wanted ||
+      (window.__parseServiceLocation(raw).extra === wanted);
+  }
+
   function applyFilters(list) {
     return list.filter((c) => {
       if (filters.milestone && String(c.milestone) !== filters.milestone) return false;
@@ -78,7 +103,7 @@
       if (filters.priority && c.priority !== filters.priority) return false;
       if (filters.insurance && c.insurance_provider !== filters.insurance) return false;
       if (filters.bcba && c.assigned_bcba_name !== filters.bcba) return false;
-      if (filters.service && c.service_location !== filters.service) return false;
+      if (filters.service && !serviceMatches(c.service_location, filters.service)) return false;
       if (filters.days && c.daysInStage < Number(filters.days)) return false;
       if (filters.waitlist === "only" && !c.waitlisted) return false;
       if (filters.waitlist === "hide" && c.waitlisted) return false;
@@ -156,7 +181,7 @@
         '<select id="pv2-f-priority"><option value="">All priorities</option><option>High</option><option>Medium</option><option>Low</option></select>' +
         '<select id="pv2-f-insurance"><option value="">All insurers</option>' + opt(uniqueValues("insurance_provider")) + "</select>" +
         '<select id="pv2-f-bcba"><option value="">All BCBAs</option>' + opt(uniqueValues("assigned_bcba_name")) + "</select>" +
-        '<select id="pv2-f-service"><option value="">All service types</option>' + opt(uniqueValues("service_location")) + "</select>" +
+        '<select id="pv2-f-service"><option value="">All service types</option>' + opt(serviceValues()) + "</select>" +
         '<select id="pv2-f-days"><option value="">Any days waiting</option><option value="7">7+ days</option><option value="14">14+ days</option><option value="21">21+ days</option></select>' +
         '<select id="pv2-f-waitlist"><option value="">Waitlist: show all</option><option value="only">On the waitlist only</option><option value="hide">Hide waitlisted</option></select>' +
         '<button type="button" id="pv2-f-clear" style="margin-left:auto;background:none;border:none;color:#1b2a6b;text-decoration:underline;font-size:12.5px;cursor:pointer;">Clear filters</button>' +
