@@ -106,7 +106,7 @@ const { chromium } = require("playwright");
     await fetch("/api/nav-order", {
       method: "PUT", credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ order: ["hr", "staff", "financial", "dashboard", "pipeline"] }),
+      body: JSON.stringify({ order: ["hr", "staff", "financial", "ot", "dashboard", "pipeline"] }),
     });
   });
 
@@ -116,6 +116,14 @@ const { chromium } = require("playwright");
   check("an ordered key their role does not allow does NOT appear",
     !intakeKeys.includes("hr") && !intakeKeys.includes("financial"),
     intakeKeys.join(","));
+  // The same question for an add-on button, which is the new part. Occupational
+  // Therapy has a key in the saved order now, and its bundle is loaded on this
+  // page -- but OT_ROLES does not include intake, so its own check must be the
+  // thing that decides, not the order naming it.
+  check("AN ORDERED ADD-ON KEY DOES NOT CONJURE ITS BUTTON EITHER",
+    !intakeKeys.includes("ot"), intakeKeys.join(","));
+  check("and no OT button was drawn by any other route",
+    await page.locator("#ot-nav-btn").count() === 0);
   check("intake is not offered the reorder control",
     await page.locator("#nav-reorder-open").count() === 0);
 
@@ -129,32 +137,92 @@ const { chromium } = require("playwright");
   });
   check("and the server refuses their write even without the button", forbidden === 403, forbidden);
 
-  console.log("\n== Add-on buttons are left out of the stored order ==");
-  // Supply Requests and Occupational Therapy are appended to the same <nav> by
-  // their own bundles, with no data-nav key. They must not end up in the saved
-  // order as keys that mean nothing to the shell.
-  const strayKeys = await page.evaluate(async () => {
-    const d = await (await fetch("/api/nav-order", { credentials: "include" })).json();
-    const known = Array.from(document.querySelectorAll("#nav-list [data-nav]")).map((b) => b.dataset.nav);
-    return (d.order || []).filter((k) => !known.includes(k) && k !== "hr" && k !== "financial");
-  });
-  check("the stored order contains no keys the shell does not own",
-    Array.isArray(strayKeys), strayKeys);
-  const injectedDraggable = await page.evaluate(() =>
-    document.querySelectorAll('#nav-list .nav-item:not([data-nav])[draggable="true"]').length);
-  check("an add-on button is not draggable", injectedDraggable === 0, injectedDraggable);
-
   console.log("\n== A new tab is not swallowed by an old order ==");
-  // The saved order above names five keys and the sidebar has more than five.
+  // The saved order above names six keys and the sidebar has more than five.
   // Anything unnamed must still render -- that is the upgrade case.
   await login("admin@spectrumsquadlv.com", "TestOwner123!");
   const partial = await navKeys();
   check("entries missing from the saved order still appear",
-    partial.length > 5, `${partial.length} entries for a 5-key order`);
+    partial.length > 5, `${partial.length} entries for a 6-key order`);
   check("the named ones lead, in the order given",
     partial.indexOf("dashboard") < partial.indexOf("tasks") ||
     !partial.includes("tasks"),
     partial.join(","));
+
+  console.log("\n== Add-on buttons reorder like everything else ==");
+  // Supply Requests and Occupational Therapy are appended to the same <nav> by
+  // their own bundles, after the shell has drawn. They carry a data-nav key now
+  // and take part in the order like any other entry.
+  await login("admin@spectrumsquadlv.com", "TestOwner123!");
+  await page.waitForTimeout(1200);
+  const addonPresent = await page.evaluate(() => ({
+    supply: !!document.getElementById("supply-nav-btn"),
+    ot: !!document.getElementById("ot-nav-btn"),
+    // Direct children only: the Admin group's entries live inside .nav-sub and
+    // are not top-level rows, so they are neither draggable nor saved.
+    keys: Array.from(document.getElementById("nav-list").children)
+      .filter((el) => el.hasAttribute("data-nav")).map((b) => b.dataset.nav),
+  }));
+  check("the add-on buttons are on the sidebar for an admin",
+    addonPresent.supply && addonPresent.ot, addonPresent);
+  check("and they are entries the shell can order",
+    addonPresent.keys.includes("supply") && addonPresent.keys.includes("ot"),
+    addonPresent.keys.join(","));
+
+  await page.click("#nav-reorder-open");
+  await page.waitForTimeout(800);
+  const addonDraggable = await page.evaluate(() => ({
+    supply: document.getElementById("supply-nav-btn").getAttribute("draggable") === "true",
+    ot: document.getElementById("ot-nav-btn").getAttribute("draggable") === "true",
+    handles: !!document.getElementById("supply-nav-btn").querySelector(".nav-drag-handle"),
+    // Nothing top-level may be left undraggable now, or it would be a row you
+    // can see but cannot move.
+    stuck: Array.from(document.getElementById("nav-list").children)
+      .filter((el) => el.hasAttribute("data-nav") && el.getAttribute("draggable") !== "true").length,
+  }));
+  check("AN ADD-ON BUTTON IS DRAGGABLE", addonDraggable.supply && addonDraggable.ot, addonDraggable);
+  check("and it gets a drag handle like the rest", addonDraggable.handles === true, addonDraggable);
+  check("no top-level entry is left unmovable", addonDraggable.stuck === 0, addonDraggable.stuck);
+
+  // Clicking one mid-reorder must not navigate either -- its click listener
+  // belongs to the add-on, not to the shell, so the shell has to stop it.
+  const hashPreClick = await page.evaluate(() => location.hash);
+  await page.click("#supply-nav-btn");
+  await page.waitForTimeout(400);
+  check("clicking an add-on entry while reordering does not navigate away",
+    (await page.evaluate(() => location.hash)) === hashPreClick,
+    await page.evaluate(() => location.hash));
+
+  // Drag Supply Requests to the very front and save it.
+  await page.evaluate(() => {
+    const list = document.getElementById("nav-list");
+    const first = Array.from(list.children).find((el) => el.hasAttribute("data-nav"));
+    list.insertBefore(document.getElementById("supply-nav-btn"), first);
+  });
+  await page.click("#nav-reorder-save");
+  await page.waitForTimeout(1500);
+  const storedOrder = await page.evaluate(async () =>
+    ((await (await fetch("/api/nav-order", { credentials: "include" })).json()).order || []));
+  check("the saved order records the add-on where it was dropped",
+    storedOrder[0] === "supply", storedOrder.slice(0, 4).join(","));
+
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(2200);
+  const placed = await page.evaluate(() => {
+    const list = document.getElementById("nav-list");
+    const entries = Array.from(list.children).filter((el) => el.hasAttribute("data-nav"));
+    const admin = document.getElementById("nav-admin-toggle");
+    return {
+      first: entries.length ? entries[0].dataset.nav : null,
+      // Admin Settings is a group, not a row, and stays at the end.
+      adminLast: !admin || entries.every((e) => !!(e.compareDocumentPosition(admin) & Node.DOCUMENT_POSITION_FOLLOWING)),
+      count: entries.length,
+    };
+  });
+  check("AND THE ADD-ON BUTTON COMES BACK IN THAT POSITION AFTER A RELOAD",
+    placed.first === "supply", placed);
+  check("the Admin group is still last", placed.adminLast === true, placed);
+  check("nothing was lost placing it", placed.count >= addonPresent.keys.length, placed);
 
   check("no page errors", errors.length === 0, errors.join(" | "));
   console.log(`\n${pass} passed, ${fail} failed`);

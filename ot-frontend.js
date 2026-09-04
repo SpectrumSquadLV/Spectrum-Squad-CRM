@@ -32,9 +32,14 @@
     const btn = document.createElement("button");
     btn.className = "nav-item";
     btn.id = "ot-nav-btn";
+    // A key of its own, so an admin can drag this button like any other entry.
+    // The shell never creates it from the saved order -- the role check above
+    // is still the only thing that decides whether it exists.
+    btn.dataset.nav = "ot";
     btn.innerHTML = 'Occupational Therapy';
     btn.addEventListener("click", () => { location.hash = HASH; });
     nav.appendChild(btn);
+    if (typeof window.__navPlace === "function") window.__navPlace(btn);
   }
 
   function chip(item) {
