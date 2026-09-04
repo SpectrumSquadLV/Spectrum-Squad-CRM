@@ -112,7 +112,7 @@ const BASE = process.env.BASE || "http://localhost:3011";
   // does not throw either.
   for (const [hash, label, expect] of [
     ["#/dashboard", "Dashboard", /dashboard|pipeline|client/i],
-    ["#/pipeline-v2", "Client Pipeline", /pipeline|stage|client|waitlist/i],
+    ["#/pipeline-v2", "Clients", /pipeline|stage|client|waitlist/i],
     ["#/tasks", "Tasks & Alerts", /task/i],
     ["#/staff", "Staff", /staff|employee|name/i],
     ["#/leads", "Lead Management", /lead/i],

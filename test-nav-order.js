@@ -211,7 +211,7 @@ const { chromium } = require("playwright");
   const placed = await page.evaluate(() => {
     const list = document.getElementById("nav-list");
     const entries = Array.from(list.children).filter((el) => el.hasAttribute("data-nav"));
-    const admin = document.getElementById("nav-admin-toggle");
+    const admin = document.querySelector('[data-nav-group="grp-admin"]');
     return {
       first: entries.length ? entries[0].dataset.nav : null,
       // Admin Settings is a group, not a row, and stays at the end.

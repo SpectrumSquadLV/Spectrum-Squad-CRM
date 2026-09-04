@@ -38,25 +38,25 @@ const CHILDREN = ["admin", "rethink-clients", "signnow-import", "email-templates
   section("The group exists and holds all five");
   await login("admin@spectrumsquadlv.com", "TestOwner123!");
 
-  check("an Admin parent button is in the sidebar", await page.locator("#nav-admin-toggle").count() === 1);
+  check("an Admin parent button is in the sidebar", await page.locator('[data-nav-group="grp-admin"]').count() === 1);
   check("it is not itself a destination (no data-nav)",
-    await page.locator("#nav-admin-toggle[data-nav]").count() === 0);
+    await page.locator('[data-nav-group="grp-admin"][data-nav]').count() === 0);
 
   for (const key of CHILDREN) {
     check(`${key} lives inside the group`,
-      await page.locator(`#nav-admin-sub [data-nav="${key}"]`).count() === 1);
+      await page.locator(`#nav-sub-grp-admin [data-nav="${key}"]`).count() === 1);
     // The whole point: it is no longer a top-level entry.
     check(`${key} is no longer a direct child of nav`,
       await page.evaluate((k) => {
         const btn = document.querySelector(`.sidebar nav [data-nav="${k}"]`);
-        return !!btn && btn.parentElement.id === "nav-admin-sub";
+        return !!btn && btn.parentElement.id === "nav-sub-grp-admin";
       }, key));
   }
 
   // ---------------------------------------------------------- open / close
   section("Opening and closing");
   const subHidden = () => page.evaluate(() => {
-    const el = document.getElementById("nav-admin-sub");
+    const el = document.getElementById("nav-sub-grp-admin");
     return el ? el.hasAttribute("hidden") : null;
   });
 
@@ -64,11 +64,11 @@ const CHILDREN = ["admin", "rethink-clients", "signnow-import", "email-templates
   await page.evaluate(() => { location.hash = "#/dashboard"; });
   await page.waitForTimeout(900);
   const before = await subHidden();
-  await page.click("#nav-admin-toggle");
+  await page.click('[data-nav-group="grp-admin"]');
   await page.waitForTimeout(300);
   check("clicking the parent toggles the group", (await subHidden()) !== before);
   check("and says so for screen readers",
-    (await page.getAttribute("#nav-admin-toggle", "aria-expanded")) === ((await subHidden()) ? "false" : "true"));
+    (await page.getAttribute('[data-nav-group="grp-admin"]', "aria-expanded")) === ((await subHidden()) ? "false" : "true"));
   check("clicking the parent did not navigate away", (await page.evaluate(() => location.hash)) === "#/dashboard");
 
   // ------------------------------------------------------- still reachable
@@ -87,7 +87,7 @@ const CHILDREN = ["admin", "rethink-clients", "signnow-import", "email-templates
     check(`${hash} renders its own page`, expect.test(text), text.slice(0, 160));
     // Being on a child page opens the group and marks the child.
     check(`${key} is marked active while you are on it`,
-      await page.locator(`#nav-admin-sub [data-nav="${key}"].active`).count() === 1);
+      await page.locator(`#nav-sub-grp-admin [data-nav="${key}"].active`).count() === 1);
     check(`the group is open while you are on ${key}`, (await subHidden()) === false);
   }
 
@@ -100,7 +100,7 @@ const CHILDREN = ["admin", "rethink-clients", "signnow-import", "email-templates
   // ------------------------------------------------------------ permissions
   section("Nobody gains access from the regrouping");
   await login("clinical@spectrumsquadlv.com", "TestStaff123!");
-  check("a clinical user gets no Admin group", await page.locator("#nav-admin-toggle").count() === 0);
+  check("a clinical user gets no Admin group", await page.locator('[data-nav-group="grp-admin"]').count() === 0);
   for (const key of CHILDREN) {
     check(`and no ${key} button anywhere in the sidebar`,
       await page.locator(`.sidebar nav [data-nav="${key}"]`).count() === 0);

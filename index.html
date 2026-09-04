@@ -630,14 +630,26 @@ async function loadNavOrder() {
 // naming a tab you may not see still matches nothing and still shows nothing.
 let navDragged = null;
 
+// The draggable rows at the top level: loose entries and group HEADINGS. A
+// group's members are not here -- they live inside its .nav-sub and are dragged
+// within it, because membership is structural and dragging a page out of its
+// group would mean nothing.
 function navEntries(list) {
-  // Direct children only. The Admin group's children live inside .nav-sub and
-  // are not top-level entries, so they are not draggable and not saved.
-  return Array.from(list.children).filter((el) => el.nodeType === 1 && el.hasAttribute("data-nav"));
+  return Array.from(list.children).filter(
+    (el) => el.nodeType === 1 && (el.hasAttribute("data-nav") || el.hasAttribute("data-nav-group")));
 }
 
+// Every draggable row on the page, in either scope.
+function navDraggables(list) {
+  return navEntries(list).concat(
+    Array.from(list.querySelectorAll(".nav-sub > [data-nav]")));
+}
+
+// The key a row carries, whichever kind it is.
+const navKeyOf = (el) => el.dataset.nav || el.dataset.navGroup || "";
+
 function navClearMarks(list) {
-  navEntries(list).forEach((b) => b.classList.remove("nav-drop-before", "nav-drop-after"));
+  navDraggables(list).forEach((b) => b.classList.remove("nav-drop-before", "nav-drop-after"));
 }
 
 // Put the sidebar's buttons into the saved order, in the DOM. The shell already
@@ -651,18 +663,43 @@ function applyNavOrderToDom() {
   const list = document.getElementById("nav-list");
   if (!list) return;
   const rank = new Map((state.navOrder || []).map((k, i) => [k, i]));
-  const current = navEntries(list);
-  if (!current.length) return;
-  const known = current.filter((b) => rank.has(b.dataset.nav))
-    .sort((a, b) => rank.get(a.dataset.nav) - rank.get(b.dataset.nav));
-  const want = known.concat(current.filter((b) => !rank.has(b.dataset.nav)));
-  // The Admin group is a collapsible parent plus its sub-list, not a row, and
-  // always sits at the end.
-  const anchor = document.getElementById("nav-admin-toggle");
-  const settled = want.every((b, i) => b === current[i]) &&
-    (!anchor || want.every((b) => !!(b.compareDocumentPosition(anchor) & Node.DOCUMENT_POSITION_FOLLOWING)));
-  if (settled) return;
-  want.forEach((b) => list.insertBefore(b, anchor || null));
+
+  // An add-on's button arrives after the render. If its key belongs to a group,
+  // it belongs INSIDE that group -- otherwise Supply Requests and Occupational
+  // Therapy would sit alone below every heading, which is the clutter this
+  // change exists to remove. The shell only ever MOVES a button the add-on
+  // itself decided to create; it never creates one, so a key in a group still
+  // shows nothing to a user whose add-on did not draw it.
+  Array.from(list.children).forEach((el) => {
+    if (el.nodeType !== 1 || !el.hasAttribute("data-nav")) return;
+    const groupKey = NAV_GROUP_OF.get(el.dataset.nav);
+    if (!groupKey) return;
+    const sub = document.getElementById("nav-sub-" + groupKey);
+    if (sub) sub.appendChild(el);
+  });
+
+  // Then order each scope by the saved list, using the same rule the render
+  // uses: named keys first in their sequence, everything else after, in the
+  // order it already had.
+  const sortWithin = (parent) => {
+    const rows = Array.from(parent.children).filter(
+      (el) => el.nodeType === 1 && (el.hasAttribute("data-nav") || el.hasAttribute("data-nav-group")));
+    if (!rows.length) return;
+    const key = (el) => el.dataset.nav || el.dataset.navGroup || "";
+    const known = rows.filter((b) => rank.has(key(b))).sort((a, b) => rank.get(key(a)) - rank.get(key(b)));
+    const want = known.concat(rows.filter((b) => !rank.has(key(b))));
+    if (want.every((b, i) => b === rows[i])) return;
+    // A group heading and its sub-list move together, or the list comes apart.
+    want.forEach((b) => {
+      parent.appendChild(b);
+      if (b.dataset && b.dataset.navGroup) {
+        const sub = document.getElementById("nav-sub-" + b.dataset.navGroup);
+        if (sub) parent.appendChild(sub);
+      }
+    });
+  };
+  sortWithin(list);
+  list.querySelectorAll(".nav-sub").forEach(sortWithin);
 }
 
 // Idempotent: makes every top-level entry draggable and gives it a handle,
@@ -671,7 +708,7 @@ function decorateNavForReorder() {
   if (!state.navReorder) return;
   const list = document.getElementById("nav-list");
   if (!list) return;
-  navEntries(list).forEach((btn) => {
+  navDraggables(list).forEach((btn) => {
     btn.setAttribute("draggable", "true");
     btn.classList.add("nav-dragging-on");
     if (!btn.querySelector(".nav-drag-handle")) {
@@ -686,11 +723,11 @@ function decorateNavForReorder() {
       navDragged = btn;
       e.dataTransfer.effectAllowed = "move";
       // Firefox will not start a drag without data on the transfer.
-      try { e.dataTransfer.setData("text/plain", btn.dataset.nav); } catch (err) { /* older browsers */ }
+      try { e.dataTransfer.setData("text/plain", navKeyOf(btn)); } catch (err) { /* older browsers */ }
     });
     btn.addEventListener("dragend", () => { navDragged = null; navClearMarks(list); });
     btn.addEventListener("dragover", (e) => {
-      if (!navDragged || btn === navDragged) return;
+      if (!navDragged || btn === navDragged || navDragged.parentNode !== btn.parentNode) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       const r = btn.getBoundingClientRect();
@@ -700,6 +737,10 @@ function decorateNavForReorder() {
     });
     btn.addEventListener("drop", (e) => {
       if (!navDragged || btn === navDragged) return;
+      // Same scope only. A page dragged out of its group would be put straight
+      // back by the next render, because membership is structural rather than
+      // positional -- so the drop simply does not happen.
+      if (navDragged.parentNode !== btn.parentNode) return;
       e.preventDefault();
       const r = btn.getBoundingClientRect();
       const after = e.clientY > r.top + r.height / 2;
@@ -731,11 +772,20 @@ function wireNavReorder() {
       const msg = document.getElementById("nav-reorder-msg");
       const list = document.getElementById("nav-list");
       if (!list) return;
-      // Top-level entries in the order they are now sitting in, add-on buttons
-      // included -- they carry a data-nav key of their own now. Keys only: no
-      // labels, no routes, no permissions, so there is nothing in the saved
-      // order that could contradict a role check.
-      const order = navEntries(list).map((b) => b.dataset.nav);
+      // Every row in the order it is now sitting in: each top-level unit, and
+      // straight after a group heading, that group's members. Keys only -- no
+      // labels, no routes, no permissions -- so there is nothing in the saved
+      // order that could contradict a role check. Membership itself is NOT
+      // saved: it comes from NAV_GROUPS, so this is a list of positions and
+      // nothing else.
+      const order = [];
+      navEntries(list).forEach((el) => {
+        order.push(navKeyOf(el));
+        if (el.dataset.navGroup) {
+          const sub = document.getElementById("nav-sub-" + el.dataset.navGroup);
+          if (sub) sub.querySelectorAll("[data-nav]").forEach((m) => order.push(m.dataset.nav));
+        }
+      });
       save.disabled = true;
       try {
         const d = await api("/api/nav-order", { method: "PUT", body: { order } });
@@ -893,16 +943,44 @@ async function loadTherapists() {
 }
 
 // Catalog of grantable nav modules (for per-user granular access).
+// ---------------- Sidebar groups ----------------
+// The sidebar had grown to about twenty-five top-level entries, which is a list
+// you scan rather than a menu you use. Related pages fold into collapsible
+// groups now.
+//
+// GROUPING IS PURELY PRESENTATIONAL, and that is what keeps it safe. Membership
+// is a list of KEYS; navItems is still built exactly as before, so every role
+// check and every per-user module-access override still decides what exists. A
+// key naming a page this user may not see simply matches nothing, a group whose
+// members are all hidden is not drawn at all, and no page, route or permission
+// changes because an entry moved under a heading.
+const NAV_GROUPS = [
+  { key: "grp-clients", label: "Clients",
+    members: ["pipeline", "client-behavior", "auth-alerts", "outbox", "leads"] },
+  { key: "grp-staff", label: "Staff",
+    members: ["staff", "attendance", "supervision", "billable", "pto", "hr"] },
+  { key: "grp-practice", label: "Practice",
+    members: ["events", "policies", "map", "financial-center", "grants", "supply", "ot"] },
+  { key: "grp-admin", label: "Admin",
+    members: ["admin", "rethink-clients", "signnow-import", "email-templates", "failed-emails"] },
+];
+const NAV_GROUP_OF = new Map();
+NAV_GROUPS.forEach((g) => g.members.forEach((k) => NAV_GROUP_OF.set(k, g.key)));
+// Where each top-level unit sits before an admin rearranges anything. The three
+// entries that stay loose are the ones you reach for constantly and would not
+// want to open a group to find.
+const NAV_UNIT_ORDER = ["dashboard", "grp-clients", "bcba-hub", "tasks", "grp-staff", "grp-practice", "grp-admin"];
+
 const MODULE_CATALOG = {
   dashboard: { label: "Dashboard", icon: "◧" },
-  pipeline: { label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" },
+  pipeline: { label: "Clients", icon: "▤", hash: "#/pipeline-v2" },
   tasks: { label: "Tasks & Alerts", icon: "✓" },
   staff: { label: "Staff", icon: "◉" },
   attendance: { label: "Staff Attendance", icon: "◷" },
   billable: { label: "Billable Requirements", icon: "◵" },
   pto: { label: "PTO Balances", icon: "◇" },
   supervision: { label: "RBT Supervision", icon: "▥" },
-  "client-behavior": { label: "Client Behavior", icon: "◑", hash: "#/client-behavior" },
+  "client-behavior": { label: "Programming", icon: "◑", hash: "#/client-behavior" },
   "bcba-hub": { label: "BCBA Hub", icon: "◑", hash: "#/bcba-hub" },
   "rethink-clients": { label: "Rethink Client Matching", icon: "⧉", hash: "#/rethink-clients" },
   leads: { label: "Lead Management", icon: "◎" },
@@ -966,13 +1044,13 @@ function renderShell(active) {
   // roles could see the whole client pipeline and the Access toggle for it did
   // nothing. It is a normal nav item now, with a role check like everything else.
   if (!OT_ONLY && canAccessClients())
-    navItems.push({ key: "pipeline", label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" });
+    navItems.push({ key: "pipeline", label: "Clients", icon: "▤", hash: "#/pipeline-v2" });
   // Sits with the client sections, not with the staff ones: it is client
   // clinical information. Same access rule the BIP API enforces
   // (CLIENT_ACCESS_ROLES / canViewBip) -- the nav entry hides it, bip.js is
   // what actually enforces it.
   if (!OT_ONLY && canAccessClients())
-    navItems.push({ key: "client-behavior", label: "Client Behavior", icon: "◑", hash: "#/client-behavior" });
+    navItems.push({ key: "client-behavior", label: "Programming", icon: "◑", hash: "#/client-behavior" });
   // The BCBA Hub: payer requirements and blank forms. It holds NO client
   // information, so its access rule is about who does clinical and
   // authorization work rather than who may see a child's record -- billing is
@@ -1046,67 +1124,91 @@ function renderShell(active) {
     });
   }
 
-  // Admin Settings and its four tools used to sit as five separate entries at
-  // the top level of the sidebar. They are one collapsible group now.
+  // ---- assemble the sidebar: loose entries and groups, in order -----------
   //
-  // Grouping happens here, at render time, and nowhere else: navItems is built
-  // exactly as before, so role checks and the per-user module-access overrides
-  // above still decide membership, and each child keeps its own key, hash and
-  // label. Nothing about the pages, the routes or Admin Settings changes -- a
-  // child that a user cannot see simply is not in navItems, and if none of them
-  // are, no group is drawn at all.
-  const ADMIN_GROUP_KEYS = ["admin", "rethink-clients", "signnow-import", "email-templates", "failed-emails"];
-  const adminChildren = ADMIN_GROUP_KEYS.map((k) => navItems.find((n) => n.key === k)).filter(Boolean);
-  let topItems = navItems.filter((n) => !ADMIN_GROUP_KEYS.includes(n.key));
-  // The admin-set order, applied as a LAYOUT OVER the list above -- which has
-  // already been filtered by role. Reordering therefore moves tabs and can
-  // never reveal one: a key naming a tab this user may not see simply matches
-  // nothing.
-  //
-  // A key the saved order does not mention keeps its natural relative position
-  // and follows the ordered ones. That matters for upgrades: a nav entry added
-  // in a later release still appears instead of vanishing because an order
-  // saved months ago had never heard of it.
-  if (Array.isArray(state.navOrder) && state.navOrder.length) {
-    const rank = new Map(state.navOrder.map((k, i) => [k, i]));
-    const known = topItems.filter((n) => rank.has(n.key)).sort((a, b) => rank.get(a.key) - rank.get(b.key));
-    const unknown = topItems.filter((n) => !rank.has(n.key));
-    topItems = known.concat(unknown);
-  }
-  const adminHasActive = adminChildren.some((n) => n.key === active);
-  // Open when you are on one of its pages, otherwise whatever you left it as.
-  // Storage is a convenience only: if it is unavailable the group still works,
-  // it just starts closed.
-  let adminOpen = adminHasActive;
-  if (!adminOpen) {
-    try { adminOpen = localStorage.getItem("ss-nav-admin-open") === "1"; } catch (e) { /* private mode */ }
-  }
-  // In reorder mode the entries become draggable and stop navigating: a drag
-  // that ended as a click would otherwise take you off the page mid-rearrange.
+  // Grouping happens HERE, at render time, and nowhere else. navItems above has
+  // already been filtered by role and by the per-user access overrides, so a
+  // group can only ever contain entries this user was already allowed to see.
   const reordering = !!state.navReorder;
+
+  const groups = NAV_GROUPS
+    .map((g) => ({ ...g, children: g.members.map((k) => navItems.find((n) => n.key === k)).filter(Boolean) }))
+    .filter((g) => g.children.length);
+  const drawn = new Set();
+  groups.forEach((g) => g.children.forEach((c) => drawn.add(c.key)));
+  const loose = navItems.filter((n) => !drawn.has(n.key));
+
+  // The admin-set order, applied as a LAYOUT OVER that already-filtered list.
+  // Reordering moves things and can never reveal one. A key the order does not
+  // mention falls back to the built-in position, and anything neither knows
+  // about keeps its natural place at the end -- so a nav entry added in a later
+  // release still appears instead of vanishing for everyone who saved an order
+  // before it existed.
+  const rank = new Map((Array.isArray(state.navOrder) ? state.navOrder : []).map((k, i) => [k, i]));
+  const builtIn = new Map(NAV_UNIT_ORDER.map((k, i) => [k, i]));
+  const seat = (key, natural) =>
+    rank.has(key) ? rank.get(key)
+    : builtIn.has(key) ? 10000 + builtIn.get(key)
+    : 20000 + natural;
+
+  let units = loose.map((n) => ({ type: "item", key: n.key, item: n }))
+    .concat(groups.map((g) => ({ type: "group", key: g.key, group: g })));
+  units = units
+    .map((u, i) => ({ u, i }))
+    .sort((a, b) => seat(a.u.key, a.i) - seat(b.u.key, b.i))
+    .map((x) => x.u);
+  // Members are ordered by the same saved list, within their own group.
+  groups.forEach((g) => {
+    g.children = g.children
+      .map((c, i) => ({ c, i }))
+      .sort((a, b) => seat(a.c.key, a.i) - seat(b.c.key, b.i))
+      .map((x) => x.c);
+  });
+
+  // Open when you are on one of its pages, otherwise whatever you left it as,
+  // and always while reordering so every entry can be dragged. Storage is a
+  // convenience only: without it a group still works, it just starts closed.
+  const groupIsOpen = (g) => {
+    if (reordering) return true;
+    if (g.children.some((c) => c.key === active)) return true;
+    let stored = null;
+    try { stored = localStorage.getItem("ss-nav-group:" + g.key); } catch (e) { /* private mode */ }
+    if (stored !== null) return stored === "1";
+    // Nothing stored yet. Clients starts OPEN because it is the everyday work
+    // and a sidebar of four closed headings tells a new person nothing about
+    // what is in the application. The rest start closed, which is the point of
+    // grouping them.
+    return g.key === "grp-clients";
+  };
+
   const navItemHtml = (n, cls) =>
     `<button class="nav-item ${cls} ${active === n.key && !reordering ? "active" : ""}${reordering ? " nav-dragging-on" : ""}" data-nav="${n.key}"${n.hash ? ` data-nav-hash="${n.hash}"` : ""}${reordering ? ' draggable="true"' : ""}>
               ${reordering ? `<span class="nav-drag-handle">⣿ </span>` : ""}${n.label}${n.key === "tasks" && !reordering ? `<span class="nav-count" id="nav-task-count" style="display:none;"></span>` : ""}</button>`;
-  const adminGroupHtml = adminChildren.length
-    ? `<button class="nav-item nav-group ${adminHasActive ? "has-active" : ""}" id="nav-admin-toggle"
-              aria-expanded="${adminOpen ? "true" : "false"}" aria-controls="nav-admin-sub">
-              Admin<span class="nav-chevron">${adminOpen ? "▾" : "▸"}</span></button>
-            <div class="nav-sub" id="nav-admin-sub"${adminOpen ? "" : " hidden"}>
-              ${adminChildren.map((n) => navItemHtml(n, "")).join("")}
-            </div>`
-    : "";
+
+  // A group heading is a heading, not a page: it expands and never navigates.
+  // That is the behaviour the Admin group already had, kept so the whole
+  // sidebar works one way rather than two.
+  const navGroupHtml = (g) => {
+    const open = groupIsOpen(g);
+    const hasActive = g.children.some((c) => c.key === active);
+    return `<button class="nav-item nav-group ${hasActive ? "has-active" : ""}${reordering ? " nav-dragging-on" : ""}"
+              data-nav-group="${g.key}" aria-expanded="${open ? "true" : "false"}" aria-controls="nav-sub-${g.key}"${reordering ? ' draggable="true"' : ""}>
+              ${reordering ? `<span class="nav-drag-handle">⣿ </span>` : ""}${g.label}<span class="nav-chevron">${open ? "▾" : "▸"}</span></button>
+            <div class="nav-sub" id="nav-sub-${g.key}" data-nav-sub="${g.key}"${open ? "" : " hidden"}>
+              ${g.children.map((n) => navItemHtml(n, "")).join("")}
+            </div>`;
+  };
 
   root.innerHTML = `
     <div class="app-shell">
       <div class="sidebar">
         <div class="brand"><img src="/logo.png" alt="Spectrum Squad" style="max-width:170px; width:100%; height:auto;" /></div>
         <nav id="nav-list">
-          ${topItems.map((n) => navItemHtml(n, "")).join("")}
-          ${reordering ? "" : adminGroupHtml}
+          ${units.map((u) => (u.type === "group" ? navGroupHtml(u.group) : navItemHtml(u.item, ""))).join("")}
         </nav>
         ${state.navOrderCanEdit ? (reordering
           ? `<div class="nav-reorder-bar">
-               <div class="nav-reorder-hint">Drag to reorder. This sets the menu for everyone. Admin Settings stays at the end.</div>
+               <div class="nav-reorder-hint">Drag to reorder — headings among themselves, entries within their own group. This sets the menu for everyone.</div>
                <button class="btn small" id="nav-reorder-save">Save order</button>
                <button class="btn small secondary" id="nav-reorder-cancel">Cancel</button>
                <div id="nav-reorder-msg" class="nav-reorder-msg"></div>
@@ -1133,22 +1235,21 @@ function renderShell(active) {
   });
   wireNavReorder();
   applyNavOrderToDom();
-  // The Admin parent opens and closes the group; it is not a page of its own,
-  // so it deliberately has no data-nav and never navigates.
-  const adminToggle = document.getElementById("nav-admin-toggle");
-  if (adminToggle) {
-    adminToggle.addEventListener("click", () => {
-      const sub = document.getElementById("nav-admin-sub");
+  // A group heading opens and closes its own section. It is not a page, so it
+  // deliberately carries no data-nav and never navigates.
+  root.querySelectorAll("[data-nav-group]").forEach((toggle) => {
+    toggle.addEventListener("click", () => {
+      if (state.navReorder) return;   // mid-drag: not a click
+      const sub = document.getElementById("nav-sub-" + toggle.dataset.navGroup);
       if (!sub) return;
       const open = sub.hasAttribute("hidden");
-      if (open) sub.removeAttribute("hidden");
-      else sub.setAttribute("hidden", "");
-      adminToggle.setAttribute("aria-expanded", open ? "true" : "false");
-      const chev = adminToggle.querySelector(".nav-chevron");
+      if (open) sub.removeAttribute("hidden"); else sub.setAttribute("hidden", "");
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      const chev = toggle.querySelector(".nav-chevron");
       if (chev) chev.textContent = open ? "▾" : "▸";
-      try { localStorage.setItem("ss-nav-admin-open", open ? "1" : "0"); } catch (e) { /* private mode */ }
+      try { localStorage.setItem("ss-nav-group:" + toggle.dataset.navGroup, open ? "1" : "0"); } catch (e) { /* private mode */ }
     });
-  }
+  });
   refreshTaskBadge();
   document.getElementById("logout-btn").addEventListener("click", async () => {
     await api("/api/auth/logout", { method: "POST" });
