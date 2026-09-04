@@ -96,6 +96,23 @@ const { chromium } = require("playwright");
     await page.locator('[data-nav="pipeline"]').first().getAttribute("data-nav-hash") === "#/pipeline-v2" &&
     await page.locator('[data-nav="client-behavior"]').first().getAttribute("data-nav-hash") === "#/client-behavior");
 
+  console.log("\n== Map stays where you can see it ==");
+  // Grouping put Map inside Practice, which renders collapsed -- and from the
+  // outside a page behind a closed heading is indistinguishable from a page
+  // that has been removed. It was reported as "the map feature disappeared",
+  // twice, which is the only evidence that matters about whether a menu works.
+  const mapRow = bar.find((r) => r.key === "map");
+  check("MAP IS A TOP-LEVEL ENTRY, not folded into a group",
+    !!mapRow && mapRow.type === "item", bar.map((r) => r.key));
+  check("and it is not also inside one, which would show it twice",
+    !groups.some((g) => g.members.some((m) => m.key === "map")),
+    groups.map((g) => [g.key, g.members.map((m) => m.key)]));
+  check("it is visible without expanding anything",
+    await page.locator('#nav-list > [data-nav="map"]').count() === 1);
+  check("its route still works",
+    await page.locator('[data-nav="map"]').first().getAttribute("data-nav-hash") === null ||
+    await page.locator('[data-nav="map"]').first().getAttribute("data-nav-hash") === "#/map");
+
   console.log("\n== Opening and closing ==");
   check("Clients starts open, so the sidebar is not four blank headings",
     clients.open === true, clients);
