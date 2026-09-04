@@ -771,6 +771,12 @@ function renderShell(active) {
   // nothing. It is a normal nav item now, with a role check like everything else.
   if (!OT_ONLY && canAccessClients())
     navItems.push({ key: "pipeline", label: "Client Pipeline", icon: "▤", hash: "#/pipeline-v2" });
+  // Sits with the client sections, not with the staff ones: it is client
+  // clinical information. Same access rule the BIP API enforces
+  // (CLIENT_ACCESS_ROLES / canViewBip) -- the nav entry hides it, bip.js is
+  // what actually enforces it.
+  if (!OT_ONLY && canAccessClients())
+    navItems.push({ key: "client-behavior", label: "Client Behavior", icon: "◑", hash: "#/client-behavior" });
   if (!OT_ONLY) {
     navItems.push({ key: "tasks", label: "Tasks & Alerts", icon: "✓" });
   }
@@ -799,8 +805,6 @@ function renderShell(active) {
     navItems.push({ key: "pto", label: "PTO Balances", icon: "◇" });
   if (["owner", "admin", "super_admin", "hr_admin", "clinical"].includes(state.user.role))
     navItems.push({ key: "supervision", label: "RBT Supervision", icon: "▥" });
-  if (["owner", "admin", "super_admin", "intake", "clinical", "billing", "scheduling"].includes(state.user.role))
-    navItems.push({ key: "client-behavior", label: "Client Behavior", icon: "◑", hash: "#/client-behavior" });
   // Rethink client matching. Owner/admin only, matching the server-side role
   // check on /api/rethink/client-match -- the nav entry hides it, the route
   // guard is what actually enforces it.

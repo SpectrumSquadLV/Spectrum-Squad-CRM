@@ -62,8 +62,13 @@ const read = (f) => fs.readFileSync(path.join(__dirname, f), "utf8");
   check("the router has a #/client-behavior branch",
     /hash\.startsWith\("#\/client-behavior"\)/.test(idx));
   check("the nav entry exists", /key: "client-behavior"/.test(idx));
-  check("the nav entry is limited to roles that may see client records",
-    /\[(?=[^\]]*"intake")(?=[^\]]*"clinical")(?=[^\]]*"billing")(?=[^\]]*"scheduling")[^\]]*\]\.includes\(state\.user\.role\)\)\s*\n\s*navItems\.push\(\{ key: "client-behavior"/.test(idx));
+  check("the nav entry is gated on canAccessClients(), the same rule bip.js enforces",
+    /canAccessClients\(\)\)\s*\n[^\n]*navItems\.push\(\{ key: "client-behavior"/.test(idx));
+  // Where it sits is a stated requirement, not decoration: it is client
+  // clinical information and belongs with the client sections.
+  check("it sits with the client sections, right after Client Pipeline",
+    idx.indexOf('key: "client-behavior"') > idx.indexOf('key: "pipeline"') &&
+    idx.indexOf('key: "client-behavior"') < idx.indexOf('key: "tasks"'));
 
   // ================= permissions ========================================
   section("Reads and writes are gated on the existing roles");
