@@ -71,21 +71,31 @@ const read = (f) => fs.readFileSync(path.join(__dirname, f), "utf8");
     idx.indexOf('key: "client-behavior"') < idx.indexOf('key: "tasks"'));
 
   // ================= who is on the roster ===============================
-  // A BIP is a plan for a child in therapy. Everyone still moving through
-  // intake, and anyone parked on the waitlist, has no behaviour to plan for
-  // yet -- and listing them buries the clients a BCBA is actually working.
-  section("Only clients in therapy appear");
-  const roster = bipSrc.slice(bipSrc.indexOf('"/api/bip/roster"'), bipSrc.indexOf('"/api/bip/roster"') + 1400);
-  check("the roster selects only the active stage",
-    /stage = 'active'/.test(roster), roster.slice(0, 300));
-  check("intake stages are therefore excluded",
-    !/new_submission|clinical_screener|insurance_verification|first_day_scheduled/.test(roster));
+  // A BIP is a plan for a child who is in therapy or about to start. Everyone
+  // still moving through intake, and anyone parked on the waitlist, has no
+  // behaviour to plan for yet -- and listing them buries the clients a BCBA is
+  // actually working.
+  section("Only clients in therapy or starting appear");
+  const roster = bipSrc.slice(bipSrc.indexOf('"/api/bip/roster"'), bipSrc.indexOf('"/api/bip/roster"') + 1800);
+  check("the roster selects clients in therapy",
+    /stage IN \('active', 'first_day_scheduled'\)/.test(roster), roster.slice(0, 300));
+  // The week before day one is when the plan is being WRITTEN, so a client with
+  // a start date on the books has to be reachable from this tab.
+  check("and clients with a first day scheduled, who are the ones being drafted for",
+    /first_day_scheduled/.test(roster));
+  check("intake stages are still excluded",
+    !/new_submission|clinical_screener|insurance_verification|assessment_scheduling|authorization/.test(roster));
+  check("and so are discharged and closed clients",
+    !/discharged|not_moving_forward/.test(roster));
   check("WAITLISTED CLIENTS ARE EXCLUDED, and by their own flag rather than by stage",
     /COALESCE\(c\.waitlisted, false\) = false/.test(roster), roster.slice(0, 400));
   // waitlisted is a boolean a client can carry at any stage, including active
   // when therapy is paused, so checking the stage alone would not have caught it.
   check("the waitlist check is separate from the stage check, because the flag is",
-    /stage = 'active'[\s\S]{0,120}COALESCE\(c\.waitlisted/.test(roster));
+    /stage IN \([^)]*\)[\s\S]{0,120}COALESCE\(c\.waitlisted/.test(roster));
+  // Two stages on one list is only readable if a row says which it is.
+  check("the roster reports the stage, so a pre-start client can be marked as one",
+    /c\.stage/.test(roster) && /stage: r\.stage/.test(roster), roster.slice(0, 600));
 
   // ================= permissions ========================================
   section("Reads and writes are gated on the existing roles");
