@@ -207,6 +207,32 @@ module.exports = function initBip(ctx) {
     )`).catch((e) => console.error("client_drive_files:", e.message));
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_cdf ON client_drive_files(client_id)`).catch(() => {});
 
+    // Behavior Modification Notes.
+    //
+    // NOT bip_notes. That table is a threaded internal clinical discussion --
+    // categories, parent_id, open/resolved -- read by clinicians. These are
+    // the BCBA's own running record of a behavior and what to do about it:
+    // dated, structured, and readable on its own. Same client, different
+    // document, different reader.
+    //
+    // Anchored on client_id rather than bip_id on purpose: client_bips.client_id
+    // is UNIQUE, so the two are equivalent, and this way a note survives a plan
+    // row being recreated instead of being orphaned by it.
+    await dbRun(`CREATE TABLE IF NOT EXISTS bip_behavior_notes (
+      id SERIAL PRIMARY KEY,
+      client_id INTEGER NOT NULL,
+      note_date TEXT,
+      behavior TEXT,
+      strategy TEXT,
+      instructions TEXT,
+      author TEXT,
+      author_email TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      updated_by TEXT
+    )`).catch((e) => console.error("bip_behavior_notes:", e.message));
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_bip_bnotes ON bip_behavior_notes(client_id)`).catch(() => {});
+
     await dbRun(`CREATE TABLE IF NOT EXISTS bip_reviews (
       id SERIAL PRIMARY KEY,
       bip_id INTEGER NOT NULL,
@@ -240,6 +266,110 @@ module.exports = function initBip(ctx) {
       [bipId, behavior ? behavior.id : null, behavior ? behavior.name : null, section,
        clean(oldVal).slice(0, 4000), clean(newVal).slice(0, 4000), who || null, nowISO()]
     );
+  }
+
+  // ---- behavior note PDF ------------------------------------------------
+  // A real PDF file rather than a print window, so a note can be saved and
+  // attached somewhere. Written for the BCBA reading it, not for a family:
+  // clinical field labels, no plain-language paraphrase.
+  //
+  // supervision.js already hand-rolls PDF bytes and this follows its technique,
+  // but it wraps and paginates rather than truncating. That module caps at 40
+  // rows and floors y at 90, which is survivable for a table of hours; a
+  // clinical instruction cut off mid-sentence is not.
+  const PDF_FONTS = { F: "Helvetica", FB: "Helvetica-Bold" };
+  function pdfEsc(str) {
+    // Latin-1 is what the WinAnsi fonts below can render. Anything outside it
+    // becomes "?" rather than corrupting the byte stream.
+    return String(str == null ? "" : str)
+      .replace(/\r\n?/g, "\n")
+      .split("").map((ch) => (ch.charCodeAt(0) > 255 ? "?" : ch)).join("")
+      .replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+  }
+  // Helvetica is proportional, so this is an estimate rather than a measurement.
+  // It is deliberately conservative: wrapping a line early costs nothing,
+  // wrapping it late runs the text off the page edge.
+  function wrapText(text, maxChars) {
+    const out = [];
+    for (const para of String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n")) {
+      if (!para.trim()) { out.push(""); continue; }
+      let line = "";
+      for (const word of para.split(/\s+/)) {
+        if (!line.length) { line = word; continue; }
+        if ((line + " " + word).length <= maxChars) line += " " + word;
+        else { out.push(line); line = word; }
+      }
+      if (line.length) out.push(line);
+    }
+    return out;
+  }
+
+  function buildNotePdf(client, note) {
+    const pageW = 612, pageH = 792, m = 54, bottom = 64;
+    const pages = [];
+    let cur = [], y = pageH - m;
+    const newPage = () => { if (cur.length) pages.push(cur); cur = []; y = pageH - m; };
+    const line = (text, size, font, gap) => {
+      if (y < bottom) newPage();
+      cur.push(`BT /${font} ${size} Tf 1 0 0 1 ${m} ${y} Tm (${pdfEsc(text)}) Tj ET`);
+      y -= (gap == null ? size + 4 : gap);
+    };
+    const block = (label, value, chars) => {
+      if (!filled(value)) return;
+      y -= 8;
+      line(label.toUpperCase(), 9, "FB", 13);
+      for (const l of wrapText(value, chars || 92)) {
+        if (l === "") { y -= 6; continue; }
+        line(l, 11, "F", 15);
+      }
+    };
+
+    line("Behavior Modification Note", 18, "FB", 24);
+    line("Spectrum Squad", 10, "F", 20);
+    line(`${client.child_name || "Client"}`, 14, "FB", 17);
+    line(`Date: ${note.note_date || ""}`, 11, "F", 16);
+    if (filled(note.behavior)) line(`Behavior: ${note.behavior}`, 12, "FB", 16);
+    block("Behavior modification / strategy", note.strategy);
+    block("Notes / instructions", note.instructions);
+    y -= 14;
+    line(`Written by ${note.author || ""}`, 10, "F", 13);
+    if (note.updated_by && note.updated_at) line(`Last edited by ${note.updated_by}`, 10, "F", 13);
+    newPage();
+
+    const enc = (str) => Buffer.from(str, "latin1");
+    const chunks = []; let off = 0; const xr = [];
+    const push = (b) => { chunks.push(b); off += b.length; };
+    const obj = (n, body) => { xr[n] = off; push(enc(`${n} 0 obj\n`)); push(body); push(enc("\nendobj\n")); };
+
+    const N = pages.length;
+    const pageObj = (i) => 3 + i;                 // 3 .. 2+N
+    const contentObj = (i) => 3 + N + i;          // 3+N .. 2+2N
+    const fontReg = 3 + 2 * N, fontBold = 4 + 2 * N;
+    const total = 5 + 2 * N;
+
+    push(enc("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"));
+    obj(1, enc("<< /Type /Catalog /Pages 2 0 R >>"));
+    obj(2, enc(`<< /Type /Pages /Kids [${pages.map((_, i) => `${pageObj(i)} 0 R`).join(" ")}] /Count ${N} >>`));
+    pages.forEach((_, i) => {
+      obj(pageObj(i), enc(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW} ${pageH}] ` +
+        `/Resources << /Font << /F ${fontReg} 0 R /FB ${fontBold} 0 R >> >> /Contents ${contentObj(i)} 0 R >>`));
+    });
+    pages.forEach((cmds, i) => {
+      const body = enc(cmds.join("\n"));
+      xr[contentObj(i)] = off;
+      push(enc(`${contentObj(i)} 0 obj\n<< /Length ${body.length} >>\nstream\n`));
+      push(body);
+      push(enc("\nendstream\nendobj\n"));
+    });
+    obj(fontReg, enc(`<< /Type /Font /Subtype /Type1 /BaseFont /${PDF_FONTS.F} /Encoding /WinAnsiEncoding >>`));
+    obj(fontBold, enc(`<< /Type /Font /Subtype /Type1 /BaseFont /${PDF_FONTS.FB} /Encoding /WinAnsiEncoding >>`));
+
+    const xs = off;
+    let x = `xref\n0 ${total}\n0000000000 65535 f \n`;
+    for (let i = 1; i < total; i++) x += String(xr[i] || 0).padStart(10, "0") + " 00000 n \n";
+    push(enc(x));
+    push(enc(`trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${xs}\n%%EOF`));
+    return Buffer.concat(chunks);
   }
 
   // ---- BIP Health -----------------------------------------------------
@@ -527,6 +657,73 @@ module.exports = function initBip(ctx) {
         return true;
       }
 
+      // ---- the Client Behavior roster ----
+      // One row per open client, whether or not they have a plan yet: a client
+      // with no BIP is the one most worth seeing, and hiding them behind an
+      // inner join is how they stay unnoticed.
+      if (pathname === "/api/bip/roster" && method === "GET") {
+        const rows = await dbAll(
+          `SELECT c.id, c.child_name, c.assigned_bcba_name,
+                  b.status AS bip_status, b.assigned_bcba,
+                  (SELECT COUNT(*) FROM bip_behavior_notes n WHERE n.client_id = c.id) AS behavior_note_count
+             FROM clients c
+             LEFT JOIN client_bips b ON b.client_id = c.id
+            WHERE c.stage NOT IN ('discharged','not_moving_forward')
+            ORDER BY c.child_name`
+        ).catch(() => []);
+        json(res, 200, {
+          clients: rows.map((r) => ({
+            id: r.id,
+            child_name: r.child_name,
+            // The plan's own BCBA is the authority on who owns the plan; the
+            // client record's is the fallback for a client without one.
+            assigned_bcba: clean(r.assigned_bcba) || clean(r.assigned_bcba_name) || null,
+            bip_status: r.bip_status || null,
+            behavior_note_count: Number(r.behavior_note_count) || 0,
+          })),
+          can_edit: canEditBip(user),
+        });
+        return true;
+      }
+
+      // ---- behavior modification notes for a client ----
+      const notesMatch = pathname.match(/^\/api\/bip\/client\/(\d+)\/behavior-notes$/);
+      if (notesMatch && method === "GET") {
+        const clientId = Number(notesMatch[1]);
+        const client = await dbGet("SELECT id, child_name FROM clients WHERE id = ?", [clientId]);
+        if (!client) { json(res, 404, { error: "Client not found" }); return true; }
+        const bip = await dbGet("SELECT id FROM client_bips WHERE client_id = ?", [clientId]);
+        json(res, 200, {
+          client,
+          // Offered as suggestions when writing a note, so the wording matches
+          // the plan where a behavior is already in it.
+          behaviors: bip ? await dbAll("SELECT id, name FROM bip_behaviors WHERE bip_id = ? ORDER BY sort_order, id", [bip.id]) : [],
+          notes: await dbAll(
+            "SELECT * FROM bip_behavior_notes WHERE client_id = ? ORDER BY note_date DESC, id DESC LIMIT 500",
+            [clientId]
+          ),
+          can_edit: canEditBip(user),
+        });
+        return true;
+      }
+
+      // ---- one note as a PDF ----
+      const pdfMatch = pathname.match(/^\/api\/bip\/behavior-notes\/(\d+)\/pdf$/);
+      if (pdfMatch && method === "GET") {
+        const note = await dbGet("SELECT * FROM bip_behavior_notes WHERE id = ?", [Number(pdfMatch[1])]);
+        if (!note) { json(res, 404, { error: "Note not found" }); return true; }
+        const client = await dbGet("SELECT id, child_name FROM clients WHERE id = ?", [note.client_id]);
+        const buf = buildNotePdf(client || {}, note);
+        const safe = String((client && client.child_name) || "client").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        res.writeHead(200, {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `attachment; filename="behavior-note-${safe}-${(note.note_date || "").slice(0, 10)}.pdf"`,
+          "Content-Length": buf.length,
+        });
+        res.end(buf);
+        return true;
+      }
+
       // ---- load the whole workspace for a client ----
       const byClient = pathname.match(/^\/api\/bip\/client\/(\d+)$/);
       if (byClient && method === "GET") {
@@ -543,6 +740,64 @@ module.exports = function initBip(ctx) {
       // Everything below changes something.
       if (!canEditBip(user) && !(await canDirect(user))) {
         json(res, 403, { error: "Only clinical staff can change a BIP." });
+        return true;
+      }
+
+      // ---- write a behavior modification note ----
+      // A note with nothing in any of its three fields is not a note; refusing
+      // it here keeps blank rows out of a clinical record.
+      if (notesMatch && method === "POST") {
+        const clientId = Number(notesMatch[1]);
+        const client = await dbGet("SELECT id FROM clients WHERE id = ?", [clientId]);
+        if (!client) { json(res, 404, { error: "Client not found" }); return true; }
+        const b = await readBody(req);
+        if (!filled(b.behavior) && !filled(b.strategy) && !filled(b.instructions)) {
+          json(res, 400, { error: "Add a behavior, a strategy, or instructions before saving." });
+          return true;
+        }
+        const row = await dbGet(
+          `INSERT INTO bip_behavior_notes (client_id, note_date, behavior, strategy, instructions,
+             author, author_email, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+          [clientId, clean(b.note_date) || today(), clean(b.behavior), clean(b.strategy),
+           clean(b.instructions), who, user.email || null, nowISO()]
+        );
+        json(res, 200, { ok: true, note: row });
+        return true;
+      }
+
+      // ---- edit one ----
+      // The previous wording goes to bip_history like every other clinical
+      // edit, so a note that changed can be reconstructed rather than just
+      // silently reading differently than it did last week.
+      const behaviorNoteEdit = pathname.match(/^\/api\/bip\/behavior-notes\/(\d+)$/);
+      if (behaviorNoteEdit && method === "PATCH") {
+        const id = Number(behaviorNoteEdit[1]);
+        const existing = await dbGet("SELECT * FROM bip_behavior_notes WHERE id = ?", [id]);
+        if (!existing) { json(res, 404, { error: "Note not found" }); return true; }
+        const b = await readBody(req);
+        const next = {
+          note_date: b.note_date === undefined ? existing.note_date : (clean(b.note_date) || today()),
+          behavior: b.behavior === undefined ? existing.behavior : clean(b.behavior),
+          strategy: b.strategy === undefined ? existing.strategy : clean(b.strategy),
+          instructions: b.instructions === undefined ? existing.instructions : clean(b.instructions),
+        };
+        if (!filled(next.behavior) && !filled(next.strategy) && !filled(next.instructions)) {
+          json(res, 400, { error: "A note cannot be left completely empty." });
+          return true;
+        }
+        const bip = await dbGet("SELECT id FROM client_bips WHERE client_id = ?", [existing.client_id]);
+        if (bip) {
+          for (const k of ["note_date", "behavior", "strategy", "instructions"]) {
+            await logChange(bip.id, null, `Behavior note #${id} — ${k}`, existing[k], next[k], who).catch(() => {});
+          }
+        }
+        const row = await dbGet(
+          `UPDATE bip_behavior_notes SET note_date = ?, behavior = ?, strategy = ?, instructions = ?,
+             updated_at = ?, updated_by = ? WHERE id = ? RETURNING *`,
+          [next.note_date, next.behavior, next.strategy, next.instructions, nowISO(), who, id]
+        );
+        json(res, 200, { ok: true, note: row });
         return true;
       }
 
@@ -922,6 +1177,7 @@ module.exports = function initBip(ctx) {
 
   return {
     initTables,
+    _test: { buildNotePdf, wrapText },
     handleApi,
     loadWorkspace,
     computeHealth,
