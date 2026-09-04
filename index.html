@@ -52,6 +52,24 @@ button { font-family: inherit; cursor: pointer; }
 /* ---------- Layout ---------- */
 .app-shell { display: flex; min-height: 100vh; }
 
+/* Viewing the CRM as somebody else. Deliberately loud and deliberately fixed
+   to the top of the window: the failure this prevents is an owner forgetting
+   whose screens they are looking at and reporting what they see as their own.
+   The shell is padded down so nothing sits underneath it. */
+.viewas-bar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+  background: #7c2d12; color: #fff; font-size: 13px; font-weight: 600;
+  padding: 9px 16px; display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap; box-shadow: 0 2px 10px rgba(0,0,0,.18);
+}
+.viewas-bar .who { font-weight: 800; }
+.viewas-bar .ro { font-weight: 500; opacity: .9; }
+.viewas-bar button {
+  margin-left: auto; background: #fff; color: #7c2d12; border: 0;
+  border-radius: 999px; padding: 5px 14px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+body.viewing-as .app-shell { padding-top: 40px; }
+
 .sidebar {
   width: 240px;
   background: linear-gradient(180deg, var(--brand-navy) 0%, #2a3d8f 100%);
@@ -499,7 +517,14 @@ async function api(path, opts = {}) {
     throw new Error("Not authenticated");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "Request failed");
+  if (!res.ok) {
+    // A write refused because the owner is looking at somebody else's account.
+    // The server's message already says so; this keeps it from being mistaken
+    // for a permission problem with the account being viewed, which is what a
+    // bare 403 would look like.
+    if (data.view_as_read_only) throw new Error(data.error);
+    throw new Error(data.error || "Request failed");
+  }
   return data;
 }
 
@@ -1220,7 +1245,14 @@ function renderShell(active) {
             </div>`;
   };
 
+  const va = state.user && state.user.view_as;
+  document.body.classList.toggle("viewing-as", !!(va && va.active));
   root.innerHTML = `
+    ${va && va.active ? `<div class="viewas-bar" id="viewas-bar">
+      <span>Viewing as <span class="who">${adminEsc(va.viewing_name)}</span> (${adminEsc(va.viewing_role)})</span>
+      <span class="ro">Read only &mdash; nothing can be changed from here.</span>
+      <button id="viewas-stop">Back to my account</button>
+    </div>` : ""}
     <div class="app-shell">
       <div class="sidebar">
         <div class="brand"><img src="/logo.png" alt="Spectrum Squad" style="max-width:170px; width:100%; height:auto;" /></div>
@@ -1272,6 +1304,24 @@ function renderShell(active) {
     });
   });
   refreshTaskBadge();
+  const stopBtn = document.getElementById("viewas-stop");
+  if (stopBtn) stopBtn.addEventListener("click", async () => {
+    stopBtn.disabled = true;
+    stopBtn.textContent = "Switching back…";
+    try {
+      await api("/api/auth/view-as/stop", { method: "POST" });
+      // Re-read who we are from the server rather than assuming: the session
+      // is what decides, and guessing here is how a stale banner survives.
+      const me = await api("/api/auth/me");
+      state.user = me.user;
+      location.hash = "#/dashboard";
+      route();
+    } catch (e) {
+      stopBtn.disabled = false;
+      stopBtn.textContent = "Back to my account";
+      alert(e.message);
+    }
+  });
   document.getElementById("logout-btn").addEventListener("click", async () => {
     await api("/api/auth/logout", { method: "POST" });
     state.user = null;
@@ -6188,6 +6238,8 @@ async function renderTeamSection(mount) {
                 <button class="btn small secondary" data-access-user="${u.id}">Access</button>
                 <button class="btn small secondary" data-reset-user="${u.id}">Reset password</button>
                 ${String(u.id) === String(state.user.id) ? "" : `<button class="btn small secondary" data-delete-user="${u.id}" style="color:#b91c1c;">Remove</button>`}
+                ${state.user.role === "owner" && String(u.id) !== String(state.user.id)
+                  ? `<button class="btn small secondary" data-viewas-user="${u.id}" title="See the CRM exactly as they see it. Read only.">View as</button>` : ""}
               </td>
             </tr>`
               )
@@ -6276,6 +6328,26 @@ async function renderTeamSection(mount) {
       }
     });
   });
+
+  body.querySelectorAll("[data-viewas-user]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const id = btn.getAttribute("data-viewas-user");
+      const row = body.querySelector(`[data-user-row="${id}"]`);
+      const who = row ? (row.querySelector("strong") || {}).textContent : "this user";
+      if (!confirm(`View the CRM as ${who}?\n\nYou will see exactly their screens, and nothing can be changed while you are in their view. It is recorded.`)) return;
+      btn.disabled = true;
+      try {
+        await api("/api/auth/view-as", { method: "POST", body: { user_id: Number(id) } });
+        const me = await api("/api/auth/me");
+        state.user = me.user;
+        location.hash = "#/dashboard";
+        route();
+      } catch (e) {
+        btn.disabled = false;
+        const st = document.getElementById("team-status");
+        if (st) { st.style.color = "#b91c1c"; st.textContent = e.message; }
+      }
+    }));
 
   body.querySelectorAll("[data-delete-user]").forEach((btn) => {
     btn.addEventListener("click", async () => {

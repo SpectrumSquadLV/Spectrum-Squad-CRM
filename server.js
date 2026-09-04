@@ -91,6 +91,34 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TEXT NOT NULL
 );
 
+-- Owner troubleshooting: looking at the CRM as somebody else sees it.
+--
+-- The session still belongs to the OWNER -- view_as_user_id is who they are
+-- currently looking as. Nothing about their own account changes, and clearing
+-- this column is the whole of "stop".
+--
+-- Kept as a column on the session rather than a second token so it cannot
+-- outlive the sign-in it came from: the owner's session expiring ends the
+-- viewing with it.
+
+-- Who looked at whose account, and for how long. Every start and every stop.
+--
+-- This is the record of one person reading another person's screens, so it is
+-- written before the viewing begins rather than after it ends -- a crash mid-
+-- session must not be the thing that keeps it out of the log.
+CREATE TABLE IF NOT EXISTS admin_view_as_log (
+  id SERIAL PRIMARY KEY,
+  owner_id INTEGER NOT NULL,
+  owner_email TEXT,
+  target_id INTEGER NOT NULL,
+  target_email TEXT,
+  target_role TEXT,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  ended_reason TEXT,
+  ip TEXT
+);
+
 -- Forgotten-password links.
 --
 -- WHAT IS STORED IS A HASH, NOT THE LINK. The token in the email is 32 random
@@ -630,6 +658,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS module_access TEXT;
   -- indexed. The index is NOT unique: two rows could in principle carry the
   -- same hash, and a unique index would turn that into a 500 on an endpoint
   -- anyone can reach.
+  ALTER TABLE sessions ADD COLUMN IF NOT EXISTS view_as_user_id INTEGER;
+
   CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens (token_hash);
   CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens (user_id);
 `;
@@ -751,8 +781,42 @@ async function getUserFromToken(token) {
     await dbRun("DELETE FROM sessions WHERE token = ?", [token]);
     return null;
   }
-  const user = await dbGet("SELECT * FROM users WHERE id = ?", [session.user_id]);
-  return user ? sanitizeUser(user) : null;
+  const owner = await dbGet("SELECT * FROM users WHERE id = ?", [session.user_id]);
+  if (!owner) return null;
+
+  // VIEWING AS SOMEBODY ELSE.
+  //
+  // The request is answered as the target user -- not "as the owner with extra
+  // filtering". Every role check, every module-access override and every
+  // assigned-client query downstream then applies to THEM, without a single
+  // one of those call sites needing to know this feature exists. That is the
+  // point: a screen built by pretending is a screen that can differ from the
+  // real one, and the whole reason for looking is to see what they see.
+  //
+  // What is NOT inherited is the ability to change anything: the read-only
+  // gate in handle() refuses every write while this is set.
+  if (session.view_as_user_id) {
+    const target = await dbGet("SELECT * FROM users WHERE id = ?", [session.view_as_user_id]);
+    if (target) {
+      return {
+        ...sanitizeUser(target),
+        view_as: {
+          active: true,
+          read_only: true,
+          real_user_id: owner.id,
+          real_user_name: owner.name,
+          real_user_email: owner.email,
+          viewing_name: target.name,
+          viewing_email: target.email,
+          viewing_role: target.role,
+        },
+      };
+    }
+    // The account was deleted while being viewed. Fall back to the owner
+    // rather than to nobody, so they are not silently signed out.
+    await dbRun("UPDATE sessions SET view_as_user_id = NULL WHERE token = ?", [token]).catch(() => {});
+  }
+  return sanitizeUser(owner);
 }
 
 function sanitizeUser(user) {
@@ -4606,6 +4670,40 @@ async function handle(req, res, pathname, method, query = {}) {
   const cookies = auth.parseCookies(req);
   const user = await auth.getUserFromToken(cookies.session);
 
+  // ---- LOOK, DON'T TOUCH -------------------------------------------------
+  //
+  // While the owner is viewing the CRM as somebody else, NOTHING CAN BE
+  // WRITTEN. One gate, and it sits HERE -- immediately after the session is
+  // resolved, above the module-access check, above the OT lockdown, and above
+  // every add-on dispatch.
+  //
+  // That position is the whole point, and it was wrong first: the gate started
+  // out below the add-on dispatch, so /api/bcba/*, /api/hr/*, /api/ot/* and the
+  // rest never reached it. A test caught it only because the account being
+  // viewed happened to lack permission for those routes anyway -- the refusals
+  // were coming from the add-on's own role check, not from read-only. Viewing
+  // an account that DID have permission would have written straight through.
+  //
+  // The test is the HTTP method, not a list of endpoints, for the same reason
+  // the gate is central: an allowlist of "safe" writes rots the moment a route
+  // is added. A few harmless POSTs -- a preview, a search -- are refused along
+  // with the rest, which is the right trade for somebody who is looking at a
+  // screen rather than working.
+  //
+  // The two exceptions are the ways out. Stopping is a POST and so is signing
+  // out; refusing those would leave somebody stuck inside another person's
+  // account with no button that works.
+  if (user && user.view_as && user.view_as.active && method !== "GET" && method !== "HEAD") {
+    const wayOut = pathname === "/api/auth/view-as/stop" || pathname === "/api/auth/logout";
+    if (!wayOut) {
+      json(res, 403, {
+        error: `You are viewing the CRM as ${user.view_as.viewing_name}. Nothing can be changed from here — switch back to your own account first.`,
+        view_as_read_only: true,
+      });
+      return true;
+    }
+  }
+
   // Per-user granular module access: if the owner explicitly turned a module OFF
   // for this user, block its API here (public sub-routes are exempt). Absent =
   // role defaults apply, so existing users are unaffected.
@@ -4926,6 +5024,15 @@ async function handle(req, res, pathname, method, query = {}) {
     }
 
     if (pathname === "/api/auth/logout" && method === "POST") {
+      // Signing out while viewing as somebody closes that entry too, so the log
+      // does not show an owner still inside another account forever.
+      if (user && user.view_as && user.view_as.active) {
+        await dbRun(
+          `UPDATE admin_view_as_log SET ended_at = ?, ended_reason = 'signed out'
+            WHERE owner_id = ? AND target_id = ? AND ended_at IS NULL`,
+          [nowISO(), user.view_as.real_user_id, user.id]
+        ).catch(() => {});
+      }
       if (cookies.session) await auth.logout(cookies.session);
       res.setHeader("Set-Cookie", "session=; HttpOnly; Path=/; Max-Age=0");
       return json(res, 200, { ok: true });
@@ -4933,6 +5040,71 @@ async function handle(req, res, pathname, method, query = {}) {
 
     if (pathname === "/api/auth/me" && method === "GET") {
       return json(res, 200, { user });
+    }
+
+    // ---------- VIEWING THE CRM AS SOMEBODY ELSE ----------
+    // Owner only. Not super admin, not admin: this is the ability to read every
+    // screen in the application through somebody else's account, and an admin
+    // using it on the owner would see the financial pages their own role is
+    // deliberately blocked from. One role holds it.
+    const canViewAs = (u) => !!u && u.role === "owner" && !(u.view_as && u.view_as.active);
+
+    if (pathname === "/api/auth/view-as" && method === "POST") {
+      if (!canViewAs(user)) {
+        return json(res, 403, { error: "Only the owner can view the CRM as another user." });
+      }
+      const body = await readBody(req).catch(() => ({}));
+      const targetId = Number(body.user_id);
+      if (!Number.isInteger(targetId) || targetId <= 0) {
+        return json(res, 400, { error: "Choose who to view as." });
+      }
+      if (targetId === Number(user.id)) {
+        return json(res, 400, { error: "That is already your own account." });
+      }
+      const target = await dbGet("SELECT id, name, email, role FROM users WHERE id = ?", [targetId]);
+      if (!target) return json(res, 404, { error: "That account no longer exists." });
+
+      // Written BEFORE the viewing begins. One person reading another person's
+      // screens is the thing being recorded, and a crash halfway through must
+      // not be what keeps it out of the log.
+      await dbRun(
+        `INSERT INTO admin_view_as_log (owner_id, owner_email, target_id, target_email, target_role, started_at, ip)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [user.id, user.email, target.id, target.email, target.role, nowISO(), requestIp(req)]
+      ).catch((e) => console.error("[view-as] log:", e.message));
+
+      await dbRun("UPDATE sessions SET view_as_user_id = ? WHERE token = ?", [target.id, cookies.session]);
+      return json(res, 200, {
+        ok: true,
+        viewing: { id: target.id, name: target.name, email: target.email, role: target.role },
+        read_only: true,
+      });
+    }
+
+    if (pathname === "/api/auth/view-as/stop" && method === "POST") {
+      if (!user || !(user.view_as && user.view_as.active)) {
+        return json(res, 200, { ok: true, already: true });
+      }
+      await dbRun(
+        `UPDATE admin_view_as_log SET ended_at = ?, ended_reason = 'stopped'
+          WHERE owner_id = ? AND target_id = ? AND ended_at IS NULL`,
+        [nowISO(), user.view_as.real_user_id, user.id]
+      ).catch(() => {});
+      await dbRun("UPDATE sessions SET view_as_user_id = NULL WHERE token = ?", [cookies.session]);
+      return json(res, 200, { ok: true });
+    }
+
+    // The record of who looked at whose account. Owner only, and readable --
+    // an audit trail nothing can read is not an audit trail.
+    if (pathname === "/api/auth/view-as/log" && method === "GET") {
+      if (!user || user.role !== "owner" || (user.view_as && user.view_as.active)) {
+        return json(res, 403, { error: "Not permitted" });
+      }
+      const rows = await dbAll(
+        `SELECT id, owner_email, target_email, target_role, started_at, ended_at, ended_reason, ip
+           FROM admin_view_as_log ORDER BY id DESC LIMIT 100`
+      ).catch(() => []);
+      return json(res, 200, { entries: rows });
     }
 
     // ---------- FORGOTTEN PASSWORD ----------
