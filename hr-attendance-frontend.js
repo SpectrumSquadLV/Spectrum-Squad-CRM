@@ -258,7 +258,13 @@
         '<td style="padding:9px 10px;">' + pill(s.discipline_level) + "</td>" +
         '<td style="padding:9px 10px;font-size:12.5px;">' + (s.bonus_eligible
             ? '<span style="color:#166534;font-weight:700;">$' + (d.bonus_amount || 50) + "</span>"
-            : '<span style="color:var(--text-muted);">' + esc(s.bonus_status) + "</span>") +
+            : s.bonus_excluded
+              // Distinct from "not eligible this cycle". Somebody outside the
+              // scheme has not failed anything, and a grey "Not eligible" next
+              // to their name reads as though they had.
+              ? '<span class="tag" style="background:#f1f5f9;color:#475569;">Not in the scheme</span>'
+                + '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' + esc(s.bonus_status) + "</div>"
+              : '<span style="color:var(--text-muted);">' + esc(s.bonus_status) + "</span>") +
           (s.next_bonus_date ? '<div style="font-size:11px;color:var(--text-muted);">next ' + esc(s.next_bonus_date) + "</div>" : "") + "</td>" +
         '<td style="padding:9px 10px;text-align:center;">' + (s.unsigned_acknowledgments
             ? '<span class="tag" style="background:#fef3c7;color:#92400e;">' + s.unsigned_acknowledgments + " unsigned</span>" : "—") + "</td>" +
@@ -276,7 +282,11 @@
         tile(t.people || 0, "Staff tracked") +
         tile(t.with_points_90 || 0, "With points (90 days)", (t.with_points_90 ? "#b45309" : null)) +
         tile(t.needing_action || 0, "At coaching level or above", (t.needing_action ? "#b91c1c" : null)) +
-        tile(t.bonus_eligible || 0, "On track for the bonus", "#166534") +
+        // "On track" is counted against the people the bonus actually applies
+        // to. Showing 6 of 14 when four of those are BCBAs and admin reads as
+        // eight staff with attendance problems.
+        tile((t.bonus_eligible || 0) + (t.bonus_in_scheme != null ? " / " + t.bonus_in_scheme : ""),
+             "On track for the bonus", "#166534") +
         tile(t.unsigned || 0, "Unsigned acknowledgments", (t.unsigned ? "#b45309" : null)) +
       "</div>" +
       '<div id="att-review-status" style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px;"></div>' +
