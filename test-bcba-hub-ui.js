@@ -20,7 +20,9 @@ const { chromium } = require("playwright");
   let pass = 0, fail = 0;
   const check = (name, cond, detail) => {
     if (cond) { pass++; console.log("  PASS  " + name); }
-    else { fail++; console.log("  FAIL  " + name + (detail !== undefined ? "  -> " + String(detail).slice(0, 400) : "")); }
+    // JSON, not String(): a failure whose detail is an object printed as
+    // "[object Object]" tells you nothing, which is the one moment it matters.
+    else { fail++; console.log("  FAIL  " + name + (detail !== undefined ? "  -> " + (typeof detail === "string" ? detail : JSON.stringify(detail)).slice(0, 400) : "")); }
   };
   const BASE = process.env.BASE || "http://localhost:3009";
 

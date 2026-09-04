@@ -125,7 +125,8 @@
     const el = document.createElement("style");
     el.id = "bh-styles";
     el.textContent = `
-    .bh { padding: 22px; max-width: 1180px; }
+    .bh { padding: 22px; max-width: 1180px; min-width: 0; }
+    .bh * { min-width: 0; }
     .bh-i { flex: 0 0 auto; }
     .bh-head h1 { margin: 0 0 3px; font-size: 26px; color: var(--brand-navy, #1b2a6b); }
     .bh-head p { margin: 0 0 16px; color: var(--text-muted, #6b6a86); font-size: 13.5px; }
@@ -152,7 +153,7 @@
     .bh-sec-title { font-size: 16px; font-weight: 700; color: var(--brand-navy, #1b2a6b); margin: 0 0 3px; }
     .bh-sec-sub { font-size: 12.5px; color: var(--text-muted, #6b6a86); margin: 0 0 12px; }
 
-    .bh-payers { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; margin-bottom: 22px; }
+    .bh-payers { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(132px, 100%), 1fr)); gap: 10px; margin-bottom: 22px; }
     .bh-payer { background: #fff; border: 1.5px solid var(--border, #e5e7eb); border-radius: 13px; padding: 15px 10px;
       cursor: pointer; text-align: center; font-family: inherit; transition: border-color .12s, box-shadow .12s, transform .12s; }
     .bh-payer:hover { border-color: #c3bbe8; box-shadow: 0 4px 14px rgba(41,34,92,.09); transform: translateY(-1px); }
@@ -163,7 +164,7 @@
     .bh-payer .ct { font-size: 10.5px; color: var(--text-muted, #6b6a86); margin-top: 3px; }
 
     .bh-card { background: #fff; border: 1px solid var(--border, #e5e7eb); border-radius: 14px; padding: 16px 18px; margin-bottom: 14px; }
-    .bh-grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .bh-grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 12px; margin-bottom: 16px; }
     .bh-qr { border-radius: 13px; padding: 14px 15px; border: 1px solid; }
     .bh-qr h4 { margin: 0 0 8px; font-size: 12.5px; font-weight: 700; display: flex; align-items: center; gap: 7px; }
     .bh-qr ul { margin: 0; padding-left: 17px; font-size: 12.5px; line-height: 1.5; color: #33334f; }
@@ -179,7 +180,7 @@
     .bh-toggle button.on { background: #fff; color: var(--brand-navy, #1b2a6b); box-shadow: 0 1px 3px rgba(41,34,92,.14); }
 
     .bh-ready { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-    .bh-bar { flex: 1 1 220px; height: 9px; background: #eeecf6; border-radius: 999px; overflow: hidden; min-width: 160px; }
+    .bh-bar { flex: 1 1 220px; height: 9px; background: #eeecf6; border-radius: 999px; overflow: hidden; min-width: 0; }
     .bh-bar i { display: block; height: 100%; border-radius: 999px; transition: width .25s ease; }
     .bh-pct { font-size: 20px; font-weight: 800; color: var(--brand-navy, #1b2a6b); }
     .bh-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700;
@@ -226,7 +227,7 @@
     .bh-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
     .bh-formbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
-    .bh-search { position: relative; flex: 1 1 240px; min-width: 200px; }
+    .bh-search { position: relative; flex: 1 1 240px; min-width: 0; }
     .bh-search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-muted, #6b6a86); }
     .bh-search input { width: 100%; padding: 8px 12px 8px 34px; border-radius: 9px; border: 1px solid var(--border, #e5e7eb);
       font-family: inherit; font-size: 13px; }
@@ -234,7 +235,7 @@
     .bh-chip { border: 1px solid var(--border, #e5e7eb); background: #fff; border-radius: 999px; padding: 5px 13px;
       font-size: 12px; font-weight: 600; color: var(--text-muted, #6b6a86); cursor: pointer; font-family: inherit; }
     .bh-chip.on { background: var(--brand-navy, #1b2a6b); color: #fff; border-color: var(--brand-navy, #1b2a6b); }
-    .bh-forms { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .bh-forms { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 12px; }
     .bh-form { background: #fff; border: 1px solid var(--border, #e5e7eb); border-radius: 13px; padding: 15px 16px;
       display: flex; flex-direction: column; gap: 9px; }
     .bh-form:hover { border-color: #c3bbe8; }
@@ -245,7 +246,8 @@
     .bh-tag.arch { background: #e5e7eb; color: #4b5563; }
     .bh-tag.pay { background: #eefaf3; color: #1c6b45; }
 
-    .bh-cmp table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .bh-cmp .scroll { overflow-x: auto; }
+    .bh-cmp table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 460px; }
     .bh-cmp th, .bh-cmp td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--border, #e5e7eb); }
     .bh-cmp th.rowh { width: 200px; color: var(--text-muted, #6b6a86); font-weight: 700; }
     .bh-cmp ul { margin: 0; padding-left: 16px; }
@@ -383,7 +385,7 @@
     const color = band === "ok" ? "#22c55e" : band === "mid" ? "#e0a430" : "#ef4444";
     return '<div class="bh-card"><div class="bh-ready">' +
       '<div class="bh-pct">' + pct + "%</div>" +
-      '<div style="flex:1 1 220px;min-width:160px;">' +
+      '<div style="flex:1 1 220px;min-width:0;">' +
         '<div style="font-size:12.5px;font-weight:700;color:#4a4a68;margin-bottom:5px;">Treatment Plan Readiness ' +
           '<span class="bh-pill ' + band + '"><span class="dot"></span>' + label + "</span></div>" +
         '<div class="bh-bar"><i style="width:' + pct + "%;background:" + color + ';"></i></div>' +
@@ -495,13 +497,14 @@
           '<button class="bh-btn sm" id="bh-cmp-close">Close</button>' +
         "</div>" +
       "</div>" +
+      '<div class="scroll">' +
       "<table><thead><tr><th class=\"rowh\"></th><th>" + esc(pa.name) + "</th><th>" + esc(pb.name) + "</th></tr></thead><tbody>" +
         row("Assessment authorization", list(pa.assessment_authorization, "Not listed"), list(pb.assessment_authorization, "Not listed")) +
         row("Assessment units", list(pa.assessment_units, "Not listed"), list(pb.assessment_units, "Not listed")) +
         row("Required forms / documents", list(pa.required_documents, "Not listed"), list(pb.required_documents, "Not listed")) +
         row("Treatment plan sections", majorSections(pa), majorSections(pb)) +
         row("Reauthorization", reauth(pa), reauth(pb)) +
-      "</tbody></table>" +
+      "</tbody></table></div>" +
       '<p class="bh-sec-sub" style="margin:12px 0 0;">Differences are shown as the cheat sheet records them. ' +
       "A blank on one side means that payer's entry does not cover it, not that the requirement does not exist.</p>" +
     "</div>";
