@@ -129,10 +129,18 @@ const BASE = process.env.BASE || "http://localhost:3011";
   section("The permanent nav item is generic");
   // If this ever says "Halloween Palooza", the architecture has leaked into the
   // product and next year's event needs a code change.
-  const navText = await page.$eval(".app-shell", (s) => s.innerText).catch(() => "");
-  check('the sidebar has an "Events" item', /\bEvents\b/.test(navText), navText.slice(0, 400));
+  // The entry is asked for by KEY, not by visible text: the sidebar is grouped
+  // now and Events sits inside a collapsed group, so innerText does not contain
+  // it even though it is there.
+  const eventsEntry = await page.locator('.sidebar nav [data-nav="events"]').count();
+  check('the sidebar has an "Events" item', eventsEntry === 1, eventsEntry);
+  // The label check stays on the RENDERED MARKUP rather than visible text, so a
+  // collapsed group cannot hide a leak. This is the assertion that matters --
+  // if it ever says "Halloween Palooza", the architecture has leaked into the
+  // product and next year's event needs a code change.
+  const navHtml = await page.$eval(".sidebar nav", (s) => s.innerHTML).catch(() => "");
   check("and does NOT name one event in the navigation",
-    !/halloween/i.test(navText), navText.slice(0, 400));
+    !/halloween/i.test(navHtml), navHtml.slice(0, 400));
 
   section("Events opens, with the Palooza as one row among others");
   let text = await go("#/events", /New event/);
