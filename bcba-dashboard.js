@@ -518,8 +518,22 @@ module.exports = function initBcbaDashboard(ctx) {
               assigned_student_analyst_name, squad_leader_name,
               auth_start_date, auth_expiration_date, treatment_plan_due_date
          FROM clients`).catch(() => []);
+    // Staff are looked for in BOTH places a person can exist in this CRM. The
+    // HR record is preferred because it is the fuller one and carries the
+    // Rethink link and the billable target, but somebody can hold a CRM login
+    // without an HR record -- and refusing to match them would put every one of
+    // their clients on the review list for no reason a person could act on.
+    // Matched by email first, so the same person in both is one person here.
     const employees = await dbAll(
       `SELECT id, name, email FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated'`).catch(() => []);
+    const logins = await dbAll("SELECT id, name, email FROM users").catch(() => []);
+    const seen = new Set(employees.map((e) => lower(e.email)).filter(Boolean));
+    const seenNames = new Set(employees.map((e) => normName(e.name)));
+    for (const u of logins) {
+      if (lower(u.email) && seen.has(lower(u.email))) continue;
+      if (seenNames.has(normName(u.name))) continue;
+      employees.push({ id: null, name: u.name, email: u.email, from_login: true });
+    }
 
     // Squad leader per client, from the sheet's second table, keyed by name.
     const squadByClient = new Map();

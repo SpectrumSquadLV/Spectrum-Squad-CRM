@@ -60,13 +60,30 @@ function unescapeCell(s) {
 // filled this in". Both end up empty; neither is guessed at.
 const isBlank = (v) => !v || /^(n\/a|na|none|-|—|tbd)$/i.test(v);
 
+// Two shapes, because the sheet arrives two ways and both are ordinary.
+//
+//   * A markdown pipe table, which is what an export of the document gives.
+//   * TAB-SEPARATED text, which is what COPYING CELLS OUT OF GOOGLE SHEETS
+//     puts on the clipboard. That is how a person will actually use this, and
+//     accepting only the first would have refused every real paste.
+//
+// A tab-separated line is recognised by containing a tab, never by guessing at
+// spacing: client names, payers and schedule notes are full of spaces, and
+// splitting on runs of them would cut names in half.
 function splitRow(line) {
-  const t = line.trim();
-  if (!t.startsWith("|")) return null;
-  // Drop the leading and trailing pipe, then split. Escaped pipes inside a cell
-  // are not separators.
-  const body = t.replace(/^\|/, "").replace(/\|\s*$/, "");
-  return body.split(/(?<!\\)\|/).map(unescapeCell);
+  // ONLY the line ending is stripped. A trailing tab is an EMPTY TRAILING CELL,
+  // not whitespace: trimming it turns "Needs assessment\t\t\t" into a line with
+  // no tab at all, which stops looking like a table row and silently ends the
+  // table -- taking every row after it with it.
+  const t = String(line).replace(/[\r\n]+$/, "");
+  if (t.trim().startsWith("|")) {
+    // Drop the leading and trailing pipe, then split. Escaped pipes inside a
+    // cell are not separators.
+    const body = t.trim().replace(/^\|/, "").replace(/\|\s*$/, "");
+    return body.split(/(?<!\\)\|/).map(unescapeCell);
+  }
+  if (t.includes("\t")) return t.split("\t").map(unescapeCell);
+  return null;
 }
 
 const isSeparator = (cells) => cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c) || c === "");
@@ -75,9 +92,21 @@ const isSeparator = (cells) => cells.length > 0 && cells.every((c) => /^:?-{2,}:
 // repeated across every column. "Pending", "Needs assessment", and so on.
 function sectionLabel(cells) {
   const filled = cells.filter(Boolean);
-  if (filled.length < 3) return null;
-  const first = filled[0];
-  return filled.every((c) => c === first) ? first : null;
+  if (!filled.length) return null;
+  // Exported form: the merged value repeated across the row.
+  if (filled.length >= 3) {
+    const first = filled[0];
+    if (filled.every((c) => c === first)) return first;
+  }
+  // Pasted form: a merged cell arrives once, in the first column, with the rest
+  // of the row empty. That is also what a client row carrying nothing but a
+  // name looks like, so this only claims it as a heading when the row is WIDE
+  // and everything after the first cell is empty -- and even then the row is
+  // reported either way, never silently dropped.
+  if (filled.length === 1 && cells.length >= 4 && cells[0] && cells.slice(1).every((c) => !c)) {
+    return { maybe: cells[0] };
+  }
+  return null;
 }
 
 // mm/dd/yyyy and mm/dd/yy, which is what the sheet actually contains. Anything
@@ -170,7 +199,12 @@ function parseAssignmentSheet(text) {
     const cells = table[i];
     if (isSeparator(cells)) continue;
     const label = sectionLabel(cells);
-    if (label) { section = label; continue; }
+    if (typeof label === "string") { section = label; continue; }
+    // An ambiguous one sets the section AND still falls through as a row, so a
+    // real client carrying only a name is never lost to a wrong guess. It will
+    // reach the review table as "Client not found", which is visible and
+    // harmless, rather than disappearing.
+    if (label && label.maybe) section = label.maybe;
 
     const name = at(cells, "client_name");
     if (!name || isBlank(name)) { skippedBlank++; continue; }

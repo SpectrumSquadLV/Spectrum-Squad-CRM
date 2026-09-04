@@ -31,7 +31,7 @@ const { chromium } = require("playwright");
     await page.fill('#login-form input[name="email"]', email);
     await page.fill('#login-form input[name="password"]', password);
     await page.click('#login-form button[type="submit"]');
-    await page.waitForTimeout(1600);
+    await page.waitForTimeout(1400);
   };
 
   // ---- something real for the BCBA to see --------------------------------
@@ -57,9 +57,18 @@ const { chromium } = require("playwright");
         body: JSON.stringify({ assigned_bcba_name: "Clinical Staff" }),
       });
     }
-    await set(a.id, { auth_start_date: dates.start, auth_expiration_date: dates.soon, treatment_plan_due_date: dates.overdue, insurance_provider: "NV Medicaid" });
-    await set(b.id, { auth_expiration_date: dates.far, insurance_provider: "Molina" });
-    await set(c.id, { auth_expiration_date: dates.mid, insurance_provider: "Aetna" });
+    // Authorization dates belong to /authorization -- /api/clients/:id does not
+    // accept them, by design, because editing them is a billing permission.
+    const auth = async (id, body) => fetch(`/api/clients/${id}/authorization`, {
+      method: "PATCH", credentials: "include",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    await auth(a.id, { auth_start_date: dates.start, auth_expiration_date: dates.soon, treatment_plan_due_date: dates.overdue });
+    await auth(b.id, { auth_expiration_date: dates.far });
+    await auth(c.id, { auth_expiration_date: dates.mid });
+    await set(a.id, { insurance_provider: "NV Medicaid" });
+    await set(b.id, { insurance_provider: "Molina" });
+    await set(c.id, { insurance_provider: "Aetna" });
     return { a: a.id, b: b.id, c: c.id };
   }, { start: iso(-120), soon: iso(4), mid: iso(20), far: iso(400), overdue: iso(-3) });
   check("test clients were created and assigned", !!made.a && !!made.b && !!made.c, made);
@@ -108,9 +117,6 @@ const { chromium } = require("playwright");
     await page.locator('[data-nav="bcba-dashboard"]').count() === 0);
 
   console.log("\n== The summary cards ==");
-  for (const t of ["My Clients", "Authorizations Expiring", "Treatment Plans Due", "Student Analysts", "Monthly Billable"]) {
-    check(`the ${t} card is there`, text.includes(t), t);
-  }
   const cards = await page.evaluate(() => {
     const out = {};
     document.querySelectorAll(".bd-card").forEach((c) => {
@@ -119,17 +125,30 @@ const { chromium } = require("playwright");
     });
     return out;
   });
-  check("My Clients counts the assigned caseload", Number(cards["My Clients"]) >= 3, cards);
+  // The labels are uppercased by CSS, so this compares on the written text of
+  // the element rather than on rendered innerText.
+  const cardKeys = Object.keys(cards).map((k) => k.toLowerCase());
+  for (const t of ["my clients", "authorizations expiring", "treatment plans due", "student analysts", "monthly billable"]) {
+    check(`the ${t} card is there`, cardKeys.includes(t), cardKeys);
+  }
+  const card = (name) => cards[Object.keys(cards).find((k) => k.toLowerCase() === name)];
+  check("My Clients counts the assigned caseload", Number(card("my clients")) >= 3, cards);
   check("an authorization 400 days out does NOT raise an alert",
-    Number(cards["Authorizations Expiring"]) === 2, cards);
+    Number(card("authorizations expiring")) === 2, cards);
+  check("an overdue treatment plan is counted", Number(card("treatment plans due")) >= 1, cards);
   check("billable says it is not available rather than showing 0%",
-    /Not available/i.test(text) || /%/.test(cards["Monthly Billable"] || ""), cards["Monthly Billable"]);
+    /Not available/i.test(card("monthly billable") || ""), card("monthly billable"));
 
   console.log("\n== Authorizations ==");
   check("the authorizations panel is near the top",
     /Authorizations Expiring Soon/.test(text));
+  const authHeads = await page.evaluate(() => {
+    const p = [...document.querySelectorAll(".bd-panel")].find((t) => /Authorizations Expiring Soon/.test(t.textContent));
+    return p ? [...p.querySelectorAll("th")].map((h) => h.textContent.trim().toLowerCase()) : [];
+  });
   check("with the columns asked for",
-    /Auth Start/.test(text) && /Days/.test(text) && /Treatment Plan Due/.test(text));
+    ["client", "payer", "auth start", "auth end", "days", "treatment plan due", "status"]
+      .every((h) => authHeads.includes(h)), authHeads);
   check("an urgent authorization is labelled urgent", /Urgent — \d+ day/.test(text), text.match(/Urgent[^\n]*/));
   check("and a further-out one is labelled due soon", /Due Soon — \d+ days/.test(text));
   check("there is a link to the full authorization list",
@@ -145,10 +164,11 @@ const { chromium } = require("playwright");
     return { heads, rows };
   });
   check("the caseload table is drawn", !!caseload, caseload);
+  const heads = caseload.heads.map((h) => h.toLowerCase());
   check("STUDENT ANALYST IS A COLUMN, not something behind a click",
-    caseload.heads.includes("Student Analyst"), caseload.heads);
+    heads.includes("student analyst"), caseload.heads);
   check("and the other columns asked for are there",
-    ["Client", "Status", "Payer", "Auth End", "Treatment Plan Due", "Next Session"].every((h) => caseload.heads.includes(h)),
+    ["client", "status", "payer", "auth end", "treatment plan due", "next session"].every((h) => heads.includes(h)),
     caseload.heads);
   check("the analyst the migration set is shown on the row",
     caseload.rows.some((r) => r.join("|").includes("Intake Staff")), caseload.rows);
@@ -202,7 +222,7 @@ const { chromium } = require("playwright");
   await login("admin@spectrumsquadlv.com", "TestOwner123!");
   await page.goto(BASE + "/#/dashboard");
   await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(1200);
   check("AN ADMIN KEEPS THE ADMINISTRATIVE DASHBOARD",
     await page.locator(".bd").count() === 0, await page.locator(".bd").count());
   const adminPick = await page.evaluate(async () => {
@@ -229,7 +249,7 @@ const { chromium } = require("playwright");
   await login("intake@spectrumsquadlv.com", "TestStaff123!");
   await page.goto(BASE + "/#/dashboard");
   await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(1200);
+  await page.waitForTimeout(1000);
   check("intake does not get the caseload dashboard", await page.locator(".bd").count() === 0);
   const intakeMig = await page.evaluate(async () => (await fetch("/api/caseload/migration/preview", {
     method: "POST", credentials: "include",

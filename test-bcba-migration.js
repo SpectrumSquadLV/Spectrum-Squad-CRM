@@ -241,5 +241,54 @@ section("Nothing is invented");
     r.bcba_names.includes("wren"), r.bcba_names);
 }
 
+// ============================================================ a real paste
+section("A tab-separated paste, which is what a browser clipboard gives");
+{
+  const TSV = [
+    ["Client Name", "BCBA", "Insurance", "Auth Start", "Auth End", "Treatment Plan Due", "Tx Updates", "Student Analyst", "Schedule"],
+    ["Robin Aster", "Wren", "NV Medicaid", "06/01/2026", "11/27/2026", "10/27/2026", "", "Juniper", "clinic, 9-3"],
+    ["Sage Bellamy", "Fable", "Molina", "3/9/26", "9/4/2026", "8/4/2026", "", "Rowan", ""],
+  ].map((r) => r.join("\t")).join("\n");
+  const r = parseAssignmentSheet(TSV);
+  check("A TAB-SEPARATED PASTE IS READ", r.ok, r.reason);
+  check("with both rows", r.rows.length === 2, r.rows.length);
+  const a = find(r, "Robin Aster");
+  check("the BCBA and analyst land in the right fields",
+    a.bcba === "Wren" && a.student_analyst === "Juniper", a);
+  check("and the dates parse the same way", a.auth_start === "2026-06-01", a.auth_start);
+  check("a name containing spaces is not split on them",
+    !!find(r, "Sage Bellamy"), r.rows.map((x) => x.client_name));
+}
+{
+  // A pasted schedule note is full of spaces and commas. It must survive whole.
+  const TSV = [
+    ["Client Name", "BCBA", "Student Analyst", "Schedule"],
+    ["Robin Aster", "Wren", "Juniper", "school Mon/Thurs/Fri 8:30-3:30PM and clinic Tues/Wed 8:30-2PM"],
+  ].map((r) => r.join("\t")).join("\n");
+  const r = parseAssignmentSheet(TSV);
+  check("a long schedule note survives a paste intact",
+    r.ok && find(r, "Robin Aster").schedule_note === "school Mon/Thurs/Fri 8:30-3:30PM and clinic Tues/Wed 8:30-2PM",
+    r.ok && find(r, "Robin Aster").schedule_note);
+}
+{
+  // In a paste, a merged heading arrives once rather than repeated. It must not
+  // swallow a client whose row carries only a name.
+  const TSV = [
+    ["Client Name", "BCBA", "Insurance", "Auth Start", "Student Analyst"],
+    ["Robin Aster", "Wren", "", "", "Juniper"],
+    ["Needs assessment", "", "", "", ""],
+    ["Marlow Quill", "", "", "", "Rowan"],
+  ].map((r) => r.join("\t")).join("\n");
+  const r = parseAssignmentSheet(TSV);
+  check("A NAME-ONLY ROW IS STILL OFFERED, never silently dropped as a heading",
+    r.rows.some((x) => x.client_name === "Needs assessment"), r.rows.map((x) => x.client_name));
+  check("and the rows after it are still read",
+    !!find(r, "Marlow Quill") && find(r, "Marlow Quill").student_analyst === "Rowan", find(r, "Marlow Quill"));
+  check("the heading is recorded as the section for what follows",
+    find(r, "Marlow Quill").section === "Needs assessment", find(r, "Marlow Quill").section);
+}
+check("a pasted sheet without the required columns is still refused",
+  parseAssignmentSheet("Name\tPerson\nRobin\tWren").ok === false);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
