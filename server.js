@@ -7969,6 +7969,31 @@ const PUBLIC_FILES = new Set([
   "/grants-frontend.js",
 ]);
 
+// NOTHING SERVED HERE IS FINGERPRINTED. index.html and every *-frontend.js
+// bundle keep the same URL across every deploy, so a browser left to decide for
+// itself how long to keep them can hand somebody yesterday's application with
+// nothing on screen to say so. From a desk that looks exactly like "it is not
+// showing any of our changes" -- and it is unfixable from this end, because the
+// request never arrives.
+//
+// These responses used to carry no Cache-Control, no ETag and no Last-Modified
+// at all, which does not mean "do not cache": it means the browser picks, and
+// they do not all pick the same thing. So every file is now tagged and told to
+// revalidate. The browser still asks on each load, and still gets a 304 with no
+// body when the file has not moved, so the cost is a round trip rather than the
+// file -- and a deploy reaches everyone on their next page load.
+function staticCacheHeaders(stat) {
+  return {
+    // "no-cache" is check-with-me-first, not do-not-store. The 304 below is
+    // what keeps that cheap.
+    "Cache-Control": "no-cache",
+    // Size and mtime together: a redeploy rewrites both, and neither changes
+    // when the file does not.
+    ETag: '"' + stat.size.toString(16) + "-" + Math.floor(stat.mtimeMs).toString(16) + '"',
+    "Last-Modified": stat.mtime.toUTCString(),
+  };
+}
+
 function serveStatic(req, res, pathname) {
   let filePath = pathname === "/" ? "/index.html" : pathname;
   // Anything not on the allowlist that *looks* like a file is refused
@@ -7985,24 +8010,38 @@ function serveStatic(req, res, pathname) {
   filePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
   let fullPath = path.join(PUBLIC_DIR, filePath);
 
-  fs.readFile(fullPath, (err, data) => {
-    if (err) {
-      // SPA fallback: unknown non-file routes serve index.html
-      const indexPath = path.join(PUBLIC_DIR, "index.html");
-      fs.readFile(indexPath, (err2, indexData) => {
-        if (err2) {
-          res.writeHead(404);
-          res.end("Not found");
-          return;
-        }
-        res.writeHead(200, { "Content-Type": MIME[".html"] });
-        res.end(indexData);
+  // One sender for both the requested file and the SPA fallback below, so the
+  // fallback's index.html -- which is the copy most people actually receive --
+  // cannot end up being the one response that ships untagged.
+  const send = (file, onMissing) => {
+    fs.stat(file, (statErr, stat) => {
+      if (statErr || !stat.isFile()) { onMissing(); return; }
+      const headers = staticCacheHeaders(stat);
+      // A matching tag means the browser already holds this exact file. A 304
+      // carries no body, which is what makes revalidating on every load cheap
+      // enough to do on every load.
+      if (req.headers["if-none-match"] === headers.ETag) {
+        res.writeHead(304, headers);
+        res.end();
+        return;
+      }
+      fs.readFile(file, (err, data) => {
+        if (err) { onMissing(); return; }
+        res.writeHead(200, {
+          "Content-Type": MIME[path.extname(file)] || "application/octet-stream",
+          ...headers,
+        });
+        res.end(data);
       });
-      return;
-    }
-    const ext = path.extname(fullPath);
-    res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream" });
-    res.end(data);
+    });
+  };
+
+  send(fullPath, () => {
+    // SPA fallback: unknown non-file routes serve index.html
+    send(path.join(PUBLIC_DIR, "index.html"), () => {
+      res.writeHead(404);
+      res.end("Not found");
+    });
   });
 }
 // ---- Per-user module grants ------------------------------------------
