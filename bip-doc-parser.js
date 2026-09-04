@@ -43,7 +43,7 @@ function unescapeRepeatedly(s) {
   // pathological input cannot spin.
   let out = s;
   for (let i = 0; i < 5; i++) {
-    const next = out.replace(/\\([*_\-\\!.()[\]])/g, "$1");
+    const next = out.replace(/\\([*_\-\\!.()[\]#>+])/g, "$1");
     if (next === out) break;
     out = next;
   }
@@ -142,7 +142,9 @@ function splitBehaviorCell(text) {
   const NON_EX = /^non ?-?ex(amples?)?\b\s*[,:]?\s*/i;
   const EX = /^(for )?ex(amples?)?\b\s*[,:]?\s*/i;
   for (const line of body.split("\n")) {
-    const l = line.replace(/^[-\s•]+/, "").trim();
+    // Some plans write the definition as a markdown heading ("## Aggression is
+    // defined as..."). The hashes are formatting, not content.
+    const l = line.replace(/^[-\s•]+/, "").replace(/^#{1,6}\s*/, "").trim();
     if (!l) continue;
     if (NON_EX.test(l)) nonExamples.push(l.replace(NON_EX, "").trim());
     else if (EX.test(l)) examples.push(l.replace(EX, "").trim());

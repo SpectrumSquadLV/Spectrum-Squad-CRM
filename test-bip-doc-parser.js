@@ -157,6 +157,16 @@ const DOC = [
       && /first redirection/.test(tt.behaviors[0].operational_definition)
       && tt.behaviors[0].prevention_strategies === "- Set firm expectations", tt.behaviors[0]);
 
+  // Also from a real document: a definition written as a markdown heading.
+  const HEADINGS = [
+    "| \\*\\*Antecedent Strategies:\\*\\* | \\*\\*Behavior:\\*\\* | \\*\\*Consequence Interventions:\\*\\* |",
+    "| - Use timers | \\*\\*Aggression:\\*\\* - \\#\\# Aggression is defined as forceful physical contact. | - Stay neutral |",
+  ].join("\n");
+  const hh = parseBipDoc(HEADINGS, {});
+  check("a definition written as a markdown heading keeps its words and loses the hashes",
+    hh.ok && hh.behaviors[0].operational_definition === "Aggression is defined as forceful physical contact.",
+    hh.ok ? hh.behaviors[0].operational_definition : hh.reason);
+
   section("It cannot hand the matcher a confident match");
   // bip.js scores full name 100 + initials 55 = 155, and calls >= 135
   // "confident" -- which skips human confirmation. Emitting only initials and a
