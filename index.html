@@ -835,7 +835,15 @@ async function route() {
     const handled = window.__renderHR ? await window.__renderHR(mount) : false;
     if (!handled) await renderDashboard(mount);
   }
-  else if (hash.startsWith("#/dashboard") || !rawView) await renderDashboard(mount);
+  else if (hash.startsWith("#/dashboard") || !rawView) {
+    // A BCBA's landing screen is their caseload, not the administrative
+    // overview. Same route, same nav entry -- the role decides which one draws.
+    // If the bundle failed to load, the generic dashboard still appears rather
+    // than an empty page.
+    if (window.__isBcbaDashboardUser && window.__isBcbaDashboardUser() && window.__renderBcbaDashboard) {
+      await window.__renderBcbaDashboard(mount);
+    } else await renderDashboard(mount);
+  }
   // pipeline-v2.js owns the milestone view and renders into the mount itself.
   // Claiming the route here (instead of letting it fall through to the old
   // pipeline view) is what stops the two from overwriting each other.
@@ -861,6 +869,10 @@ async function route() {
   else if (hash.startsWith("#/email-templates")) { if (window.__renderEmailTemplates) await window.__renderEmailTemplates(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/failed-emails")) { if (window.__renderFailedEmails) await window.__renderFailedEmails(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/auth-alerts")) await renderAuthAlerts(mount, param);
+  else if (hash.startsWith("#/bcba-migration")) {
+    if (window.__renderBcbaMigration) await window.__renderBcbaMigration(mount);
+    else await renderAdmin(mount);
+  }
   else if (hash.startsWith("#/admin")) await renderAdmin(mount);
   else await renderDashboard(mount);
 
@@ -5606,6 +5618,16 @@ async function renderAdmin(mount) {
       <div id="bip-import-preview" style="margin-top:14px;"></div>
     </div>
     <div class="card" style="margin-bottom:20px;">
+      <div class="section-title" style="margin-top:0;">BCBA &amp; Student Analyst Assignments</div>
+      <p style="font-size:13px; color:var(--text-muted); margin-top:0;">
+        A <strong>one-time</strong> cleanup from the assignments spreadsheet. Every change is shown to you before
+        anything is written, an assignment the CRM already holds is never overwritten silently, and nothing here
+        runs again on its own — after this the CRM is the source of truth for who a client's BCBA and Student
+        Analyst are.
+      </p>
+      <a class="btn small secondary" href="#/bcba-migration">Open the assignment migration</a>
+    </div>
+    <div class="card" style="margin-bottom:20px;">
       <div class="section-title" style="margin-top:0;">Departments</div>
       <div id="departments-mount"></div>
     </div>
@@ -6069,6 +6091,7 @@ function openAccessModal(u, onDone) {
   <script src="bip-frontend.js"></script>
   <script src="client-behavior-frontend.js"></script>
   <script src="bcba-hub-frontend.js"></script>
+  <script src="bcba-dashboard-frontend.js"></script>
   <script src="people-frontend.js"></script>
   <script src="signnow-import-frontend.js"></script>
 

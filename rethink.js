@@ -2111,9 +2111,36 @@ module.exports = function initRethink(ctx) {
     return out;
   }
 
+  // A day's appointments, straight from Rethink, for the BCBA dashboard's
+  // schedule panel. READ ONLY and deliberately unstored: Rethink is the source
+  // of truth for scheduling, so the CRM displays what it says at the moment it
+  // is asked and keeps no copy that could go stale or be edited into a second
+  // schedule. Cancelled and deleted appointments are excluded at the source,
+  // the same way every other read in this module does it.
+  async function fetchAppointments(from, to) {
+    if (!client.configured()) {
+      return { ok: false, error: "Rethink credentials are not configured on the server." };
+    }
+    const isDay = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ""));
+    if (!isDay(from) || !isDay(to)) return { ok: false, error: "A date range is required." };
+    try {
+      const fetched = await client.dwhGetAllPages(DWH_APPOINTMENTS, {
+        From: from,
+        To: to,
+        FilterByAppointmentDate: true,
+        IncludeDeleted: false,
+        IncludeCanceled: false,
+      }, { nowMs: nowMs(), pageSize: 500 });
+      return { ok: true, rows: fetched.rows || [], truncated: !!fetched.truncated };
+    } catch (e) {
+      return { ok: false, error: client.redact((e && e.message) || "Rethink could not be reached.") };
+    }
+  }
+
   return {
     initTables,
     handleApi,
+    fetchAppointments,
     syncSupervisionHours,
     syncAuthorizations,
     integrationStatus,

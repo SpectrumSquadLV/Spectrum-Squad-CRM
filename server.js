@@ -4579,6 +4579,11 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  if (pathname.startsWith("/api/caseload")) {
+    const handled = await bcbaDashboard.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/grants/")) {
     const handled = await grants.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -7458,6 +7463,7 @@ const PUBLIC_FILES = new Set([
   "/owner-financials.js",
   "/pipeline-v2.js",
   "/bcba-hub-frontend.js",
+  "/bcba-dashboard-frontend.js",
   "/screener-admin.js",
   "/hr-recruiting.js",
   "/ot-frontend.js",
@@ -7735,6 +7741,23 @@ const bcbaHub = require("./bcba-hub")({
   dbGet, dbAll, dbRun, nowISO, readBody, json,
 });
 
+// ===== BCBA DASHBOARD: the caseload landing screen for the clinical (BCBA)
+// role, and the one-time BCBA / Student Analyst assignment migration. Owns
+// /api/caseload/*. It READS the systems that already own each fact -- clients,
+// staff_tasks, auth_alerts, hr_employees, supervision_logs and Rethink -- and
+// keeps no caseload table of its own, so it cannot disagree with the client
+// card. The schedule is read from Rethink and never written back. =====
+const bcbaDashboard = require("./bcba-dashboard")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, canAccessClients,
+  // Read-only, unstored: see the note on fetchAppointments in rethink.js.
+  fetchAppointments: (from, to) => rethink.fetchAppointments(from, to),
+  verifiedHoursForMonths: (empId, months) => rethink.verifiedHoursForMonths(empId, months),
+  // The RBT Supervision tracker's own month computation, not a second copy of
+  // it: the worked-hours denominator has a precedence rule (Rethink verified
+  // hours, else the uploaded payroll figure) that must exist in one place.
+  supervisionMonth: (month) => supervision._internal.monthSummary(month),
+});
+
 // ===== PEOPLE add-on: department management, emergency contacts on client and
 // staff cards, and staff certification expiry with staged notices. Owns
 // /api/people/*. Extends the existing departments table rather than replacing
@@ -7943,6 +7966,7 @@ async function start() {
   await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
   await bip.initTables().catch((e) => console.error("BIP initTables failed:", e));
   await bcbaHub.initTables().catch((e) => console.error("BCBA Hub initTables failed:", e));
+  await bcbaDashboard.initTables().catch((e) => console.error("BCBA dashboard initTables failed:", e));
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
   await grants.initTables().catch((e) => console.error("Grants initTables failed:", e));
   await scheduling.initTables().catch((e) => console.error("Scheduling initTables failed:", e));
