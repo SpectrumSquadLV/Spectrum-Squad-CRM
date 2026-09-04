@@ -44,9 +44,11 @@
         <p>Link CRM clients to their Rethink record. Nothing is saved until you approve it.</p></div>
       <div style="display:flex; gap:8px; align-items:center;">
         <button class="btn secondary" id="rm-scan">⟳ Scan Rethink clients</button>
+        <button class="btn secondary" id="rm-activity">⟳ Check appointment activity</button>
       </div></div>
       <div id="rm-body"><div class="empty-state">Loading…</div></div>`;
     mount.querySelector("#rm-scan").addEventListener("click", () => runScan(mount));
+    mount.querySelector("#rm-activity").addEventListener("click", () => runActivityScan(mount));
     await fill(mount);
   }
 
@@ -68,7 +70,28 @@
     btn.disabled = false; btn.textContent = "⟳ Scan Rethink clients";
   }
 
-  async function fill(mount, scanOut) {
+  // The fallback path. Reads the appointment schedule rather than the client
+  // list, because this Rethink account's /api/Clients returns no rows.
+  async function runActivityScan(mount) {
+    const btn = mount.querySelector("#rm-activity");
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = "Checking…";
+    try {
+      const out = await api("/api/rethink/client-match/activity-scan", { method: "POST", body: {} });
+      await fill(mount, null, out);
+    } catch (e) {
+      const box = mount.querySelector("#rm-body");
+      box.innerHTML = `<div class="card" style="border-left:4px solid #dc2626;">
+        <strong>Appointment activity check failed.</strong>
+        <div style="font-size:13px; margin-top:6px;">${esc(e.message)}</div>
+        <div style="font-size:11.5px; color:var(--text-muted); margin-top:6px;">
+          The full upstream response is in the Railway deploy logs — filter for <code>[rethink]</code>.</div>
+      </div>` + box.innerHTML;
+    }
+    btn.disabled = false; btn.textContent = label;
+  }
+
+  async function fill(mount, scanOut, activityOut) {
     const box = mount.querySelector("#rm-body");
     let d;
     try { d = await api("/api/rethink/client-match"); }
@@ -83,9 +106,17 @@
 
       // Ready = exactly one high-confidence candidate, so it gets a one-click
       // approve. Everything else makes you pick, on purpose.
+      // What the schedule says about a linked client. Only rendered once the
+      // activity scan has actually run, so a blank is never read as "no sessions".
+      const activityLine = (i.status === "linked" && d.last_activity_scan_at)
+        ? (i.last_appointment
+            ? `<div style="font-size:11px; color:#166534; margin-top:3px;">Last appointment ${esc(dayLabel(i.last_appointment))}${i.appointment_count ? ` · ${i.appointment_count} in window` : ""}</div>`
+            : `<div style="font-size:11px; color:#b45309; margin-top:3px;">No appointments in the last ${d.last_activity_window_days || 90} days</div>`)
+        : "";
+
       const action = i.status === "linked"
         ? `<span style="font-size:12px; color:var(--text-muted);">${esc(i.linked_rethink_client_id)}</span>
-           <button class="btn small secondary" data-rm-relink="${i.crm_client_id}">Change</button>`
+           <button class="btn small secondary" data-rm-relink="${i.crm_client_id}">Change</button>${activityLine}`
         : cands.length
           ? cands.map((x) => `<div style="display:flex; align-items:center; gap:6px; margin:2px 0;">
               <button class="btn small ${i.status === "ready" ? "" : "secondary"}"
@@ -185,6 +216,32 @@
         <strong>${scanOut.ready_to_link} ready</strong>, ${scanOut.needs_review} need review, ${scanOut.no_match} with no match.
         ${scanOut.already_linked ? ` ${scanOut.already_linked} already linked.` : ""}
         ${scanOut.rethink_only ? `<div style="margin-top:4px;">${scanOut.rethink_only} Rethink client(s) have no CRM record${scanOut.rethink_only_active ? `, <strong style="color:#991b1b;">${scanOut.rethink_only_active} of them Active</strong>` : ""} — see “Missing from CRM”.</div>` : ""}
+      </div>` : ""}
+
+      ${activityOut && activityOut.ok ? `<div style="background:#f0fdf4; color:#14532d; border:1px solid #bbf7d0; border-radius:8px; padding:9px 13px; font-size:12.5px; margin-bottom:12px;">
+        <strong>Appointment activity, ${esc(activityOut.window.from)} to ${esc(activityOut.window.to)}.</strong>
+        Read ${activityOut.appointments} appointments covering ${activityOut.rethink_clients_with_activity} Rethink client(s).
+        <div style="margin-top:4px;">
+          <strong>${activityOut.linked_active} of ${activityOut.linked_total}</strong> open CRM clients have appointments in this window.
+          ${activityOut.linked_idle ? ` ${activityOut.linked_idle} have none — they may be on a break, between authorizations, or discharged in Rethink. Nothing on their record was changed.` : ""}
+        </div>
+        ${activityOut.insurance_filled ? `<div style="margin-top:4px;">Filled the insurance field on ${activityOut.insurance_filled} client(s) that had none. Nothing already recorded was changed.</div>` : ""}
+        ${activityOut.insurance_conflicts && activityOut.insurance_conflicts.length ? `<div style="margin-top:4px; color:#b45309;">
+          ⚠ ${activityOut.insurance_conflict_count} client(s) have appointments naming more than one funder — left alone for billing to settle:
+          ${esc(activityOut.insurance_conflicts.map((x) => `${x.name} (${x.funders.join(", ")})`).join("; "))}</div>` : ""}
+        ${activityOut.closed_but_active_count ? `<div style="margin-top:6px; padding-top:6px; border-top:1px solid #bbf7d0; color:#991b1b;">
+          <strong>${activityOut.closed_but_active_count} client(s) are closed in the CRM but still have appointments in Rethink.</strong>
+          Either the discharge did not reach Rethink or the CRM was closed early — worth checking before it becomes a billing question.
+          <div style="font-size:11px; margin-top:3px; color:var(--text-muted);">${esc(activityOut.closed_but_active.map((x) => `${x.name} (${x.stage}, last ${x.last})`).join("; "))}</div>
+        </div>` : ""}
+        ${activityOut.unlinked_active_count ? `<div style="margin-top:6px; padding-top:6px; border-top:1px solid #bbf7d0; color:#991b1b;">
+          <strong>${activityOut.unlinked_active_count} Rethink client(s) had sessions but match no CRM record.</strong>
+          These are children receiving services that this CRM cannot account for. Appointments carries no name or date of birth,
+          so they can be counted but not identified — naming them needs the <code>/api/Clients</code> endpoint, which returns
+          nothing on this account.
+          <div style="font-size:11px; margin-top:3px; color:var(--text-muted);">Rethink IDs: ${esc(activityOut.unlinked_active.map((x) => x.rethink_client_id).join(", "))}${activityOut.unlinked_active_count > activityOut.unlinked_active.length ? ` … and ${activityOut.unlinked_active_count - activityOut.unlinked_active.length} more` : ""}</div>
+        </div>` : ""}
+        ${(activityOut.warnings || []).length ? `<div style="margin-top:4px; color:#b45309;">${esc(activityOut.warnings.join(" "))}</div>` : ""}
       </div>` : ""}
 
       <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px;">
