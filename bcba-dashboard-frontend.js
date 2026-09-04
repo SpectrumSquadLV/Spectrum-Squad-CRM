@@ -875,7 +875,8 @@
         </div>
       </div>
       <div class="bd-note">Nothing is written until you review the preview and press Apply.</div>
-    </div>`);
+    </div>
+    <div id="mig-dupes"></div>`);
     const ta = document.getElementById("mig-text");
     if (sheetText) ta.value = sheetText;
     document.getElementById("mig-preview").addEventListener("click", async () => {
@@ -883,6 +884,75 @@
       if (!sheetText.trim()) { document.getElementById("mig-msg").textContent = "Paste the sheet first."; return; }
       await preview();
     });
+    renderDuplicates();
+  }
+
+  // ---- one person filed under two spellings ------------------------------
+  //
+  // assigned_bcba_name and the two beside it are free text, so the same person
+  // ends up as "Marissa" on some clients and "Marissa Gaut" on others -- and
+  // the caseload picker, which groups by that string, shows her twice with her
+  // clients split between the halves.
+  async function renderDuplicates() {
+    const box = document.getElementById("mig-dupes");
+    if (!box) return;
+    let d;
+    try { d = await api("/api/caseload/name-duplicates"); }
+    catch (e) { box.innerHTML = ""; return; }
+    const all = d.duplicates || [];
+    if (!all.length) {
+      box.innerHTML = `<div class="bd-panel" style="margin-top:16px;">
+        <div class="bd-ph"><div><h2 class="bd-pt">Staff filed under two names</h2>
+        <p class="bd-pn">Nothing looks duplicated. Every BCBA, Student Analyst and Squad Leader is spelled one way across your clients.</p>
+        </div></div></div>`;
+      return;
+    }
+    const sure = all.filter((x) => x.confident);
+    const unsure = all.filter((x) => !x.confident);
+
+    const row = (x, i) => `<div style="padding:12px 15px; border-top:1px solid #eceaf6;">
+      <div style="display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;">
+        <div style="min-width:0; flex:1;">
+          <strong>${esc(x.from)}</strong>
+          <span style="color:#6b6a86;"> (${x.from_clients} client${x.from_clients === 1 ? "" : "s"})</span>
+          ${x.to ? ` &rarr; <strong>${esc(x.to)}</strong>
+            <span style="color:#6b6a86;"> (${x.to_clients} client${x.to_clients === 1 ? "" : "s"})</span>` : ""}
+          <div style="font-size:12px; color:#6b6a86; margin-top:3px;">${esc(x.label)} &middot; ${esc(x.reason)}</div>
+          ${x.candidates ? `<div style="font-size:12px; color:#a3282e; margin-top:3px;">Could be: ${x.candidates.map(esc).join(", ")}</div>` : ""}
+        </div>
+        ${x.to ? `<button class="bd-ql" data-merge="${i}" style="cursor:pointer;">Merge into ${esc(x.to)}</button>` : ""}
+      </div>
+      <div class="bd-err" data-merge-msg="${i}" style="font-size:12px; color:#a3282e; margin-top:6px;"></div>
+    </div>`;
+
+    box.innerHTML = `<div class="bd-panel" style="margin-top:16px;">
+      <div class="bd-ph"><div><h2 class="bd-pt">Staff filed under two names</h2>
+      <p class="bd-pn">The BCBA, Student Analyst and Squad Leader on a client are typed in by hand, so one person can end up spelled two ways &mdash; which is why they appear twice on the caseload list with their clients split between them. Merging rewrites the name on those clients; nothing else about the record changes.</p>
+      </div></div>
+      ${sure.map((x) => row(x, all.indexOf(x))).join("")}
+      ${unsure.length ? `<div class="bd-note" style="border-top:1px solid #eceaf6;">
+        These need a person to decide, so no merge is offered:
+      </div>${unsure.map((x) => row(x, all.indexOf(x))).join("")}` : ""}
+    </div>`;
+
+    box.querySelectorAll("[data-merge]").forEach((b) => b.addEventListener("click", async () => {
+      const x = all[Number(b.getAttribute("data-merge"))];
+      const msg = box.querySelector(`[data-merge-msg="${b.getAttribute("data-merge")}"]`);
+      b.disabled = true;
+      msg.textContent = "";
+      try {
+        const r = await api("/api/caseload/merge-name", {
+          method: "POST", body: { field: x.field, from: x.from, to: x.to },
+        });
+        msg.style.color = "#1c6b45";
+        msg.textContent = `Moved ${r.moved} client${r.moved === 1 ? "" : "s"} onto ${r.to}. ${r.now_on} now filed under that name${r.email_applied ? `, email ${r.email_applied}` : ""}.`;
+        setTimeout(renderDuplicates, 1200);
+      } catch (e) {
+        msg.style.color = "#a3282e";
+        msg.textContent = e.message;
+        b.disabled = false;
+      }
+    }));
   }
 
   async function preview() {
