@@ -4903,6 +4903,42 @@ async function handle(req, res, pathname, method, query = {}) {
       return json(res, 200, pipeline.STAGES);
     }
 
+    // ---------- Sidebar order ----------
+    // One shared order for the whole practice, set by an admin. It is a LAYOUT
+    // OVER the nav, never a replacement for it: each entry still carries its
+    // own role check, so reordering can move a tab but can never hand somebody
+    // a tab their role does not allow. That is why this endpoint stores nothing
+    // but a list of keys -- no labels, no routes, no permissions.
+    if (pathname === "/api/nav-order" && method === "GET") {
+      const raw = await getAppSetting("nav_order", "");
+      let order = [];
+      try { order = raw ? JSON.parse(raw) : []; } catch (e) { order = []; }
+      return json(res, 200, { order: Array.isArray(order) ? order : [], can_edit: USER_ADMIN_ROLES.includes(user.role) });
+    }
+
+    if (pathname === "/api/nav-order" && method === "PUT") {
+      if (!USER_ADMIN_ROLES.includes(user.role)) {
+        return json(res, 403, { error: "Only an owner or admin can change the menu order." });
+      }
+      const b = await readBody(req);
+      if (!Array.isArray(b.order)) return json(res, 400, { error: "Expected an order array." });
+      // Keys only, deduplicated, and bounded. A key that does not correspond to
+      // a nav entry is harmless -- the client ignores what it does not know --
+      // but there is no reason to store unbounded junk in a settings row.
+      const seen = new Set();
+      const clean = [];
+      for (const k of b.order) {
+        const key = String(k == null ? "" : k).trim();
+        if (!key || key.length > 60 || !/^[a-z0-9-]+$/i.test(key) || seen.has(key)) continue;
+        seen.add(key);
+        clean.push(key);
+        if (clean.length >= 100) break;
+      }
+      await setAppSetting("nav_order", JSON.stringify(clean));
+      await setAppSetting("nav_order_by", user.email || user.name || "unknown");
+      return json(res, 200, { ok: true, order: clean });
+    }
+
     if (pathname === "/api/departments" && method === "GET") {
       return json(res, 200, await dbAll("SELECT * FROM departments"));
     }

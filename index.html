@@ -95,6 +95,20 @@ button { font-family: inherit; cursor: pointer; }
   text-align: left;
 }
 .nav-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
+/* Reorder mode. The handle replaces the icon so the row reads as draggable
+   rather than clickable, and the whole sidebar dims slightly so it is obvious
+   you are arranging the menu rather than using it. */
+.nav-item.nav-dragging-on { cursor: grab; opacity: 0.92; }
+.nav-item.nav-drop-before { box-shadow: inset 0 2px 0 0 #fff; }
+.nav-item.nav-drop-after { box-shadow: inset 0 -2px 0 0 #fff; }
+.nav-reorder-open { margin: 6px 10px 0; padding: 7px 10px; width: calc(100% - 20px);
+  background: rgba(255,255,255,0.08); color: #dfe4f5; border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 8px; font-size: 12.5px; cursor: pointer; }
+.nav-reorder-open:hover { background: rgba(255,255,255,0.16); color: #fff; }
+.nav-reorder-bar { margin: 8px 10px 0; padding: 9px 10px; background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.nav-reorder-hint { font-size: 11.5px; color: #cfd6ee; width: 100%; margin-bottom: 2px; line-height: 1.4; }
+.nav-reorder-msg { font-size: 11.5px; color: #ffd9a8; width: 100%; }
 .nav-item.active { background: rgba(255,255,255,0.18); color: #fff; }
 /* Admin group. Five separate top-level entries (Settings plus four tools) now
    sit under one collapsible parent. The children are ordinary .nav-item
@@ -458,6 +472,12 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-light
 
 const state = {
   user: null,
+  // The admin-set sidebar order. Empty until loaded, and an empty order simply
+  // means "natural order", so a failed load degrades to the built-in layout
+  // rather than to an empty menu.
+  navOrder: [],
+  navOrderCanEdit: false,
+  navReorder: false,
   clients: [],
   stages: [],
   departments: [],
@@ -582,10 +602,96 @@ function askPassword(title) {
 window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", boot);
 
+async function loadNavOrder() {
+  try {
+    const d = await api("/api/nav-order");
+    state.navOrder = Array.isArray(d.order) ? d.order : [];
+    state.navOrderCanEdit = !!d.can_edit;
+  } catch (e) {
+    // Never fatal. The sidebar is how you get anywhere; it renders in its
+    // natural order rather than not at all.
+    state.navOrder = [];
+    state.navOrderCanEdit = false;
+  }
+}
+
+// ---------------- Sidebar reordering ----------------
+// Admin-only, and one shared order for everyone. The list being dragged has
+// already been filtered by role, and only KEYS are ever sent, so this can
+// rearrange the menu but can never widen what anybody may reach.
+function wireNavReorder() {
+  const open = document.getElementById("nav-reorder-open");
+  if (open) open.addEventListener("click", () => { state.navReorder = true; route(); });
+
+  const cancel = document.getElementById("nav-reorder-cancel");
+  if (cancel) cancel.addEventListener("click", () => { state.navReorder = false; route(); });
+
+  const save = document.getElementById("nav-reorder-save");
+  if (save) {
+    save.addEventListener("click", async () => {
+      const msg = document.getElementById("nav-reorder-msg");
+      const list = document.getElementById("nav-list");
+      if (!list) return;
+      // [data-nav] on purpose. Add-on bundles (Supply Requests, Occupational
+      // Therapy) append their own buttons to this same <nav> without a
+      // data-nav key, so this reads the entries the shell owns and leaves
+      // theirs out of the stored order rather than writing keys that mean
+      // nothing. They are not draggable and stay at the end.
+      const order = Array.from(list.querySelectorAll("[data-nav]")).map((b) => b.dataset.nav);
+      save.disabled = true;
+      try {
+        const d = await api("/api/nav-order", { method: "PUT", body: { order } });
+        state.navOrder = d.order || order;
+        state.navReorder = false;
+        route();
+      } catch (e) {
+        save.disabled = false;
+        if (msg) msg.textContent = e.message;
+      }
+    });
+  }
+
+  if (!state.navReorder) return;
+  const list = document.getElementById("nav-list");
+  if (!list) return;
+  let dragged = null;
+  const clearMarks = () => list.querySelectorAll("[data-nav]").forEach((b) => {
+    b.classList.remove("nav-drop-before", "nav-drop-after");
+  });
+
+  list.querySelectorAll("[data-nav]").forEach((btn) => {
+    btn.addEventListener("dragstart", (e) => {
+      dragged = btn;
+      e.dataTransfer.effectAllowed = "move";
+      // Firefox will not start a drag without data on the transfer.
+      try { e.dataTransfer.setData("text/plain", btn.dataset.nav); } catch (err) { /* older browsers */ }
+    });
+    btn.addEventListener("dragend", () => { dragged = null; clearMarks(); });
+    btn.addEventListener("dragover", (e) => {
+      if (!dragged || btn === dragged) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const r = btn.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      clearMarks();
+      btn.classList.add(after ? "nav-drop-after" : "nav-drop-before");
+    });
+    btn.addEventListener("drop", (e) => {
+      if (!dragged || btn === dragged) return;
+      e.preventDefault();
+      const r = btn.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      btn.parentNode.insertBefore(dragged, after ? btn.nextSibling : btn);
+      clearMarks();
+    });
+  });
+}
+
 async function boot() {
   try {
     const { user } = await api("/api/auth/me");
     state.user = user;
+    await loadNavOrder();
   } catch (e) {
     state.user = null;
   }
@@ -854,7 +960,22 @@ function renderShell(active) {
   // are, no group is drawn at all.
   const ADMIN_GROUP_KEYS = ["admin", "rethink-clients", "signnow-import", "email-templates", "failed-emails"];
   const adminChildren = ADMIN_GROUP_KEYS.map((k) => navItems.find((n) => n.key === k)).filter(Boolean);
-  const topItems = navItems.filter((n) => !ADMIN_GROUP_KEYS.includes(n.key));
+  let topItems = navItems.filter((n) => !ADMIN_GROUP_KEYS.includes(n.key));
+  // The admin-set order, applied as a LAYOUT OVER the list above -- which has
+  // already been filtered by role. Reordering therefore moves tabs and can
+  // never reveal one: a key naming a tab this user may not see simply matches
+  // nothing.
+  //
+  // A key the saved order does not mention keeps its natural relative position
+  // and follows the ordered ones. That matters for upgrades: a nav entry added
+  // in a later release still appears instead of vanishing because an order
+  // saved months ago had never heard of it.
+  if (Array.isArray(state.navOrder) && state.navOrder.length) {
+    const rank = new Map(state.navOrder.map((k, i) => [k, i]));
+    const known = topItems.filter((n) => rank.has(n.key)).sort((a, b) => rank.get(a.key) - rank.get(b.key));
+    const unknown = topItems.filter((n) => !rank.has(n.key));
+    topItems = known.concat(unknown);
+  }
   const adminHasActive = adminChildren.some((n) => n.key === active);
   // Open when you are on one of its pages, otherwise whatever you left it as.
   // Storage is a convenience only: if it is unavailable the group still works,
@@ -863,9 +984,12 @@ function renderShell(active) {
   if (!adminOpen) {
     try { adminOpen = localStorage.getItem("ss-nav-admin-open") === "1"; } catch (e) { /* private mode */ }
   }
+  // In reorder mode the entries become draggable and stop navigating: a drag
+  // that ended as a click would otherwise take you off the page mid-rearrange.
+  const reordering = !!state.navReorder;
   const navItemHtml = (n, cls) =>
-    `<button class="nav-item ${cls} ${active === n.key ? "active" : ""}" data-nav="${n.key}"${n.hash ? ` data-nav-hash="${n.hash}"` : ""}>
-              <span>${n.icon}</span> ${n.label}${n.key === "tasks" ? `<span class="nav-count" id="nav-task-count" style="display:none;"></span>` : ""}</button>`;
+    `<button class="nav-item ${cls} ${active === n.key && !reordering ? "active" : ""}${reordering ? " nav-dragging-on" : ""}" data-nav="${n.key}"${n.hash ? ` data-nav-hash="${n.hash}"` : ""}${reordering ? ' draggable="true"' : ""}>
+              <span>${reordering ? "⣿" : n.icon}</span> ${n.label}${n.key === "tasks" && !reordering ? `<span class="nav-count" id="nav-task-count" style="display:none;"></span>` : ""}</button>`;
   const adminGroupHtml = adminChildren.length
     ? `<button class="nav-item nav-group ${adminHasActive ? "has-active" : ""}" id="nav-admin-toggle"
               aria-expanded="${adminOpen ? "true" : "false"}" aria-controls="nav-admin-sub">
@@ -879,10 +1003,18 @@ function renderShell(active) {
     <div class="app-shell">
       <div class="sidebar">
         <div class="brand"><img src="/logo.png" alt="Spectrum Squad" style="max-width:170px; width:100%; height:auto;" /></div>
-        <nav>
+        <nav id="nav-list">
           ${topItems.map((n) => navItemHtml(n, "")).join("")}
-          ${adminGroupHtml}
+          ${reordering ? "" : adminGroupHtml}
         </nav>
+        ${state.navOrderCanEdit ? (reordering
+          ? `<div class="nav-reorder-bar">
+               <div class="nav-reorder-hint">Drag to reorder. This sets the menu for everyone. Entries without a handle are added by add-ons and stay at the end.</div>
+               <button class="btn small" id="nav-reorder-save">Save order</button>
+               <button class="btn small secondary" id="nav-reorder-cancel">Cancel</button>
+               <div id="nav-reorder-msg" class="nav-reorder-msg"></div>
+             </div>`
+          : `<button class="nav-reorder-open" id="nav-reorder-open">Reorder menu</button>`) : ""}
         <div class="sidebar-footer">
           <div class="sidebar-user"><strong>${state.user.name}</strong>${state.user.role}</div>
           <button class="logout-btn" id="logout-btn">Log out</button>
@@ -895,8 +1027,14 @@ function renderShell(active) {
     </div>
   `;
   root.querySelectorAll("[data-nav]").forEach((btn) => {
-    btn.addEventListener("click", () => (location.hash = btn.dataset.navHash || "#/" + btn.dataset.nav));
+    btn.addEventListener("click", () => {
+      // While reordering, a click is the tail end of a drag. Navigating here
+      // would throw away an arrangement somebody was halfway through.
+      if (state.navReorder) return;
+      location.hash = btn.dataset.navHash || "#/" + btn.dataset.nav;
+    });
   });
+  wireNavReorder();
   // The Admin parent opens and closes the group; it is not a page of its own,
   // so it deliberately has no data-nav and never navigates.
   const adminToggle = document.getElementById("nav-admin-toggle");
@@ -953,6 +1091,7 @@ function renderLogin() {
         body: { email: fd.get("email"), password: fd.get("password") },
       });
       state.user = user;
+      await loadNavOrder();
       location.hash = "#/dashboard";
       route();
     } catch (err) {
