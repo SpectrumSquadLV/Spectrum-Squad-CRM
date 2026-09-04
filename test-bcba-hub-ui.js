@@ -260,16 +260,60 @@ const { chromium } = require("playwright");
   check("a BCBA gets the hub", await page.locator('[data-nav="bcba-hub"]').count() > 0);
   await openHub();
   check("and can use the cheat sheet", /Treatment Plan Cheat Sheet/.test(await panelText()));
-  check("but is not offered Add Form", await page.locator("#bh-add-form").count() === 0);
-  await page.evaluate(() => {
-    const t = Array.from(document.querySelectorAll("[data-tab]")).find((b) => b.dataset.tab === "forms");
-    if (t) t.click();
-  });
-  await page.waitForTimeout(350);
-  check("nor any form management control",
+  const toForms = async () => {
+    await page.evaluate(() => {
+      const t = Array.from(document.querySelectorAll("[data-tab]")).find((b) => b.dataset.tab === "forms");
+      if (t) t.click();
+    });
+    await page.waitForTimeout(350);
+  };
+  await toForms();
+
+  // The request: "I need the option to add files to the BCBA hub to show up on
+  // all ends not just mine." The button was on one screen.
+  check("A BCBA IS OFFERED ADD FORM", await page.locator("#bh-add-form").count() === 1);
+  check("but still no control that changes somebody else's form",
     await page.locator("[data-archive-form], [data-delete-form], [data-edit-form]").count() === 0);
-  check("but can download a form, which is the point",
+  check("nor the archived view, which is the library's own housekeeping",
+    await page.locator("#bh-show-arch").count() === 0);
+  check("and can download a form, which was always the point",
     /Download/.test(await panelText()));
+
+  await page.click("#bh-add-form");
+  await page.waitForSelector(".bh-modal", { timeout: 8000 });
+  // A form code is what makes a file the answer to a cheat sheet requirement
+  // on every BCBA's screen. The server drops it from a contributor, so the box
+  // must not be sitting there looking as though it works.
+  check("THE FORM CODE FIELD IS NOT OFFERED TO A CONTRIBUTOR",
+    await page.locator("#bh-fd-code").count() === 0);
+  check("and the dialog says why, rather than the field simply being missing",
+    /admin can link this/i.test(await page.innerText(".bh-modal")), await page.innerText(".bh-modal"));
+  await page.fill("#bh-fd-name", "Zz Sensory Checklist");
+  await page.fill("#bh-fd-desc", "Brought in by the BCBA who was handed it.");
+  await page.selectOption("#bh-fd-cat", "clinical");
+  await page.setInputFiles("#bh-fd-file", {
+    name: "zz-sensory.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\nsensory\n"),
+  });
+  await page.click("#bh-fd-save");
+  await page.waitForTimeout(1500);
+  const mineNow = await panelText();
+  check("THE UPLOAD LANDS IN THE LIBRARY", /Zz Sensory Checklist/.test(mineNow), mineNow.slice(0, 400));
+  check("credited to them on the card", /Added by .*clinical@/.test(mineNow), mineNow.slice(0, 500));
+  check("with a way to take it back", await page.locator("[data-withdraw-form]").count() === 1);
+  check("AND NO WITHDRAW ON THE ADMIN'S FORM, only on their own",
+    await page.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll(".bh-form"));
+      const admins = cards.find((c) => /FA-11E Authorization Request/.test(c.textContent));
+      return admins ? admins.querySelectorAll("[data-withdraw-form]").length === 0 : false;
+    }));
+
+  page.once("dialog", (d) => d.accept());
+  await page.click("[data-withdraw-form]");
+  await page.waitForTimeout(1500);
+  check("withdrawing removes it from the library",
+    !/Zz Sensory Checklist/.test(await panelText()), (await panelText()).slice(0, 300));
+  check("and the admin's form is untouched",
+    /FA-11E Authorization Request/.test(await panelText()));
 
   await login("intake@spectrumsquadlv.com", "TestStaff123!");
   check("intake does not see the hub at all", await page.locator('[data-nav="bcba-hub"]').count() === 0);

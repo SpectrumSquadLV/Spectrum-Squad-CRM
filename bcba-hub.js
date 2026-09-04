@@ -37,6 +37,24 @@ module.exports = function initBcbaHub(ctx) {
   const canView = (u) => !!u && VIEW_ROLES.includes(u.role);
   const canManage = (u) => !!u && MANAGE_ROLES.includes(u.role);
 
+  // ADDING a form is not maintaining the library, and the two were the same
+  // permission until it was pointed out that only one person's screen had the
+  // button on it. The BCBA who is handed a payer's new packet is the person
+  // holding the file; routing it through an admin is how it stays in somebody's
+  // inbox. So anyone who can READ the Hub can put a form in it.
+  //
+  // WHAT STAYS WITH ADMINS is everything that acts on somebody ELSE'S form --
+  // renaming it, re-pointing which payer or form code it answers, replacing the
+  // file underneath it, archiving it, deleting it. Those are the operations
+  // that change what a colleague already relies on, and one of them (replacing
+  // the file) would let a contributor swap the contents of a form the cheat
+  // sheet links to without its name or its description changing at all.
+  //
+  // The one thing a contributor can do to their own upload is withdraw it,
+  // because "I have just uploaded the wrong file" with no way back is a worse
+  // state than the mistake.
+  const canAddForms = (u) => canView(u);
+
   const DATA_DIR = path.join(__dirname, "data");
   const FORM_DIR = path.join(DATA_DIR, "bcba-forms");
   const LOGO_DIR = path.join(DATA_DIR, "bcba-payer-logos");
@@ -282,8 +300,18 @@ module.exports = function initBcbaHub(ctx) {
     return /\.(pdf|png|jpe?g|gif|webp)$/i.test(clean(filename));
   }
 
-  function shapeForm(r) {
+  // Who a row is credited to. ONE function, used both when a form is written
+  // and when "is this mine?" is asked -- if the two ever computed the tag
+  // differently, a contributor would lose the ability to withdraw their own
+  // upload and nothing would say why.
+  const uploaderTag = (u) => String((u && (u.email || u.name)) || "unknown").trim().toLowerCase();
+
+  function shapeForm(r, viewer) {
     return {
+      // Whether the person reading this is the one who put it here. Drives the
+      // Withdraw button, and is false for everybody else including admins --
+      // an admin archives through the ordinary controls, not through this one.
+      mine: !!viewer && !!r.uploaded_by && uploaderTag(viewer) === String(r.uploaded_by).trim().toLowerCase(),
       id: r.id,
       name: r.name,
       description: r.description || "",
@@ -374,6 +402,7 @@ module.exports = function initBcbaHub(ctx) {
         }),
         categories: CATEGORIES,
         can_manage_forms: canManage(user),
+        can_add_forms: canAddForms(user),
         // Editing a payer requirement changes what every BCBA is told to
         // submit, so it is the same set that maintains the Form Library.
         can_edit_requirements: canManage(user),
@@ -416,9 +445,12 @@ module.exports = function initBcbaHub(ctx) {
           : "SELECT * FROM bcba_forms WHERE archived_at IS NULL ORDER BY name"
       ).catch(() => []);
       json(res, 200, {
-        forms: rows.map(shapeForm),
+        // (r) => rather than a bare reference: map passes the INDEX as the
+        // second argument, which would arrive here as the viewer.
+        forms: rows.map((r) => shapeForm(r, user)),
         categories: CATEGORIES,
         can_manage: canManage(user),
+        can_add: canAddForms(user),
       });
       return true;
     }
@@ -437,6 +469,64 @@ module.exports = function initBcbaHub(ctx) {
         "Content-Length": fs.statSync(full).size,
       });
       fs.createReadStream(full).pipe(res);
+      return true;
+    }
+
+    // ---- adding to the library, from any Hub screen ----------------------
+    //
+    // ABOVE the admin gate below, deliberately and with its own permission
+    // check. Leaving it underneath is what made this an admin-only button in
+    // the first place, and a route that lands under a blanket gate by accident
+    // is indistinguishable from one that was put there on purpose.
+    if (pathname === "/api/bcba/forms" && method === "POST") {
+      if (!canAddForms(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const name = clean(query.name);
+      if (!name) { json(res, 400, { error: "A form needs a name." }); return true; }
+      const category = CATEGORY_KEYS.includes(clean(query.category)) ? clean(query.category) : "other";
+      const payerKey = CHEATSHEET.payers.some((p) => p.key === clean(query.payer_key)) ? clean(query.payer_key) : null;
+      // A FORM CODE IS A CLAIM ABOUT THE CHEAT SHEET, not a label: it is what
+      // attaches this file to "Form FA-11E" wherever the document names it, on
+      // every BCBA's screen. Setting one silently answers a requirement with a
+      // file of your choosing, so a contributor may not, and the field is
+      // dropped rather than refused -- the upload is still wanted, and an admin
+      // can point it at a code afterwards.
+      const formCode = canManage(user) ? normCode(query.form_code) || null : null;
+      const { tooBig, buffer } = await readRaw(req);
+      if (tooBig) { json(res, 413, { error: "That file is larger than 20 MB." }); return true; }
+      if (!buffer.length) { json(res, 400, { error: "That upload came through empty." }); return true; }
+
+      const row = await dbGet(
+        `INSERT INTO bcba_forms (name, description, category, payer_key, form_code, editable,
+                                 filename, mime_type, size_bytes, uploaded_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+        [name.slice(0, 200), clean(query.description).slice(0, 500), category, payerKey,
+         formCode, clean(query.editable) === "1",
+         clean(query.filename).slice(0, 200) || "form", clean(query.mime) || "application/octet-stream",
+         buffer.length, uploaderTag(user), nowISO(), nowISO()]
+      );
+      const stored = storedNameFor(row.id, query.filename);
+      fs.writeFileSync(path.join(FORM_DIR, stored), buffer);
+      await dbRun("UPDATE bcba_forms SET stored_name = ? WHERE id = ?", [stored, row.id]);
+      json(res, 201, { form: shapeForm({ ...row, stored_name: stored }, user) });
+      return true;
+    }
+
+    // Taking back your own upload. Archives rather than deletes, like every
+    // other removal in this library: the file stays recoverable and an admin
+    // can put it back. It is the only write a contributor has on a row that
+    // already exists, and only on a row that is theirs.
+    const withdrawMatch = pathname.match(/^\/api\/bcba\/forms\/(\d+)\/withdraw$/);
+    if (withdrawMatch && method === "POST") {
+      if (!canAddForms(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const id = Number(withdrawMatch[1]);
+      const existing = await dbGet("SELECT * FROM bcba_forms WHERE id = ?", [id]);
+      if (!existing) { json(res, 404, { error: "Form not found" }); return true; }
+      if (uploaderTag(user) !== String(existing.uploaded_by || "").trim().toLowerCase()) {
+        json(res, 403, { error: "You can only withdraw a form you added yourself. Ask an admin to remove this one." });
+        return true;
+      }
+      await dbRun("UPDATE bcba_forms SET archived_at = ?, updated_at = ? WHERE id = ?", [nowISO(), nowISO(), id]);
+      json(res, 200, { form: shapeForm(await dbGet("SELECT * FROM bcba_forms WHERE id = ?", [id]), user) });
       return true;
     }
 
@@ -636,31 +726,6 @@ module.exports = function initBcbaHub(ctx) {
     // Create: metadata on the query string, the file as the raw body -- the
     // same shape the onboarding portal uses, so there is no multipart parser
     // in this codebase to maintain.
-    if (pathname === "/api/bcba/forms" && method === "POST") {
-      const name = clean(query.name);
-      if (!name) { json(res, 400, { error: "A form needs a name." }); return true; }
-      const category = CATEGORY_KEYS.includes(clean(query.category)) ? clean(query.category) : "other";
-      const payerKey = CHEATSHEET.payers.some((p) => p.key === clean(query.payer_key)) ? clean(query.payer_key) : null;
-      const { tooBig, buffer } = await readRaw(req);
-      if (tooBig) { json(res, 413, { error: "That file is larger than 20 MB." }); return true; }
-      if (!buffer.length) { json(res, 400, { error: "That upload came through empty." }); return true; }
-
-      const row = await dbGet(
-        `INSERT INTO bcba_forms (name, description, category, payer_key, form_code, editable,
-                                 filename, mime_type, size_bytes, uploaded_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
-        [name.slice(0, 200), clean(query.description).slice(0, 500), category, payerKey,
-         normCode(query.form_code) || null, clean(query.editable) === "1",
-         clean(query.filename).slice(0, 200) || "form", clean(query.mime) || "application/octet-stream",
-         buffer.length, user.email || user.name || "unknown", nowISO(), nowISO()]
-      );
-      const stored = storedNameFor(row.id, query.filename);
-      fs.writeFileSync(path.join(FORM_DIR, stored), buffer);
-      await dbRun("UPDATE bcba_forms SET stored_name = ? WHERE id = ?", [stored, row.id]);
-      json(res, 201, { form: shapeForm({ ...row, stored_name: stored }) });
-      return true;
-    }
-
     const idMatch = pathname.match(/^\/api\/bcba\/forms\/(\d+)$/);
     if (idMatch && method === "PATCH") {
       const id = Number(idMatch[1]);
@@ -688,7 +753,7 @@ module.exports = function initBcbaHub(ctx) {
       put("updated_at", nowISO());
       vals.push(id);
       await dbRun(`UPDATE bcba_forms SET ${sets.join(", ")} WHERE id = ?`, vals);
-      json(res, 200, { form: shapeForm(await dbGet("SELECT * FROM bcba_forms WHERE id = ?", [id])) });
+      json(res, 200, { form: shapeForm(await dbGet("SELECT * FROM bcba_forms WHERE id = ?", [id]), user) });
       return true;
     }
 
@@ -713,7 +778,7 @@ module.exports = function initBcbaHub(ctx) {
       );
       // The superseded file is left on disk rather than unlinked: a replace
       // made by mistake is recoverable, and these are blank forms, not PHI.
-      json(res, 200, { form: shapeForm(await dbGet("SELECT * FROM bcba_forms WHERE id = ?", [id])) });
+      json(res, 200, { form: shapeForm(await dbGet("SELECT * FROM bcba_forms WHERE id = ?", [id]), user) });
       return true;
     }
 

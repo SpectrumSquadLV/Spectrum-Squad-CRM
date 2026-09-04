@@ -69,6 +69,10 @@
     tab: "cheatsheet",
     payers: [],
     canManageForms: false,
+    // Adding a form is a wider permission than maintaining the library: see
+    // canAddForms in bcba-hub.js. Anyone who can read the Hub can put a form
+    // in it; only an admin can change or remove one that is already there.
+    canAddForms: false,
     payerKey: null,
     mode: "initial",          // initial | reauth
     compare: null,            // [keyA, keyB] while the comparison is open
@@ -765,6 +769,10 @@
       acts.push('<button class="bh-btn sm" data-edit-form="' + f.id + '">Edit</button>');
       acts.push('<button class="bh-btn sm" data-archive-form="' + f.id + '">' + (f.archived ? "Restore" : "Archive") + "</button>");
       if (f.archived) acts.push('<button class="bh-btn sm dgr" data-delete-form="' + f.id + '">Delete</button>');
+    } else if (f.mine && !f.archived) {
+      // The way back from uploading the wrong file. Only on your own, and only
+      // for somebody who is not already offered Archive.
+      acts.push('<button class="bh-btn sm" data-withdraw-form="' + f.id + '">Withdraw</button>');
     }
     return '<div class="bh-form">' +
       '<div style="display:flex;gap:8px;align-items:flex-start;">' +
@@ -778,6 +786,12 @@
         (f.form_code ? '<span class="bh-tag">' + esc(f.form_code) + "</span>" : "") +
         (f.archived ? '<span class="bh-tag arch">Archived</span>' : "") +
       "</div>" +
+      // Who put it here. A library only an admin could add to did not need to
+      // say; one anybody can add to does.
+      (f.uploaded_by
+        ? '<div class="bh-none" style="font-size:11.5px;">Added by ' + esc(f.uploaded_by) +
+          (f.mine ? " (you)" : "") + "</div>"
+        : "") +
       '<div class="bh-actions">' + acts.join("") + "</div>" +
     "</div>";
   }
@@ -797,9 +811,11 @@
         '<div class="bh-search">' + icon("search", 16) +
           '<input id="bh-form-q" type="text" placeholder="Search forms" value="' + attr(state.formQuery) + '" />' +
         "</div>" +
+        (state.canAddForms
+          ? '<button class="bh-btn pri" id="bh-add-form">' + icon("plus", 15) + "Add Form</button>"
+          : "") +
         (state.canManageForms
-          ? '<button class="bh-btn pri" id="bh-add-form">' + icon("plus", 15) + "Add Form</button>" +
-            '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted,#6b6a86);">' +
+          ? '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted,#6b6a86);">' +
             '<input type="checkbox" id="bh-show-arch"' + (state.showArchived ? " checked" : "") + " /> Show archived</label>"
           : "") +
       "</div>" +
@@ -809,7 +825,7 @@
         : '<div class="bh-card"><div class="bh-empty">' +
           (state.forms.length
             ? "No forms match that search."
-            : "The Form Library is empty." + (state.canManageForms ? " Use Add Form to upload the first one." : " An admin can add forms to it.")) +
+            : "The Form Library is empty." + (state.canAddForms ? " Use Add Form to upload the first one." : "")) +
           "</div></div>");
   }
 
@@ -902,8 +918,15 @@
       '<div class="bh-fld"><label>Short description</label><textarea id="bh-fd-desc" rows="2">' + esc(f.description || "") + "</textarea></div>" +
       '<div class="bh-fld"><label>Category</label><select id="bh-fd-cat">' + cats + "</select></div>" +
       '<div class="bh-fld"><label>Associated payer</label><select id="bh-fd-payer">' + payers + "</select></div>" +
-      '<div class="bh-fld"><label>Form code</label><input type="text" id="bh-fd-code" value="' + attr(f.form_code || "") + '" />' +
-        '<div class="hint">A Nevada form code such as FA-11F. When the cheat sheet names this code, the requirement links straight to this file.</div></div>' +
+      // A FORM CODE IS WHAT WIRES THIS FILE INTO THE CHEAT SHEET -- naming
+      // FA-11F here makes this the file every BCBA is handed for that
+      // requirement. The server refuses it from a contributor, so the box is
+      // not shown to one either: a field that silently does nothing is worse
+      // than no field.
+      (state.canManageForms
+        ? '<div class="bh-fld"><label>Form code</label><input type="text" id="bh-fd-code" value="' + attr(f.form_code || "") + '" />' +
+          '<div class="hint">A Nevada form code such as FA-11F. When the cheat sheet names this code, the requirement links straight to this file.</div></div>'
+        : '<div class="bh-fld"><div class="hint">An admin can link this to a cheat sheet form code after it is added.</div></div>') +
       '<div class="bh-fld"><label style="display:inline-flex;align-items:center;gap:7px;font-weight:600;">' +
         '<input type="checkbox" id="bh-fd-edit"' + (f.editable ? " checked" : "") + " /> This file can be edited and filled in</label>" +
         '<div class="hint">Shows as "Download Editable" rather than "Download".</div></div>' +
@@ -931,7 +954,7 @@
         description: wrap.querySelector("#bh-fd-desc").value.trim(),
         category: wrap.querySelector("#bh-fd-cat").value,
         payer_key: wrap.querySelector("#bh-fd-payer").value,
-        form_code: wrap.querySelector("#bh-fd-code").value.trim(),
+        form_code: (wrap.querySelector("#bh-fd-code") || { value: "" }).value.trim(),
         editable: wrap.querySelector("#bh-fd-edit").checked,
       };
       const btn = wrap.querySelector("#bh-fd-save");
@@ -1171,6 +1194,16 @@
     if (add) add.addEventListener("click", () => formDialog(null));
     mountEl.querySelectorAll("[data-edit-form]").forEach((b) => b.addEventListener("click", () =>
       formDialog(state.forms.find((f) => f.id === Number(b.dataset.editForm)))));
+    mountEl.querySelectorAll("[data-withdraw-form]").forEach((b) => b.addEventListener("click", async () => {
+      const f = state.forms.find((x) => x.id === Number(b.dataset.withdrawForm)) || {};
+      if (!confirm('Withdraw "' + (f.name || "this form") + '"?\n\nIt is removed from the library for everyone. It is not deleted -- an admin can put it back.')) return;
+      b.disabled = true;
+      try {
+        await api("/api/bcba/forms/" + b.dataset.withdrawForm + "/withdraw", { method: "POST" });
+        await reloadBoth();
+        render();
+      } catch (e) { b.disabled = false; alert(e.message); }
+    }));
     mountEl.querySelectorAll("[data-archive-form]").forEach((b) => b.addEventListener("click", async () => {
       const f = state.forms.find((x) => x.id === Number(b.dataset.archiveForm));
       b.disabled = true;
@@ -1197,6 +1230,7 @@
     state.forms = d.forms || [];
     state.categories = d.categories || state.categories;
     state.canManageForms = !!d.can_manage;
+    state.canAddForms = !!d.can_add;
   }
 
   async function loadCheatsheet() {
@@ -1204,6 +1238,7 @@
     state.payers = d.payers || [];
     state.categories = d.categories || state.categories;
     state.canManageForms = !!d.can_manage_forms;
+    state.canAddForms = !!d.can_add_forms;
     state.canEditRequirements = !!d.can_edit_requirements;
     state.orphanedEdits = d.orphaned_edits || [];
   }
