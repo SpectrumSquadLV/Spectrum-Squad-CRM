@@ -28,6 +28,28 @@
     grey:     { bg: "#e5e7eb", fg: "#4b5563", soft: "#f3f4f6", softFg: "#6b7280" },
   };
 
+  // Line icons, drawn here rather than pulled from a font: the app ships no
+  // icon library and a webfont for nine glyphs is a network request that can
+  // fail and leave empty boxes on a clinical screen.
+  const ICON = {
+    people: '<circle cx="7" cy="7" r="2.5"/><circle cx="13.5" cy="8" r="2"/><path d="M3 16c0-2.2 1.8-4 4-4s4 1.8 4 4"/><path d="M12 16c0-1.7 1.1-3 2.5-3S17 14.3 17 16"/>',
+    doc: '<path d="M6 3h5l3 3v11a1 1 0 01-1 1H6a1 1 0 01-1-1V4a1 1 0 011-1z"/><path d="M11 3v3h3"/>',
+    checkbox: '<rect x="3.5" y="3.5" width="13" height="13" rx="2"/><path d="M7 10l2 2 4-4"/>',
+    cap: '<path d="M10 4l7 3.5-7 3.5-7-3.5L10 4z"/><path d="M6 9.5V13c0 1.1 1.8 2 4 2s4-.9 4-2V9.5"/>',
+    chart: '<path d="M4 16V9"/><path d="M9 16V4"/><path d="M14 16v-5"/>',
+    clock: '<circle cx="10" cy="10" r="7"/><path d="M10 6v4l3 2"/>',
+    calendar: '<rect x="3.5" y="4.5" width="13" height="12" rx="2"/><path d="M3.5 8h13"/><path d="M7 3v3M13 3v3"/>',
+    briefcase: '<rect x="3" y="6.5" width="14" height="9" rx="2"/><path d="M7.5 6.5V5a1 1 0 011-1h3a1 1 0 011 1v1.5"/>',
+    link: '<path d="M8.5 11.5a3 3 0 004.2 0l2.3-2.3a3 3 0 10-4.2-4.2l-1 1"/><path d="M11.5 8.5a3 3 0 00-4.2 0L5 10.8a3 3 0 104.2 4.2l1-1"/>',
+    chevron: '<path d="M8 5l5 5-5 5"/>',
+    download: '<path d="M10 3v9"/><path d="M6.5 8.5L10 12l3.5-3.5"/><path d="M4 15h12"/>',
+  };
+  function icon(name, size) {
+    return '<svg class="bd-i" width="' + (size || 17) + '" height="' + (size || 17) + '" viewBox="0 0 20 20" ' +
+      'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      (ICON[name] || "") + "</svg>";
+  }
+
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   const n0 = (v) => (v == null ? "—" : String(v));
 
@@ -39,6 +61,11 @@
     return (m[+p[1]] || p[1]) + " " + (+p[2]) + ", " + p[0];
   }
   const todayStr = () => new Date().toISOString().slice(0, 10);
+  function longDate() {
+    try {
+      return new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+    } catch (e) { return todayStr(); }
+  }
   function shiftDay(iso, by) {
     const d = new Date(String(iso).slice(0, 10) + "T00:00:00Z");
     d.setUTCDate(d.getUTCDate() + by);
@@ -82,8 +109,17 @@
     const st = document.createElement("style");
     st.id = "bd-styles";
     st.textContent = `
-    .bd { padding: 22px; max-width: 1240px; min-width: 0; }
-    .bd * { min-width: 0; box-sizing: border-box; }
+    /* .bd itself, not only its descendants: the app's global border-box rule
+       never applies (a stray declaration makes the parser swallow it), so
+       padding adds OUTSIDE a declared width here unless it is set explicitly. */
+    .bd { padding: 22px; max-width: 1240px; min-width: 0; box-sizing: border-box; }
+    .bd *, .bd *::before, .bd *::after { min-width: 0; box-sizing: border-box; }
+    @media (max-width: 700px) { .bd { padding: 14px; } }
+    /* The Task Center is the shell's markup mounted inside this section, so its
+       rows follow the app's styling rather than this one's. A task row is a
+       flex line of check, text and buttons that will not wrap on its own. */
+    .bd-tc .tc-row { flex-wrap: wrap; }
+    .bd-tc .tc-tabs { flex-wrap: wrap; }
     .bd-head { margin-bottom: 18px; display:flex; align-items:flex-end; justify-content:space-between; gap:14px; flex-wrap:wrap; }
     .bd-hello { font-size: clamp(19px, 3.6vw, 25px); font-weight: 700; color: #1b2a6b; margin: 0 0 3px; letter-spacing: -0.2px; }
     .bd-sub { font-size: 13px; color: #767488; margin: 0; }
@@ -92,6 +128,16 @@
     .bd-card:hover { border-color:#c9c2ae; }
     .bd-card[data-static="1"] { cursor: default; }
     .bd-card[data-static="1"]:hover { border-color:#e6e1d4; }
+    /* The mock's card head: a tinted rounded square holding a line icon, with
+       the number beside it rather than under it. */
+    .bd-chead { display:flex; align-items:center; gap:11px; margin-bottom:9px; }
+    .bd-mark { width:38px; height:38px; border-radius:11px; display:grid; place-items:center; flex:0 0 auto; }
+    .bd-i { display:block; }
+    .bd-headmeta { text-align:right; font-size:12px; color:#767488; line-height:1.6; }
+    .bd-headmeta .q { font-style:italic; color:#5b5878; }
+    .bd-chev { color:#b9b6c9; flex:0 0 auto; }
+    .bd-row-link { cursor:pointer; }
+    .bd-row-link:hover { background:#faf8f3; }
     .bd-ct { font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:#767488; margin-bottom:6px; }
     .bd-cn { font-size:26px; font-weight:700; color:#1b2a6b; line-height:1.05; }
     .bd-cl { font-size:11.5px; color:#767488; margin-top:5px; line-height:1.5; }
@@ -99,7 +145,7 @@
     .bd-chip { font-size:10.5px; font-weight:700; padding:2px 7px; border-radius:20px; }
     .bd-panel { background:#fff; border:1px solid #e6e1d4; border-radius:12px; margin-bottom:16px; overflow:hidden; }
     .bd-ph { padding:12px 15px; border-bottom:1px solid #f0ece2; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
-    .bd-pt { font-size:13.5px; font-weight:700; color:#1b2a6b; margin:0; }
+    .bd-pt { font-size:13.5px; font-weight:700; color:#1b2a6b; margin:0; display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
     .bd-pn { font-size:11.5px; color:#767488; margin:2px 0 0; font-weight:400; }
     .bd-body { padding: 4px 0; }
     .bd-scroll { overflow-x:auto; }
@@ -120,6 +166,10 @@
     .bd-bar { height:8px; background:#eeecf6; border-radius:999px; overflow:hidden; margin-top:8px; }
     .bd-bar i { display:block; height:100%; background:#1b2a6b; }
     .bd-links { display:flex; flex-wrap:wrap; gap:7px; }
+    .bd-linkrow { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 15px;
+      font-size:12.5px; font-weight:600; color:#1b2a6b; text-decoration:none; border-bottom:1px solid #f6f3ec; }
+    .bd-linkrow:last-child { border-bottom:0; }
+    .bd-linkrow:hover { background:#faf8f3; }
     .bd-ql { font-size:12px; font-weight:600; padding:6px 12px; border-radius:8px; border:1px solid #e6e1d4; background:#fff; color:#1b2a6b; text-decoration:none; }
     .bd-ql:hover { background:#f6f3ec; }
     .bd-day { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
@@ -128,6 +178,7 @@
     .bd-drawer-back { position:fixed; inset:0; background:rgba(20,20,30,.35); z-index:80; display:flex; justify-content:flex-end; }
     .bd-drawer { background:#fff; width:min(420px,100%); height:100%; overflow-y:auto; padding:20px; }
     .bd-x { float:right; border:0; background:none; font-size:18px; cursor:pointer; color:#767488; line-height:1; }
+    .bd-tc { margin-bottom:16px; }
     .bd-two { display:grid; grid-template-columns: repeat(auto-fit, minmax(min(330px,100%), 1fr)); gap:16px; }
     @media print {
       .sidebar, .bd-filters, .bd-day, .bd-links, .bd-fb { display:none !important; }
@@ -156,8 +207,10 @@
 
     return `<div class="bd-cards">
       <button class="bd-card" data-go="caseload">
-        <div class="bd-ct">My Clients</div>
-        <div class="bd-cn">${c.total}</div>
+        <div class="bd-chead">
+          <span class="bd-mark" style="background:#e8eefc; color:#2c4bb8;">${icon("people", 20)}</span>
+          <div><div class="bd-cn">${c.total}</div><div class="bd-ct" style="margin:0;">Total Clients</div></div>
+        </div>
         <div class="bd-split">
           ${chip("In therapy", c.in_therapy, "none")}
           ${chip("Assessment", c.assessment, "grey")}
@@ -166,8 +219,10 @@
       </button>
 
       <button class="bd-card" data-go="auth">
-        <div class="bd-ct">Authorizations Expiring</div>
-        <div class="bd-cn">${a.attention}</div>
+        <div class="bd-chead">
+          <span class="bd-mark" style="background:#fdeaea; color:#c0392b;">${icon("doc", 20)}</span>
+          <div><div class="bd-cn">${a.attention}</div><div class="bd-ct" style="margin:0;">Authorizations Expiring Soon</div></div>
+        </div>
         <div class="bd-split">
           ${chip("Expired", a.expired, "darkred")}
           ${chip("7 days", a.d7, "red")}
@@ -178,8 +233,10 @@
       </button>
 
       <button class="bd-card" data-go="caseload">
-        <div class="bd-ct">Treatment Plans Due</div>
-        <div class="bd-cn">${tp.attention}</div>
+        <div class="bd-chead">
+          <span class="bd-mark" style="background:#e8f0fd; color:#2563eb;">${icon("checkbox", 20)}</span>
+          <div><div class="bd-cn">${tp.attention}</div><div class="bd-ct" style="margin:0;">Treatment Plans Due Soon</div></div>
+        </div>
         <div class="bd-split">
           ${chip("Overdue", tp.expired, "darkred")}
           ${chip("7 days", tp.d7, "red")}
@@ -191,14 +248,19 @@
       </button>
 
       <button class="bd-card" data-go="analysts">
-        <div class="bd-ct">Student Analysts</div>
-        <div class="bd-cn">${an.count}</div>
+        <div class="bd-chead">
+          <span class="bd-mark" style="background:#e6f6ec; color:#177a3c;">${icon("cap", 20)}</span>
+          <div><div class="bd-cn">${an.count}</div><div class="bd-ct" style="margin:0;">Student Analysts</div></div>
+        </div>
         <div class="bd-cl">${an.clients_with} client${an.clients_with === 1 ? "" : "s"} with an analyst${
           an.clients_without ? ` · <strong>${an.clients_without}</strong> without` : ""}</div>
       </button>
 
       <div class="bd-card" data-static="1">
-        <div class="bd-ct">Monthly Billable</div>
+        <div class="bd-chead">
+          <span class="bd-mark" style="background:#eeeafc; color:#5b4bbd;">${icon("chart", 20)}</span>
+          <div class="bd-ct" style="margin:0;">Monthly Billable Progress</div>
+        </div>
         ${billableBody}
       </div>
     </div>`;
@@ -232,7 +294,7 @@
 
     return `<div class="bd-panel">
       <div class="bd-ph">
-        <div><h2 class="bd-pt">Authorizations Expiring Soon</h2>
+        <div><h2 class="bd-pt">${icon("clock", 16)} Authorizations Expiring Soon</h2>
           <p class="bd-pn">From the client's own authorization record — this is not a second copy.</p></div>
         <a class="bd-ql" href="#/auth-alerts">View All Authorizations</a>
       </div>
@@ -244,7 +306,7 @@
   function schedulePanel() {
     return `<div class="bd-panel" id="bd-sched">
       <div class="bd-ph">
-        <div><h2 class="bd-pt">My Schedule</h2>
+        <div><h2 class="bd-pt">${icon("calendar", 16)} My Schedule <span style="font-weight:400; color:var(--text-muted);">(from Rethink)</span></h2>
           <p class="bd-pn">Read from Rethink, which is the source of truth for scheduling. The CRM never changes it.</p></div>
         <div class="bd-day">
           <button class="bd-db" data-day="prev">‹ Previous</button>
@@ -305,6 +367,15 @@
     { key: "waitlist", label: "Waitlisted" },
   ];
 
+  function countFor(d, key) {
+    if (!d || !Array.isArray(d.clients)) return null;
+    const was = caseFilter;
+    caseFilter = key;
+    const n = d.clients.filter(matchesFilter).length;
+    caseFilter = was;
+    return n;
+  }
+
   function matchesFilter(c) {
     if (caseFilter === "all") return true;
     if (caseFilter === "hold" || caseFilter === "waitlist") return c.waitlisted;
@@ -343,11 +414,12 @@
 
     return `<div class="bd-panel">
       <div class="bd-ph">
-        <div><h2 class="bd-pt">My Caseload</h2>
+        <div><h2 class="bd-pt">${icon("briefcase", 16)} My Caseload</h2>
           <p class="bd-pn">${d.clients.length} open client${d.clients.length === 1 ? "" : "s"}. The Student Analyst is here so you never have to open a card to find one.</p></div>
         <div class="bd-filters">
-          ${FILTERS.map((f) => `<button class="bd-fb ${caseFilter === f.key ? "on" : ""}" data-filter="${f.key}">${esc(f.label)}</button>`).join("")}
-          <input class="bd-search" id="bd-case-search" placeholder="Search clients…" value="${esc(caseSearch)}" />
+          ${FILTERS.map((f) => `<button class="bd-fb ${caseFilter === f.key ? "on" : ""}" data-filter="${f.key}">${esc(f.label)}${countFor(d, f.key) === null ? "" : ` (${countFor(d, f.key)})`}</button>`).join("")}
+          <input class="bd-search" id="bd-case-search" placeholder="Search my clients…" value="${esc(caseSearch)}" />
+          <button class="bd-db" id="bd-export">${icon("download", 14)} Export</button>
         </div>
       </div>
       <div class="bd-body">${body}</div>
@@ -381,7 +453,7 @@
       : `<div class="bd-empty">No Student Analyst is assigned to any client on this caseload yet.</div>`;
     return `<div class="bd-panel" id="bd-analysts">
       <div class="bd-ph"><div>
-        <h2 class="bd-pt">My Student Analysts</h2>
+        <h2 class="bd-pt">${icon("cap", 16)} My Student Analysts</h2>
         <p class="bd-pn">From each client's own record — BCBA → Client → Student Analyst, not a separate caseload.</p>
       </div></div>
       <div class="bd-body">${body}</div>
@@ -431,6 +503,18 @@
   }
 
   // ================= tasks =================================================
+  // THE REAL TASK CENTER, not a second task list. Replacing the generic
+  // dashboard for the clinical role took the Task Center away from every BCBA
+  // -- its Completed tab and its reopen have no equivalent here -- so this
+  // mounts the shell's own one. The fallback below only draws if the shell did
+  // not load, and says what it is.
+  function taskCenterPanel() {
+    if (typeof window.__taskCenterHtml === "function") {
+      return '<div class="bd-tc">' + window.__taskCenterHtml({ marginTop: "0" }) + "</div>";
+    }
+    return "";
+  }
+
   function tasksPanel(d) {
     const order = { overdue: 0, today: 1, week: 2, later: 3 };
     const rows = (d.tasks || []).slice().sort((a, b) => (order[a.bucket] - order[b.bucket]) || String(a.due_date || "").localeCompare(String(b.due_date || "")));
@@ -453,7 +537,7 @@
       : `<div class="bd-empty">Nothing outstanding. </div>`;
     return `<div class="bd-panel">
       <div class="bd-ph"><div>
-        <h2 class="bd-pt">My Tasks</h2>
+        <h2 class="bd-pt">${icon("checkbox", 16)} My Tasks</h2>
         <p class="bd-pn">From Tasks &amp; Alerts — the same tasks, not a copy.</p>
       </div><a class="bd-ql" href="#/tasks">Open Tasks &amp; Alerts</a></div>
       <div class="bd-body">${body}</div>
@@ -483,7 +567,7 @@
       : `<div class="bd-empty">No supervision responsibilities recorded for you${s.derived ? " (" + esc(s.derived) + ")" : ""}.</div>`;
     return `<div class="bd-panel">
       <div class="bd-ph"><div>
-        <h2 class="bd-pt">Supervision</h2>
+        <h2 class="bd-pt">${icon("people", 16)} Supervision</h2>
         <p class="bd-pn">Figures come from the RBT Supervision tracker, not recalculated here.</p>
       </div><a class="bd-ql" href="#/supervision">Open RBT Supervision</a></div>
       <div class="bd-body">${body}</div>
@@ -493,17 +577,23 @@
   // ================= quick links ==========================================
   function quickLinks() {
     const links = [
-      ["Treatment Plan Cheat Sheet", "#/bcba-hub"],
-      ["Form Library", "#/bcba-hub"],
-      ["Client Behavior / BIP", "#/client-behavior"],
-      ["RBT Supervision", "#/supervision"],
-      ["Policies & SOPs", "#/policies"],
-      ["BCBA Hub", "#/bcba-hub"],
-      ["Billable Requirements", "#/billable"],
+      ["Treatment Plan Cheat Sheet", "#/bcba-hub", "doc"],
+      ["Form Library", "#/bcba-hub", "briefcase"],
+      ["Programming / BIP", "#/client-behavior", "checkbox"],
+      ["RBT Supervision", "#/supervision", "people"],
+      ["Policies & SOPs", "#/policies", "doc"],
+      ["Billable Requirements", "#/billable", "chart"],
     ];
-    return `<div class="bd-panel"><div class="bd-ph" style="border-bottom:0;">
-      <div class="bd-links">${links.map(([l, h]) => `<a class="bd-ql" href="${h}">${esc(l)}</a>`).join("")}</div>
-    </div></div>`;
+    return `<div class="bd-panel">
+      <div class="bd-ph"><div><h2 class="bd-pt">${icon("link", 16)} Quick Links</h2></div></div>
+      <div class="bd-body">${links.map(([l, h, ic]) => `
+        <a class="bd-linkrow" href="${h}">
+          <span style="display:flex; align-items:center; gap:9px;">
+            <span class="bd-mark" style="width:26px; height:26px; border-radius:8px; background:#eef1fb; color:#2c4bb8;">${icon(ic, 14)}</span>
+            ${esc(l)}
+          </span>${icon("chevron", 15)}
+        </a>`).join("")}</div>
+    </div>`;
   }
 
   // ================= render ===============================================
@@ -513,8 +603,13 @@
     mountEl.innerHTML = `<div class="bd">
       <div class="bd-head">
         <div>
+          <div class="bd-ct" style="margin-bottom:5px;">BCBA Dashboard</div>
           <h1 class="bd-hello">${esc(greeting())}, ${esc(firstName(d.bcba.name))}.</h1>
           <p class="bd-sub">Here's what's happening with your caseload today.</p>
+        </div>
+        <div class="bd-headmeta">
+          <div>${esc(longDate())}</div>
+          <div class="q">&ldquo;Progress is progress.&rdquo;</div>
         </div>
         ${d.can_pick ? `<div class="bd-day">
           <label style="font-size:11.5px; color:#767488;">Viewing</label>
@@ -527,10 +622,14 @@
       ${schedulePanel()}
       ${caseloadPanel(d)}
       ${analystPanel(d)}
-      <div class="bd-two">${tasksPanel(d)}${supervisionPanel(d)}</div>
+      ${taskCenterPanel() || tasksPanel(d)}
+      ${supervisionPanel(d)}
       ${quickLinks()}
     </div>`;
     wire();
+    if (typeof window.__fillTaskCenter === "function") {
+      try { window.__fillTaskCenter(mountEl); } catch (e) { /* the shell owns its own errors */ }
+    }
     fillSchedule();
     fillNextSessions();
   }
@@ -570,6 +669,9 @@
         await load();
       } catch (e) { b.disabled = false; b.textContent = e.message; }
     }));
+    const exportBtn = mountEl.querySelector("#bd-export");
+    if (exportBtn) exportBtn.addEventListener("click", () => exportCaseload());
+
     const search = mountEl.querySelector("#bd-case-search");
     if (search) {
       search.addEventListener("input", () => {
@@ -616,6 +718,34 @@
       td.textContent = "Today " + t;
       td.style.color = "";
     });
+  }
+
+  // The rows currently on screen, as a CSV. Built in the browser from data the
+  // page already has: no new endpoint, and no way for this to hand out a client
+  // the viewer could not already see.
+  function exportCaseload() {
+    if (!data) return;
+    const q = caseSearch.trim().toLowerCase();
+    const rows = data.clients.filter(matchesFilter)
+      .filter((c) => !q || String(c.child_name || "").toLowerCase().includes(q));
+    const cell = (v) => {
+      const t = v == null ? "" : String(v);
+      return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+    };
+    const head = ["Client", "Status", "Payer", "Auth End", "Treatment Plan Due", "Student Analyst"];
+    const body = rows.map((c) => [
+      c.child_name, stageLabel(c), c.insurance_provider || "",
+      c.auth_expiration_date || "", c.treatment_plan_due_date || "", c.student_analyst || "Unassigned",
+    ].map(cell).join(","));
+    const csv = [head.join(","), ...body].join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "caseload-" + todayStr() + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
   async function load() {

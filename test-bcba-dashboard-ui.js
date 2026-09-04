@@ -159,16 +159,19 @@ const { chromium } = require("playwright");
   // The labels are uppercased by CSS, so this compares on the written text of
   // the element rather than on rendered innerText.
   const cardKeys = Object.keys(cards).map((k) => k.toLowerCase());
-  for (const t of ["my clients", "authorizations expiring", "treatment plans due", "student analysts", "monthly billable"]) {
-    check(`the ${t} card is there`, cardKeys.includes(t), cardKeys);
+  // Matched on a distinctive fragment, not the whole label: the wording is a
+  // design decision that will keep moving, but "there is a card about
+  // authorizations" is the thing worth pinning.
+  for (const t of ["clients", "authorizations expiring", "treatment plans due", "student analysts", "billable"]) {
+    check(`the ${t} card is there`, cardKeys.some((k) => k.includes(t)), cardKeys);
   }
-  const card = (name) => cards[Object.keys(cards).find((k) => k.toLowerCase() === name)];
-  check("My Clients counts the assigned caseload", Number(card("my clients")) >= 3, cards);
+  const card = (name) => cards[Object.keys(cards).find((k) => k.toLowerCase().includes(name))];
+  check("My Clients counts the assigned caseload", Number(card("clients")) >= 3, cards);
   check("an authorization 400 days out does NOT raise an alert",
     Number(card("authorizations expiring")) === 2, cards);
   check("an overdue treatment plan is counted", Number(card("treatment plans due")) >= 1, cards);
   check("billable says it is not available rather than showing 0%",
-    /Not available/i.test(card("monthly billable") || ""), card("monthly billable"));
+    /Not available/i.test(card("billable") || ""), card("billable"));
 
   console.log("\n== Authorizations ==");
   check("the authorizations panel is near the top",
@@ -222,15 +225,43 @@ const { chromium } = require("playwright");
   await page.waitForTimeout(300);
   check("and it closes", await page.locator(".bd-drawer").count() === 0);
 
+  console.log("\n== The Task Center a BCBA already had ==");
+  // The regression this pins: replacing the generic dashboard for the clinical
+  // role took the Task Center away from every BCBA. Its Completed tab and its
+  // reopen have no equivalent on a simpler task list, so losing it lost real
+  // function -- quietly, because a dashboard full of other panels still looks
+  // complete.
+  const tc = await page.evaluate(() => ({
+    present: !!document.getElementById("task-center"),
+    body: !!document.getElementById("task-center-body"),
+    tabs: Array.from(document.querySelectorAll("[data-tc]")).map((b) => b.dataset.tc),
+  }));
+  check("THE BCBA DASHBOARD CARRIES THE REAL TASK CENTER", tc.present === true, tc);
+  check("with all four tabs, Completed included",
+    ["today", "upcoming", "overdue", "completed"].every((t) => tc.tabs.includes(t)), tc.tabs);
+  check("and its body mounts", tc.body === true, tc);
+  // It has to be the shell's own, not a copy: a second implementation is how
+  // the two drift apart.
+  check("mounted from the shell rather than rebuilt here",
+    await page.evaluate(() => typeof window.__taskCenterHtml === "function" && typeof window.__fillTaskCenter === "function"));
+  await page.evaluate(() => { const b = document.querySelector('[data-tc="completed"]'); if (b) b.click(); });
+  await page.waitForTimeout(700);
+  check("the Completed tab responds",
+    await page.evaluate(() => !!document.querySelector('[data-tc="completed"].active')));
+
   console.log("\n== The rest of the page ==");
   check("the Student Analyst panel lists them with their clients", /My Student Analysts/.test(text));
-  check("My Tasks is present", /My Tasks/.test(text));
+  // Asked of the DOM at this moment, not of a snapshot taken near the top of the
+  // run: the page has re-rendered several times since then, so a stale string is
+  // testing what the dashboard looked like a minute ago.
+  check("the task area is present",
+    await page.locator("#task-center .section-title").count() === 1);
   check("Supervision is present", /Supervision/.test(text));
   check("and says the figures come from the tracker", /RBT Supervision tracker/i.test(text));
   check("the schedule panel names Rethink as the source",
     /source of truth for scheduling/i.test(text), text.match(/Rethink[^\n]*/));
   check("the schedule has day controls", await page.locator("[data-day]").count() === 3);
-  for (const l of ["Treatment Plan Cheat Sheet", "Form Library", "Client Behavior / BIP", "RBT Supervision", "Policies & SOPs", "BCBA Hub", "Billable Requirements"]) {
+  for (const l of ["Treatment Plan Cheat Sheet", "Form Library", "Programming / BIP", "RBT Supervision", "Policies & SOPs", "Billable Requirements"]) {
     check(`quick link: ${l}`, text.includes(l), l);
   }
 
@@ -257,7 +288,38 @@ const { chromium } = require("playwright");
   check("nothing overflows horizontally", wide.doc <= wide.win + 1, wide);
   await page.setViewportSize({ width: 480, height: 900 });
   await page.waitForTimeout(400);
-  const narrow = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, win: window.innerWidth }));
+  // On failure this names the WIDEST ELEMENT rather than only the page width.
+  // "497 vs 480" says a page scrolls sideways; it does not say what is doing it,
+  // and guessing at that has cost two runs already.
+  const narrow = await page.evaluate(() => {
+    const win = window.innerWidth;
+    let worst = null;
+    // Anything inside a scrolling container is EXCLUDED. A wide table in an
+    // overflow-x:auto box sticks out of the viewport by design and scrolls
+    // inside its own box -- reporting it hides the element that is actually
+    // pushing the document, which is the only one worth fixing.
+    const clipped = (el) => {
+      for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+        const ox = getComputedStyle(n).overflowX;
+        if (ox === "auto" || ox === "scroll" || ox === "hidden") return true;
+      }
+      return false;
+    };
+    document.querySelectorAll(".bd, .bd *").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      const over = Math.round(r.right - win);
+      if (over > 1 && !clipped(el) && (!worst || over > worst.over)) {
+        worst = {
+          over,
+          tag: el.tagName.toLowerCase(),
+          cls: (el.className && el.className.baseVal !== undefined ? el.className.baseVal : String(el.className || "")).slice(0, 60),
+          w: Math.round(r.width),
+          text: (el.textContent || "").trim().slice(0, 40),
+        };
+      }
+    });
+    return { doc: document.documentElement.scrollWidth, win, worst };
+  });
   check("nor on a phone", narrow.doc <= narrow.win + 1, narrow);
 
   console.log("\n== A role with no business here ==");

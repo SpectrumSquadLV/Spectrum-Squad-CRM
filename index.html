@@ -1316,18 +1316,7 @@ async function renderDashboard(mount) {
       <div class="stat-card danger"><div class="label">Overdue Tasks</div><div class="value">${dash.overdue}</div></div>
       <div class="stat-card"><div class="label">Active Therapy</div><div class="value">${byStage.active || 0}</div></div>
     </div>
-    <div class="card" id="task-center" style="margin-top:20px;">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-        <div class="section-title" style="margin:0; display:flex; align-items:center; gap:8px;">My Task Center</div>
-        <div class="tc-tabs" id="tc-tabs">
-          <button class="tc-tab active" data-tc="today">Today <span class="tc-n" data-tc-n="today"></span></button>
-          <button class="tc-tab" data-tc="upcoming">Upcoming <span class="tc-n" data-tc-n="upcoming"></span></button>
-          <button class="tc-tab" data-tc="overdue">Overdue <span class="tc-n" data-tc-n="overdue"></span></button>
-          <button class="tc-tab" data-tc="completed">Completed</button>
-        </div>
-      </div>
-      <div id="task-center-body" style="margin-top:12px;"><div class="empty-state">Loading your tasks…</div></div>
-    </div>
+    ${taskCenterHtml()}
     ${dash.authCounts ? renderAuthDashboardCard(dash.authCounts) : ""}
     <div style="display:grid; grid-template-columns: 1.4fr 1fr; gap: 20px;">
       <div class="card">
@@ -1414,6 +1403,28 @@ async function renderDashboard(mount) {
 }
 
 // ---------------- Personal Task Center (item 9) ----------------
+// Extracted so it can be mounted on more than one dashboard. The BCBA landing
+// screen replaces the generic dashboard for the clinical role, and rebuilding a
+// simpler task list there would have left BCBAs with the only task interface in
+// the CRM that has no Completed tab and no way to reopen something ticked by
+// mistake. One Task Center, mounted in two places.
+function taskCenterHtml(opts) {
+  const o = opts || {};
+  return `
+    <div class="card" id="task-center" style="margin-top:${o.marginTop || "20px"};">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div class="section-title" style="margin:0; display:flex; align-items:center; gap:8px;">My Task Center</div>
+        <div class="tc-tabs" id="tc-tabs">
+          <button class="tc-tab active" data-tc="today">Today <span class="tc-n" data-tc-n="today"></span></button>
+          <button class="tc-tab" data-tc="upcoming">Upcoming <span class="tc-n" data-tc-n="upcoming"></span></button>
+          <button class="tc-tab" data-tc="overdue">Overdue <span class="tc-n" data-tc-n="overdue"></span></button>
+          <button class="tc-tab" data-tc="completed">Completed</button>
+        </div>
+      </div>
+      <div id="task-center-body" style="margin-top:12px;"><div class="empty-state">Loading your tasks…</div></div>
+    </div>`;
+}
+
 // Shows ONLY the logged-in user's own tasks (the server scopes /scope=mine to
 // the current user and refuses to hand a normal staffer anyone else's list).
 // Tabs: Today / Upcoming / Overdue / Completed. Each row has a priority pill,
@@ -1443,6 +1454,12 @@ function _tcBucket(t) {
   if (d && d === today) return "today";
   return "upcoming"; // includes no-due-date tasks
 }
+// Both halves are exposed so the BCBA dashboard bundle can mount the real Task
+// Center. It is the same markup and the same filler -- not a copy that will
+// drift the first time either is changed.
+window.__taskCenterHtml = (o) => taskCenterHtml(o);
+window.__fillTaskCenter = (mount) => fillTaskCenter(mount);
+
 async function fillTaskCenter(mount) {
   const body = (mount || document).querySelector("#task-center-body");
   if (!body) return;
