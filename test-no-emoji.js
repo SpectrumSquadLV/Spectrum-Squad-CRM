@@ -56,22 +56,16 @@ const publicBlock = SERVER_SRC.slice(
 const SERVED = [...publicBlock.matchAll(/"\/([^"]+)"/g)].map((m) => m[1]);
 // Server modules stay out: their emoji live in outbound email bodies and log
 // lines, which are not this interface.
-// The two family-facing intake forms are held out DELIBERATELY, not because
-// they are clean -- they are not. clinical-screener.html carries 45 distinct
-// emoji and ot-intake.html eight.
-//
-// The rule this test enforces was asked for about the CRM: the software staff
-// work in all day, where a clinical record should not read like a chat
-// message. These two are forms a parent fills in about their child, and
-// friendly pictures on them are a plausible deliberate choice rather than an
-// oversight. Stripping them is a decision for whoever owns that experience, so
-// they are named here with the reason instead of being quietly swept or
-// quietly ignored.
-const FAMILY_FACING = ["clinical-screener.html", "ot-intake.html"];
+// Nothing is held out any more. The two family-facing intake forms -- the
+// clinical screener and the OT intake -- were excluded for a while on the
+// grounds that friendly pictures on a form a PARENT fills in might be a
+// deliberate choice rather than an oversight. Asked, and the answer was to
+// strip them too, so the rule is now the same everywhere: no emoji on any
+// screen this application serves.
 const UI_FILES = [...new Set(
   SERVED.filter((f) => /\.(html|js)$/.test(f))
     .concat(["screener-admin.js", "pipeline-v2.js", "financial-center.js", "owner-financials.js", "theme.js"])
-)].filter((f) => !FAMILY_FACING.includes(f));
+)];
 
 // Coloured pictograph blocks. Emoji, by any ordinary reading of the word.
 const PICTOGRAPH = /[\u{1F000}-\u{1FAFF}\u{1F900}-\u{1F9FF}]/u;
