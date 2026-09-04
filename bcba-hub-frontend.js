@@ -125,13 +125,31 @@
     const el = document.createElement("style");
     el.id = "bh-styles";
     el.textContent = `
-    .bh { padding: 22px; max-width: 1180px; min-width: 0; }
+    /* The app's own universal box-sizing rule never applies: a stray
+       declaration after the :root block makes the CSS parser swallow that rule
+       (verified in a browser, not assumed). Until that is fixed globally --
+       which shifts every screen in the app and wants its own change -- padding
+       adds OUTSIDE a declared width here, which is what pushed the upload
+       dialog and the quick-reference cards past the edge on a phone. Scoped to
+       this section so the fix cannot move anything outside it. */
+    .bh, .bh *, .bh-modal, .bh-modal * { box-sizing: border-box; }
+    /* An icon-plus-label flex box holds its text in an ANONYMOUS flex item,
+       which cannot be given min-width:0 and so refuses to wrap. In a column
+       this narrow that is what pushes the page sideways -- not the icon, the
+       label beside it. Wrapping lets the label drop under the icon instead. */
+    .bh-qr h4, .bh-callout h4, .bh-btn, .bh-tab, .bh-hero-pt { flex-wrap: wrap; }
+    .bh { padding: 22px; max-width: 1180px; min-width: 0; overflow-wrap: break-word; }
     .bh * { min-width: 0; }
     .bh-i { flex: 0 0 auto; }
     .bh-head h1 { margin: 0 0 3px; font-size: 26px; color: var(--brand-navy, #1b2a6b); }
     .bh-head p { margin: 0 0 16px; color: var(--text-muted, #6b6a86); font-size: 13.5px; }
 
-    .bh-tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--border, #e5e7eb); margin-bottom: 20px; }
+    /* The app keeps a fixed 240px sidebar at every width, so on a phone this
+       strip has about 90px to render four tabs in. It wraps first, and scrolls
+       inside itself when even one tab cannot fit, rather than making the whole
+       page scroll sideways. */
+    .bh-tabs { display: flex; gap: 6px; flex-wrap: wrap; overflow-x: auto;
+      border-bottom: 1px solid var(--border, #e5e7eb); margin-bottom: 20px; }
     .bh-tab { display: inline-flex; align-items: center; gap: 7px; background: none; border: none; cursor: pointer;
       padding: 10px 14px; font-size: 13.5px; font-weight: 600; color: var(--text-muted, #6b6a86);
       border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: inherit; }
@@ -143,7 +161,7 @@
     .bh-hero { background: linear-gradient(120deg, #f4f2fd 0%, #eef6fb 55%, #f0faf5 100%);
       border: 1px solid #e7e3f7; border-radius: 16px; padding: 22px 24px; margin-bottom: 22px; }
     .bh-hero .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: #7c6bb5; }
-    .bh-hero h2 { margin: 6px 0 6px; font-size: 27px; color: var(--brand-navy, #1b2a6b); }
+    .bh-hero h2 { margin: 6px 0 6px; font-size: clamp(19px, 5.5vw, 27px); color: var(--brand-navy, #1b2a6b); }
     .bh-hero h2 span { color: #7c5cd6; }
     .bh-hero p { margin: 0; color: #4a4a68; font-size: 13.5px; max-width: 560px; }
     .bh-hero-pts { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 16px; }
@@ -174,7 +192,8 @@
     .bh-qr.c { background: #eefaf3; border-color: #cdeedd; color: #1c6b45; }
     .bh-none { font-size: 12.5px; color: var(--text-muted, #6b6a86); font-style: italic; }
 
-    .bh-toggle { display: inline-flex; background: #f1f0f8; border-radius: 999px; padding: 3px; margin-bottom: 16px; }
+    .bh-toggle { display: flex; flex-wrap: wrap; width: fit-content; max-width: 100%;
+      background: #f1f0f8; border-radius: 999px; padding: 3px; margin-bottom: 16px; }
     .bh-toggle button { border: none; background: none; cursor: pointer; font-family: inherit; font-size: 12.5px;
       font-weight: 700; padding: 7px 16px; border-radius: 999px; color: var(--text-muted, #6b6a86); }
     .bh-toggle button.on { background: #fff; color: var(--brand-navy, #1b2a6b); box-shadow: 0 1px 3px rgba(41,34,92,.14); }
