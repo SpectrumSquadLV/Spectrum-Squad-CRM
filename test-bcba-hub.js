@@ -176,10 +176,20 @@ async function login(email, password) {
     method: "POST", rawBody: body, headers: { "Content-Type": "application/octet-stream" },
   });
 
-  const denied = await up(clinical, "name=Sneaky&filename=x.pdf&mime=application/pdf", bytes);
-  check("A BCBA CANNOT UPLOAD A FORM", denied.status === 403, denied.status);
+  // A BCBA MAY ADD ONE. Asked for as "the option to add files ... on all ends
+  // not just mine": the person handed a payer's new packet is the one holding
+  // the file. What they may not do is decide what it ANSWERS -- a form code
+  // wires a file into the cheat sheet on every BCBA's screen -- so the code is
+  // dropped rather than the upload being refused. test-bcba-forms-contrib.js
+  // covers the rest of that boundary.
+  const byBcba = await up(clinical, "name=Zz+From+A+BCBA&form_code=FA-11F&filename=x.pdf&mime=application/pdf", bytes);
+  check("A BCBA CAN UPLOAD A FORM", byBcba.status === 201, byBcba.status);
+  check("but does not get to say which requirement it answers",
+    byBcba.data.form.form_code === null, byBcba.data.form.form_code);
   const deniedIntake = await up(intake, "name=Sneaky&filename=x.pdf", bytes);
-  check("and someone with no hub access certainly cannot", deniedIntake.status === 403, deniedIntake.status);
+  check("and someone with no hub access still cannot upload at all", deniedIntake.status === 403, deniedIntake.status);
+  // Put the library back as the rest of this suite expects to find it.
+  await clinical.req("/api/bcba/forms/" + byBcba.data.form.id + "/withdraw", { method: "POST" });
 
   const created = await up(owner,
     "name=" + encodeURIComponent("FA-11F ASD Diagnosis Certification") +
