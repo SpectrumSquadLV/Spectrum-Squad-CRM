@@ -38,6 +38,43 @@ module.exports = function initBcbaHub(ctx) {
 
   const DATA_DIR = path.join(__dirname, "data");
   const FORM_DIR = path.join(DATA_DIR, "bcba-forms");
+  const LOGO_DIR = path.join(DATA_DIR, "bcba-payer-logos");
+  const crypto = require("crypto");
+
+  const LOGO_EXT = {
+    "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+    "image/webp": ".webp", "image/svg+xml": ".svg",
+  };
+  const extFor = (mime) => LOGO_EXT[mime] || ".bin";
+
+  // Checked by MAGIC BYTES, not by the type the uploader declared. This file is
+  // served back to every person who opens the Hub, so "it said it was a PNG" is
+  // not good enough -- a mislabelled file would be handed out under an image
+  // content type. SVG is text and has no magic number, so it is matched on its
+  // root element instead.
+  function looksLikeImage(buf, mime) {
+    if (!buf || buf.length < 12) return false;
+    const b = buf;
+    switch (mime) {
+      case "image/png":
+        return b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+      case "image/jpeg":
+        return b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+      case "image/gif":
+        return b.slice(0, 6).toString("ascii") === "GIF87a" || b.slice(0, 6).toString("ascii") === "GIF89a";
+      case "image/webp":
+        return b.slice(0, 4).toString("ascii") === "RIFF" && b.slice(8, 12).toString("ascii") === "WEBP";
+      case "image/svg+xml": {
+        const head = b.slice(0, 1024).toString("utf8").toLowerCase();
+        // An SVG can carry script, and this one is rendered in an <img>, which
+        // does not execute it -- but a file that is not an SVG at all is still
+        // refused rather than served under an SVG content type.
+        return head.includes("<svg");
+      }
+      default:
+        return false;
+    }
+  }
 
   const CATEGORIES = [
     { key: "assessments", label: "Assessments" },
@@ -52,7 +89,46 @@ module.exports = function initBcbaHub(ctx) {
   const clean = (v) => String(v == null ? "" : v).trim();
   const MAX_UPLOAD = 20 * 1024 * 1024;
 
+  // Per-payer material the CHEAT SHEET DOES NOT CONTAIN: the payer's own
+  // reference links, the denial reasons this practice actually sees, and a
+  // logo. None of it can be derived from the source document, and none of it
+  // may be invented -- so it is a table an admin fills in, empty until they do,
+  // and the page says so rather than showing a confident blank.
+  //
+  // Deliberately SEPARATE from the cheat sheet data: bcba-cheatsheet-data.js
+  // stays a faithful conversion of the practice's document, and nothing written
+  // here can edit a requirement.
+  async function initPayerMeta() {
+    await dbRun(`CREATE TABLE IF NOT EXISTS bcba_payer_meta (
+      payer_key TEXT PRIMARY KEY,
+      links TEXT,
+      denial_reasons TEXT,
+      logo_stored TEXT,
+      logo_mime TEXT,
+      updated_by TEXT,
+      updated_at TEXT
+    )`).catch((e) => console.error("[bcba] payer meta table:", e.message));
+    try { fs.mkdirSync(LOGO_DIR, { recursive: true }); } catch (e) { /* volume not mounted yet */ }
+  }
+
+  const parseJson = (v, fallback) => {
+    if (!v) return fallback;
+    try { const out = JSON.parse(v); return Array.isArray(out) ? out : fallback; } catch (e) { return fallback; }
+  };
+
+  async function payerMetaMap() {
+    const rows = await dbAll("SELECT * FROM bcba_payer_meta").catch(() => []);
+    const out = new Map();
+    rows.forEach((r) => out.set(r.payer_key, {
+      links: parseJson(r.links, []),
+      denial_reasons: parseJson(r.denial_reasons, []),
+      logo_url: r.logo_stored ? "/api/bcba/payers/" + encodeURIComponent(r.payer_key) + "/logo" : null,
+    }));
+    return out;
+  }
+
   async function initTables() {
+    await initPayerMeta();
     if (!fs.existsSync(FORM_DIR)) fs.mkdirSync(FORM_DIR, { recursive: true });
     await dbRun(`CREATE TABLE IF NOT EXISTS bcba_forms (
       id SERIAL PRIMARY KEY,
@@ -167,9 +243,16 @@ module.exports = function initBcbaHub(ctx) {
     // ---- the cheat sheet -------------------------------------------------
     if (pathname === "/api/bcba/cheatsheet" && method === "GET") {
       const byCode = await formsByCodeMap();
+      const meta = await payerMetaMap();
       json(res, 200, {
         payers: CHEATSHEET.payers.map((p) => ({
           ...p,
+          // Empty arrays until an admin fills them in. The page renders an
+          // empty state that says what the panel is for rather than hiding it,
+          // because a missing panel looks like the payer has nothing to say.
+          links: (meta.get(p.key) || {}).links || [],
+          denial_reasons: (meta.get(p.key) || {}).denial_reasons || [],
+          logo_url: (meta.get(p.key) || {}).logo_url || null,
           // Requirements that name a form get that form attached, so the
           // download comes from the Form Library rather than a copy.
           required_documents: attachForms(p.required_documents, byCode),
@@ -178,6 +261,28 @@ module.exports = function initBcbaHub(ctx) {
         categories: CATEGORIES,
         can_manage_forms: canManage(user),
       });
+      return true;
+    }
+
+    // ---- a payer's logo -------------------------------------------------
+    // Readable by anyone who can see the Hub, because it is drawn on every
+    // payer card. Uploading one is an admin action, gated below.
+    const logoMatch = pathname.match(/^\/api\/bcba\/payers\/([^/]+)\/logo$/);
+    if (logoMatch && method === "GET") {
+      const key = decodeURIComponent(logoMatch[1]);
+      const row = await dbGet("SELECT logo_stored, logo_mime FROM bcba_payer_meta WHERE payer_key = ?", [key]).catch(() => null);
+      if (!row || !row.logo_stored) { json(res, 404, { error: "No logo" }); return true; }
+      let buf;
+      try { buf = fs.readFileSync(path.join(LOGO_DIR, row.logo_stored)); }
+      catch (e) { json(res, 404, { error: "No logo" }); return true; }
+      res.writeHead(200, {
+        "Content-Type": row.logo_mime || "image/png",
+        "Content-Length": buf.length,
+        // The filename is the row id plus a hash, so a replaced logo is a new
+        // name and this can be cached hard without going stale.
+        "Cache-Control": "public, max-age=86400",
+      });
+      res.end(buf);
       return true;
     }
 
@@ -218,6 +323,77 @@ module.exports = function initBcbaHub(ctx) {
     if (!canManage(user)) {
       if (method !== "GET") { json(res, 403, { error: "Only an owner or admin can change the Form Library." }); return true; }
       json(res, 404, { error: "Not found" });
+      return true;
+    }
+
+    // ---- payer meta: links and denial reasons ---------------------------
+    const metaMatch = pathname.match(/^\/api\/bcba\/payers\/([^/]+)\/meta$/);
+    if (metaMatch && method === "PUT") {
+      const key = decodeURIComponent(metaMatch[1]);
+      if (!CHEATSHEET.payers.some((x) => x.key === key)) { json(res, 404, { error: "Unknown payer" }); return true; }
+      const b = await readBody(req);
+      // Links are name + URL, and ONLY http(s): a javascript: or data: URL in a
+      // link an admin pasted would run on every BCBA's screen.
+      const links = (Array.isArray(b.links) ? b.links : []).map((l) => ({
+        label: clean(l && l.label).slice(0, 120),
+        url: clean(l && l.url).slice(0, 500),
+      })).filter((l) => l.label && /^https?:\/\//i.test(l.url)).slice(0, 20);
+      const denials = (Array.isArray(b.denial_reasons) ? b.denial_reasons : [])
+        .map((d) => clean(d).slice(0, 300)).filter(Boolean).slice(0, 30);
+      await dbRun(
+        `INSERT INTO bcba_payer_meta (payer_key, links, denial_reasons, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (payer_key) DO UPDATE SET links = EXCLUDED.links,
+           denial_reasons = EXCLUDED.denial_reasons, updated_by = EXCLUDED.updated_by,
+           updated_at = EXCLUDED.updated_at`,
+        [key, JSON.stringify(links), JSON.stringify(denials), user.email || user.name || "unknown", nowISO()]
+      );
+      json(res, 200, { ok: true, links, denial_reasons: denials });
+      return true;
+    }
+
+    if (logoMatch && method === "POST") {
+      const key = decodeURIComponent(logoMatch[1]);
+      if (!CHEATSHEET.payers.some((x) => x.key === key)) { json(res, 404, { error: "Unknown payer" }); return true; }
+      // Images only, by declared type AND by magic bytes. A file that merely
+      // claims to be a PNG is served back to every user of the Hub.
+      const mime = clean(query.mime).toLowerCase();
+      const ALLOWED = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
+      if (!ALLOWED.includes(mime)) { json(res, 400, { error: "A logo must be a PNG, JPEG, GIF, WebP or SVG." }); return true; }
+      const { tooBig, buffer } = await readRaw(req);
+      if (tooBig) { json(res, 413, { error: "That image is too large." }); return true; }
+      if (!buffer.length) { json(res, 400, { error: "That upload came through empty." }); return true; }
+      if (buffer.length > 512 * 1024) { json(res, 413, { error: "A logo should be under 512 KB." }); return true; }
+      if (!looksLikeImage(buffer, mime)) { json(res, 400, { error: "That file is not the image type it claims to be." }); return true; }
+
+      const stored = key.replace(/[^a-z0-9-]/gi, "") + "-" + crypto.randomBytes(6).toString("hex") + extFor(mime);
+      try { fs.mkdirSync(LOGO_DIR, { recursive: true }); } catch (e) { /* already there */ }
+      const prev = await dbGet("SELECT logo_stored FROM bcba_payer_meta WHERE payer_key = ?", [key]).catch(() => null);
+      fs.writeFileSync(path.join(LOGO_DIR, stored), buffer);
+      await dbRun(
+        `INSERT INTO bcba_payer_meta (payer_key, logo_stored, logo_mime, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (payer_key) DO UPDATE SET logo_stored = EXCLUDED.logo_stored,
+           logo_mime = EXCLUDED.logo_mime, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
+        [key, stored, mime, user.email || user.name || "unknown", nowISO()]
+      );
+      // The old file goes only after the new one is recorded, so a crash in
+      // between leaves a stale logo rather than none.
+      if (prev && prev.logo_stored && prev.logo_stored !== stored) {
+        try { fs.unlinkSync(path.join(LOGO_DIR, prev.logo_stored)); } catch (e) { /* already gone */ }
+      }
+      json(res, 201, { ok: true, logo_url: "/api/bcba/payers/" + encodeURIComponent(key) + "/logo" });
+      return true;
+    }
+
+    if (logoMatch && method === "DELETE") {
+      const key = decodeURIComponent(logoMatch[1]);
+      const row = await dbGet("SELECT logo_stored FROM bcba_payer_meta WHERE payer_key = ?", [key]).catch(() => null);
+      if (row && row.logo_stored) {
+        try { fs.unlinkSync(path.join(LOGO_DIR, row.logo_stored)); } catch (e) { /* already gone */ }
+      }
+      await dbRun("UPDATE bcba_payer_meta SET logo_stored = NULL, logo_mime = NULL WHERE payer_key = ?", [key]).catch(() => {});
+      json(res, 200, { ok: true });
       return true;
     }
 

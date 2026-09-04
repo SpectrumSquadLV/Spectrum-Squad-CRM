@@ -41,8 +41,14 @@ const { chromium } = require("playwright");
     await page.click('#login-form button[type="submit"]');
     await page.waitForTimeout(2200);
   };
+  // Every entry anywhere in the sidebar -- used for "can this role reach it".
   const navKeys = () => page.evaluate(() =>
     Array.from(document.querySelectorAll("#nav-list [data-nav]")).map((b) => b.dataset.nav));
+  // The top-level units in order -- used for "where did it end up".
+  const navUnits = () => page.evaluate(() =>
+    Array.from(document.getElementById("nav-list").children)
+      .filter((el) => el.hasAttribute("data-nav") || el.hasAttribute("data-nav-group"))
+      .map((el) => el.dataset.nav || el.dataset.navGroup));
 
   await login("admin@spectrumsquadlv.com", "TestOwner123!");
 
@@ -70,18 +76,28 @@ const { chromium } = require("playwright");
     await page.evaluate(() => location.hash));
 
   console.log("\n== Saving an order ==");
-  // Move the last entry to the front through the DOM, the way a drop does,
-  // then save exactly what the list reads.
+  // Move the last TOP-LEVEL UNIT to the front, the way a drop does. Direct
+  // children only: a group's members live inside its .nav-sub, and dragging one
+  // out of its group is refused because membership is structural.
   const reversedFirst = await page.evaluate(() => {
     const list = document.getElementById("nav-list");
-    const items = Array.from(list.querySelectorAll("[data-nav]"));
-    const last = items[items.length - 1];
-    list.insertBefore(last, items[0]);
-    return Array.from(list.querySelectorAll("[data-nav]")).map((b) => b.dataset.nav);
+    const units = Array.from(list.children).filter(
+      (el) => el.hasAttribute("data-nav") || el.hasAttribute("data-nav-group"));
+    const last = units[units.length - 1], first = units[0];
+    const key = (el) => el.dataset.nav || el.dataset.navGroup;
+    // A heading and its sub-list travel together.
+    list.insertBefore(last, first);
+    if (last.dataset.navGroup) {
+      const sub = document.getElementById("nav-sub-" + last.dataset.navGroup);
+      if (sub) list.insertBefore(sub, first);
+    }
+    return Array.from(list.children)
+      .filter((el) => el.hasAttribute("data-nav") || el.hasAttribute("data-nav-group"))
+      .map(key);
   });
   await page.click("#nav-reorder-save");
   await page.waitForTimeout(1500);
-  const afterSave = await navKeys();
+  const afterSave = await navUnits();
   check("the new order is applied immediately", afterSave[0] === reversedFirst[0],
     `${afterSave[0]} vs ${reversedFirst[0]}`);
   check("reorder mode closes after saving",
@@ -89,15 +105,19 @@ const { chromium } = require("playwright");
 
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
-  const afterReload = await navKeys();
+  const afterReload = await navUnits();
   check("and it survives a reload, so it is stored not just local",
     afterReload[0] === reversedFirst[0], afterReload.slice(0, 3).join(","));
 
+  // Positions are compared as UNITS; losses are compared as ENTRIES. Mixing the
+  // two reads as "19 tabs vanished" when all that happened is that they moved
+  // inside a group.
+  const afterReloadAll = await navKeys();
   check("no entry was lost in the reorder",
-    afterReload.length === natural.length, `${afterReload.length} vs ${natural.length}`);
+    afterReloadAll.length === natural.length, `${afterReloadAll.length} vs ${natural.length}`);
   check("every original entry is still present",
-    natural.every((k) => afterReload.includes(k)),
-    natural.filter((k) => !afterReload.includes(k)).join(","));
+    natural.every((k) => afterReloadAll.includes(k)),
+    natural.filter((k) => !afterReloadAll.includes(k)).join(","));
 
   console.log("\n== An order cannot widen what anyone can reach ==");
   // Save an order naming a tab that a limited role must never see. If the order
@@ -155,19 +175,28 @@ const { chromium } = require("playwright");
   // and take part in the order like any other entry.
   await login("admin@spectrumsquadlv.com", "TestOwner123!");
   await page.waitForTimeout(1200);
-  const addonPresent = await page.evaluate(() => ({
-    supply: !!document.getElementById("supply-nav-btn"),
-    ot: !!document.getElementById("ot-nav-btn"),
-    // Direct children only: the Admin group's entries live inside .nav-sub and
-    // are not top-level rows, so they are neither draggable nor saved.
-    keys: Array.from(document.getElementById("nav-list").children)
-      .filter((el) => el.hasAttribute("data-nav")).map((b) => b.dataset.nav),
-  }));
+  const addonPresent = await page.evaluate(() => {
+    const at = (id) => {
+      const b = document.getElementById(id);
+      if (!b) return null;
+      const sub = b.closest(".nav-sub");
+      return { key: b.dataset.nav, group: sub ? sub.dataset.navSub : null };
+    };
+    return {
+      supply: at("supply-nav-btn"), ot: at("ot-nav-btn"),
+      keys: Array.from(document.querySelectorAll("#nav-list [data-nav]")).map((b) => b.dataset.nav),
+    };
+  });
   check("the add-on buttons are on the sidebar for an admin",
-    addonPresent.supply && addonPresent.ot, addonPresent);
-  check("and they are entries the shell can order",
+    !!addonPresent.supply && !!addonPresent.ot, addonPresent);
+  check("and they carry a key the shell can order",
     addonPresent.keys.includes("supply") && addonPresent.keys.includes("ot"),
     addonPresent.keys.join(","));
+  // They used to sit loose below every heading. Being placed in a group is the
+  // whole point: an add-on's page is a practice page like any other.
+  check("AND THEY ARE PLACED IN A GROUP RATHER THAN LEFT LOOSE AT THE END",
+    addonPresent.supply.group === "grp-practice" && addonPresent.ot.group === "grp-practice",
+    addonPresent);
 
   await page.click("#nav-reorder-open");
   await page.waitForTimeout(800);
@@ -193,36 +222,38 @@ const { chromium } = require("playwright");
     (await page.evaluate(() => location.hash)) === hashPreClick,
     await page.evaluate(() => location.hash));
 
-  // Drag Supply Requests to the very front and save it.
+  // Drag Supply Requests to the front OF ITS OWN GROUP and save. Dragging it to
+  // the top level is refused now, and rightly: membership is structural, so a
+  // drop that appeared to work and then reverted on the next render would read
+  // as a bug rather than as a rule.
   await page.evaluate(() => {
-    const list = document.getElementById("nav-list");
-    const first = Array.from(list.children).find((el) => el.hasAttribute("data-nav"));
-    list.insertBefore(document.getElementById("supply-nav-btn"), first);
+    const sub = document.getElementById("nav-sub-grp-practice");
+    const first = sub.querySelector("[data-nav]");
+    sub.insertBefore(document.getElementById("supply-nav-btn"), first);
   });
   await page.click("#nav-reorder-save");
   await page.waitForTimeout(1500);
   const storedOrder = await page.evaluate(async () =>
     ((await (await fetch("/api/nav-order", { credentials: "include" })).json()).order || []));
   check("the saved order records the add-on where it was dropped",
-    storedOrder[0] === "supply", storedOrder.slice(0, 4).join(","));
+    storedOrder.indexOf("supply") < storedOrder.indexOf("events"),
+    storedOrder.filter((k) => ["supply", "ot", "events", "policies"].includes(k)).join(","));
 
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2200);
   const placed = await page.evaluate(() => {
+    const sub = document.getElementById("nav-sub-grp-practice");
+    const members = sub ? Array.from(sub.querySelectorAll("[data-nav]")).map((b) => b.dataset.nav) : [];
     const list = document.getElementById("nav-list");
-    const entries = Array.from(list.children).filter((el) => el.hasAttribute("data-nav"));
-    const admin = document.getElementById("nav-admin-toggle");
-    return {
-      first: entries.length ? entries[0].dataset.nav : null,
-      // Admin Settings is a group, not a row, and stays at the end.
-      adminLast: !admin || entries.every((e) => !!(e.compareDocumentPosition(admin) & Node.DOCUMENT_POSITION_FOLLOWING)),
-      count: entries.length,
-    };
+    const units = Array.from(list.children)
+      .filter((el) => el.hasAttribute("data-nav") || el.hasAttribute("data-nav-group"))
+      .map((el) => el.dataset.nav || el.dataset.navGroup);
+    return { members, units, adminLast: units[units.length - 1] === "grp-admin" };
   });
   check("AND THE ADD-ON BUTTON COMES BACK IN THAT POSITION AFTER A RELOAD",
-    placed.first === "supply", placed);
-  check("the Admin group is still last", placed.adminLast === true, placed);
-  check("nothing was lost placing it", placed.count >= addonPresent.keys.length, placed);
+    placed.members[0] === "supply", placed.members.join(","));
+  check("the Admin group is still last", placed.adminLast === true, placed.units.join(","));
+  check("nothing was lost placing it", placed.units.length >= 5, placed.units.join(","));
 
   check("no page errors", errors.length === 0, errors.join(" | "));
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -61,11 +61,25 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
   section("It is in the sidebar and it opens");
   check("Grant Finder is a top-level nav entry",
     await page.locator('.sidebar nav [data-nav="grants"]').count() === 1);
+  // The sidebar is grouped now, so "not buried in Admin" is checked by naming
+  // the group it IS in rather than by requiring it to sit loose at the top.
   check("and not buried in the Admin group",
     await page.evaluate(() => {
       const b = document.querySelector('.sidebar nav [data-nav="grants"]');
-      return !!b && b.parentElement.tagName === "NAV";
+      if (!b) return false;
+      const sub = b.closest(".nav-sub");
+      return !sub || sub.dataset.navSub === "grp-practice";
     }));
+  // A collapsed group hides its pages, which is the point of grouping -- so
+  // this opens the group first, exactly as a person would.
+  await page.evaluate(() => {
+    const b = document.querySelector('.sidebar nav [data-nav="grants"]');
+    const sub = b && b.closest(".nav-sub");
+    if (!sub || !sub.hasAttribute("hidden")) return;
+    const head = document.querySelector('[data-nav-group="' + sub.dataset.navSub + '"]');
+    if (head) head.click();
+  });
+  await page.waitForTimeout(300);
   await page.click('[data-nav="grants"]');
   await page.waitForTimeout(2200);
   const shell = await page.locator("#view-mount").innerText();

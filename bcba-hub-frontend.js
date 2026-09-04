@@ -54,6 +54,9 @@
     alert: '<path d="M10 3l7 13H3l7-13z"/><path d="M10 8v4"/><circle cx="10" cy="14.5" r=".6" fill="currentColor"/>',
     search: '<circle cx="9" cy="9" r="5"/><path d="M13 13l4 4"/>',
     plus: '<path d="M10 4v12"/><path d="M4 10h12"/>',
+    link: '<path d="M8.5 11.5a3 3 0 004.2 0l2.3-2.3a3 3 0 10-4.2-4.2l-1 1"/><path d="M11.5 8.5a3 3 0 00-4.2 0L5 10.8a3 3 0 104.2 4.2l1-1"/>',
+    chat: '<path d="M4 5h12a1 1 0 011 1v6a1 1 0 01-1 1H9l-4 3v-3H4a1 1 0 01-1-1V6a1 1 0 011-1z"/>',
+    external: '<path d="M12 4h4v4"/><path d="M16 4l-6 6"/><path d="M14 11v4a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h4"/>',
   };
   function icon(name, size) {
     return '<svg class="bh-i" width="' + (size || 18) + '" height="' + (size || 18) + '" viewBox="0 0 20 20" fill="none" ' +
@@ -74,6 +77,7 @@
     formFilter: "all",
     formQuery: "",
     showArchived: false,
+    payerSearch: "",
   };
 
   // ---- checklist memory --------------------------------------------------
@@ -171,12 +175,50 @@
     .bh-sec-title { font-size: 16px; font-weight: 700; color: var(--brand-navy, #1b2a6b); margin: 0 0 3px; }
     .bh-sec-sub { font-size: 12.5px; color: var(--text-muted, #6b6a86); margin: 0 0 12px; }
 
-    .bh-payers { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(132px, 100%), 1fr)); gap: 10px; margin-bottom: 22px; }
+    /* The mock's two-column shape: the payer's requirements on the left, the
+       things you reach for beside them on the right. It collapses to one
+       column early, because the app keeps a fixed 240px sidebar at every width
+       and the content column is narrow long before the viewport is. */
+    .bh-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 290px); gap: 18px; align-items: start; }
+    @media (max-width: 1080px) { .bh-layout { grid-template-columns: minmax(0, 1fr); } }
+    .bh-rail { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 14px; }
+    @media (max-width: 1080px) { .bh-rail { position: static; } }
+    .bh-rail .bh-card { padding: 14px 15px; }
+    .bh-rail h4 { margin: 0 0 9px; font-size: 12.5px; font-weight: 800; display: flex; align-items: center;
+      gap: 7px; flex-wrap: wrap; color: var(--brand-navy, #1b2a6b); }
+    .bh-rail ul { margin: 0; padding-left: 17px; font-size: 12.5px; line-height: 1.6; color: #33334f; }
+    .bh-rail a { color: #1b2a6b; }
+    .bh-linkrow { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 7px 0; border-bottom: 1px solid #f2efe6; font-size: 12.5px; }
+    .bh-linkrow:last-child { border-bottom: 0; }
+    .bh-linkrow a { text-decoration: none; font-weight: 600; }
+    .bh-linkrow a:hover { text-decoration: underline; }
+
+    /* The payer search from the mock. With seven payers it is not strictly
+       needed, so it hides itself below a handful rather than sitting there
+       looking like the list is longer than it is. */
+    .bh-payerbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .bh-payersearch { position: relative; flex: 0 1 260px; min-width: 0; }
+    .bh-payersearch input { width: 100%; padding: 7px 10px 7px 30px; border: 1px solid var(--border, #e5e7eb);
+      border-radius: 9px; font-size: 12.5px; font-family: inherit; }
+    .bh-payersearch .ic { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); opacity: .5; }
+
+    /* A payer's own logo when one has been uploaded, the coloured initials mark
+       until then -- so a card never renders as an empty square. */
+    .bh-payer .mk img, .bh-logo img { width: 100%; height: 100%; object-fit: contain; border-radius: inherit; background: #fff; }
+    .bh-payer .mk.has-logo, .bh-logo.has-logo { background: #fff !important; border: 1px solid var(--border, #e5e7eb); padding: 3px; }
+
+    .bh-cta { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+      background: linear-gradient(120deg, #f4f2fd 0%, #eef6fb 100%); border: 1px solid #e7e3f7;
+      border-radius: 14px; padding: 15px 18px; margin-top: 16px; }
+    .bh-cta .t { font-size: 13.5px; font-weight: 700; color: var(--brand-navy, #1b2a6b); }
+    .bh-cta .s { font-size: 12.5px; color: #4a4a68; }
+    .bh-payers { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(124px, 100%), 1fr)); gap: 10px; margin: 12px 0 22px; }
     .bh-payer { background: #fff; border: 1.5px solid var(--border, #e5e7eb); border-radius: 13px; padding: 15px 10px;
       cursor: pointer; text-align: center; font-family: inherit; transition: border-color .12s, box-shadow .12s, transform .12s; }
     .bh-payer:hover { border-color: #c3bbe8; box-shadow: 0 4px 14px rgba(41,34,92,.09); transform: translateY(-1px); }
     .bh-payer.on { border-color: var(--brand-navy, #1b2a6b); box-shadow: 0 0 0 3px #e7e4f7; }
-    .bh-payer .mk { width: 34px; height: 34px; margin: 0 auto 8px; border-radius: 10px; display: grid; place-items: center;
+    .bh-payer .mk { width: 40px; height: 40px; margin: 0 auto 9px; border-radius: 11px; display: grid; place-items: center;
       font-weight: 800; font-size: 14px; color: #fff; }
     .bh-payer .nm { font-size: 12.5px; font-weight: 700; color: var(--text, #201a4d); line-height: 1.25; }
     .bh-payer .ct { font-size: 10.5px; color: var(--text-muted, #6b6a86); margin-top: 3px; }
@@ -324,19 +366,41 @@
       "</div></div>";
   }
 
+  // A payer's own logo if one has been uploaded, the coloured initials mark
+  // otherwise. Never an empty square: a card with nothing in it reads as a
+  // broken image rather than as "no logo yet".
+  function payerMarkHtml(p, i, size) {
+    const m = markFor(p, i);
+    const px = size || 40;
+    if (p.logo_url) {
+      return '<span class="mk has-logo" style="width:' + px + "px;height:" + px + 'px;">' +
+        '<img src="' + attr(p.logo_url) + '" alt="' + attr(p.name) + '" loading="lazy" />' + "</span>";
+    }
+    return '<span class="mk" style="background:' + m.color + ";width:" + px + "px;height:" + px + 'px;">' + esc(m.letters) + "</span>";
+  }
+
   function payerPickerHtml() {
-    const cards = state.payers.map((p, i) => {
-      const m = markFor(p, i);
+    const q = String(state.payerSearch || "").trim().toLowerCase();
+    const shown = state.payers.filter((p) => !q || p.name.toLowerCase().includes(q));
+    const cards = shown.map((p) => {
+      const i = state.payers.indexOf(p);
       const n = p.sections.reduce((a, s) => a + s.items.filter((x) => x.kind === "item").length, 0);
       return '<button class="bh-payer' + (state.payerKey === p.key ? " on" : "") + '" data-payer="' + attr(p.key) + '">' +
-        '<span class="mk" style="background:' + m.color + '">' + esc(m.letters) + "</span>" +
+        payerMarkHtml(p, i) +
         '<div class="nm">' + esc(p.name) + "</div>" +
         '<div class="ct">' + (n ? n + " requirement" + (n === 1 ? "" : "s") : "No components listed") + "</div>" +
       "</button>";
     }).join("");
-    return '<div class="bh-noprint"><div class="bh-sec-title">Select a Payer</div>' +
-      '<p class="bh-sec-sub">Choose an insurance provider to see what that payer needs before a treatment plan goes out.</p>' +
-      '<div class="bh-payers">' + cards + "</div></div>";
+    // Only offered once the list is long enough to be worth searching.
+    const search = state.payers.length >= 8
+      ? '<div class="bh-payersearch"><span class="ic">' + icon("search", 14) + "</span>" +
+        '<input id="bh-payer-search" placeholder="Search payers…" value="' + attr(state.payerSearch || "") + '" /></div>'
+      : "";
+    return '<div class="bh-noprint">' +
+      '<div class="bh-payerbar"><div><div class="bh-sec-title">Select a Payer</div>' +
+      '<p class="bh-sec-sub">Choose an insurance provider to see what that payer needs before a treatment plan goes out.</p></div>' +
+      search + "</div>" +
+      '<div class="bh-payers">' + (cards || '<div class="bh-none">No payer matches that.</div>') + "</div></div>";
   }
 
   function qrList(entries, emptyText) {
@@ -450,18 +514,48 @@
       body + "</div>";
   }
 
+  // The rail beside the requirements: the things you reach for while reading
+  // them. Two of its panels hold content THIS APPLICATION DOES NOT HAVE -- the
+  // payer's own reference links, and the denial reasons that payer actually
+  // gives. Neither is in the cheat sheet, and inventing either would put made-up
+  // payer facts on a clinical screen, so each renders an empty state that says
+  // what it is for and who can fill it in. A panel that admits it is empty is
+  // worth more than one that quietly looks authoritative.
+  function railHtml(p) {
+    const links = Array.isArray(p.links) ? p.links : [];
+    const denials = Array.isArray(p.denial_reasons) ? p.denial_reasons : [];
+    const linkRows = links.length
+      ? links.map((l) =>
+          '<div class="bh-linkrow"><a href="' + attr(l.url) + '" target="_blank" rel="noopener noreferrer">' +
+          esc(l.label) + "</a>" + icon("external", 13) + "</div>").join("")
+      : '<div class="bh-none">No reference links saved for this payer yet.' +
+        (state.canManageForms ? " An admin can add them in Admin Settings." : "") + "</div>";
+    const denialRows = denials.length
+      ? "<ul>" + denials.map((d) => "<li>" + esc(d) + "</li>").join("") + "</ul>"
+      : '<div class="bh-none">No denial reasons recorded for this payer yet.' +
+        (state.canManageForms ? " An admin can add the ones you actually see." : "") + "</div>";
+
+    return '<aside class="bh-rail bh-noprint">' +
+      '<div class="bh-actions" style="display:flex;flex-direction:column;gap:8px;">' +
+        '<button class="bh-btn" id="bh-print">' + icon("print", 15) + "Print / Download View</button>" +
+      "</div>" +
+      '<div class="bh-card"><h4>' + icon("link", 14) + "Helpful Links</h4>" + linkRows + "</div>" +
+      '<div class="bh-callout tip"><h4>' + icon("bulb", 14) + "Pro Tip</h4>" +
+        "<p>Run this cheat sheet against the plan before you submit it. The readiness figure above only counts what you have ticked, so it is a check on your own reading rather than a score.</p></div>" +
+      '<div class="bh-card"><h4>' + icon("alert", 14) + "Common Denial Reasons</h4>" + denialRows + "</div>" +
+      '<div class="bh-callout info"><h4>' + icon("chat", 14) + "Still Unsure?</h4>" +
+        "<p>Ask the Clinical Director, or check the payer's most recent bulletin. This sheet is only as current as the last time somebody updated it.</p></div>" +
+    "</aside>";
+  }
+
   function payerPanelHtml(p) {
     const i = state.payers.indexOf(p);
     const m = markFor(p, i);
     return '<div class="bh-card" style="padding:18px 20px;">' +
       '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;">' +
-        '<span class="mk" style="background:' + m.color + ';width:36px;height:36px;border-radius:10px;display:grid;place-items:center;color:#fff;font-weight:800;font-size:14px;">' + esc(m.letters) + "</span>" +
+        payerMarkHtml(p, i, 38) +
         "<div><div style=\"font-size:18px;font-weight:800;color:var(--brand-navy,#1b2a6b);\">" + esc(p.name) + "</div>" +
-        '<div style="font-size:12px;color:var(--text-muted,#6b6a86);">Assessment and treatment plan requirements from the practice cheat sheet.</div></div>' +
-        '<div class="bh-actions bh-noprint" style="margin-left:auto;">' +
-          '<button class="bh-btn" id="bh-print">' + icon("print", 15) + "Print / Download View</button>" +
-          '<button class="bh-btn" id="bh-compare">' + icon("scales", 15) + "Compare Payers</button>" +
-        "</div>" +
+        '<div style="font-size:12px;color:var(--text-muted,#6b6a86);">Quick reference for assessment authorization and treatment plan requirements.</div></div>' +
       "</div>" +
       '<div class="bh-toggle bh-noprint" role="tablist">' +
         '<button data-mode="initial"' + (state.mode === "initial" ? ' class="on"' : "") + ">Initial Authorization</button>" +
@@ -478,6 +572,17 @@
     readinessHtml(p) +
     checklistHtml(p) +
     '<div class="bh-quote">A well-documented plan today means fewer barriers tomorrow.</div>';
+  }
+
+  // Main column and rail side by side, with the compare invitation underneath
+  // where it reads as an offer rather than as another control in the header.
+  function cheatsheetLayoutHtml(p) {
+    return '<div class="bh-layout"><div>' + payerPanelHtml(p) + "</div>" + railHtml(p) + "</div>" +
+      '<div class="bh-cta bh-noprint"><div>' +
+        '<div class="t">Need to compare payers?</div>' +
+        '<div class="s">See what two payers ask for side by side, so the differences are the thing you read.</div>' +
+      "</div>" +
+      '<button class="bh-btn primary" id="bh-compare">' + icon("scales", 15) + "Compare Payers</button></div>";
   }
 
   // ---- compare -----------------------------------------------------------
@@ -710,7 +815,7 @@
       const p = payer();
       body = heroHtml() + payerPickerHtml() +
         (state.compare ? compareHtml() : "") +
-        (p ? payerPanelHtml(p)
+        (p ? cheatsheetLayoutHtml(p)
            : '<div class="bh-card"><div class="bh-empty">Pick a payer above to see what they require.</div></div>');
     } else if (state.tab === "forms") {
       body = formsHtml();
@@ -778,6 +883,17 @@
     ["#bh-cmp-a", "#bh-cmp-b"].forEach((sel, i) => {
       const el = q(sel);
       if (el) el.addEventListener("change", () => { state.compare[i] = el.value; render(); });
+    });
+
+    // ---- payer search: same focus-restoring pattern the form search uses,
+    // because re-rendering on every keystroke otherwise drops the caret.
+    const psearch = q("#bh-payer-search");
+    if (psearch) psearch.addEventListener("input", () => {
+      state.payerSearch = psearch.value;
+      const at = psearch.selectionStart;
+      render();
+      const again = mountEl.querySelector("#bh-payer-search");
+      if (again) { again.focus(); try { again.setSelectionRange(at, at); } catch (e) { /* not a text input */ } }
     });
 
     // ---- forms

@@ -302,9 +302,20 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   // ---- 4. supply requests ----
   section("4. Supply Requests reachable by staff");
 
-  const navText = await staff.locator(".sidebar nav").innerText();
-  check("staff now have a Supply Requests nav entry", /Supply Requests/i.test(navText), navText);
+  // By key, not by visible text: the sidebar is grouped now and Supply Requests
+  // sits inside the Practice group, which starts collapsed.
+  const supplyEntry = await staff.locator('.sidebar nav [data-nav="supply"]').count();
+  check("staff now have a Supply Requests nav entry", supplyEntry === 1, supplyEntry);
 
+  await staff.evaluate(() => {
+    const b = document.getElementById("supply-nav-btn");
+    const sub = b && b.closest(".nav-sub");
+    if (sub && sub.hasAttribute("hidden")) {
+      const head = document.querySelector('[data-nav-group="' + sub.dataset.navSub + '"]');
+      if (head) head.click();
+    }
+  });
+  await staff.waitForTimeout(300);
   await staff.locator("#supply-nav-btn").click();
   await staff.waitForTimeout(2600);
   const supplyText = await staff.locator("#view-mount").innerText();

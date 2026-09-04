@@ -56,8 +56,14 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   // ---------------- the nav ----------------
   section("A way in");
 
-  const navText = await owner.locator(".sidebar nav").innerText();
-  check("there is a Staff Attendance nav entry (there was none at all before)", /Staff Attendance/i.test(navText), navText);
+  // Asked of the DOM, not of the visible text. The sidebar is grouped now, so
+  // Staff Attendance sits inside a collapsed group and innerText does not
+  // include it -- and the permission check further down was the real casualty:
+  // reading visible text, it would have started passing because the entry was
+  // HIDDEN rather than because it was absent, which is a permission test that
+  // no longer tests the permission.
+  const navEntry = await owner.locator('.sidebar nav [data-nav="attendance"]').count();
+  check("there is a Staff Attendance nav entry (there was none at all before)", navEntry === 1, navEntry);
 
   await owner.evaluate(() => { location.hash = "#/attendance"; });
   await owner.waitForTimeout(3000);
@@ -142,8 +148,8 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   section("Who can see it");
 
   const { page: staff, errors: staffErrors } = await signIn("clinical@spectrumsquadlv.com", STAFF_PW);
-  const staffNav = await staff.locator(".sidebar nav").innerText();
-  check("a clinical user gets no Staff Attendance nav entry", !/Staff Attendance/i.test(staffNav), staffNav);
+  const staffNavEntry = await staff.locator('.sidebar nav [data-nav="attendance"]').count();
+  check("a clinical user gets no Staff Attendance nav entry", staffNavEntry === 0, staffNavEntry);
   await staff.evaluate(() => { location.hash = "#/attendance"; });
   await staff.waitForTimeout(2600);
   const staffView = await staff.locator("#view-mount").innerText();
