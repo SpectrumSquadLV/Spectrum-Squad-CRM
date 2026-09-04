@@ -70,6 +70,23 @@ const read = (f) => fs.readFileSync(path.join(__dirname, f), "utf8");
     idx.indexOf('key: "client-behavior"') > idx.indexOf('key: "pipeline"') &&
     idx.indexOf('key: "client-behavior"') < idx.indexOf('key: "tasks"'));
 
+  // ================= who is on the roster ===============================
+  // A BIP is a plan for a child in therapy. Everyone still moving through
+  // intake, and anyone parked on the waitlist, has no behaviour to plan for
+  // yet -- and listing them buries the clients a BCBA is actually working.
+  section("Only clients in therapy appear");
+  const roster = bipSrc.slice(bipSrc.indexOf('"/api/bip/roster"'), bipSrc.indexOf('"/api/bip/roster"') + 1400);
+  check("the roster selects only the active stage",
+    /stage = 'active'/.test(roster), roster.slice(0, 300));
+  check("intake stages are therefore excluded",
+    !/new_submission|clinical_screener|insurance_verification|first_day_scheduled/.test(roster));
+  check("WAITLISTED CLIENTS ARE EXCLUDED, and by their own flag rather than by stage",
+    /COALESCE\(c\.waitlisted, false\) = false/.test(roster), roster.slice(0, 400));
+  // waitlisted is a boolean a client can carry at any stage, including active
+  // when therapy is paused, so checking the stage alone would not have caught it.
+  check("the waitlist check is separate from the stage check, because the flag is",
+    /stage = 'active'[\s\S]{0,120}COALESCE\(c\.waitlisted/.test(roster));
+
   // ================= permissions ========================================
   section("Reads and writes are gated on the existing roles");
   check("every /api/bip route is behind canViewBip",

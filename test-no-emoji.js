@@ -36,17 +36,42 @@ const check = (name, cond, detail) => {
   else { fail++; console.log("  FAIL  " + name + (detail !== undefined ? "\n        " + detail : "")); }
 };
 
-// Files a user's browser actually renders. Server modules are excluded: their
-// emoji live in outbound email bodies and log lines, which are not this UI.
-const UI_FILES = [
-  "index.html",
-  ...fs.readdirSync(__dirname).filter((f) => /-frontend\.js$/.test(f)),
-  "screener-admin.js",
-  "pipeline-v2.js",
-  "financial-center.js",
-  "owner-financials.js",
-  "theme.js",
-];
+// Files a user's browser actually renders, DERIVED FROM WHAT THE SERVER
+// SERVES rather than listed by hand.
+//
+// The hand-maintained list is why this is now written this way. It named
+// index.html, the *-frontend.js bundles and a handful of others, and missed
+// hr-recruiting.js and email-templates.js -- both of which server.js serves to
+// the browser. A "👥" in the HR nav button therefore survived two separate
+// emoji sweeps and the test that was supposed to catch it, because the file it
+// lived in was never opened.
+//
+// Reading PUBLIC_FILES means any browser-served file is scanned the day it is
+// added, and nobody has to remember to add it here too.
+const SERVER_SRC = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
+const publicBlock = SERVER_SRC.slice(
+  SERVER_SRC.indexOf("const PUBLIC_FILES = new Set(["),
+  SERVER_SRC.indexOf("]);", SERVER_SRC.indexOf("const PUBLIC_FILES = new Set(["))
+);
+const SERVED = [...publicBlock.matchAll(/"\/([^"]+)"/g)].map((m) => m[1]);
+// Server modules stay out: their emoji live in outbound email bodies and log
+// lines, which are not this interface.
+// The two family-facing intake forms are held out DELIBERATELY, not because
+// they are clean -- they are not. clinical-screener.html carries 45 distinct
+// emoji and ot-intake.html eight.
+//
+// The rule this test enforces was asked for about the CRM: the software staff
+// work in all day, where a clinical record should not read like a chat
+// message. These two are forms a parent fills in about their child, and
+// friendly pictures on them are a plausible deliberate choice rather than an
+// oversight. Stripping them is a decision for whoever owns that experience, so
+// they are named here with the reason instead of being quietly swept or
+// quietly ignored.
+const FAMILY_FACING = ["clinical-screener.html", "ot-intake.html"];
+const UI_FILES = [...new Set(
+  SERVED.filter((f) => /\.(html|js)$/.test(f))
+    .concat(["screener-admin.js", "pipeline-v2.js", "financial-center.js", "owner-financials.js", "theme.js"])
+)].filter((f) => !FAMILY_FACING.includes(f));
 
 // Coloured pictograph blocks. Emoji, by any ordinary reading of the word.
 const PICTOGRAPH = /[\u{1F000}-\u{1FAFF}\u{1F900}-\u{1F9FF}]/u;
@@ -70,7 +95,13 @@ const scan = (re) => {
 };
 
 console.log("\n== No emoji in the interface ==");
-console.log(`  (scanning ${UI_FILES.length} user-facing files)`);
+console.log(`  (scanning ${UI_FILES.length} user-facing files, derived from PUBLIC_FILES)`);
+// A parsing slip here would silently scan nothing and pass forever, which is a
+// worse failure than the one this test exists to catch.
+check("the served-file list was parsed, not silently empty", UI_FILES.length > 15, UI_FILES.length);
+check("it picks up files the old hand-written list missed",
+  UI_FILES.includes("hr-recruiting.js") && UI_FILES.includes("email-templates.js"),
+  UI_FILES.join(","));
 
 const pictographs = scan(PICTOGRAPH.source);
 check("no coloured pictographs anywhere in the interface",

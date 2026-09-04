@@ -95,7 +95,7 @@ function hrSyncNavButton() {
   const btn = document.createElement("button");
   btn.className = "nav-item";
   btn.dataset.nav = "hr";
-  btn.innerHTML = "<span>👥</span> HR & Recruiting";
+  btn.innerHTML = "HR &amp; Recruiting";
   btn.addEventListener("click", () => {
     location.hash = "#/hr/dashboard";
   });
@@ -253,7 +253,7 @@ async function hrRenderCommandCenter(body) {
                   )}</span> <a href="#/hr/candidate/${t.applicant_id}">${hrEsc(t.name)}</a> — ${hrEsc(t.action)}</li>`
               )
               .join("")}</ul>`
-          : `<p class="hr-muted">No urgent tasks right now. 🎉</p>`
+          : `<p class="hr-muted">No urgent tasks right now. </p>`
       }
     </div>
     <div class="hr-card">
@@ -263,7 +263,7 @@ async function hrRenderCommandCenter(body) {
           ? `<table class="hr-table"><thead><tr><th>Candidate</th><th>Stage</th><th>Match</th><th>Days</th></tr></thead><tbody>${d.days_in_stage
               .map(
                 (a) =>
-                  `<tr class="clickable" data-cand="${a.id}"><td>${a.priority ? "⭐ " : ""}${hrEsc(a.name)}</td><td>${hrEsc(
+                  `<tr class="clickable" data-cand="${a.id}"><td>${a.priority ? "★ " : ""}${hrEsc(a.name)}</td><td>${hrEsc(
                     hrStageLabel(a.stage)
                   )}</td><td>${hrEsc(hrMatchLabel(a.match))}</td><td>${a.days}</td></tr>`
               )
@@ -669,7 +669,7 @@ async function hrRenderInbox(body) {
             )}</td><td>${hrFmtDate(a.last_response_at)}</td><td>${a.automation_paused ? '<span class="hr-badge paused">paused</span>' : '<span class="hr-badge qualified">active</span>'}</td></tr>`
         )
         .join("")}</tbody></table>`
-    : `<p class="hr-muted">No candidates are currently awaiting a reply. 🎉</p>`;
+    : `<p class="hr-muted">No candidates are currently awaiting a reply. </p>`;
   const recentHtml = recent.length
     ? `<table class="hr-table"><thead><tr><th>Direction</th><th>Candidate</th><th>Subject</th><th>Status</th><th>When</th></tr></thead><tbody>${recent
         .map(
@@ -735,7 +735,7 @@ function hrPipelineTable(applicants) {
       .map(
         (a) =>
           `<tr class="clickable" data-cand="${a.id}">
-            <td>${a.priority_flag ? "⭐ " : ""}${hrEsc(a.full_name)}</td>
+            <td>${a.priority_flag ? "★ " : ""}${hrEsc(a.full_name)}</td>
             <td>${hrEsc(a.position_title || "—")}</td>
             <td>${hrEsc(hrStageLabel(a.stage))}</td>
             <td><span class="hr-badge ${a.match_category || ""}">${hrEsc(hrMatchLabel(a.match_category))}</span></td>
@@ -760,7 +760,7 @@ function hrPipelineKanban(applicants) {
         ${(byStage[s.key] || [])
           .map(
             (a) => `<div class="hr-ccard" draggable="true" data-cand="${a.id}" data-id="${a.id}">
-              <div class="nm">${a.priority_flag ? "⭐ " : ""}${hrEsc(a.full_name)}</div>
+              <div class="nm">${a.priority_flag ? "★ " : ""}${hrEsc(a.full_name)}</div>
               <div class="meta">${hrEsc(a.position_title || "—")}</div>
               <div class="meta"><span class="hr-badge ${a.match_category || ""}">${hrEsc(hrMatchLabel(a.match_category))}</span></div>
               <div class="meta">${hrEsc(hrSourceLabel(a.source))} · ${hrFmtDate(a.applied_at)}</div>
@@ -992,19 +992,19 @@ async function hrLoadOffers(mount, id, a) {
     return;
   }
   const o = offers[0];
-  let html = "<h2>Offer 🎁</h2>";
+  let html = "<h2>Offer </h2>";
   if (!o) {
     html += `<p class="hr-muted">No offer yet. Create a delightful, interactive offer the candidate can open, sign, and celebrate.</p><button class="hr-btn" id="hr-offer-new">Create offer</button>`;
   } else {
     const money = o.comp_amount != null ? "$" + Number(o.comp_amount).toLocaleString() + (o.comp_unit === "hour" ? "/hr" : "/yr") : "—";
     html += `<div class="hr-row" style="margin-bottom:8px"><span class="hr-badge ${o.status === "accepted" ? "qualified" : o.status === "declined" ? "priority" : ""}">${hrEsc(o.status)}</span> <span class="hr-muted">${hrEsc(o.job_title || "")} · ${money}</span></div>`;
-    if (o.status === "accepted") html += `<p style="color:#16a34a;font-weight:600">🎉 Accepted by ${hrEsc(o.signed_name || "")} on ${hrFmtDate(o.signed_at)}</p>`;
+    if (o.status === "accepted") html += `<p style="color:#16a34a;font-weight:600">Accepted by ${hrEsc(o.signed_name || "")} on ${hrFmtDate(o.signed_at)}</p>`;
     if (o.status === "declined") html += `<p class="hr-muted">Declined${o.decline_reason ? ": " + hrEsc(o.decline_reason) : ""}</p>`;
     html += `<div class="hr-row">`;
     if (o.status === "draft") {
       html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm" id="hr-offer-approve">Approve</button>`;
     } else if (o.status === "approved") {
-      html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm" id="hr-offer-send">Send to candidate 🎊</button><button class="hr-btn sm ghost" id="hr-offer-withdraw">Back to draft</button>`;
+      html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm" id="hr-offer-send">Send to candidate </button><button class="hr-btn sm ghost" id="hr-offer-withdraw">Back to draft</button>`;
     } else if (o.status === "sent") {
       html += `<button class="hr-btn sm ghost" id="hr-offer-edit">Edit</button><button class="hr-btn sm ghost" id="hr-offer-copy">Copy link</button> <a class="hr-btn sm ghost" href="${hrEsc(o.public_url)}" target="_blank">Preview</a><button class="hr-btn sm danger" id="hr-offer-withdraw">Withdraw</button>`;
     } else {
@@ -1147,7 +1147,7 @@ async function hrRenderCandidate(mount, id) {
     : `<span class="hr-muted">No resume uploaded.</span>`;
 
   const notesHtml = (a.notes || []).length
-    ? (a.notes || []).map((n) => `<div class="hr-note"><div>${hrEsc(n.body)}${n.rating ? " · ⭐ " + n.rating : ""}</div><div class="who">${hrEsc(n.author)} · ${hrFmtDate(n.created_at)}${n.is_private ? " · private" : ""}</div></div>`).join("")
+    ? (a.notes || []).map((n) => `<div class="hr-note"><div>${hrEsc(n.body)}${n.rating ? " · " + n.rating : ""}</div><div class="who">${hrEsc(n.author)} · ${hrFmtDate(n.created_at)}${n.is_private ? " · private" : ""}</div></div>`).join("")
     : `<p class="hr-muted">No notes yet.</p>`;
 
   const historyHtml = (a.stage_history || []).length
@@ -1156,7 +1156,7 @@ async function hrRenderCandidate(mount, id) {
 
   body.innerHTML = `
     <div class="hr-head">
-      <h1>${a.priority_flag ? "⭐ " : ""}${hrEsc(a.full_name)}${a.preferred_name ? ` <span class="hr-muted" style="font-size:16px;font-weight:400">(goes by ${hrEsc(a.preferred_name)})</span>` : ""}</h1>
+      <h1>${a.priority_flag ? "★ " : ""}${hrEsc(a.full_name)}${a.preferred_name ? ` <span class="hr-muted" style="font-size:16px;font-weight:400">(goes by ${hrEsc(a.preferred_name)})</span>` : ""}</h1>
       <div class="hr-row">
         <span class="hr-badge ${a.match_category || ""}">${hrEsc(hrMatchLabel(a.match_category))}</span>
         <span class="hr-badge">${hrEsc(hrStageLabel(a.stage))}</span>
@@ -1381,8 +1381,8 @@ async function hrRenderTimecards(body) {
         .map(
           (t) => {
             const sendBtn = canManage ? `<button class="hr-btn sm" data-tcsend="${t.id}">${t.verification_requested_at ? "Resend" : "Send"}</button>` : "";
-            const previewBtn = canManage ? `<button class="hr-btn sm ghost" data-tcpreview="${t.id}">👁 Preview</button>` : "";
-            const pdfLink = t.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${t.pdf_doc_id}" target="_blank">📄 Signed PDF</a>` : "";
+            const previewBtn = canManage ? `<button class="hr-btn sm ghost" data-tcpreview="${t.id}">Preview</button>` : "";
+            const pdfLink = t.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${t.pdf_doc_id}" target="_blank">Signed PDF</a>` : "";
             const delBtn = hrCanDelete() ? `<button class="hr-btn sm ghost" data-tcdel="${t.id}" data-tcwho="${hrEsc(t.employee_name || "this timecard")}" style="color:#b91c1c">Delete</button>` : "";
             const check = canManage ? `<td><input type="checkbox" class="tc-pick" value="${t.id}" ${t.status === "accepted" ? "disabled" : ""} /></td>` : "";
             const sentMark = t.verification_requested_at ? `<div class="hr-muted" style="font-size:11px">sent</div>` : "";
@@ -1391,7 +1391,7 @@ async function hrRenderTimecards(body) {
             const st = t.status === "accepted"
               ? `<span class="hr-badge qualified">Accepted ✓</span>${t.signed_name ? `<div class="hr-muted" style="font-size:11px">by ${hrEsc(t.signed_name)}</div>` : ""}`
               : t.status === "edit_requested"
-              ? `<span class="hr-badge paused">✏️ Edits requested</span>`
+              ? `<span class="hr-badge paused">✏ Edits requested</span>`
               : t.verification_requested_at
               ? `<span class="hr-badge">Awaiting response</span>`
               : `<span class="hr-badge ${Number(t.open_flags) ? "paused" : "qualified"}">${hrEsc(t.status)}</span>`;
@@ -1423,7 +1423,7 @@ async function hrRenderTimecards(body) {
         <div class="hr-row"><button class="hr-btn sm" id="tc-batch-import">Import all</button><span class="hr-status" id="tc-batch-status"></span></div>` : `<p class="hr-muted">Managers can import timecards.</p>`}
       </div>
     </div>
-    <div class="hr-card"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><h2 style="margin:0;">Timecards</h2>${canManage && timecards.length ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><button class="hr-btn sm" id="tc-send-selected" disabled>📧 Send selected (0)</button><button class="hr-btn sm ghost" id="tc-send-all">Send to all unaccepted</button><span class="hr-status" id="tc-send-all-status"></span></div>` : ""}</div>${tcRows}</div>`;
+    <div class="hr-card"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><h2 style="margin:0;">Timecards</h2>${canManage && timecards.length ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><button class="hr-btn sm" id="tc-send-selected" disabled>Send selected (0)</button><button class="hr-btn sm ghost" id="tc-send-all">Send to all unaccepted</button><span class="hr-status" id="tc-send-all-status"></span></div>` : ""}</div>${tcRows}</div>`;
 
   if (canManage) {
     document.getElementById("emp-add").addEventListener("click", async () => {
@@ -1498,7 +1498,7 @@ async function hrRenderTimecards(body) {
     const syncSel = () => {
       if (!selBtn) return;
       const n = picks().length;
-      selBtn.textContent = `📧 Send selected (${n})`;
+      selBtn.textContent = `Send selected (${n})`;
       selBtn.disabled = n === 0;
     };
     body.querySelectorAll(".tc-pick").forEach((c) => c.addEventListener("change", syncSel));
@@ -1638,22 +1638,22 @@ function hrOpenTimecardModal(id, tcBody) {
           .map((e) => `<tr><td>${hrEsc(e.date || "")}</td><td>${hrEsc(e.clock_in || "—")}</td><td>${hrEsc(e.clock_out || "—")}</td><td>${hrEsc(e.hours != null ? e.hours : "")}</td></tr>`)
           .join("")}</tbody></table>`
       : "";
-    const pdfLink = tc.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${tc.pdf_doc_id}" target="_blank">📄 Open signed PDF</a>` : "";
+    const pdfLink = tc.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${tc.pdf_doc_id}" target="_blank">Open signed PDF</a>` : "";
     let respHtml = "";
     if (tc.status === "accepted") {
       respHtml = `<div class="hr-note" style="border-left:3px solid #22c55e;background:#f0fbf5">
-        <div><strong>✅ Accepted &amp; signed</strong> by ${hrEsc(tc.signed_name || "the employee")}${tc.accepted_at ? " on " + hrEsc(fmtWhen(tc.accepted_at)) : ""}.</div>
+        <div><strong>Accepted &amp; signed</strong> by ${hrEsc(tc.signed_name || "the employee")}${tc.accepted_at ? " on " + hrEsc(fmtWhen(tc.accepted_at)) : ""}.</div>
         <div class="hr-muted">They accepted these hours as-is — the <strong>Entries</strong> below are exactly what to enter into payroll.</div>
         ${pdfLink ? `<div style="margin-top:6px">${pdfLink}</div>` : ""}
       </div>`;
     } else if (tc.status === "edit_requested") {
       respHtml = `<div class="hr-note" style="border-left:3px solid #e0a430;background:#fdf6e6">
-        <div><strong>✏️ Employee requested changes</strong> — they did not accept as-is.</div>
+        <div><strong>✏ Employee requested changes</strong> — they did not accept as-is.</div>
         ${tc.employee_note ? `<div style="margin-top:4px"><em>Their note:</em> ${hrEsc(tc.employee_note)}</div>` : ""}
         ${editedTable ? `<div class="hr-muted" style="font-weight:600;margin:8px 0 4px">Hours the employee is proposing</div>${editedTable}` : `<div class="hr-muted" style="margin-top:4px">No line-item edits were provided — see their note above.</div>`}
       </div>`;
     } else if (tc.verification_requested_at) {
-      respHtml = `<div class="hr-note" style="border-left:3px solid #93a5cf"><div>📧 Sent to the employee ${hrEsc(fmtWhen(tc.verification_requested_at))} — awaiting their response.</div></div>`;
+      respHtml = `<div class="hr-note" style="border-left:3px solid #93a5cf"><div>Sent to the employee ${hrEsc(fmtWhen(tc.verification_requested_at))} — awaiting their response.</div></div>`;
     } else {
       respHtml = `<div class="hr-muted">Not sent to the employee yet.</div>`;
     }

@@ -989,11 +989,11 @@ function renderShell(active) {
   const reordering = !!state.navReorder;
   const navItemHtml = (n, cls) =>
     `<button class="nav-item ${cls} ${active === n.key && !reordering ? "active" : ""}${reordering ? " nav-dragging-on" : ""}" data-nav="${n.key}"${n.hash ? ` data-nav-hash="${n.hash}"` : ""}${reordering ? ' draggable="true"' : ""}>
-              <span>${reordering ? "⣿" : n.icon}</span> ${n.label}${n.key === "tasks" && !reordering ? `<span class="nav-count" id="nav-task-count" style="display:none;"></span>` : ""}</button>`;
+              ${reordering ? `<span>⣿</span> ` : ""}${n.label}${n.key === "tasks" && !reordering ? `<span class="nav-count" id="nav-task-count" style="display:none;"></span>` : ""}</button>`;
   const adminGroupHtml = adminChildren.length
     ? `<button class="nav-item nav-group ${adminHasActive ? "has-active" : ""}" id="nav-admin-toggle"
               aria-expanded="${adminOpen ? "true" : "false"}" aria-controls="nav-admin-sub">
-              <span>⚙</span> Admin<span class="nav-chevron">${adminOpen ? "▾" : "▸"}</span></button>
+              Admin<span class="nav-chevron">${adminOpen ? "▾" : "▸"}</span></button>
             <div class="nav-sub" id="nav-admin-sub"${adminOpen ? "" : " hidden"}>
               ${adminChildren.map((n) => navItemHtml(n, "")).join("")}
             </div>`

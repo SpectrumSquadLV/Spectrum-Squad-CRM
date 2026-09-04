@@ -55,6 +55,48 @@ const { chromium } = require("playwright");
   check("the roster returns at least one client", clientId != null);
   if (clientId == null) { console.log(`\n${pass} passed, ${fail} failed`); await browser.close(); process.exit(1); }
 
+  // Asserted against a live database rather than against the SQL text: a
+  // source check would pass just as happily if the column name were wrong.
+  console.log("\n== The waitlist and intake do not appear ==");
+  const scope = await page.evaluate(async () => {
+    const all = await (await fetch("/api/clients", { credentials: "include" })).json();
+    const roster = await (await fetch("/api/bip/roster", { credentials: "include" })).json();
+    const ids = new Set((roster.clients || []).map((c) => c.id));
+    const list = Array.isArray(all) ? all : (all.clients || []);
+    return {
+      rosterCount: ids.size,
+      nonActiveShown: list.filter((c) => c.stage !== "active" && ids.has(c.id)).map((c) => c.child_name),
+      activeCount: list.filter((c) => c.stage === "active" && !c.waitlisted).length,
+      picked: list.find((c) => c.stage === "active" && !c.waitlisted) || null,
+    };
+  });
+  check("no client outside Active Therapy is on the roster",
+    scope.nonActiveShown.length === 0, scope.nonActiveShown.join(", "));
+  check("and the active ones are all there",
+    scope.rosterCount === scope.activeCount, `${scope.rosterCount} vs ${scope.activeCount}`);
+
+  // Waitlist a real active client and watch them leave the roster.
+  if (scope.picked) {
+    const gone = await page.evaluate(async (id) => {
+      await fetch(`/api/clients/${id}/waitlist`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ waitlisted: true, reason: "smoke test" }),
+      });
+      const r = await (await fetch("/api/bip/roster", { credentials: "include" })).json();
+      const present = (r.clients || []).some((c) => c.id === id);
+      await fetch(`/api/clients/${id}/waitlist`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ waitlisted: false }),
+      });
+      const back = await (await fetch("/api/bip/roster", { credentials: "include" })).json();
+      return { present, restored: (back.clients || []).some((c) => c.id === id) };
+    }, scope.picked.id);
+    check("WAITLISTING AN ACTIVE CLIENT REMOVES THEM FROM THE ROSTER", gone.present === false, gone);
+    check("and taking them off the waitlist brings them back", gone.restored === true, gone);
+  }
+
   console.log("\n== One client ==");
   await page.goto(BASE + "/#/client-behavior/" + clientId);
   await page.reload({ waitUntil: "networkidle" });

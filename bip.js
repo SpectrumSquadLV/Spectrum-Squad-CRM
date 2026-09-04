@@ -668,7 +668,8 @@ module.exports = function initBip(ctx) {
                   (SELECT COUNT(*) FROM bip_behavior_notes n WHERE n.client_id = c.id) AS behavior_note_count
              FROM clients c
              LEFT JOIN client_bips b ON b.client_id = c.id
-            WHERE c.stage NOT IN ('discharged','not_moving_forward')
+            WHERE c.stage = 'active'
+              AND COALESCE(c.waitlisted, false) = false
             ORDER BY c.child_name`
         ).catch(() => []);
         json(res, 200, {
