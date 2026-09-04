@@ -661,16 +661,27 @@ module.exports = function initBip(ctx) {
       // One row per open client, whether or not they have a plan yet: a client
       // with no BIP is the one most worth seeing, and hiding them behind an
       // inner join is how they stay unnoticed.
+      //
+      // Two stages, not one. A client in First Day Scheduling has a start date
+      // and no sessions yet, which is exactly when a BCBA is WRITING the plan
+      // -- so leaving them off meant the tab could not reach a plan during the
+      // week it is being drafted. Active Therapy stays first in the ordering
+      // because that is the everyday list; the pre-start clients follow.
+      //
+      // Every earlier stage is still excluded: a child in intake or insurance
+      // verification has no behaviour to plan for, and the waitlist is excluded
+      // at any stage because waitlisted is a BOOLEAN A CLIENT CARRIES, not a
+      // stage -- a paused client can be active and waitlisted at once.
       if (pathname === "/api/bip/roster" && method === "GET") {
         const rows = await dbAll(
-          `SELECT c.id, c.child_name, c.assigned_bcba_name,
+          `SELECT c.id, c.child_name, c.assigned_bcba_name, c.stage,
                   b.status AS bip_status, b.assigned_bcba,
                   (SELECT COUNT(*) FROM bip_behavior_notes n WHERE n.client_id = c.id) AS behavior_note_count
              FROM clients c
              LEFT JOIN client_bips b ON b.client_id = c.id
-            WHERE c.stage = 'active'
+            WHERE c.stage IN ('active', 'first_day_scheduled')
               AND COALESCE(c.waitlisted, false) = false
-            ORDER BY c.child_name`
+            ORDER BY CASE c.stage WHEN 'active' THEN 0 ELSE 1 END, c.child_name`
         ).catch(() => []);
         json(res, 200, {
           clients: rows.map((r) => ({
@@ -680,6 +691,9 @@ module.exports = function initBip(ctx) {
             // client record's is the fallback for a client without one.
             assigned_bcba: clean(r.assigned_bcba) || clean(r.assigned_bcba_name) || null,
             bip_status: r.bip_status || null,
+            // So the page can say which of the two a row is. A plan being
+            // drafted before day one reads differently from one in use.
+            stage: r.stage || null,
             behavior_note_count: Number(r.behavior_note_count) || 0,
           })),
           can_edit: canEditBip(user),

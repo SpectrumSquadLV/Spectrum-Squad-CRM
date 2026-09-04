@@ -619,6 +619,105 @@ async function loadNavOrder() {
 // Admin-only, and one shared order for everyone. The list being dragged has
 // already been filtered by role, and only KEYS are ever sent, so this can
 // rearrange the menu but can never widen what anybody may reach.
+//
+// ADD-ON BUTTONS. Supply Requests and Occupational Therapy live in separate
+// bundles that append their own button to this same <nav> AFTER the shell has
+// drawn it. They used to be left out of the order and pinned to the end for
+// that reason. They are ordinary entries now, and the property that keeps that
+// safe is unchanged: THE SHELL NEVER CREATES ONE OF THOSE BUTTONS FROM THE
+// STORED ORDER. The add-on's own role check decides whether its button exists
+// at all; the saved order only says where an existing button sits. A key
+// naming a tab you may not see still matches nothing and still shows nothing.
+let navDragged = null;
+
+function navEntries(list) {
+  // Direct children only. The Admin group's children live inside .nav-sub and
+  // are not top-level entries, so they are not draggable and not saved.
+  return Array.from(list.children).filter((el) => el.nodeType === 1 && el.hasAttribute("data-nav"));
+}
+
+function navClearMarks(list) {
+  navEntries(list).forEach((b) => b.classList.remove("nav-drop-before", "nav-drop-after"));
+}
+
+// Put the sidebar's buttons into the saved order, in the DOM. The shell already
+// does this when it renders its own entries; this exists for the ones that
+// arrive afterwards, and applies exactly the same rule -- keys that are in the
+// order first, in its sequence, then everything it does not mention, in the
+// order it already had. An entry the saved order has never heard of therefore
+// still appears, which is what stops a nav item added in a later release from
+// vanishing for everyone who saved an order before it existed.
+function applyNavOrderToDom() {
+  const list = document.getElementById("nav-list");
+  if (!list) return;
+  const rank = new Map((state.navOrder || []).map((k, i) => [k, i]));
+  const current = navEntries(list);
+  if (!current.length) return;
+  const known = current.filter((b) => rank.has(b.dataset.nav))
+    .sort((a, b) => rank.get(a.dataset.nav) - rank.get(b.dataset.nav));
+  const want = known.concat(current.filter((b) => !rank.has(b.dataset.nav)));
+  // The Admin group is a collapsible parent plus its sub-list, not a row, and
+  // always sits at the end.
+  const anchor = document.getElementById("nav-admin-toggle");
+  const settled = want.every((b, i) => b === current[i]) &&
+    (!anchor || want.every((b) => !!(b.compareDocumentPosition(anchor) & Node.DOCUMENT_POSITION_FOLLOWING)));
+  if (settled) return;
+  want.forEach((b) => list.insertBefore(b, anchor || null));
+}
+
+// Idempotent: makes every top-level entry draggable and gives it a handle,
+// including buttons that appeared after reorder mode was switched on.
+function decorateNavForReorder() {
+  if (!state.navReorder) return;
+  const list = document.getElementById("nav-list");
+  if (!list) return;
+  navEntries(list).forEach((btn) => {
+    btn.setAttribute("draggable", "true");
+    btn.classList.add("nav-dragging-on");
+    if (!btn.querySelector(".nav-drag-handle")) {
+      const handle = document.createElement("span");
+      handle.className = "nav-drag-handle";
+      handle.textContent = "⣿ ";
+      btn.insertBefore(handle, btn.firstChild);
+    }
+    if (btn.dataset.navDragWired === "1") return;
+    btn.dataset.navDragWired = "1";
+    btn.addEventListener("dragstart", (e) => {
+      navDragged = btn;
+      e.dataTransfer.effectAllowed = "move";
+      // Firefox will not start a drag without data on the transfer.
+      try { e.dataTransfer.setData("text/plain", btn.dataset.nav); } catch (err) { /* older browsers */ }
+    });
+    btn.addEventListener("dragend", () => { navDragged = null; navClearMarks(list); });
+    btn.addEventListener("dragover", (e) => {
+      if (!navDragged || btn === navDragged) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const r = btn.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      navClearMarks(list);
+      btn.classList.add(after ? "nav-drop-after" : "nav-drop-before");
+    });
+    btn.addEventListener("drop", (e) => {
+      if (!navDragged || btn === navDragged) return;
+      e.preventDefault();
+      const r = btn.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      btn.parentNode.insertBefore(navDragged, after ? btn.nextSibling : btn);
+      navClearMarks(list);
+    });
+  });
+}
+
+// Called by an add-on bundle straight after it appends its nav button, so the
+// button lands in the saved position instead of on the end, and picks up the
+// drag handle if the menu is being rearranged at that moment.
+window.__navPlace = function (btn) {
+  if (!btn || !btn.dataset || !btn.dataset.nav) return;
+  applyNavOrderToDom();
+  decorateNavForReorder();
+};
+
 function wireNavReorder() {
   const open = document.getElementById("nav-reorder-open");
   if (open) open.addEventListener("click", () => { state.navReorder = true; route(); });
@@ -632,12 +731,11 @@ function wireNavReorder() {
       const msg = document.getElementById("nav-reorder-msg");
       const list = document.getElementById("nav-list");
       if (!list) return;
-      // [data-nav] on purpose. Add-on bundles (Supply Requests, Occupational
-      // Therapy) append their own buttons to this same <nav> without a
-      // data-nav key, so this reads the entries the shell owns and leaves
-      // theirs out of the stored order rather than writing keys that mean
-      // nothing. They are not draggable and stay at the end.
-      const order = Array.from(list.querySelectorAll("[data-nav]")).map((b) => b.dataset.nav);
+      // Top-level entries in the order they are now sitting in, add-on buttons
+      // included -- they carry a data-nav key of their own now. Keys only: no
+      // labels, no routes, no permissions, so there is nothing in the saved
+      // order that could contradict a role check.
+      const order = navEntries(list).map((b) => b.dataset.nav);
       save.disabled = true;
       try {
         const d = await api("/api/nav-order", { method: "PUT", body: { order } });
@@ -654,37 +752,15 @@ function wireNavReorder() {
   if (!state.navReorder) return;
   const list = document.getElementById("nav-list");
   if (!list) return;
-  let dragged = null;
-  const clearMarks = () => list.querySelectorAll("[data-nav]").forEach((b) => {
-    b.classList.remove("nav-drop-before", "nav-drop-after");
-  });
-
-  list.querySelectorAll("[data-nav]").forEach((btn) => {
-    btn.addEventListener("dragstart", (e) => {
-      dragged = btn;
-      e.dataTransfer.effectAllowed = "move";
-      // Firefox will not start a drag without data on the transfer.
-      try { e.dataTransfer.setData("text/plain", btn.dataset.nav); } catch (err) { /* older browsers */ }
-    });
-    btn.addEventListener("dragend", () => { dragged = null; clearMarks(); });
-    btn.addEventListener("dragover", (e) => {
-      if (!dragged || btn === dragged) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      const r = btn.getBoundingClientRect();
-      const after = e.clientY > r.top + r.height / 2;
-      clearMarks();
-      btn.classList.add(after ? "nav-drop-after" : "nav-drop-before");
-    });
-    btn.addEventListener("drop", (e) => {
-      if (!dragged || btn === dragged) return;
-      e.preventDefault();
-      const r = btn.getBoundingClientRect();
-      const after = e.clientY > r.top + r.height / 2;
-      btn.parentNode.insertBefore(dragged, after ? btn.nextSibling : btn);
-      clearMarks();
-    });
-  });
+  // A click during reorder is the tail end of a drag. The shell's own handler
+  // already checks for that, but an add-on button carries a click listener the
+  // shell did not write, so this stops the event before it reaches any of them.
+  list.addEventListener("click", (e) => {
+    if (!state.navReorder) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+  decorateNavForReorder();
 }
 
 async function boot() {
@@ -773,6 +849,7 @@ async function route() {
   else if (hash.startsWith("#/pto")) { if (window.__renderPto) await window.__renderPto(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/client-behavior")) { if (window.__renderClientBehavior) await window.__renderClientBehavior(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/bcba-hub")) { if (window.__renderBcbaHub) await window.__renderBcbaHub(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/rethink-clients")) { if (window.__renderRethinkMatch) await window.__renderRethinkMatch(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/events")) { if (window.__renderEvents) await window.__renderEvents(mount); else await renderDashboard(mount); }
@@ -814,6 +891,7 @@ const MODULE_CATALOG = {
   pto: { label: "PTO Balances", icon: "◇" },
   supervision: { label: "RBT Supervision", icon: "▥" },
   "client-behavior": { label: "Client Behavior", icon: "◑", hash: "#/client-behavior" },
+  "bcba-hub": { label: "BCBA Hub", icon: "◑", hash: "#/bcba-hub" },
   "rethink-clients": { label: "Rethink Client Matching", icon: "⧉", hash: "#/rethink-clients" },
   leads: { label: "Lead Management", icon: "◎" },
   events: { label: "Events", icon: "▽" },
@@ -883,6 +961,13 @@ function renderShell(active) {
   // what actually enforces it.
   if (!OT_ONLY && canAccessClients())
     navItems.push({ key: "client-behavior", label: "Client Behavior", icon: "◑", hash: "#/client-behavior" });
+  // The BCBA Hub: payer requirements and blank forms. It holds NO client
+  // information, so its access rule is about who does clinical and
+  // authorization work rather than who may see a child's record -- billing is
+  // included because submitting the authorization request is their job.
+  // Same list bcba-hub.js enforces; the nav entry only hides it.
+  if (!OT_ONLY && ["owner", "super_admin", "admin", "clinical", "billing"].includes(state.user.role))
+    navItems.push({ key: "bcba-hub", label: "BCBA Hub", icon: "◑", hash: "#/bcba-hub" });
   if (!OT_ONLY) {
     navItems.push({ key: "tasks", label: "Tasks & Alerts", icon: "✓" });
   }
@@ -989,7 +1074,7 @@ function renderShell(active) {
   const reordering = !!state.navReorder;
   const navItemHtml = (n, cls) =>
     `<button class="nav-item ${cls} ${active === n.key && !reordering ? "active" : ""}${reordering ? " nav-dragging-on" : ""}" data-nav="${n.key}"${n.hash ? ` data-nav-hash="${n.hash}"` : ""}${reordering ? ' draggable="true"' : ""}>
-              ${reordering ? `<span>⣿</span> ` : ""}${n.label}${n.key === "tasks" && !reordering ? `<span class="nav-count" id="nav-task-count" style="display:none;"></span>` : ""}</button>`;
+              ${reordering ? `<span class="nav-drag-handle">⣿ </span>` : ""}${n.label}${n.key === "tasks" && !reordering ? `<span class="nav-count" id="nav-task-count" style="display:none;"></span>` : ""}</button>`;
   const adminGroupHtml = adminChildren.length
     ? `<button class="nav-item nav-group ${adminHasActive ? "has-active" : ""}" id="nav-admin-toggle"
               aria-expanded="${adminOpen ? "true" : "false"}" aria-controls="nav-admin-sub">
@@ -1009,7 +1094,7 @@ function renderShell(active) {
         </nav>
         ${state.navOrderCanEdit ? (reordering
           ? `<div class="nav-reorder-bar">
-               <div class="nav-reorder-hint">Drag to reorder. This sets the menu for everyone. Entries without a handle are added by add-ons and stay at the end.</div>
+               <div class="nav-reorder-hint">Drag to reorder. This sets the menu for everyone. Admin Settings stays at the end.</div>
                <button class="btn small" id="nav-reorder-save">Save order</button>
                <button class="btn small secondary" id="nav-reorder-cancel">Cancel</button>
                <div id="nav-reorder-msg" class="nav-reorder-msg"></div>
@@ -1035,6 +1120,7 @@ function renderShell(active) {
     });
   });
   wireNavReorder();
+  applyNavOrderToDom();
   // The Admin parent opens and closes the group; it is not a page of its own,
   // so it deliberately has no data-nav and never navigates.
   const adminToggle = document.getElementById("nav-admin-toggle");
@@ -2356,6 +2442,80 @@ function ea(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
+// ---------------- Service location ----------------
+// A client can be seen in more than one setting, so this is a set of choices
+// rather than one. It stays in the single `service_location` TEXT column as a
+// comma-separated list -- the map's classifier already reads a value naming
+// several settings and reports them all, so nothing downstream had to change
+// and no historical value had to be migrated.
+const SERVICE_LOCATIONS = ["In-Clinic", "In Home", "In-School"];
+
+// What is already stored is not necessarily one of the three. It is whatever
+// was typed, imported or written before this was a multi-select: "In Home /
+// In-School", "Telehealth", a note somebody left. So parsing reports BOTH --
+// the settings it recognises, and the rest of the string verbatim -- and the
+// editor keeps the remainder in a field of its own. Opening a client and
+// pressing Save must not quietly delete something a person put there.
+function parseServiceLocation(raw) {
+  const flat = (v) => String(v).toLowerCase().replace(/[^a-z]/g, "");
+  const parts = String(raw == null ? "" : raw).split(/[,/;|]+|\band\b/i).map((x) => x.trim()).filter(Boolean);
+  const chosen = [], extra = [];
+  parts.forEach((p) => {
+    const hit = SERVICE_LOCATIONS.find((o) => flat(o) === flat(p));
+    if (hit) { if (chosen.indexOf(hit) === -1) chosen.push(hit); }
+    else extra.push(p);
+  });
+  return { chosen: chosen, extra: extra.join(", ") };
+}
+
+// Written back in the canonical order rather than the order the boxes were
+// ticked, so the same set of settings always reads the same way.
+function formatServiceLocation(chosen, extra) {
+  const list = SERVICE_LOCATIONS.filter((o) => (chosen || []).indexOf(o) !== -1);
+  const rest = String(extra == null ? "" : extra).trim();
+  if (rest) list.push(rest);
+  return list.join(", ");
+}
+
+// Does this stored value name that setting? Used for filtering, where a plain
+// equality test would stop matching the moment a client is seen in two places.
+function serviceLocationHas(raw, setting) {
+  return parseServiceLocation(raw).chosen.indexOf(setting) !== -1;
+}
+
+// Exposed for pipeline-v2.js, which filters on the same field and must read it
+// the same way. One parser, not two that agree until one is edited.
+window.__serviceLocations = SERVICE_LOCATIONS;
+window.__serviceLocationHas = serviceLocationHas;
+window.__parseServiceLocation = parseServiceLocation;
+
+function cdServiceLocation(current) {
+  const parsed = parseServiceLocation(current);
+  return (
+    `<div id="cd-service_location">` +
+      `<div class="opt-row">` +
+        SERVICE_LOCATIONS.map((o) =>
+          `<label><input type="checkbox" class="svc-opt" value="${ea(o)}"${parsed.chosen.indexOf(o) !== -1 ? " checked" : ""} /> ${ea(o)}</label>`
+        ).join("") +
+      `</div>` +
+      // Only drawn when there IS something else on the record. There is no
+      // reason to invite free text into a field with three settled answers --
+      // this exists to hold on to what is already there.
+      (parsed.extra
+        ? `<label style="display:block; margin-top:6px; font-size:11.5px; color:var(--text-muted);">Also recorded
+             <input class="svc-other" value="${ea(parsed.extra)}" style="margin-top:3px;" /></label>`
+        : "") +
+    `</div>`
+  );
+}
+
+function readServiceLocation(box) {
+  if (!box) return "";
+  const chosen = Array.from(box.querySelectorAll("input.svc-opt")).filter((i) => i.checked).map((i) => i.value);
+  const other = box.querySelector(".svc-other");
+  return formatServiceLocation(chosen, other ? other.value : "");
+}
+
 function cdSelect(id, options, current) {
   return (
     `<select id="cd-${id}">` +
@@ -2467,7 +2627,7 @@ function clientDetailsHtml(client, editing) {
       <div class="field"><label>Parent Email</label><input id="cd-parent_email" type="email" value="${ea(client.parent_email)}" /></div>
       <div class="field"><label>Parent Phone</label><input id="cd-parent_phone" value="${ea(client.parent_phone)}" /></div>
       <div class="field full"><label>Address</label><input id="cd-address" value="${ea(client.address)}" /></div>
-      <div class="field"><label>Service Location</label>${cdSelect("service_location", ["In-Clinic", "In Home", "In-School"], client.service_location)}</div>
+      <div class="field"><label>Service Location</label>${cdServiceLocation(client.service_location)}</div>
       <div class="field"><label>Insurance Provider</label><input id="cd-insurance_provider" value="${ea(client.insurance_provider)}" /></div>
       <div class="field"><label>Desired Schedule</label>${cdSelect("desired_schedule", ["Full-Time", "Part Time AM", "Part Time PM"], client.desired_schedule)}</div>
       <div class="field"><label>ASD Diagnosis</label>${cdSelect("has_asd_diagnosis", ["Yes", "No"], client.has_asd_diagnosis)}</div>
@@ -2890,6 +3050,10 @@ async function openClientModal(id) {
         const el = backdrop.querySelector(`#cd-${f}`);
         if (el) body[f] = el.value;
       });
+      // Service location is a set of checkboxes rather than one control, so it
+      // is read on its own. Unticking everything writes an empty value, which
+      // is the honest answer for a client whose setting is not known.
+      body.service_location = readServiceLocation(backdrop.querySelector("#cd-service_location"));
       clientSaveBtn.disabled = true;
       clientSaveBtn.textContent = "Saving…";
       try {
@@ -3449,7 +3613,11 @@ function openNewClientModal() {
           <div class="field full"><label>Address</label><input name="address" /></div>
           <div class="field">
             <label>Service Location</label>
-            <select name="service_location"><option>In-Clinic</option><option>In Home</option><option>In-School</option></select>
+            <div class="opt-row" id="new-client-service">
+              <label><input type="checkbox" class="svc-opt" name="service_location" value="In-Clinic" /> In-Clinic</label>
+              <label><input type="checkbox" class="svc-opt" name="service_location" value="In Home" /> In Home</label>
+              <label><input type="checkbox" class="svc-opt" name="service_location" value="In-School" /> In-School</label>
+            </div>
           </div>
           <div class="field">
             <label>Desired Schedule</label>
@@ -3477,6 +3645,9 @@ function openNewClientModal() {
     e.preventDefault();
     const fd = new FormData(e.target);
     const body = Object.fromEntries(fd.entries());
+    // Object.fromEntries keeps only the LAST value of a repeated field name, so
+    // ticking two settings would have submitted one. Read them all.
+    body.service_location = formatServiceLocation(fd.getAll("service_location"), "");
     await api("/api/clients", { method: "POST", body });
     close();
     await loadClients();
@@ -5897,6 +6068,7 @@ function openAccessModal(u, onDone) {
   <script src="geo-map-frontend.js"></script>
   <script src="bip-frontend.js"></script>
   <script src="client-behavior-frontend.js"></script>
+  <script src="bcba-hub-frontend.js"></script>
   <script src="people-frontend.js"></script>
   <script src="signnow-import-frontend.js"></script>
 

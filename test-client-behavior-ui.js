@@ -58,22 +58,35 @@ const { chromium } = require("playwright");
   // Asserted against a live database rather than against the SQL text: a
   // source check would pass just as happily if the column name were wrong.
   console.log("\n== The waitlist and intake do not appear ==");
-  const scope = await page.evaluate(async () => {
+  const IN_SCOPE = ["active", "first_day_scheduled"];
+  const scope = await page.evaluate(async (inScope) => {
     const all = await (await fetch("/api/clients", { credentials: "include" })).json();
     const roster = await (await fetch("/api/bip/roster", { credentials: "include" })).json();
     const ids = new Set((roster.clients || []).map((c) => c.id));
     const list = Array.isArray(all) ? all : (all.clients || []);
+    const eligible = (c) => inScope.includes(c.stage) && !c.waitlisted;
     return {
       rosterCount: ids.size,
-      nonActiveShown: list.filter((c) => c.stage !== "active" && ids.has(c.id)).map((c) => c.child_name),
-      activeCount: list.filter((c) => c.stage === "active" && !c.waitlisted).length,
+      outOfScopeShown: list.filter((c) => !inScope.includes(c.stage) && ids.has(c.id)).map((c) => c.child_name),
+      waitlistedShown: list.filter((c) => c.waitlisted && ids.has(c.id)).map((c) => c.child_name),
+      eligibleCount: list.filter(eligible).length,
       picked: list.find((c) => c.stage === "active" && !c.waitlisted) || null,
+      // Whatever the roster says a row's stage is has to match the client
+      // record; the "Starting soon" tag is drawn off this field.
+      stageMismatch: (roster.clients || []).filter((r) => {
+        const c = list.find((x) => x.id === r.id);
+        return c && r.stage !== c.stage;
+      }).map((r) => r.child_name),
     };
-  });
-  check("no client outside Active Therapy is on the roster",
-    scope.nonActiveShown.length === 0, scope.nonActiveShown.join(", "));
-  check("and the active ones are all there",
-    scope.rosterCount === scope.activeCount, `${scope.rosterCount} vs ${scope.activeCount}`);
+  }, IN_SCOPE);
+  check("no client outside Active Therapy or First Day Scheduling is on the roster",
+    scope.outOfScopeShown.length === 0, scope.outOfScopeShown.join(", "));
+  check("no waitlisted client is on the roster whatever their stage",
+    scope.waitlistedShown.length === 0, scope.waitlistedShown.join(", "));
+  check("and every eligible client is there",
+    scope.rosterCount === scope.eligibleCount, `${scope.rosterCount} vs ${scope.eligibleCount}`);
+  check("the stage each row reports is the stage the client record holds",
+    scope.stageMismatch.length === 0, scope.stageMismatch.join(", "));
 
   // Waitlist a real active client and watch them leave the roster.
   if (scope.picked) {
@@ -96,6 +109,59 @@ const { chromium } = require("playwright");
     check("WAITLISTING AN ACTIVE CLIENT REMOVES THEM FROM THE ROSTER", gone.present === false, gone);
     check("and taking them off the waitlist brings them back", gone.restored === true, gone);
   }
+
+  // A client with a first day booked, driven through the real stage move
+  // rather than a direct UPDATE, because enterStage is what production runs.
+  console.log("\n== A client whose first day is scheduled ==");
+  const firstDay = await page.evaluate(async () => {
+    const mk = await (await fetch("/api/clients", {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ child_name: "Starting Soon Child", parent_name: "Starting Parent",
+                             parent_email: "starting.soon@example.com" }),
+    })).json();
+    await fetch(`/api/clients/${mk.id}/advance`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage: "first_day_scheduled" }),
+    });
+    const r = await (await fetch("/api/bip/roster", { credentials: "include" })).json();
+    const row = (r.clients || []).find((c) => c.id === mk.id) || null;
+    // And still excluded once waitlisted, which is the flag doing the work
+    // rather than the stage.
+    await fetch(`/api/clients/${mk.id}/waitlist`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ waitlisted: true, reason: "smoke test" }),
+    });
+    const after = await (await fetch("/api/bip/roster", { credentials: "include" })).json();
+    return { id: mk.id, row, waitlistedStillShown: (after.clients || []).some((c) => c.id === mk.id) };
+  });
+  check("A CLIENT IN FIRST DAY SCHEDULING IS ON THE ROSTER", !!firstDay.row, firstDay);
+  check("and the row carries that stage", firstDay.row && firstDay.row.stage === "first_day_scheduled", firstDay.row);
+  check("waitlisting one still takes them off, so the flag beats the stage here too",
+    firstDay.waitlistedStillShown === false, firstDay);
+
+  // Take them off the waitlist and read the drawn page: the tag is what tells
+  // a BCBA this plan is for a child who has not started yet.
+  await page.evaluate(async (id) => {
+    await fetch(`/api/clients/${id}/waitlist`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ waitlisted: false }),
+    });
+  }, firstDay.id);
+  // The page is already on this hash, and setting the same hash fires no
+  // hashchange -- so the roster would not redraw and the new client would not
+  // be on it. Reload rather than navigate.
+  await page.goto(BASE + "/#/client-behavior");
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForFunction(
+    () => /Starting Soon Child/.test(document.body.innerText), null, { timeout: 15000 }
+  ).catch(() => {});
+  const rosterAgain = await page.locator("#app, body").first().innerText();
+  check("the page marks them as starting soon rather than mixing them in silently",
+    /Starting Soon Child[\s\S]{0,80}Starting soon/i.test(rosterAgain), rosterAgain.slice(0, 400));
 
   console.log("\n== One client ==");
   await page.goto(BASE + "/#/client-behavior/" + clientId);

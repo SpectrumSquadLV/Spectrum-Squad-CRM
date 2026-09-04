@@ -4574,6 +4574,11 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  if (pathname.startsWith("/api/bcba/")) {
+    const handled = await bcbaHub.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/grants/")) {
     const handled = await grants.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -7452,6 +7457,7 @@ const PUBLIC_FILES = new Set([
   "/financial-center.js",
   "/owner-financials.js",
   "/pipeline-v2.js",
+  "/bcba-hub-frontend.js",
   "/screener-admin.js",
   "/hr-recruiting.js",
   "/ot-frontend.js",
@@ -7721,6 +7727,14 @@ const bip = require("./bip")({
   sendEmail, APP_BASE_URL, getAppSetting, canAccessClients,
 });
 
+// ===== BCBA HUB: the clinical reference area. Owns /api/bcba/*. Payer
+// requirements come from bcba-cheatsheet-data.js (converted from the practice's
+// cheat sheet); the Form Library stores blank forms on the same data volume the
+// onboarding documents use. No client information passes through it. =====
+const bcbaHub = require("./bcba-hub")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json,
+});
+
 // ===== PEOPLE add-on: department management, emergency contacts on client and
 // staff cards, and staff certification expiry with staged notices. Owns
 // /api/people/*. Extends the existing departments table rather than replacing
@@ -7928,6 +7942,7 @@ async function start() {
   await financialAdvisor.initTables().catch((e) => console.error("Financial advisor initTables failed:", e));
   await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
   await bip.initTables().catch((e) => console.error("BIP initTables failed:", e));
+  await bcbaHub.initTables().catch((e) => console.error("BCBA Hub initTables failed:", e));
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
   await grants.initTables().catch((e) => console.error("Grants initTables failed:", e));
   await scheduling.initTables().catch((e) => console.error("Scheduling initTables failed:", e));

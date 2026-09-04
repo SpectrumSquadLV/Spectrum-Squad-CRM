@@ -58,7 +58,7 @@
   async function renderRoster(mount) {
     mount.innerHTML = `<div class="page-header">
       <div><h1>Client Behavior</h1>
-        <p>Behavior Intervention Plans and behavior modification notes. The plan shown here is the same plan on the client's card — editing either updates both.</p></div>
+        <p>Behavior Intervention Plans and behavior modification notes for clients in therapy and clients with a first day scheduled. The plan shown here is the same plan on the client's card — editing either updates both.</p></div>
       </div>
       <div id="cb-body"><div class="empty-state">Loading…</div></div>`;
 
@@ -67,9 +67,13 @@
     try { d = await api("/api/bip/roster"); }
     catch (e) { box.innerHTML = `<div class="empty-state">Couldn't load: ${esc(e.message)}</div>`; return; }
 
+    // A pre-start client is marked rather than silently mixed in: the plan a
+    // BCBA is drafting for a child who has not had a session yet is a different
+    // thing to read than one already being run, and the roster should say so.
+    const startingSoon = `<span class="tag" style="background:#fef3c7; color:#92400e;">Starting soon</span>`;
     const rows = (d.clients || []).map((c) => `<tr>
       <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">
-        <strong>${esc(c.child_name || "—")}</strong>
+        <strong>${esc(c.child_name || "—")}</strong>${c.stage === "first_day_scheduled" ? " " + startingSoon : ""}
         ${c.behavior_note_count ? `<div style="font-size:11px; color:var(--text-muted);">${c.behavior_note_count} behavior note${c.behavior_note_count === 1 ? "" : "s"}</div>` : ""}
       </td>
       <td style="padding:9px 10px; border-top:1px solid var(--border,#eee); font-size:13px;">
