@@ -904,6 +904,32 @@ module.exports = function initRethink(ctx) {
     return { created, refused };
   }
 
+  // Two spellings of one payer are not a billing conflict. Production showed
+  // "Molina" and "Molina MCO" on the same child, and refusing to fill on that
+  // is over-cautious in the most ordinary case there is.
+  //
+  // Containment is compared on WHOLE TOKENS, never raw substrings: "VA" is a
+  // substring of "Nevada Medicaid" and merging those two would put the wrong
+  // payer on a claim. ["molina"] inside ["molina","mco"] is a real match;
+  // ["va"] inside ["nevada","medicaid"] is not.
+  const tokens = (v) => norm(v).split(/[^a-z0-9]+/).filter(Boolean);
+  const containsTokens = (haystack, needle) => {
+    if (!needle.length || needle.length > haystack.length) return false;
+    for (let i = 0; i + needle.length <= haystack.length; i++) {
+      if (needle.every((t, j) => haystack[i + j] === t)) return true;
+    }
+    return false;
+  };
+  // One payer, or a genuine disagreement? They are one payer when the shortest
+  // name appears whole inside every other -- which makes "Medicaid" vs "Anthem"
+  // a conflict still, and a three-way with one odd name out a conflict too.
+  const oneFunder = (raws) => {
+    if (raws.length <= 1) return raws.length === 1;
+    const toks = raws.map(tokens);
+    const shortest = toks.reduce((a, b) => (b.length < a.length ? b : a));
+    return toks.every((t) => containsTokens(t, shortest));
+  };
+
   // ---- appointment activity fallback ------------------------------------
   // Rethink's /api/Clients returns HTTP 200 with an empty result on this
   // account, and so does /api/ClientAuthorization, while /api/Appointments
@@ -922,7 +948,7 @@ module.exports = function initRethink(ctx) {
 
     const days = Math.max(1, Number(opts.days) || ACTIVITY_DAYS);
     const to = today();
-    const from = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+    const from = new Date(nowMs() - days * 86400000).toISOString().slice(0, 10);
 
     client.log("activity_scan_start", { endpoint: DWH_APPOINTMENTS, from, to, days });
 
@@ -975,11 +1001,19 @@ module.exports = function initRethink(ctx) {
         // bound should already exclude these, and when it does not, a session
         // that has not happened yet must not be reported as the last one.
         if (date && date > to) { upcoming++; continue; }
-        const cur = byClient.get(rid) || { count: 0, last: null, funders: new Map() };
+        const cur = byClient.get(rid) || { count: 0, last: null, funders: new Map(), latestFunder: null, latestFunderDate: null };
         cur.count += 1;
         if (date && (!cur.last || date > cur.last)) cur.last = date;
         const funder = String(row.funder == null ? "" : row.funder).trim();
-        if (funder) cur.funders.set(norm(funder), funder);
+        if (funder) {
+          cur.funders.set(norm(funder), funder);
+          // Which payer is on the most recent session, so a client whose
+          // funder changed mid-window resolves to the current one rather
+          // than to whichever row happened to be read last.
+          if (!cur.latestFunderDate || (date && date >= cur.latestFunderDate)) {
+            cur.latestFunder = funder; cur.latestFunderDate = date || cur.latestFunderDate;
+          }
+        }
         byClient.set(rid, cur);
       } catch (e) {
         warnings.push(`An appointment row could not be read: ${client.redact(e.message)}`);
@@ -1041,14 +1075,17 @@ module.exports = function initRethink(ctx) {
       // endpoint are appointment and EVV locations rather than a family's home
       // address, so they are deliberately not written anywhere.
       const funders = [...agg.funders.values()];
-      if (funders.length > 1) {
+      if (funders.length && !oneFunder(funders)) {
         conflicts.push({ crm_client_id: c.id, name: c.child_name, funders });
-      } else if (funders.length === 1) {
+      } else if (funders.length) {
+        // Spellings of one payer collapse to whichever is on the most recent
+        // session -- the one billing is currently using.
+        const chosen = agg.latestFunder || funders[0];
         const blank = c.insurance_provider == null || String(c.insurance_provider).trim() === "";
         if (blank) {
           if (!opts.dryRun) {
             await dbRun("UPDATE clients SET insurance_provider = ?, updated_at = ? WHERE id = ?",
-              [funders[0], nowISO(), c.id]).catch(() => {});
+              [chosen, nowISO(), c.id]).catch(() => {});
           }
           insuranceFilled++;
         }
