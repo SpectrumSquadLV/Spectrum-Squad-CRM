@@ -143,7 +143,7 @@
   }
   function uploader(kind, title, sub){
     var done = uploaded[kind];
-    return '<div class="up'+(done?" done":"")+'" data-up="'+kind+'"><div class="em">'+(done?"✅":"📎")+'</div>'+
+    return '<div class="up'+(done?" done":"")+'" data-up="'+kind+'"><div class="em">'+(done?"":"")+'</div>'+
       '<div class="t" data-uptitle>'+(done?"Uploaded ✓":esc(title))+'</div><div class="s">'+esc(sub||"Take a photo or choose a file")+'</div>'+
       '<input type="file" accept="image/*,application/pdf" style="display:none" /></div>';
   }
@@ -157,7 +157,7 @@
         var reader=new FileReader();
         reader.onload=function(){
           apiReq(API+"/"+token+"/upload",{method:"POST",body:{kind:kind,filename:f.name,mime_type:f.type,content_base64:String(reader.result).split(",")[1]}})
-          .then(function(){uploaded[kind]=true;box.classList.add("done");box.querySelector("[data-uptitle]").textContent="Uploaded ✓";box.querySelector(".em").textContent="✅";})
+          .then(function(){uploaded[kind]=true;box.classList.add("done");box.querySelector("[data-uptitle]").textContent="Uploaded ✓";box.querySelector(".em").textContent="";})
           .catch(function(e){box.querySelector("[data-uptitle]").textContent="Upload failed — tap to retry";});
         };
         reader.readAsDataURL(f);
@@ -168,13 +168,13 @@
   // ---------- steps ----------
   var STEPS = [
     { name:"Welcome", render:function(){ return {
-      html:'<div class="card"><div style="font-size:40px">💛</div>'+
+      html:'<div class="card"><div style="font-size:40px"></div>'+
         '<h1>Welcome to Spectrum Squad Occupational Therapy</h1>'+
         '<p class="sub">A few gentle questions help our OT team understand your child — their strengths, what support would help, and your family\'s goals. It takes about 5–7 minutes, and your progress saves as you go.</p>'+
         '<div><span class="pill">Warm & simple</span><span class="pill">Save & resume</span><span class="pill">Private & secure</span></div>'+
         '<div class="btns"><button class="btn primary" data-next>Let\'s Get Started</button></div></div>' }; } },
 
-    { name:"Your child", render:function(){ return { title:"Tell us about your child 💛", sub:"Let’s start with the basics.", html:
+    { name:"Your child", render:function(){ return { title:"Tell us about your child ", sub:"Let’s start with the basics.", html:
       textField("Child’s First Name","child_first")+
       textField("Middle Name (optional)","child_middle")+
       textField("Child’s Last Name","child_last")+
@@ -217,7 +217,7 @@
       multi("diagnoses",["Autistic","ADHD","Sensory Processing differences","Developmental variations","Genetic conditions","Neurological conditions","Something else"])+
       areaField("Anything else important about your child’s medical or developmental history?","history","Optional — anything you’d like our OT to know.") }; } },
 
-    { name:"What they love", render:function(){ return { title:"Let’s talk about what makes your child light up ✨", sub:"We use their passions and strengths to make therapy engaging and meaningful.", html:
+    { name:"What they love", render:function(){ return { title:"Let’s talk about what makes your child light up ", sub:"We use their passions and strengths to make therapy engaging and meaningful.", html:
       areaField("What brings your child the most joy?","strengths","Favorite activities, toys, characters, music, games, topics, sensory play, or anything they love.") }; } },
 
     { name:"Support needs", render:function(){ return { title:"Where could your child use the most support?", sub:"Choose any that fit — there are no wrong answers.", html:
@@ -253,10 +253,10 @@
       '<div class="hint">Date: '+new Date().toLocaleDateString()+'</div><div class="err" id="reviewErr"></div>' }; } },
 
     { name:"Done", render:function(){ return { html:
-      '<div class="card success"><div class="big">💛</div><h1>You’re all set!</h1>'+
+      '<div class="card success"><div class="big"></div><h1>You’re all set!</h1>'+
       '<p class="sub">Thank you for telling us about your child. Our Spectrum Squad Occupational Therapy team will review your information and begin the next steps.</p>'+
       '<div class="next"><b style="color:var(--navy)">What happens next</b><ol><li>We review your intake.</li><li>We verify your insurance benefits.</li><li>Our team reaches out about next steps.</li><li>We work toward scheduling your child’s OT evaluation.</li></ol></div>'+
-      '<p class="hint" style="margin-top:14px">You don’t need to call us to confirm — we’ve received your intake. 💛</p></div>' }; } },
+      '<p class="hint" style="margin-top:14px">You don’t need to call us to confirm — we’ve received your intake.</p></div>' }; } },
   ];
 
   function availabilityGrid(){
