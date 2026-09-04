@@ -106,7 +106,8 @@
         <h1 id="cb-name" style="margin-top:2px;">Client Behavior</h1>
       </div></div>
       <div id="cb-plan"><div class="empty-state">Loading the plan…</div></div>
-      <div id="cb-notes" style="margin-top:18px;"><div class="empty-state">Loading notes…</div></div>`;
+      <div id="cb-notes" style="margin-top:18px;"><div class="empty-state">Loading notes…</div></div>
+      <div id="cb-drive" style="margin-top:18px;"></div>`;
 
     // The plan half. Same function the client card calls, so this is the same
     // plan and the same editor -- not a copy of either.
@@ -119,6 +120,93 @@
     }
 
     await fillNotes(mount, clientId);
+    await fillDriveNotes(mount, clientId);
+  }
+
+  // ================= notes imported from Google Drive =======================
+  //
+  // A SNAPSHOT, and the panel says so in the heading rather than in a tooltip.
+  // The practice keeps working in Drive; this copy was taken on a particular
+  // day and does not update itself. Reading a superseded protocol and running
+  // it is the failure that matters here, so the date is not decoration.
+  //
+  // There is no link straight to the document: a Drive folder download carries
+  // filenames, not file ids, so a deep link would have to be invented. Each row
+  // opens a Drive SEARCH for its filename instead -- which is true, and lands
+  // in the right place.
+  const DRIVE_KINDS = {
+    note:           { label: "Note",           bg: "#eef2ff", fg: "#3730a3" },
+    supervision:    { label: "Supervision",    bg: "#ecfdf5", fg: "#065f46" },
+    programming:    { label: "Program training", bg: "#fff7ed", fg: "#9a3412" },
+    bip:            { label: "BIP",            bg: "#f1f5f9", fg: "#334155" },
+    treatment_plan: { label: "Treatment plan", bg: "#fdf2f8", fg: "#9d174d" },
+    other:          { label: "File",           bg: "#f1f5f9", fg: "#475569" },
+  };
+
+  async function fillDriveNotes(mount, clientId) {
+    const box = mount.querySelector("#cb-drive");
+    if (!box) return;
+    let d;
+    try { d = await api(`/api/drive-notes/client/${clientId}`); }
+    catch (e) {
+      // Not fatal to the page: the plan and the behavior notes above are the
+      // clinical record, and this panel is an import of copies.
+      box.innerHTML = `<div class="empty-state">Couldn't load the imported Drive notes: ${esc(e.message)}</div>`;
+      return;
+    }
+    const rows = d.rows || [];
+    if (!rows.length) {
+      box.innerHTML = `
+        <h2 style="margin:0 0 8px; font-size:17px;">Notes from Google Drive</h2>
+        <div class="empty-state">Nothing has been imported for this client. An owner or admin can import the practice's Drive folder from Admin Settings.</div>`;
+      return;
+    }
+
+    const searchUrl = (name) =>
+      "https://drive.google.com/drive/search?q=" + encodeURIComponent(String(name).replace(/\.[a-z0-9]+$/i, ""));
+
+    const card = (r, i) => {
+      const k = DRIVE_KINDS[r.kind] || DRIVE_KINDS.other;
+      const hasText = !!String(r.body || "").trim();
+      return `<div class="card" style="margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+          <div style="min-width:0;">
+            <span class="tag" style="background:${k.bg}; color:${k.fg};">${esc(k.label)}</span>
+            <strong style="font-size:14.5px; margin-left:6px; word-break:break-word;">${esc(r.filename)}</strong>
+            <div style="font-size:11.5px; color:var(--text-muted); margin-top:3px;">
+              From the ${esc(r.source_folder)} folder${r.file_ext ? " · ." + esc(r.file_ext) : ""}${r.bytes ? " · " + Math.max(1, Math.round(r.bytes / 1024)) + " KB" : ""}
+            </div>
+          </div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            ${hasText ? `<button class="btn small secondary" data-drive-toggle="${i}">Show</button>` : ""}
+            <a class="btn small secondary" href="${searchUrl(r.filename)}" target="_blank" rel="noopener">Find in Drive</a>
+          </div>
+        </div>
+        ${r.note ? `<div style="margin-top:8px; font-size:12.5px; color:var(--text-muted);">${esc(r.note)}</div>` : ""}
+        ${hasText ? `<pre id="drive-body-${i}" hidden style="margin-top:10px; white-space:pre-wrap; word-break:break-word; font-family:inherit; font-size:13px; background:var(--brand-light,#f7f7fb); padding:12px; border-radius:8px; max-height:420px; overflow:auto;">${esc(r.body)}</pre>` : ""}
+        ${r.truncated ? `<div style="margin-top:6px; font-size:11.5px; color:var(--text-muted);">Only the first part of this document was imported. Open it in Drive for the rest.</div>` : ""}
+      </div>`;
+    };
+
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:4px;">
+        <h2 style="margin:0; font-size:17px;">Notes from Google Drive</h2>
+        <span class="tag" style="background:#fff7ed; color:#9a3412;">Snapshot</span>
+      </div>
+      <p style="margin:0 0 10px; font-size:12.5px; color:var(--text-muted);">
+        ${rows.length} file${rows.length === 1 ? "" : "s"} copied from this client's Drive folder on ${esc(dayLabel(d.imported_at))}.
+        Drive is still where these are edited &mdash; anything changed there since is not shown here.
+      </p>
+      <div>${rows.map(card).join("")}</div>`;
+
+    box.querySelectorAll("[data-drive-toggle]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const pre = box.querySelector("#drive-body-" + b.getAttribute("data-drive-toggle"));
+        if (!pre) return;
+        pre.hidden = !pre.hidden;
+        b.textContent = pre.hidden ? "Show" : "Hide";
+      });
+    });
   }
 
   async function fillNotes(mount, clientId) {

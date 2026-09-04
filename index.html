@@ -827,6 +827,19 @@ async function boot() {
 async function route() {
   const hash = location.hash || "#/dashboard";
 
+  // The two password screens are reachable WITHOUT a session, which is the
+  // whole point of them -- the person using them cannot sign in. They are
+  // checked before the signed-in test below, which otherwise sends every hash
+  // to the login card.
+  if (hash.startsWith("#/forgot-password")) {
+    renderForgotPassword();
+    return;
+  }
+  if (hash.startsWith("#/reset-password")) {
+    await renderResetPassword(hash);
+    return;
+  }
+
   if (!state.user) {
     renderLogin();
     return;
@@ -921,6 +934,10 @@ async function route() {
   else if (hash.startsWith("#/auth-alerts")) await renderAuthAlerts(mount, param);
   else if (hash.startsWith("#/bcba-migration")) {
     if (window.__renderBcbaMigration) await window.__renderBcbaMigration(mount);
+    else await renderAdmin(mount);
+  }
+  else if (hash.startsWith("#/drive-notes-import")) {
+    if (window.__renderDriveNotesImport) await window.__renderDriveNotesImport(mount);
     else await renderAdmin(mount);
   }
   else if (hash.startsWith("#/admin")) await renderAdmin(mount);
@@ -1278,6 +1295,9 @@ function renderLogin() {
           </div>
           <button class="btn" type="submit" style="width:100%; justify-content:center; margin-top:8px;">Log in</button>
         </form>
+        <p style="text-align:center; margin:16px 0 0; font-size:12.5px;">
+          <a href="#/forgot-password" id="forgot-password-link" style="color:var(--brand-navy); text-decoration:underline;">Forgot your password?</a>
+        </p>
       </div>
     </div>
   `;
@@ -1295,6 +1315,156 @@ function renderLogin() {
       route();
     } catch (err) {
       document.getElementById("login-error").textContent = err.message;
+    }
+  });
+}
+
+// ---------------- Forgotten password ----------------
+// Two screens, both reachable without a session.
+//
+// The confirmation is the SAME SENTENCE whether or not the address has an
+// account, because the server gives the same answer either way. Saying "no such
+// user" here would undo that in one line: this page is served to anybody, and
+// the addresses are staff addresses at a named practice.
+function passwordCardHtml(inner) {
+  return `
+    <div class="login-wrap">
+      <div class="login-card">
+        <img src="/logo.png" alt="Spectrum Squad" style="display:block; max-width:220px; width:70%; height:auto; margin:0 auto 10px;" />
+        ${inner}
+      </div>
+    </div>
+  `;
+}
+
+function renderForgotPassword() {
+  root.innerHTML = passwordCardHtml(`
+    <p class="sub" style="text-align:center;">Reset your password</p>
+    <p style="font-size:13px; color:var(--text-muted); margin:0 0 16px;">Enter the email address you sign in with and we will send you a link to choose a new password. The link works once and expires in an hour.</p>
+    <div id="forgot-error" class="login-error"></div>
+    <div id="forgot-done" style="display:none; font-size:13px; background:var(--brand-light); padding:12px 14px; border-radius:8px; margin-bottom:12px;"></div>
+    <form id="forgot-form">
+      <div class="field">
+        <label>Email</label>
+        <input type="email" name="email" required autocomplete="username" />
+      </div>
+      <button class="btn" type="submit" id="forgot-submit" style="width:100%; justify-content:center; margin-top:8px;">Send the link</button>
+    </form>
+    <p style="text-align:center; margin:16px 0 0; font-size:12.5px;">
+      <a href="#/login" style="color:var(--brand-navy); text-decoration:underline;">Back to sign in</a>
+    </p>
+  `);
+
+  document.getElementById("forgot-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById("forgot-submit");
+    const err = document.getElementById("forgot-error");
+    const done = document.getElementById("forgot-done");
+    err.textContent = "";
+    btn.disabled = true;
+    btn.textContent = "Sending...";
+    try {
+      const data = await api("/api/auth/forgot-password", {
+        method: "POST",
+        body: { email: new FormData(e.target).get("email") },
+      });
+      // Replace the form rather than leaving it usable: a second press sends a
+      // second link and invalidates the first, which is exactly the confusion
+      // somebody in this position does not need.
+      done.textContent = data.message || "If that address has an account, we have sent it a link to reset the password.";
+      done.style.display = "block";
+      e.target.style.display = "none";
+    } catch (ex) {
+      err.textContent = ex.message;
+      btn.disabled = false;
+      btn.textContent = "Send the link";
+    }
+  });
+}
+
+async function renderResetPassword(hash) {
+  const token = (hash.split("?")[1] || "")
+    .split("&")
+    .map((p) => p.split("="))
+    .filter((p) => p[0] === "token")
+    .map((p) => decodeURIComponent(p[1] || ""))[0] || "";
+
+  // THE TOKEN TRAVELS IN THE FRAGMENT, not the path or the query string. A
+  // fragment is never sent to the server, so the link cannot end up in an HTTP
+  // access log, a proxy log or a Referer header on the way in. It reaches the
+  // server only in the body of the POST below.
+  root.innerHTML = passwordCardHtml(`<p class="sub" style="text-align:center;">Checking your link...</p>`);
+
+  let state_ = { valid: false, reason: "invalid", email_hint: "" };
+  try {
+    state_ = await api("/api/auth/reset-password/check", { method: "POST", body: { token } });
+  } catch (e) { /* falls through to the invalid card below */ }
+
+  if (!state_.valid) {
+    const why = {
+      expired: "That link has expired. Reset links are good for one hour.",
+      used: "That link has already been used.",
+      superseded: "A newer reset link was sent to you. Please open the most recent email.",
+    };
+    root.innerHTML = passwordCardHtml(`
+      <p class="sub" style="text-align:center;">This link cannot be used</p>
+      <div class="login-error" style="margin-bottom:14px;">${why[state_.reason] || "That reset link is not valid."}</div>
+      <p style="font-size:13px; color:var(--text-muted);">You can ask for a new one, and your password has not been changed.</p>
+      <p style="text-align:center; margin:16px 0 0; font-size:12.5px;">
+        <a href="#/forgot-password" style="color:var(--brand-navy); text-decoration:underline;">Send a new link</a>
+      </p>
+    `);
+    return;
+  }
+
+  root.innerHTML = passwordCardHtml(`
+    <p class="sub" style="text-align:center;">Choose a new password</p>
+    <p style="font-size:13px; color:var(--text-muted); margin:0 0 16px;">For ${state_.email_hint || "your account"}. It needs to be at least 8 characters.</p>
+    <div id="reset-error" class="login-error"></div>
+    <form id="reset-form">
+      <div class="field">
+        <label>New password</label>
+        <input type="password" name="password" required minlength="8" autocomplete="new-password" />
+      </div>
+      <div class="field">
+        <label>Confirm new password</label>
+        <input type="password" name="confirm" required minlength="8" autocomplete="new-password" />
+      </div>
+      <button class="btn" type="submit" id="reset-submit" style="width:100%; justify-content:center; margin-top:8px;">Save the new password</button>
+    </form>
+  `);
+
+  document.getElementById("reset-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const err = document.getElementById("reset-error");
+    const btn = document.getElementById("reset-submit");
+    err.textContent = "";
+    if (fd.get("password") !== fd.get("confirm")) {
+      err.textContent = "Those two passwords do not match.";
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    try {
+      await api("/api/auth/reset-password", {
+        method: "POST",
+        body: { token, password: fd.get("password") },
+      });
+      // Every session for the account was just ended server-side, this browser's
+      // included, so there is nothing to do but sign in again.
+      state.user = null;
+      root.innerHTML = passwordCardHtml(`
+        <p class="sub" style="text-align:center;">Password updated</p>
+        <p style="font-size:13px; background:var(--brand-light); padding:12px 14px; border-radius:8px;">You can now sign in with your new password. Anyone who was signed in to this account has been signed out.</p>
+        <p style="text-align:center; margin:16px 0 0; font-size:12.5px;">
+          <a href="#/login" style="color:var(--brand-navy); text-decoration:underline;">Go to sign in</a>
+        </p>
+      `);
+    } catch (ex) {
+      err.textContent = ex.message;
+      btn.disabled = false;
+      btn.textContent = "Save the new password";
     }
   });
 }
@@ -5746,6 +5916,17 @@ async function renderAdmin(mount) {
       <a class="btn small secondary" href="#/bcba-migration">Open the assignment migration</a>
     </div>
     <div class="card" style="margin-bottom:20px;">
+      <div class="section-title" style="margin-top:0;">Client Notes from Google Drive</div>
+      <p style="font-size:13px; color:var(--text-muted); margin-top:0;">
+        Copy each client's Drive folder &mdash; supervision notes, program training, loose notes, plans &mdash; into
+        their Programming page. You download the <strong>Clients</strong> folder from Drive and upload the .zip here.
+        Every folder is matched to a child by their initials and shown to you before anything is written; a folder
+        matching two children, or none, is held for you to decide rather than guessed at. It is a snapshot, so Drive
+        stays the place these are edited.
+      </p>
+      <a class="btn small secondary" href="#/drive-notes-import">Open the notes import</a>
+    </div>
+    <div class="card" style="margin-bottom:20px;">
       <div class="section-title" style="margin-top:0;">Departments</div>
       <div id="departments-mount"></div>
     </div>
@@ -6208,6 +6389,7 @@ function openAccessModal(u, onDone) {
   <script src="geo-map-frontend.js"></script>
   <script src="bip-frontend.js"></script>
   <script src="client-behavior-frontend.js"></script>
+  <script src="drive-notes-frontend.js"></script>
   <script src="bcba-hub-frontend.js"></script>
   <script src="bcba-dashboard-frontend.js"></script>
   <script src="people-frontend.js"></script>
