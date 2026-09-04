@@ -187,6 +187,7 @@
           ${chip("60 days", tp.d60, "yellow")}
         </div>
         ${tp.attention ? "" : `<div class="bd-cl">Nothing inside 60 days.</div>`}
+        ${s.plans && s.plans.no_date ? `<div class="bd-cl">${s.plans.no_date} client${s.plans.no_date === 1 ? "" : "s"} with no plan deadline recorded.</div>` : ""}
       </button>
 
       <button class="bd-card" data-go="analysts">
@@ -327,7 +328,11 @@
             <td>${esc(stageLabel(c))}</td>
             <td>${esc(c.insurance_provider || "—")}</td>
             <td>${c.auth_expiration_date ? dayLabel(c.auth_expiration_date) + " " + pill(c.auth_urgency) : "—"}</td>
-            <td>${c.treatment_plan_due_date ? dayLabel(c.treatment_plan_due_date) + " " + pill(c.tp_urgency) : "—"}</td>
+            <td>${c.treatment_plan_due_date
+                  ? dayLabel(c.treatment_plan_due_date) + " " + pill(c.tp_urgency)
+                  : c.plan_due_source === "stale"
+                    ? `<span style="color:#767488;" title="The only plan date on record (${esc(c.plan_due_stale)}) is from before this authorization began, so it belongs to a finished cycle.">Not set</span>`
+                    : "—"}</td>
             <td>${c.student_analyst
                   ? `<button class="bd-link" data-analyst="${esc(c.student_analyst)}">${esc(c.student_analyst)}</button>`
                   : `<span class="bd-pill" style="background:${TONES.yellow.soft}; color:${TONES.yellow.softFg};">Unassigned</span>`}</td>

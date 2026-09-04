@@ -63,7 +63,7 @@ const { chromium } = require("playwright");
       method: "PATCH", credentials: "include",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
-    await auth(a.id, { auth_start_date: dates.start, auth_expiration_date: dates.soon, treatment_plan_due_date: dates.overdue });
+    await auth(a.id, { auth_start_date: dates.start, auth_expiration_date: dates.soon });
     await auth(b.id, { auth_expiration_date: dates.far });
     await auth(c.id, { auth_expiration_date: dates.mid });
     await set(a.id, { insurance_provider: "NV Medicaid" });
@@ -75,11 +75,15 @@ const { chromium } = require("playwright");
 
   // The Student Analyst is set through the migration's own path so the test
   // exercises what an admin will actually run, not a direct column write.
+  await page.evaluate((d) => { window.__overdueDate = d; }, (() => {
+    const p = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10).split("-");
+    return `${p[1]}/${p[2]}/${p[0]}`;   // the sheet's own mm/dd/yyyy
+  })());
   const mig = await page.evaluate(async () => {
     const text = [
       "| Client Name | BCBA | Insurance | Auth Start | Auth End | Treatment Plan Due | Tx Updates | Student Analyst | Schedule |",
       "| :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |",
-      "| Caseload Alpha | Clinical | | | | | | Intake |",
+      `| Caseload Alpha | Clinical | | | ${window.__overdueDate} | | Intake |`,
       "| Caseload Beta | Clinical | | | | | | Intake |",
       "| Nobody Real Here | Clinical | | | | | | Intake |",
     ].join("\n");
@@ -99,6 +103,27 @@ const { chromium } = require("playwright");
     (mig.prev.review || []).some((r) => r.issue === "Client not found" && r.sheet_client === "Nobody Real Here"),
     mig.prev.review);
   check("applying reports a summary", !!(mig.app && mig.app.summary), mig.app && mig.app.summary);
+
+  // Checked here, in the session that is already open. A browser suite that
+  // runs to the runner's limit starts failing for reasons that are not the
+  // code's, and each extra sign-in costs several seconds.
+  console.log("\n== An admin keeps their own dashboard ==");
+  await page.goto(BASE + "/#/dashboard");
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(1200);
+  check("AN ADMIN KEEPS THE ADMINISTRATIVE DASHBOARD",
+    await page.locator(".bd").count() === 0, await page.locator(".bd").count());
+  const adminPick = await page.evaluate(async () => {
+    const r = await fetch("/api/caseload/bcbas", { credentials: "include" });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  });
+  check("but can list BCBAs to look at one", adminPick.status === 200 && Array.isArray(adminPick.body.bcbas), adminPick);
+  check("and the migration screen is reachable from Admin Settings",
+    await page.evaluate(async () => {
+      location.hash = "#/admin";
+      await new Promise((r) => setTimeout(r, 1200));
+      return !!document.querySelector('a[href="#/bcba-migration"]');
+    }));
 
   // ---- the BCBA's own landing screen -------------------------------------
   console.log("\n== A BCBA lands on their caseload ==");
@@ -218,34 +243,18 @@ const { chromium } = require("playwright");
   });
   check("search narrows it to one client", searched === 1, searched);
 
-  console.log("\n== What other roles see ==");
-  await login("admin@spectrumsquadlv.com", "TestOwner123!");
-  await page.goto(BASE + "/#/dashboard");
-  await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(1200);
-  check("AN ADMIN KEEPS THE ADMINISTRATIVE DASHBOARD",
-    await page.locator(".bd").count() === 0, await page.locator(".bd").count());
-  const adminPick = await page.evaluate(async () => {
-    const r = await fetch("/api/caseload/bcbas", { credentials: "include" });
-    return { status: r.status, body: await r.json().catch(() => ({})) };
-  });
-  check("but can list BCBAs to look at one", adminPick.status === 200 && Array.isArray(adminPick.body.bcbas), adminPick);
-  check("and the migration screen is reachable from Admin Settings",
-    await page.evaluate(async () => {
-      location.hash = "#/admin";
-      await new Promise((r) => setTimeout(r, 1200));
-      return !!document.querySelector('a[href="#/bcba-migration"]');
-    }));
+  console.log("\n== Presentation ==");
+  const html = await page.innerHTML(".bd");
+  const emoji = html.match(/[\u{1F300}-\u{1FAFF}]/gu) || [];
+  check("no emoji on the dashboard", emoji.length === 0, emoji);
+  const wide = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, win: window.innerWidth }));
+  check("nothing overflows horizontally", wide.doc <= wide.win + 1, wide);
+  await page.setViewportSize({ width: 480, height: 900 });
+  await page.waitForTimeout(400);
+  const narrow = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, win: window.innerWidth }));
+  check("nor on a phone", narrow.doc <= narrow.win + 1, narrow);
 
-  const intakeBlocked = await page.evaluate(async () => {
-    const r = await fetch("/api/caseload/migration/preview", {
-      method: "POST", credentials: "include",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "x" }),
-    });
-    return r.status;
-  });
-  check("an admin may run the migration", intakeBlocked !== 403, intakeBlocked);
-
+  console.log("\n== A role with no business here ==");
   await login("intake@spectrumsquadlv.com", "TestStaff123!");
   await page.goto(BASE + "/#/dashboard");
   await page.reload({ waitUntil: "networkidle" });
@@ -256,21 +265,6 @@ const { chromium } = require("playwright");
     headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "x" }),
   })).status);
   check("AND CANNOT RUN THE MIGRATION", intakeMig === 403, intakeMig);
-
-  console.log("\n== Presentation ==");
-  await login("clinical@spectrumsquadlv.com", "TestStaff123!");
-  await page.goto(BASE + "/#/dashboard");
-  await page.reload({ waitUntil: "networkidle" });
-  await page.waitForSelector(".bd", { timeout: 15000 }).catch(() => {});
-  const html = await page.innerHTML(".bd");
-  const emoji = html.match(/[\u{1F300}-\u{1FAFF}]/gu) || [];
-  check("no emoji on the dashboard", emoji.length === 0, emoji);
-  const wide = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, win: window.innerWidth }));
-  check("nothing overflows horizontally", wide.doc <= wide.win + 1, wide);
-  await page.setViewportSize({ width: 480, height: 900 });
-  await page.waitForTimeout(400);
-  const narrow = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, win: window.innerWidth }));
-  check("nor on a phone", narrow.doc <= narrow.win + 1, narrow);
 
   check("no page errors", errors.length === 0, errors.join(" | "));
   console.log(`\n${pass} passed, ${fail} failed`);

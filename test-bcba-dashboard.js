@@ -151,6 +151,43 @@ section("Urgency bands");
   check("and null is not treated as due today", u(d("", "2026-09-04")).key === "unknown");
 }
 
+// ============================================== which plan deadline applies
+section("Treatment plan deadlines: two different things, kept apart");
+{
+  const { mod } = load();
+  const pd = mod._internal.planDue;
+  check("the reauthorization deadline wins when there is one",
+    pd({ reauth_plan_due_date: "2026-10-27", treatment_plan_due_date: "2024-01-15", auth_start_date: "2026-06-01" }).date === "2026-10-27");
+  check("and is named as its source",
+    pd({ reauth_plan_due_date: "2026-10-27" }).source === "reauthorization");
+  check("the derived assessment date is used when it falls inside the auth period",
+    pd({ treatment_plan_due_date: "2026-07-01", auth_start_date: "2026-06-01" }).date === "2026-07-01");
+  // The one that matters on day one: a year-old intake deadline must not make
+  // an entire caseload read as hundreds of days overdue.
+  check("A DEADLINE FROM BEFORE THIS AUTHORIZATION IS NOT AN OUTSTANDING TASK",
+    pd({ treatment_plan_due_date: "2024-01-15", auth_start_date: "2026-06-01" }).date === null,
+    pd({ treatment_plan_due_date: "2024-01-15", auth_start_date: "2026-06-01" }));
+  check("but the stale date is reported rather than hidden",
+    pd({ treatment_plan_due_date: "2024-01-15", auth_start_date: "2026-06-01" }).stale_date === "2024-01-15");
+  check("with no auth start to compare against, the derived date stands",
+    pd({ treatment_plan_due_date: "2024-01-15" }).date === "2024-01-15");
+  check("no date at all is simply none", pd({}).date === null && pd({}).source === null);
+}
+{
+  // The migration must not write into the field the CRM derives and recomputes.
+  check("THE MIGRATION WRITES THE REAUTH FIELD, NOT THE DERIVED ONE",
+    /\["reauth_plan_due_date", row\.treatment_plan_due/.test(SRC));
+  // Checked against the WRITE LIST specifically. The name still appears in the
+  // select and in planDue(), which is correct -- it is read, never written.
+  // Comments stripped first: the block explains WHY it avoids the derived field
+  // and naming it in prose must not read as writing to it.
+  const dateWrites = SRC
+    .slice(SRC.indexOf("const dateFields = ["), SRC.indexOf("];", SRC.indexOf("const dateFields = [")))
+    .split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+  check("and never writes the derived field",
+    !/treatment_plan_due_date/.test(dateWrites), dateWrites);
+}
+
 // ============================================================== matching rules
 section("Migration matching is conservative");
 {
@@ -235,7 +272,7 @@ const R = (n, b, ins, s, e, tp, tx, an) => `| ${n} | ${b || ""} | ${ins || ""} |
     check("the Student Analyst is written too",
       w.assigned_student_analyst_name === "Juniper Kade", w);
     check("and blank dates are filled",
-      w.auth_start_date === "2026-06-01" && w.auth_expiration_date === "2026-11-27" && w.treatment_plan_due_date === "2026-10-27", w);
+      w.auth_start_date === "2026-06-01" && w.auth_expiration_date === "2026-11-27" && w.reauth_plan_due_date === "2026-10-27", w);
     check("nothing needed review", p.review.length === 0, p.review);
   }
 
@@ -270,7 +307,7 @@ const R = (n, b, ins, s, e, tp, tx, an) => `| ${n} | ${b || ""} | ${ins || ""} |
     check("the differing date is flagged with both values",
       p.review.some((r) => r.issue === "Existing date differs" && /2026-07-01/.test(r.detail) && /2026-12-25/.test(r.detail)), p.review);
     check("but a BLANK date on the same client is still filled",
-      p.plan.length === 1 && p.plan[0].writes.treatment_plan_due_date === "2026-11-25", p.plan);
+      p.plan.length === 1 && p.plan[0].writes.reauth_plan_due_date === "2026-11-25", p.plan);
   }
 
   {
@@ -502,6 +539,9 @@ const R = (n, b, ins, s, e, tp, tx, an) => `| ${n} | ${b || ""} | ${ins || ""} |
           { id: 3, child_name: "Marlow Quill", stage: "assessment_scheduling", waitlisted: false, auth_expiration_date: iso(45) },
           { id: 4, child_name: "Indigo Vale", stage: "discharged", waitlisted: false, auth_expiration_date: iso(1) },
           { id: 5, child_name: "Wren Ash", stage: "active", waitlisted: false, auth_expiration_date: iso(200) },
+          // In therapy a year: the only plan date on record is from intake,
+          // long before the current authorization began.
+          { id: 6, child_name: "Fern Ash", stage: "active", waitlisted: false, auth_start_date: iso(-30), auth_expiration_date: iso(90), treatment_plan_due_date: iso(-300) },
         ]],
         [/FROM hr_employees/, null],
       ],
@@ -510,8 +550,8 @@ const R = (n, b, ins, s, e, tp, tx, an) => `| ${n} | ${b || ""} | ${ins || ""} |
     await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
     const p = res.payload;
     check("A DISCHARGED CLIENT IS NOT ON THE CASELOAD", !p.clients.some((c) => c.id === 4), p.clients.map((c) => c.child_name));
-    check("but their record still exists", p.all_client_count === 5, p.all_client_count);
-    check("in-therapy excludes the waitlisted one", p.summary.clients.in_therapy === 2, p.summary.clients);
+    check("but their record still exists", p.all_client_count === 6, p.all_client_count);
+    check("in-therapy excludes the waitlisted one", p.summary.clients.in_therapy === 3, p.summary.clients);
     check("on hold counts the waitlisted one", p.summary.clients.on_hold === 1, p.summary.clients);
     check("assessment is counted separately", p.summary.clients.assessment === 1, p.summary.clients);
     check("an authorization inside 7 days lands in that band", p.summary.authorizations.d7 === 1, p.summary.authorizations);
@@ -520,10 +560,16 @@ const R = (n, b, ins, s, e, tp, tx, an) => `| ${n} | ${b || ""} | ${ins || ""} |
     check("AND ONE BEYOND 60 DAYS RAISES NOTHING",
       p.summary.authorizations.attention === 3, p.summary.authorizations);
     check("an overdue treatment plan is counted as overdue", p.summary.treatment_plans.expired === 1, p.summary.treatment_plans);
+    check("A YEAR-OLD INTAKE DEADLINE IS NOT COUNTED AS OVERDUE",
+      p.clients.find((c) => c.id === 6).treatment_plan_due_date === null, p.clients.find((c) => c.id === 6));
+    check("and the row says why rather than showing an unexplained blank",
+      p.clients.find((c) => c.id === 6).plan_due_source === "stale", p.clients.find((c) => c.id === 6));
+    check("clients with no plan deadline are counted, so an empty card is not mistaken for a clear one",
+      p.summary.plans.no_date >= 1, p.summary.plans);
     check("student analysts are counted from the client records",
       p.summary.analysts.count === 1 && p.summary.analysts.clients_with === 2, p.summary.analysts);
     check("and clients without one are counted too",
-      p.summary.analysts.clients_without === 2, p.summary.analysts);
+      p.summary.analysts.clients_without === 3, p.summary.analysts);
     check("THE ANALYST IS ON EVERY CLIENT ROW, not only in the summary",
       p.clients.find((c) => c.id === 1).student_analyst === "Juniper Kade");
     check("the analyst panel lists that analyst's clients",

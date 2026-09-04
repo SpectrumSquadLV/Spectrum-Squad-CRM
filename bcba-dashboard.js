@@ -97,6 +97,21 @@ module.exports = function initBcbaDashboard(ctx) {
       "assigned_student_analyst_email TEXT",
       "squad_leader_name TEXT",
       "squad_leader_email TEXT",
+      // The REAUTHORIZATION plan deadline, which is a different thing from
+      // clients.treatment_plan_due_date and has to be stored separately.
+      //
+      // treatment_plan_due_date is DERIVED: the CRM computes it as the
+      // in-clinic assessment date + 14 days, recomputes it whenever that
+      // assessment date is edited, and CLEARS IT if the assessment date is
+      // removed. It is the deadline for a new client's first plan.
+      //
+      // The practice's sheet tracks something else entirely -- the plan due
+      // before the current authorization expires, about a month ahead of it.
+      // For a child who has been in therapy a year those are years apart.
+      // Writing the sheet's date into the derived field would conflate two
+      // deadlines AND be silently overwritten the next time somebody edited an
+      // assessment date.
+      "reauth_plan_due_date TEXT",
     ]) {
       await dbRun(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS ${col}`)
         .catch((e) => console.error("[caseload] column:", col, e.message));
@@ -153,6 +168,7 @@ module.exports = function initBcbaDashboard(ctx) {
     return await dbAll(
       `SELECT id, child_name, stage, waitlisted, insurance_provider,
               auth_start_date, auth_expiration_date, treatment_plan_due_date,
+              reauth_plan_due_date,
               assigned_bcba_name, assigned_bcba_email,
               assigned_student_analyst_name, assigned_student_analyst_email,
               squad_leader_name, rethink_client_id
@@ -167,9 +183,31 @@ module.exports = function initBcbaDashboard(ctx) {
   const OPEN_STAGES = ["active", "first_day_scheduled", "assessment_scheduling", "authorization",
                        "insurance_verification", "clinical_screener", "new_submission"];
 
+  // Which plan deadline applies to this client, and where it came from.
+  //
+  // The reauthorization deadline wins when there is one. Otherwise the derived
+  // assessment+14 date is used -- but ONLY IF IT FALLS INSIDE THE CURRENT
+  // AUTHORIZATION PERIOD. For a client who has been in therapy a year, that
+  // field still holds a date from their intake, and reporting it would show an
+  // entire caseload as hundreds of days overdue on the first day this ships.
+  // A deadline that predates the authorization it belongs to is a finished
+  // cycle, not an outstanding task; it is reported as such rather than dropped.
+  function planDue(c) {
+    const reauth = String(c.reauth_plan_due_date || "").slice(0, 10);
+    if (reauth) return { date: reauth, source: "reauthorization" };
+    const derived = String(c.treatment_plan_due_date || "").slice(0, 10);
+    if (!derived) return { date: null, source: null };
+    const authStart = String(c.auth_start_date || "").slice(0, 10);
+    if (authStart && derived < authStart) {
+      return { date: null, source: "stale", stale_date: derived };
+    }
+    return { date: derived, source: "assessment" };
+  }
+
   function decorate(c) {
     const authDays = daysUntil(c.auth_expiration_date);
-    const tpDays = daysUntil(c.treatment_plan_due_date);
+    const plan = planDue(c);
+    const tpDays = daysUntil(plan.date);
     return {
       id: c.id,
       child_name: c.child_name,
@@ -178,7 +216,10 @@ module.exports = function initBcbaDashboard(ctx) {
       insurance_provider: c.insurance_provider || null,
       auth_start_date: c.auth_start_date || null,
       auth_expiration_date: c.auth_expiration_date || null,
-      treatment_plan_due_date: c.treatment_plan_due_date || null,
+      treatment_plan_due_date: plan.date,
+      // Said out loud so the page can explain a blank rather than just show one.
+      plan_due_source: plan.source,
+      plan_due_stale: plan.stale_date || null,
       auth_days: authDays,
       auth_urgency: urgency(authDays),
       tp_days: tpDays,
@@ -239,6 +280,10 @@ module.exports = function initBcbaDashboard(ctx) {
         clients: { total: openClients.length, in_therapy: inTherapy, assessment, on_hold: onHold },
         authorizations: { ...authBands, attention: authBands.expired + authBands.d7 + authBands.d30 + authBands.d60 },
         treatment_plans: { ...tpBands, attention: tpBands.expired + tpBands.d7 + tpBands.d30 + tpBands.d60 },
+        // Made visible rather than left as a silent zero: a caseload with no
+        // plan deadlines recorded and one that is completely up to date look
+        // identical on a card that only counts what is due.
+        plans: { no_date: openClients.filter((c) => c.tp_days === null).length },
         analysts: {
           count: analysts.length,
           clients_with: withAnalyst,
@@ -516,7 +561,8 @@ module.exports = function initBcbaDashboard(ctx) {
     const clients = await dbAll(
       `SELECT id, child_name, stage, assigned_bcba_name, assigned_bcba_email,
               assigned_student_analyst_name, squad_leader_name,
-              auth_start_date, auth_expiration_date, treatment_plan_due_date
+              auth_start_date, auth_expiration_date, treatment_plan_due_date,
+              reauth_plan_due_date
          FROM clients`).catch(() => []);
     // Staff are looked for in BOTH places a person can exist in this CRM. The
     // HR record is preferred because it is the fuller one and carries the
@@ -649,7 +695,11 @@ module.exports = function initBcbaDashboard(ctx) {
       const dateFields = [
         ["auth_start_date", row.auth_start, "Auth Start"],
         ["auth_expiration_date", row.auth_end, "Auth End"],
-        ["treatment_plan_due_date", row.treatment_plan_due, "Treatment Plan Due"],
+        // The sheet's plan date is the REAUTHORIZATION deadline, so it goes in
+        // its own column. Writing it to treatment_plan_due_date would put a
+        // reauth deadline in a field the CRM derives from the assessment date
+        // and recomputes behind you.
+        ["reauth_plan_due_date", row.treatment_plan_due, "Treatment Plan Due"],
       ];
       for (const [col, val, label] of dateFields) {
         if (!val) continue;
@@ -812,6 +862,6 @@ module.exports = function initBcbaDashboard(ctx) {
 
   return {
     initTables, handleApi,
-    _internal: { urgency, tpUrgency, daysUntil, matchClients, matchStaff, buildMigrationPlan, isBcbaRole, canPick },
+    _internal: { urgency, tpUrgency, daysUntil, planDue, matchClients, matchStaff, buildMigrationPlan, isBcbaRole, canPick },
   };
 };
