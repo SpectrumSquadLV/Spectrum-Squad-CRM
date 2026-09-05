@@ -64,6 +64,15 @@ const { chromium } = require("playwright");
     return rows;
   });
 
+  // "Reorder menu" is started from Admin Settings now, not from a button under
+  // the navigation. The drag bar still appears in the sidebar once it is on,
+  // because the sidebar is the thing being dragged.
+  const startReorder = async () => {
+    await page.goto(BASE + "/#/admin", { waitUntil: "networkidle" });
+    await page.waitForSelector("#admin-nav-reorder", { timeout: 15000 });
+    await page.click("#admin-nav-reorder");
+    await page.waitForTimeout(800);
+  };
   await login("admin@spectrumsquadlv.com", "TestOwner123!");
 
   console.log("\n== The sidebar is grouped ==");
@@ -173,8 +182,7 @@ const { chromium } = require("playwright");
 
   console.log("\n== Reordering with groups ==");
   await login("admin@spectrumsquadlv.com", "TestOwner123!");
-  await page.click("#nav-reorder-open");
-  await page.waitForTimeout(700);
+  await startReorder();
   const reorder = await page.evaluate(() => ({
     // Every group is expanded while reordering, or its members could not be
     // reached to drag.

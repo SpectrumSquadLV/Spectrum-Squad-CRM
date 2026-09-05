@@ -3514,6 +3514,12 @@ const DEFAULT_SETTINGS = {
   credentialing_link_bcba: "https://sparkz.clickup.com/forms/3501350/f/3av96-450954/AMW0KVAC3YL07DEEMM",
   credentialing_link_rbt: "https://sparkz.clickup.com/forms/3501350/f/3av96-450934/OFTQKDCKHXT758222Z",
   class_dojo_link: "https://teach.classdojo.com/#/singleLinkSignup/TT6SYWAH3",
+  // Where the sidebar's Rethink shortcut points. A SETTING, not a constant:
+  // this is the address the whole practice clicks, the CRM only ever talks to
+  // Rethink's id./dwh. API hosts (never the app itself), and a tenant can sit
+  // on a different host. Wrong here means everybody lands on a dead page, so
+  // it is correctable in Admin Settings without a deploy.
+  rethink_app_url: "https://app.rethinkbehavioralhealth.com",
   shirt_count_full_time: "4",
   shirt_count_part_time: "3",
   // A draft, not a policy. Shirts are issued on the first day, so a new hire
@@ -5398,7 +5404,14 @@ async function handle(req, res, pathname, method, query = {}) {
       const raw = await getAppSetting("nav_order", "");
       let order = [];
       try { order = raw ? JSON.parse(raw) : []; } catch (e) { order = []; }
-      return json(res, 200, { order: Array.isArray(order) ? order : [], can_edit: USER_ADMIN_ROLES.includes(user.role) });
+      // The Rethink shortcut's destination rides along here rather than on a
+      // route of its own: this call is already "what the sidebar needs to
+      // draw itself", and it is the one every signed-in user makes on boot.
+      return json(res, 200, {
+        order: Array.isArray(order) ? order : [],
+        can_edit: USER_ADMIN_ROLES.includes(user.role),
+        rethink_url: await getAppSetting("rethink_app_url", DEFAULT_SETTINGS.rethink_app_url),
+      });
     }
 
     if (pathname === "/api/nav-order" && method === "PUT") {
@@ -6588,10 +6601,31 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         );
       } catch (e) { /* HR add-on not present: fall back to logins only */ }
 
+      // SOMEBODY WHO HAS LEFT IS NOT ON THE ROSTER. The hr_employees half above
+      // already excludes them; the users half did not, so a leaver who still
+      // held a CRM login stayed in the "Assign to" picker and could be handed
+      // work indefinitely. Their staff record is what says they have gone, so
+      // that is what is asked -- matched on email, the only thing that reliably
+      // joins a login to a person.
+      //
+      // The RECORDS THEY LEFT BEHIND ARE UNTOUCHED. This filters one picker of
+      // people you can give work to now. Their past tasks, timecards,
+      // attendance and supervision history stay exactly where they are, and
+      // their name still renders on them.
+      let goneEmails = new Set();
+      try {
+        const gone = await dbAll(
+          `SELECT email FROM hr_employees
+            WHERE COALESCE(status, 'active') IN ('terminated', 'inactive')
+              AND email IS NOT NULL AND TRIM(email) <> ''`);
+        goneEmails = new Set(gone.map((g) => String(g.email).trim().toLowerCase()));
+      } catch (e) { /* HR add-on not present: nothing to exclude */ }
+
       const byEmail = new Map();
       const out = [];
       for (const u of users) {
         const key = (u.email || "").trim().toLowerCase();
+        if (key && goneEmails.has(key)) continue;
         const entry = {
           id: u.id, user_id: u.id, employee_id: null,
           name: u.name, email: u.email || null,
@@ -6658,7 +6692,21 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     const visibleClause =
       "(" + mineClause +
       " OR (st.created_by IS NOT NULL AND lower(st.created_by) = lower(?))" +
-      " OR (st.client_id IS NOT NULL AND EXISTS (" +
+      // A TASK WITH AN ASSIGNEE IS THAT PERSON'S, and the caseload rule below
+      // does not reach it. Reported as "Marissa can see my task": the owner's
+      // own to-do sat on a client whose BCBA is Marissa, so the caseload branch
+      // handed it to her -- she was not assigned it, had not created it, and
+      // could do nothing about it. A personal task list is personal.
+      //
+      // The caseload branch still exists, and still matters, for the tasks it
+      // was written for: an UNASSIGNED task on a client is work nobody has
+      // picked up, and the clinician on that client is exactly who should see
+      // it. Supervisors keep seeing everything, through canSeeAllTasks.
+      " OR (st.client_id IS NOT NULL" +
+      "     AND st.assigned_user_id IS NULL" +
+      "     AND COALESCE(TRIM(st.assigned_email), '') = ''" +
+      "     AND COALESCE(TRIM(st.assigned_name), '') = ''" +
+      "     AND EXISTS (" +
       "      SELECT 1 FROM clients vc WHERE vc.id = st.client_id AND (" +
       "        (? <> '' AND lower(COALESCE(vc.assigned_bcba_email, '')) = lower(?))" +
       "     OR (? <> '' AND lower(COALESCE(vc.assigned_billing_email, '')) = lower(?))" +
@@ -7323,6 +7371,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         credentialing_link_bcba: await getAppSetting("credentialing_link_bcba", DEFAULT_SETTINGS.credentialing_link_bcba),
         credentialing_link_rbt: await getAppSetting("credentialing_link_rbt", DEFAULT_SETTINGS.credentialing_link_rbt),
         class_dojo_link: await getAppSetting("class_dojo_link", DEFAULT_SETTINGS.class_dojo_link),
+        rethink_app_url: await getAppSetting("rethink_app_url", DEFAULT_SETTINGS.rethink_app_url),
         first_day_dress_code: await getAppSetting("first_day_dress_code", ""),
         shirt_count_full_time: await getAppSetting("shirt_count_full_time", DEFAULT_SETTINGS.shirt_count_full_time),
         shirt_count_part_time: await getAppSetting("shirt_count_part_time", DEFAULT_SETTINGS.shirt_count_part_time),
@@ -7407,6 +7456,15 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         }
       }
       if ("first_day_dress_code" in body) await setAppSetting("first_day_dress_code", (body.first_day_dress_code || "").trim());
+      if ("rethink_app_url" in body) {
+        const url = (body.rethink_app_url || "").trim();
+        // https only, and no javascript: -- this lands in an href on every
+        // person's sidebar. Blank is allowed and simply removes the entry.
+        if (url && !/^https:\/\/[^\s]+$/.test(url)) {
+          return json(res, 400, { error: "The Rethink link needs to be a full https:// URL." });
+        }
+        await setAppSetting("rethink_app_url", url);
+      }
       if ("class_dojo_link" in body) {
         const url = (body.class_dojo_link || "").trim();
         if (url && !/^https:\/\/[^\s]+$/.test(url)) return json(res, 400, { error: "The Class Dojo link needs to be a full https:// URL." });

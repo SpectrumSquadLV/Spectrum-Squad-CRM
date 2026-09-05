@@ -77,7 +77,7 @@ const PNG_1PX =
   let text = await card.innerText();
   check("the card explains why it can't be sent", /No insurance card on file/i.test(text), text.slice(0, 200));
   // The longer explanation moved onto the hover icon rather than being deleted.
-  const eligHints = await card.locator(".hint").evaluateAll((hs) => hs.map((h) => h.getAttribute("title")));
+  const eligHints = await card.locator(".hint-badge").evaluateAll((hs) => hs.map((h) => h.getAttribute("title")));
   check("and still points at the document request",
     eligHints.some((h) => /Documents Requested from Parent/i.test(h || "")), eligHints);
 
