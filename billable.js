@@ -79,23 +79,10 @@ module.exports = function initBillable(ctx) {
   async function monthlySummary(month) {
     const period = /^\d{4}-\d{2}$/.test(month || "") ? month : previousMonth();
 
-    // ONLY THE PEOPLE WHO HAVE A REQUIREMENT, which is what the line above has
-    // always claimed and the query did not do: it took every employee on the
-    // roster, so RBTs, schedulers and office staff appeared on a billable
-    // report with nothing to be measured against. Reported as "the billable
-    // requirement is only for BCBAs, everyone else doesn't have one".
-    //
-    // THE TEST IS THE TARGET ITSELF, not the job title. A person with a monthly
-    // billable target has a requirement; a person without one does not, whatever
-    // their title says. Reading it off role_title would be guessing at free text
-    // -- and would put a "BCaBA" or a "Clinical Supervisor" on or off the report
-    // depending on how somebody typed their job.
     const emps = await dbAll(
       `SELECT id, name, email, role_title, monthly_billable_target
          FROM hr_employees
         WHERE COALESCE(status, 'active') <> 'terminated'
-          AND monthly_billable_target IS NOT NULL
-          AND monthly_billable_target > 0
         ORDER BY name`
     ).catch(() => []);
 

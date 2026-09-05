@@ -12,7 +12,7 @@
   "use strict";
 
   var MOUNT = null;
-  var STATE = { month: null, data: null };
+  var STATE = { month: null, data: null, showAll: false };
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
@@ -63,8 +63,19 @@
 
   function render(data) {
     STATE.data = data;
-    var rows = (data.staff || []);
-    var withReq = rows.filter(function (r) { return r.has_requirement; });
+    var all = (data.staff || []);
+    var withReq = all.filter(function (r) { return r.has_requirement; });
+    // ONLY THE PEOPLE WHO HAVE A REQUIREMENT, by default. Reported as "the
+    // billable requirement is only for BCBAs, everyone else doesn't have one":
+    // the report listed the whole roster, so RBTs, schedulers and office staff
+    // sat on a billable page with nothing to be measured against.
+    //
+    // FILTERED HERE AND NOT IN THE QUERY, which is where this was tried first
+    // and where it is wrong: THIS SCREEN IS ALSO WHERE A REQUIREMENT IS SET,
+    // in the box on each person's row. Dropping people without one from the
+    // API would have left no way to give anybody their first target.
+    var rows = STATE.showAll ? all : withReq;
+    var withoutReq = all.length - withReq.length;
     var sendable = withReq.filter(function (r) { return r.trustworthy && r.email; });
     var blocked = withReq.length - sendable.length;
 
@@ -86,6 +97,11 @@
         + '<button class="btn small" id="bill-send"' + (sendable.length ? "" : " disabled") + '>'
           + 'Send ' + sendable.length + ' summar' + (sendable.length === 1 ? "y" : "ies") + '</button>'
         + (blocked ? '<span style="font-size:12.5px;color:#92400e;">' + blocked + ' cannot be sent yet</span>' : "")
+        + (withoutReq
+          ? '<label style="font-size:12.5px;color:var(--text-muted);display:inline-flex;align-items:center;gap:6px;">'
+            + '<input type="checkbox" id="bill-show-all"' + (STATE.showAll ? " checked" : "") + ' /> '
+            + 'Show the ' + withoutReq + ' with no requirement, to set one</label>'
+          : "")
         + '<span id="bill-status" style="font-size:12.5px;color:var(--text-muted);"></span>'
       + '</div>'
 
@@ -97,13 +113,25 @@
         + '<th style="text-align:left;padding:9px 12px;">Delivered</th>'
         + '<th style="text-align:left;padding:9px 12px;">Result</th>'
       + '</tr></thead><tbody>'
-      + (rows.length ? rows.map(rowHtml).join("") : '<tr><td colspan="4" style="padding:16px;color:#6b7280;">Nobody has a monthly billable requirement on file. A requirement is set on the person\'s staff record, in HR &amp; Recruiting &mdash; only the people who have one appear here.</td></tr>')
+      + (rows.length
+          ? rows.map(rowHtml).join("")
+          : '<tr><td colspan="4" style="padding:16px;color:#6b7280;">'
+            + (all.length
+              ? 'Nobody has a monthly billable requirement yet. Tick &ldquo;Show the ' + withoutReq + ' with no requirement&rdquo; above and put the hours in the box on their row.'
+              : 'No staff on file.')
+            + '</td></tr>')
       + '</tbody></table></div>';
 
     wire();
   }
 
   function wire() {
+    var showAll = MOUNT.querySelector("#bill-show-all");
+    if (showAll) showAll.addEventListener("change", function () {
+      STATE.showAll = showAll.checked;
+      render(STATE.data);
+    });
+
     var monthEl = MOUNT.querySelector("#bill-month");
     if (monthEl) monthEl.addEventListener("change", function () { load(monthEl.value); });
 
