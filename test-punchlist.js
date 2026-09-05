@@ -186,7 +186,18 @@ async function login(email, password) {
   check("the client was assigned to a BCBA", r.status === 200 && r.data.assigned_bcba_email === "clinical@spectrumsquadlv.com", r.data && r.data.assigned_bcba_email);
   r = await clinical("/api/staff-tasks");
   titles = (r.data || []).map((t) => t.title);
-  check("clinical sees a client task once that client is on their caseload", titles.includes("Client-linked task " + stamp), titles.slice(0, 10));
+  // THE RULE CHANGED HERE, on purpose, and this is the assertion that used to
+  // encode the old one. Reported as "Marissa can see my task": a task that
+  // already belongs to somebody was being shown to whoever holds the client it
+  // is attached to. Intake raised the task above and -- because a blank
+  // assignee means "myself" -- intake owns it. The BCBA on that client is not
+  // its assignee, did not create it, and cannot act on it.
+  check("A CLIENT TASK THAT BELONGS TO SOMEBODY IS NOT HANDED TO THE CASELOAD",
+    !titles.includes("Client-linked task " + stamp), titles.slice(0, 10));
+  // The surviving half of the caseload rule -- that an UNASSIGNED task on a
+  // client still reaches the clinician on it -- is asserted in
+  // test-task-privacy.js, which can write such a row directly. There is no API
+  // that produces one: a blank assignee here means "myself".
 
   r = await billing("/api/staff-tasks");
   titles = (r.data || []).map((t) => t.title);
