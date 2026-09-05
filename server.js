@@ -6588,10 +6588,31 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         );
       } catch (e) { /* HR add-on not present: fall back to logins only */ }
 
+      // SOMEBODY WHO HAS LEFT IS NOT ON THE ROSTER. The hr_employees half above
+      // already excludes them; the users half did not, so a leaver who still
+      // held a CRM login stayed in the "Assign to" picker and could be handed
+      // work indefinitely. Their staff record is what says they have gone, so
+      // that is what is asked -- matched on email, the only thing that reliably
+      // joins a login to a person.
+      //
+      // The RECORDS THEY LEFT BEHIND ARE UNTOUCHED. This filters one picker of
+      // people you can give work to now. Their past tasks, timecards,
+      // attendance and supervision history stay exactly where they are, and
+      // their name still renders on them.
+      let goneEmails = new Set();
+      try {
+        const gone = await dbAll(
+          `SELECT email FROM hr_employees
+            WHERE COALESCE(status, 'active') IN ('terminated', 'inactive')
+              AND email IS NOT NULL AND TRIM(email) <> ''`);
+        goneEmails = new Set(gone.map((g) => String(g.email).trim().toLowerCase()));
+      } catch (e) { /* HR add-on not present: nothing to exclude */ }
+
       const byEmail = new Map();
       const out = [];
       for (const u of users) {
         const key = (u.email || "").trim().toLowerCase();
+        if (key && goneEmails.has(key)) continue;
         const entry = {
           id: u.id, user_id: u.id, employee_id: null,
           name: u.name, email: u.email || null,
@@ -6658,7 +6679,21 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     const visibleClause =
       "(" + mineClause +
       " OR (st.created_by IS NOT NULL AND lower(st.created_by) = lower(?))" +
-      " OR (st.client_id IS NOT NULL AND EXISTS (" +
+      // A TASK WITH AN ASSIGNEE IS THAT PERSON'S, and the caseload rule below
+      // does not reach it. Reported as "Marissa can see my task": the owner's
+      // own to-do sat on a client whose BCBA is Marissa, so the caseload branch
+      // handed it to her -- she was not assigned it, had not created it, and
+      // could do nothing about it. A personal task list is personal.
+      //
+      // The caseload branch still exists, and still matters, for the tasks it
+      // was written for: an UNASSIGNED task on a client is work nobody has
+      // picked up, and the clinician on that client is exactly who should see
+      // it. Supervisors keep seeing everything, through canSeeAllTasks.
+      " OR (st.client_id IS NOT NULL" +
+      "     AND st.assigned_user_id IS NULL" +
+      "     AND COALESCE(TRIM(st.assigned_email), '') = ''" +
+      "     AND COALESCE(TRIM(st.assigned_name), '') = ''" +
+      "     AND EXISTS (" +
       "      SELECT 1 FROM clients vc WHERE vc.id = st.client_id AND (" +
       "        (? <> '' AND lower(COALESCE(vc.assigned_bcba_email, '')) = lower(?))" +
       "     OR (? <> '' AND lower(COALESCE(vc.assigned_billing_email, '')) = lower(?))" +

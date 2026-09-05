@@ -97,7 +97,7 @@
         + '<th style="text-align:left;padding:9px 12px;">Delivered</th>'
         + '<th style="text-align:left;padding:9px 12px;">Result</th>'
       + '</tr></thead><tbody>'
-      + (rows.length ? rows.map(rowHtml).join("") : '<tr><td colspan="4" style="padding:16px;color:#6b7280;">No staff on file.</td></tr>')
+      + (rows.length ? rows.map(rowHtml).join("") : '<tr><td colspan="4" style="padding:16px;color:#6b7280;">Nobody has a monthly billable requirement on file. A requirement is set on the person\'s staff record, in HR &amp; Recruiting &mdash; only the people who have one appear here.</td></tr>')
       + '</tbody></table></div>';
 
     wire();

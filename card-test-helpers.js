@@ -34,7 +34,7 @@ async function openAllCardSections(page) {
 // The explanations that used to be paragraphs now live on hover icons, so a
 // suite checking "the card explains X" reads the titles, not the body text.
 async function cardHintText(page) {
-  return (await page.$$eval(".modal-backdrop .hint", (hs) => hs.map((h) => h.getAttribute("title") || "")))
+  return (await page.$$eval(".modal-backdrop .hint-badge", (hs) => hs.map((h) => h.getAttribute("title") || "")))
     .join("\n");
 }
 

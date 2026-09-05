@@ -158,7 +158,7 @@ const BASE = process.env.BASE || "http://localhost:3009";
     { chip: chipFor("tasks"), overdue, doneN, total: (truth.tasks || []).length });
 
   section("The explanations moved to hover, they were not deleted");
-  const hints = await page.$$eval(".hint", (hs) => hs.map((h) => h.getAttribute("title")));
+  const hints = await page.$$eval(".hint-badge", (hs) => hs.map((h) => h.getAttribute("title")));
   check("there are hover explanations on the card", hints.length >= 5, hints.length);
   const joined = hints.join(" || ");
   check("the stage-task rule is still explained", /moves the client on/i.test(joined), joined.slice(0, 200));

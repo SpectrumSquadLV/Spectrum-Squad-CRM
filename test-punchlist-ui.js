@@ -252,7 +252,11 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   const assigneeOpts = await staff.locator("#stask-assignee option").allTextContents();
   check("the assignee list defaults to themselves", /Myself/i.test(assigneeOpts[0] || ""), assigneeOpts.slice(0, 4));
   check("they can also pick a colleague", assigneeOpts.length > 1, assigneeOpts.length);
-  check("the page states the privacy rule", /task lists stay private/i.test(tasksText), tasksText.slice(0, 900));
+  // The rule tightened: a task with an assignee is that person's, and being on
+  // a shared client no longer opens it to the caseload. The page has to say the
+  // rule it now follows.
+  check("the page states the privacy rule",
+    /stays that person's/i.test(tasksText), tasksText.slice(0, 900));
 
   await staff.locator("#stask-title").fill("Staff-made task " + stamp);
   await staff.locator("#stask-add").click();
@@ -265,6 +269,19 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
 
   await staff.locator(`[data-stask-done]`).first().click();
   await staff.waitForTimeout(2200);
+  // A TICKED TASK LEAVES THE LIST -- asked for as "task disappear once they
+  // have been completed". Hidden, never deleted: the reopen path below is the
+  // only way back for somebody who ticked the wrong one, so the list has to be
+  // able to show them again.
+  check("THE TICKED TASK LEAVES THE OPEN LIST",
+    !new RegExp("Staff-made task " + stamp).test(await staff.locator("#view-mount").innerText()));
+  check("and the page says how many are hidden rather than just losing them",
+    /Show completed \(\d+\)/.test(await staff.locator("#view-mount").innerText()),
+    (await staff.locator("#view-mount").innerText()).slice(0, 600));
+  await staff.locator("#stask-show-done").check();
+  await staff.waitForTimeout(1800);
+  check("it comes back when completed ones are shown",
+    new RegExp("Staff-made task " + stamp).test(await staff.locator("#view-mount").innerText()));
   check("a reopen button appears once a task is done",
     (await staff.locator("[data-stask-reopen]").count()) >= 1);
   await staff.locator("[data-stask-reopen]").first().click();

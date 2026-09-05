@@ -50,17 +50,33 @@ const { chromium } = require("playwright");
       .filter((el) => el.hasAttribute("data-nav") || el.hasAttribute("data-nav-group"))
       .map((el) => el.dataset.nav || el.dataset.navGroup));
 
+  // "Reorder menu" is started from Admin Settings now, not from a button under
+  // the navigation. The drag bar still appears in the sidebar once it is on,
+  // because the sidebar is the thing being dragged.
+  const startReorder = async () => {
+    await page.goto(BASE + "/#/admin", { waitUntil: "networkidle" });
+    await page.waitForSelector("#admin-nav-reorder", { timeout: 15000 });
+    await page.click("#admin-nav-reorder");
+    await page.waitForTimeout(800);
+  };
   await login("admin@spectrumsquadlv.com", "TestOwner123!");
 
   console.log("\n== An admin is offered the control ==");
-  check("the Reorder menu button is shown to an owner",
-    await page.locator("#nav-reorder-open").count() === 1);
+  // IT IS NO LONGER UNDER THE NAVIGATION. It sat there on every admin's screen,
+  // every day, for something used about twice a year.
+  check("THE SIDEBAR DOES NOT CARRY A REORDER BUTTON",
+    await page.locator("#nav-reorder-open").count() === 0);
+  await page.goto(BASE + "/#/admin", { waitUntil: "networkidle" });
+  await page.waitForTimeout(1200);
+  check("but an owner can still start it, from Admin Settings",
+    await page.locator("#admin-nav-reorder").count() === 1);
+  await page.goto(BASE + "/#/dashboard", { waitUntil: "networkidle" });
+  await page.waitForTimeout(900);
   const natural = await navKeys();
   check("the sidebar renders entries", natural.length > 3, natural.join(","));
 
   console.log("\n== Reorder mode ==");
-  await page.click("#nav-reorder-open");
-  await page.waitForTimeout(600);
+  await startReorder();
   check("a save control appears", await page.locator("#nav-reorder-save").count() === 1);
   check("it says the change applies to everyone",
     /menu for everyone/i.test(await page.locator(".nav-reorder-hint").innerText()));
@@ -145,7 +161,7 @@ const { chromium } = require("playwright");
   check("and no OT button was drawn by any other route",
     await page.locator("#ot-nav-btn").count() === 0);
   check("intake is not offered the reorder control",
-    await page.locator("#nav-reorder-open").count() === 0);
+    await page.locator("#nav-reorder-open, #admin-nav-reorder").count() === 0);
 
   const forbidden = await page.evaluate(async () => {
     const r = await fetch("/api/nav-order", {
@@ -198,8 +214,7 @@ const { chromium } = require("playwright");
     addonPresent.supply.group === "grp-practice" && addonPresent.ot.group === "grp-practice",
     addonPresent);
 
-  await page.click("#nav-reorder-open");
-  await page.waitForTimeout(800);
+  await startReorder();
   const addonDraggable = await page.evaluate(() => ({
     supply: document.getElementById("supply-nav-btn").getAttribute("draggable") === "true",
     ot: document.getElementById("ot-nav-btn").getAttribute("draggable") === "true",
