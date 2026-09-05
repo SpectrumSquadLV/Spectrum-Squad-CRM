@@ -908,11 +908,25 @@ async function route() {
     return;
   }
 
+  // CLIENT DATA IS ONLY FETCHED BY SOMEBODY WHO MAY SEE IT. This block used to
+  // load it for every role, so an HR-side or OT-only account was refused by
+  // the server on every single sign-in, the rejection was never caught, and
+  // Promise.all threw -- taking the rest of this function with it. It surfaced
+  // as an uncaught "Not permitted to access client records" in the console and
+  // nowhere else, which is why it sat here unnoticed: nothing on their screen
+  // needs client data, so nothing looked broken.
+  //
+  // Found by the role matrix on its first run, which is the entire point of
+  // that suite: it opens the application as every role and watches.
+  const maBoot = getModuleAccess(state.user);
+  const mayLoadClients = canAccessClients() || !!(maBoot && maBoot.pipeline === true);
+  // loadStages() is in here too, and that is the one that was actually
+  // throwing: /api/stages sits behind the SAME client-record lock as
+  // /api/clients, because a pipeline stage is pipeline data. Departments are
+  // not, so they still load for everybody.
   await Promise.all([
-    loadStages(),
     loadDepartments(),
-    loadClients(),
-    loadTherapists(),
+    ...(mayLoadClients ? [loadStages(), loadClients(), loadTherapists()] : []),
   ]);
 
   const [, rawView, param] = hash.split("/");
