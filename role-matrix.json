@@ -1,0 +1,966 @@
+{
+  "owner": {
+    "nav": {
+      "top": [
+        "dashboard",
+        "group:grp-clients",
+        "bcba-hub",
+        "rethink",
+        "tasks",
+        "map",
+        "group:grp-staff",
+        "group:grp-practice",
+        "group:grp-admin"
+      ],
+      "grouped": {
+        "grp-clients": [
+          "pipeline",
+          "client-behavior",
+          "auth-alerts",
+          "outbox",
+          "leads"
+        ],
+        "grp-staff": [
+          "staff",
+          "attendance",
+          "supervision",
+          "billable",
+          "pto",
+          "hr"
+        ],
+        "grp-practice": [
+          "events",
+          "policies",
+          "financial-center",
+          "grants",
+          "ot",
+          "supply"
+        ],
+        "grp-admin": [
+          "admin",
+          "rethink-clients",
+          "signnow-import",
+          "email-templates",
+          "failed-emails"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": [
+        "rethink"
+      ]
+    },
+    "api": {
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": true
+        }
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
+      "/api/staff": {
+        "status": 200
+      },
+      "/api/hr/employees": {
+        "status": 200
+      },
+      "/api/admin/users": {
+        "status": 200
+      },
+      "/api/caseload/bcbas": {
+        "status": 200
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 200,
+        "flags": {
+          "can_manage_forms": true,
+          "can_add_forms": true,
+          "can_edit_requirements": true
+        }
+      },
+      "/api/auth/view-as/log": {
+        "status": 200
+      },
+      "/api/caseload/dashboard": {
+        "status": 200,
+        "flags": {
+          "can_pick": true,
+          "is_bcba_role": false
+        }
+      },
+      "/api/bcba/forms": {
+        "status": 200,
+        "flags": {
+          "can_manage": true,
+          "can_add": true
+        }
+      },
+      "/api/clients": {
+        "status": 200
+      },
+      "/api/billable/summary": {
+        "status": 200
+      }
+    }
+  },
+  "super_admin": {
+    "nav": {
+      "top": [
+        "dashboard",
+        "group:grp-clients",
+        "bcba-hub",
+        "rethink",
+        "tasks",
+        "map",
+        "group:grp-staff",
+        "group:grp-practice",
+        "group:grp-admin"
+      ],
+      "grouped": {
+        "grp-clients": [
+          "pipeline",
+          "client-behavior",
+          "auth-alerts",
+          "outbox",
+          "leads"
+        ],
+        "grp-staff": [
+          "staff",
+          "attendance",
+          "supervision",
+          "billable",
+          "pto",
+          "hr"
+        ],
+        "grp-practice": [
+          "events",
+          "policies",
+          "financial-center",
+          "grants",
+          "ot",
+          "supply"
+        ],
+        "grp-admin": [
+          "admin",
+          "rethink-clients",
+          "signnow-import",
+          "email-templates",
+          "failed-emails"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": [
+        "rethink"
+      ]
+    },
+    "api": {
+      "/api/clients": {
+        "status": 200
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
+      "/api/staff": {
+        "status": 200
+      },
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": true
+        }
+      },
+      "/api/bcba/forms": {
+        "status": 200,
+        "flags": {
+          "can_manage": true,
+          "can_add": true
+        }
+      },
+      "/api/hr/employees": {
+        "status": 200
+      },
+      "/api/billable/summary": {
+        "status": 200
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 200,
+        "flags": {
+          "can_manage_forms": true,
+          "can_add_forms": true,
+          "can_edit_requirements": true
+        }
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      },
+      "/api/caseload/dashboard": {
+        "status": 200,
+        "flags": {
+          "can_pick": true,
+          "is_bcba_role": false
+        }
+      },
+      "/api/caseload/bcbas": {
+        "status": 200
+      },
+      "/api/admin/users": {
+        "status": 200
+      }
+    }
+  },
+  "admin": {
+    "nav": {
+      "top": [
+        "dashboard",
+        "group:grp-clients",
+        "bcba-hub",
+        "rethink",
+        "tasks",
+        "map",
+        "group:grp-staff",
+        "group:grp-practice",
+        "group:grp-admin"
+      ],
+      "grouped": {
+        "grp-clients": [
+          "pipeline",
+          "client-behavior",
+          "auth-alerts",
+          "outbox",
+          "leads"
+        ],
+        "grp-staff": [
+          "staff",
+          "attendance",
+          "supervision",
+          "billable",
+          "pto",
+          "hr"
+        ],
+        "grp-practice": [
+          "events",
+          "policies",
+          "grants",
+          "ot",
+          "supply"
+        ],
+        "grp-admin": [
+          "admin",
+          "rethink-clients",
+          "signnow-import",
+          "email-templates",
+          "failed-emails"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": [
+        "rethink"
+      ]
+    },
+    "api": {
+      "/api/clients": {
+        "status": 200
+      },
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": true
+        }
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
+      "/api/staff": {
+        "status": 200
+      },
+      "/api/bcba/forms": {
+        "status": 200,
+        "flags": {
+          "can_manage": true,
+          "can_add": true
+        }
+      },
+      "/api/billable/summary": {
+        "status": 200
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      },
+      "/api/caseload/bcbas": {
+        "status": 200
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 200,
+        "flags": {
+          "can_manage_forms": true,
+          "can_add_forms": true,
+          "can_edit_requirements": true
+        }
+      },
+      "/api/hr/employees": {
+        "status": 200
+      },
+      "/api/caseload/dashboard": {
+        "status": 200,
+        "flags": {
+          "can_pick": true,
+          "is_bcba_role": false
+        }
+      },
+      "/api/admin/users": {
+        "status": 200
+      }
+    }
+  },
+  "intake": {
+    "nav": {
+      "top": [
+        "dashboard",
+        "group:grp-clients",
+        "rethink",
+        "tasks",
+        "group:grp-practice"
+      ],
+      "grouped": {
+        "grp-clients": [
+          "pipeline",
+          "client-behavior",
+          "outbox",
+          "leads"
+        ],
+        "grp-practice": [
+          "events",
+          "policies",
+          "supply"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": [
+        "rethink"
+      ]
+    },
+    "api": {
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": false
+        }
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
+      "/api/billable/summary": {
+        "status": 403
+      },
+      "/api/bcba/forms": {
+        "status": 403
+      },
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/clients": {
+        "status": 200
+      },
+      "/api/hr/employees": {
+        "status": 403
+      },
+      "/api/staff": {
+        "status": 200
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 403
+      },
+      "/api/caseload/bcbas": {
+        "status": 403
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      },
+      "/api/caseload/dashboard": {
+        "status": 200,
+        "flags": {
+          "can_pick": false,
+          "is_bcba_role": false
+        }
+      }
+    }
+  },
+  "clinical": {
+    "nav": {
+      "top": [
+        "dashboard",
+        "group:grp-clients",
+        "bcba-hub",
+        "rethink",
+        "tasks",
+        "group:grp-staff",
+        "group:grp-practice"
+      ],
+      "grouped": {
+        "grp-clients": [
+          "pipeline",
+          "client-behavior",
+          "auth-alerts",
+          "outbox"
+        ],
+        "grp-staff": [
+          "supervision"
+        ],
+        "grp-practice": [
+          "policies",
+          "supply"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": [
+        "rethink"
+      ]
+    },
+    "api": {
+      "/api/staff": {
+        "status": 200
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": false
+        }
+      },
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/hr/employees": {
+        "status": 403
+      },
+      "/api/bcba/forms": {
+        "status": 200,
+        "flags": {
+          "can_manage": false,
+          "can_add": true
+        }
+      },
+      "/api/billable/summary": {
+        "status": 403
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 200,
+        "flags": {
+          "can_manage_forms": false,
+          "can_add_forms": true,
+          "can_edit_requirements": false
+        }
+      },
+      "/api/clients": {
+        "status": 200
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      },
+      "/api/caseload/bcbas": {
+        "status": 403
+      },
+      "/api/caseload/dashboard": {
+        "status": 200,
+        "flags": {
+          "can_pick": false,
+          "is_bcba_role": true
+        }
+      }
+    }
+  },
+  "billing": {
+    "nav": {
+      "top": [
+        "dashboard",
+        "group:grp-clients",
+        "bcba-hub",
+        "rethink",
+        "tasks",
+        "group:grp-practice"
+      ],
+      "grouped": {
+        "grp-clients": [
+          "pipeline",
+          "client-behavior",
+          "auth-alerts",
+          "outbox"
+        ],
+        "grp-practice": [
+          "policies",
+          "supply"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": [
+        "rethink"
+      ]
+    },
+    "api": {
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": false
+        }
+      },
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/staff": {
+        "status": 200
+      },
+      "/api/clients": {
+        "status": 200
+      },
+      "/api/bcba/forms": {
+        "status": 200,
+        "flags": {
+          "can_manage": false,
+          "can_add": true
+        }
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
+      "/api/caseload/bcbas": {
+        "status": 403
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      },
+      "/api/billable/summary": {
+        "status": 403
+      },
+      "/api/hr/employees": {
+        "status": 403
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 200,
+        "flags": {
+          "can_manage_forms": false,
+          "can_add_forms": true,
+          "can_edit_requirements": false
+        }
+      },
+      "/api/caseload/dashboard": {
+        "status": 200,
+        "flags": {
+          "can_pick": false,
+          "is_bcba_role": false
+        }
+      }
+    }
+  },
+  "scheduling": {
+    "nav": {
+      "top": [
+        "dashboard",
+        "group:grp-clients",
+        "rethink",
+        "tasks",
+        "map",
+        "group:grp-practice"
+      ],
+      "grouped": {
+        "grp-clients": [
+          "pipeline",
+          "client-behavior",
+          "outbox",
+          "leads"
+        ],
+        "grp-practice": [
+          "events",
+          "policies",
+          "supply"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": [
+        "rethink"
+      ]
+    },
+    "api": {
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": false
+        }
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
+      "/api/bcba/forms": {
+        "status": 403
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 403
+      },
+      "/api/staff": {
+        "status": 200
+      },
+      "/api/caseload/bcbas": {
+        "status": 403
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      },
+      "/api/clients": {
+        "status": 200
+      },
+      "/api/hr/employees": {
+        "status": 403
+      },
+      "/api/billable/summary": {
+        "status": 403
+      },
+      "/api/caseload/dashboard": {
+        "status": 200,
+        "flags": {
+          "can_pick": false,
+          "is_bcba_role": false
+        }
+      }
+    }
+  },
+  "hr_admin": {
+    "nav": {
+      "top": [
+        "dashboard",
+        "tasks",
+        "group:grp-staff",
+        "group:grp-practice"
+      ],
+      "grouped": {
+        "grp-staff": [
+          "staff",
+          "attendance",
+          "supervision",
+          "billable",
+          "pto",
+          "hr"
+        ],
+        "grp-practice": [
+          "policies",
+          "supply"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": []
+    },
+    "api": {
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": false
+        }
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
+      "/api/clients": {
+        "status": 403
+      },
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/bcba/forms": {
+        "status": 403
+      },
+      "/api/staff": {
+        "status": 200
+      },
+      "/api/hr/employees": {
+        "status": 200
+      },
+      "/api/caseload/dashboard": {
+        "status": 403
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 403
+      },
+      "/api/caseload/bcbas": {
+        "status": 403
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      },
+      "/api/billable/summary": {
+        "status": 200
+      }
+    }
+  },
+  "hiring_manager": {
+    "nav": {
+      "top": [
+        "dashboard",
+        "tasks",
+        "group:grp-staff",
+        "group:grp-practice"
+      ],
+      "grouped": {
+        "grp-staff": [
+          "hr"
+        ],
+        "grp-practice": [
+          "policies",
+          "supply"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": []
+    },
+    "api": {
+      "/api/clients": {
+        "status": 403
+      },
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": false
+        }
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
+      "/api/billable/summary": {
+        "status": 403
+      },
+      "/api/bcba/forms": {
+        "status": 403
+      },
+      "/api/staff": {
+        "status": 200
+      },
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 403
+      },
+      "/api/caseload/dashboard": {
+        "status": 403
+      },
+      "/api/caseload/bcbas": {
+        "status": 403
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      },
+      "/api/hr/employees": {
+        "status": 200
+      }
+    }
+  },
+  "interviewer": {
+    "nav": {
+      "top": [
+        "dashboard",
+        "tasks",
+        "group:grp-staff",
+        "group:grp-practice"
+      ],
+      "grouped": {
+        "grp-staff": [
+          "hr"
+        ],
+        "grp-practice": [
+          "policies",
+          "supply"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": []
+    },
+    "api": {
+      "/api/clients": {
+        "status": 403
+      },
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": false
+        }
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
+      "/api/staff": {
+        "status": 200
+      },
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/caseload/dashboard": {
+        "status": 403
+      },
+      "/api/bcba/forms": {
+        "status": 403
+      },
+      "/api/billable/summary": {
+        "status": 403
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 403
+      },
+      "/api/hr/employees": {
+        "status": 200
+      },
+      "/api/caseload/bcbas": {
+        "status": 403
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      }
+    }
+  },
+  "ot_admin": {
+    "nav": {
+      "top": [
+        "group:grp-practice"
+      ],
+      "grouped": {
+        "grp-practice": [
+          "policies",
+          "ot",
+          "supply"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": []
+    },
+    "api": {
+      "/api/nav-order": {
+        "status": 403
+      },
+      "/api/staff-tasks": {
+        "status": 403
+      },
+      "/api/billable/summary": {
+        "status": 403
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 403
+      },
+      "/api/staff": {
+        "status": 403
+      },
+      "/api/clients": {
+        "status": 403
+      },
+      "/api/hr/employees": {
+        "status": 403
+      },
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/bcba/forms": {
+        "status": 403
+      },
+      "/api/caseload/dashboard": {
+        "status": 403
+      },
+      "/api/caseload/bcbas": {
+        "status": 403
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      }
+    }
+  },
+  "ot_staff": {
+    "nav": {
+      "top": [
+        "group:grp-practice"
+      ],
+      "grouped": {
+        "grp-practice": [
+          "policies",
+          "ot",
+          "supply"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": []
+    },
+    "api": {
+      "/api/nav-order": {
+        "status": 403
+      },
+      "/api/staff-tasks": {
+        "status": 403
+      },
+      "/api/billable/summary": {
+        "status": 403
+      },
+      "/api/bcba/forms": {
+        "status": 403
+      },
+      "/api/caseload/dashboard": {
+        "status": 403
+      },
+      "/api/staff": {
+        "status": 403
+      },
+      "/api/clients": {
+        "status": 403
+      },
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/hr/employees": {
+        "status": 403
+      },
+      "/api/bcba/cheatsheet": {
+        "status": 403
+      },
+      "/api/caseload/bcbas": {
+        "status": 403
+      },
+      "/api/auth/view-as/log": {
+        "status": 403
+      }
+    }
+  }
+}

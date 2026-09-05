@@ -908,11 +908,25 @@ async function route() {
     return;
   }
 
+  // CLIENT DATA IS ONLY FETCHED BY SOMEBODY WHO MAY SEE IT. This block used to
+  // load it for every role, so an HR-side or OT-only account was refused by
+  // the server on every single sign-in, the rejection was never caught, and
+  // Promise.all threw -- taking the rest of this function with it. It surfaced
+  // as an uncaught "Not permitted to access client records" in the console and
+  // nowhere else, which is why it sat here unnoticed: nothing on their screen
+  // needs client data, so nothing looked broken.
+  //
+  // Found by the role matrix on its first run, which is the entire point of
+  // that suite: it opens the application as every role and watches.
+  const maBoot = getModuleAccess(state.user);
+  const mayLoadClients = canAccessClients() || !!(maBoot && maBoot.pipeline === true);
+  // loadStages() is in here too, and that is the one that was actually
+  // throwing: /api/stages sits behind the SAME client-record lock as
+  // /api/clients, because a pipeline stage is pipeline data. Departments are
+  // not, so they still load for everybody.
   await Promise.all([
-    loadStages(),
     loadDepartments(),
-    loadClients(),
-    loadTherapists(),
+    ...(mayLoadClients ? [loadStages(), loadClients(), loadTherapists()] : []),
   ]);
 
   const [, rawView, param] = hash.split("/");
@@ -4958,12 +4972,30 @@ const STAFF_IMPORT_FIELDS = [
   { key: "rethink_id", label: "Rethink ID" },
 ];
 
+// Kept outside renderStaff so the choice survives the re-render that changing
+// somebody's status triggers.
+let _staffShowFormer = false;
 async function renderStaff(mount) {
   let staff = [];
   try { staff = await api("/api/hr/employees"); } catch (e) {
     mount.innerHTML = `<div class="page-header"><div><h1>Staff</h1></div></div><div class="empty-state">Couldn't load staff: ${staffEsc(e.message)}</div>`;
     return;
   }
+  // FORMER STAFF ARE NOT THE TEAM. The directory listed everybody who had ever
+  // held a record, so people who left months ago sat among the current team
+  // permanently. Reported as "terminated employees should no longer show".
+  //
+  // FILTERED HERE AND NOT IN THE QUERY, deliberately, and the reason is the
+  // mistake this session already made once on the billable report: this screen
+  // is also where somebody's status is SET, in the bulk bar and on their
+  // record. Dropping them from /api/hr/employees would take the leaver out of
+  // the one place a wrong termination can be undone -- and out of the turnover
+  // report and HR's own history with it.
+  //
+  // So they are hidden, counted, and one click away. Nothing is deleted.
+  const isFormer = (e) => ["terminated", "inactive"].includes(String(e.status || "").toLowerCase());
+  const formerCount = staff.filter(isFormer).length;
+  const shown = _staffShowFormer ? staff : staff.filter((e) => !isFormer(e));
   mount.innerHTML = `
     <div class="page-header">
       <div><h1>Staff</h1><p>Team directory — contact info, documents, certifications, timecards, and length of employment.</p></div>
@@ -4973,6 +5005,8 @@ async function renderStaff(mount) {
         <button class="btn" id="staff-add-btn">+ Add Staff</button>
       </div>
     </div>
+    ${formerCount ? `<label style="display:inline-flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text-muted); margin-bottom:12px;">
+      <input type="checkbox" id="staff-show-former"${_staffShowFormer ? " checked" : ""} /> Show ${formerCount} former staff member${formerCount === 1 ? "" : "s"}</label>` : ""}
     <div id="cert-banner" style="margin-bottom:14px;"></div>
     <div id="docs-outstanding" style="margin-bottom:14px;"></div>
     <div id="staff-bulk-bar" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; background:var(--brand-light,#e8ecfa); border:1px solid var(--border,#e5e7eb); border-radius:10px; padding:10px 14px; margin-bottom:12px;">
@@ -4993,7 +5027,7 @@ async function renderStaff(mount) {
             <th style="padding:8px 10px;">Certifications</th><th style="padding:8px 10px;">Time w/ Spectrum</th><th style="padding:8px 10px;">Status</th>
           </tr></thead>
           <tbody>
-            ${staff.length ? staff.map((e) => { const ini = (e.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase(); return `<tr data-staff="${e.id}" style="cursor:pointer;">
+            ${shown.length ? shown.map((e) => { const ini = (e.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase(); return `<tr data-staff="${e.id}" style="cursor:pointer;">
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><input type="checkbox" class="staff-cb" data-cb="${e.id}" /></td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><div style="display:flex; align-items:center; gap:10px;"><span class="staff-av" data-av="${e.id}" data-hasphoto="${e.hr_photo ? "1" : "0"}" style="flex:0 0 auto; width:32px; height:32px; border-radius:50%; background:#eef0fb; color:#1b2a6b; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; overflow:hidden;">${staffEsc(ini)}</span><span><strong>${staffEsc(e.name)}</strong><div style="color:var(--text-muted); font-size:12px;">${staffEsc(e.email || "")}</div></span></div></td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.role_title || "—")}</td>
@@ -5001,13 +5035,20 @@ async function renderStaff(mount) {
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${staffEsc(e.certifications || (e.credentials || []).map((c) => c.credential_type).join(", ") || "—")}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);">${tenureFrom(e.hr_hire_date || e.hire_date)}</td>
               <td style="padding:9px 10px; border-top:1px solid var(--border,#eee);"><span class="tag">${staffEsc(e.status || "active")}</span></td>
-            </tr>`; }).join("") : `<tr><td colspan="7"><div class="empty-state">No staff yet. Add one or import your Rethink sheet.</div></td></tr>`}
+            </tr>`; }).join("") : `<tr><td colspan="7"><div class="empty-state">${staff.length
+                  ? "Nobody is currently on the team. " + formerCount + " former staff member" + (formerCount === 1 ? " is" : "s are") + " hidden."
+                  : "No staff yet. Add one or import your Rethink sheet."}</div></td></tr>`}
           </tbody>
         </table>
       </div>
     </div>
   `;
   if (window.PeopleUI) window.PeopleUI.renderCertBanner(mount.querySelector("#cert-banner"));
+  const showFormer = mount.querySelector("#staff-show-former");
+  if (showFormer) showFormer.addEventListener("change", () => {
+    _staffShowFormer = showFormer.checked;
+    renderStaff(mount);
+  });
   mount.querySelector("#staff-add-btn").addEventListener("click", () => openStaffModal(null, mount));
   mount.querySelector("#staff-import-btn").addEventListener("click", () => openStaffImportModal(mount));
   mount.querySelector("#payroll-import-btn").addEventListener("click", () => openPayrollImportModal(mount));
