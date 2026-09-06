@@ -32,8 +32,22 @@
   --radius: 12px;
   --shadow: 0 1px 3px rgba(41, 34, 92, 0.08), 0 1px 2px rgba(41, 34, 92, 0.05);
   --shadow-lg: 0 10px 30px rgba(41, 34, 92, 0.14);
-  
-}--font-header: "Outfit", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* INSIDE the block. It used to sit after the closing brace, and a
+     declaration cannot live outside one: the parser then read everything from
+     there to the next brace as a single selector -- "--font-header: ...; *" --
+     which is invalid, so IT DROPPED THE RULE THAT SELECTOR BELONGED TO.
+     That rule was the universal border-box below.
+     Consequence, for about as long as this file has existed: every width in
+     the application was content-box, so padding and borders added on top of
+     every declared size. .sidebar is written 240px and rendered 272px; on a
+     390px phone the navigation took 272 of it and left 118px for the content,
+     and the browser zoomed the whole page out to fit. Reported as "when the
+     CRM is accessed from a phone the view isn't proportional".
+     Defining the variable changes no typography: body already sets this exact
+     font stack, so the headings that read var(--font-header) were inheriting
+     Outfit anyway. */
+  --font-header: "Outfit", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
 
 * { box-sizing: border-box; }
 
@@ -357,6 +371,102 @@ tr:last-child td { border-bottom: none; }
 .opt-card input { flex: none; margin-top: 2px; width: auto; }
 @media (max-width: 560px) {
   .opt-grid { grid-template-columns: 1fr; }
+}
+
+/* ---------- The phone ----------
+   Reported as "when the CRM is accessed from a phone the view isn't
+   proportional". Fixing the swallowed border-box rule above was half of it.
+   This is the other half: THERE WAS NO MOBILE LAYOUT AT ALL. The sidebar is a
+   fixed 240px column at every screen size, so on a 390px phone it took 240 and
+   left 150 -- and because the viewport has no maximum-scale, the browser
+   responded by zooming the whole page out to fit rather than scrolling. That is
+   why everything looked shrunken rather than cut off.
+
+   Below 900px the navigation becomes a drawer: off screen until asked for,
+   over the content rather than beside it, and the content column gets the
+   whole width. 900 rather than a phone width on purpose -- a 240px sidebar
+   beside a 500px content column is already the wrong trade on a tablet. */
+/* Hidden on anything wider: the sidebar is simply there and needs no button.
+   DECLARED BEFORE the media query below, not after it. Written afterwards, this
+   display:none has equal specificity and later position, so it wins even on a
+   phone and the drawer becomes unopenable -- which is exactly what happened. */
+#nav-toggle {
+  display: none;
+  position: fixed; top: 10px; left: 10px; z-index: 130;
+  align-items: center; justify-content: center; gap: 7px;
+  width: 42px; height: 42px; border-radius: 11px; border: 0;
+  background: var(--brand-navy); color: #fff; font-size: 17px; line-height: 1;
+  box-shadow: 0 2px 10px rgba(16, 28, 77, .3);
+}
+body.viewing-as #nav-toggle { top: 50px; }
+/* Tapping beside the drawer closes it, which is what everybody expects and is
+   the only way out on a phone with no visible page behind the menu. */
+#nav-scrim {
+  display: none; position: fixed; inset: 0; z-index: 110;
+  background: rgba(16, 28, 77, .45);
+}
+@media (max-width: 900px) {
+  .app-shell { position: relative; }
+  .sidebar {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 120;
+    width: 260px; max-width: 82vw;
+    transform: translateX(-100%);
+    transition: transform .22s ease;
+    overflow-y: auto;
+    box-shadow: 2px 0 18px rgba(16, 28, 77, .28);
+  }
+  body.nav-open .sidebar { transform: translateX(0); }
+  body.viewing-as .sidebar { top: 40px; }
+  /* The content is the page now, not the column left over beside a menu. */
+  .main { width: 100%; min-width: 0; }
+  /* Room for the button that opens the drawer, which is fixed over the page. */
+  .main > * { padding-top: 0; }
+  #nav-toggle { display: inline-flex; }
+  body.nav-open #nav-scrim { display: block; }
+}
+@media (max-width: 900px) {
+  /* The page needs to clear the floating button, but only on the pages that
+     start with a heading right at the top. */
+  .main > .page-header:first-child, .main > div > .page-header:first-child { padding-left: 52px; min-height: 42px; }
+}
+
+/* What is left once the shell fits: individual pages whose own content is
+   wider than a phone. Measured rather than guessed -- test-mobile-proportions
+   names the widest element on every page it flags, and these two shapes
+   accounted for all of them.
+
+   TABLES. A table sizes itself to its content and will happily be 500px wide.
+   Several already sit in an overflow-x box and scroll properly; the ones that
+   do not pushed the whole page. Below 700px every table in the content column
+   scrolls in its own box instead.
+
+   GRIDS. The card grids ask for columns of 200-280px, so two of them need
+   400-560px and a phone has 390. Most are written as INLINE styles, which
+   nothing but !important can override -- hence the shape of the rule, which is
+   otherwise not something to reach for. */
+@media (max-width: 700px) {
+  .main table { display: block; width: 100%; max-width: 100%; overflow-x: auto; }
+  .main [style*="grid-template-columns"],
+  .main .form-grid,
+  .main .opt-grid { grid-template-columns: 1fr !important; }
+  /* Anything given an explicit min-width for a desktop layout. */
+  .main [style*="min-width:6"], .main [style*="min-width: 6"],
+  .main [style*="min-width:7"], .main [style*="min-width: 7"],
+  .main [style*="min-width:8"], .main [style*="min-width: 8"] { min-width: 0 !important; }
+
+  /* ROWS OF BUTTONS AND FIELDS THAT DO NOT WRAP. Every page still overflowing
+     after the rules above failed on exactly this: a `display:flex; gap:8px`
+     group in a page header or an Admin settings row, holding two buttons or a
+     300px input beside a Save, laid out on one line whatever the width. The
+     page header on Policies was 416px of a 390px screen by itself.
+     On a phone they wrap. */
+  .main .page-header, .main .task-row,
+  .main [style*="display:flex"], .main [style*="display: flex"] { flex-wrap: wrap; }
+  /* And the desktop-width inputs inside them stop being desktop-width. */
+  .main .task-row input, .main .task-row select,
+  .main .page-header input, .main .page-header select { max-width: 100%; }
+  .main input[style*="width:300px"], .main input[style*="width: 300px"],
+  .main input[style*="width:130px"], .main input[style*="width: 130px"] { width: 100% !important; }
 }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field.full { grid-column: 1 / -1; }
@@ -1329,6 +1439,8 @@ function renderShell(active) {
       <span class="ro">Read only &mdash; nothing can be changed from here.</span>
       <button id="viewas-stop">Back to my account</button>
     </div>` : ""}
+    <button id="nav-toggle" aria-label="Menu" aria-expanded="false" aria-controls="nav-list">&#9776;</button>
+    <div id="nav-scrim"></div>
     <div class="app-shell">
       <div class="sidebar">
         <div class="brand"><img src="/logo.png" alt="Spectrum Squad" style="max-width:170px; width:100%; height:auto;" /></div>
@@ -1371,6 +1483,25 @@ function renderShell(active) {
       location.hash = btn.dataset.navHash || "#/" + btn.dataset.nav;
     });
   });
+  // The drawer. Only ever visible under 900px (see the media query); above
+  // that the button is display:none and none of this runs.
+  const navToggle = document.getElementById("nav-toggle");
+  const navScrim = document.getElementById("nav-scrim");
+  const setNav = (open) => {
+    document.body.classList.toggle("nav-open", open);
+    if (navToggle) navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  if (navToggle) navToggle.addEventListener("click", () => setNav(!document.body.classList.contains("nav-open")));
+  if (navScrim) navScrim.addEventListener("click", () => setNav(false));
+  // Choosing a page closes it. Leaving the menu covering the page you just
+  // asked for is the single most irritating thing a drawer can do.
+  root.querySelectorAll("#nav-list [data-nav], #nav-list [data-nav-group]").forEach((el) =>
+    el.addEventListener("click", () => {
+      if (el.hasAttribute("data-nav-group")) return;   // expanding, not navigating
+      setNav(false);
+    }));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") setNav(false); });
+
   wireNavReorder();
   applyNavOrderToDom();
   // A group heading opens and closes its own section. It is not a page, so it
