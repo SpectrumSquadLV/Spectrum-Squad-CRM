@@ -277,14 +277,34 @@ a.nav-item { box-sizing: border-box; }
   overflow-x: auto;
   padding-bottom: 12px;
 }
+/* LANES. A column was one card wide, so a phase holding twenty clients was
+   twenty cards deep. A column now earns a second lane past six cards and a
+   third past fourteen -- the busy phase spreads sideways, the quiet ones are
+   unchanged, and the board widens only where there is something to put in the
+   width. The same rule and the same thresholds as the milestone board in
+   pipeline-v2.js. */
 .kanban-col {
-  min-width: 260px;
-  max-width: 260px;
+  --lanes: 1;
+  --lane: 260px;
+  width: calc(var(--lanes) * var(--lane) + (var(--lanes) - 1) * 8px + 24px);
   background: #f1f2f7;
   border-radius: var(--radius);
   padding: 12px;
   flex-shrink: 0;
   transition: background 0.12s;
+}
+.kanban-col.lanes-2 { --lanes: 2; --lane: 234px; }
+.kanban-col.lanes-3 { --lanes: 3; --lane: 234px; }
+.kanban-cards {
+  display: grid;
+  grid-template-columns: repeat(var(--lanes), minmax(0, 1fr));
+  gap: 8px;
+  align-content: start;
+}
+/* Below this there is no width to spend: two 120px cards side by side would be
+   worse than the scrolling the lanes are meant to shorten. */
+@media (max-width: 1180px) {
+  .kanban-col.lanes-2, .kanban-col.lanes-3 { --lanes: 1; --lane: 260px; }
 }
 .kanban-col.drag-over {
   background: #dfe2f5;
@@ -305,7 +325,6 @@ a.nav-item { box-sizing: border-box; }
   background: var(--surface);
   border-radius: 10px;
   padding: 12px;
-  margin-bottom: 8px;
   box-shadow: var(--shadow);
   border-left: 4px solid var(--brand);
   cursor: pointer;
@@ -2346,13 +2365,17 @@ async function renderPipeline(mount) {
         (c) => phase.stages.includes(c.stage) && (!waitlistOnly || c.waitlisted)
       );
       const multi = phase.stages.length > 1;
+      // Six and fourteen are the thresholds, not a formula: below six a column
+      // fits on a screen already, and past fourteen two lanes are still seven
+      // rows deep.
+      const lanes = clients.length > 14 ? 3 : clients.length > 6 ? 2 : 1;
       return `
-      <div class="kanban-col" data-phase="${phase.key}">
+      <div class="kanban-col${lanes > 1 ? ` lanes-${lanes}` : ""}" data-phase="${phase.key}" data-lanes="${lanes}">
         <div class="kanban-col-header">
           <div class="kanban-col-title"><span class="dot" style="background:${phase.color}"></span>${phase.label}</div>
           <span class="count-pill">${clients.length}</span>
         </div>
-        ${clients
+        <div class="kanban-cards">${clients
           .map(
             (c) => `<div class="client-card" draggable="true" style="border-left-color:${phase.color}" data-client="${c.id}">
               <div class="name">${c.child_name} ${c.waitlisted ? `<span class="tag" style="background:#fef3c7; color:#92400e;">Waitlist</span>` : ""}${c.intake_chasing_paused_at ? `<span class="tag" title="Automatic intake reminders are on hold for this family." style="background:#e5e7eb; color:#374151;">On hold</span>` : ""}</div>
@@ -2364,7 +2387,7 @@ async function renderPipeline(mount) {
               </div>
             </div>`
           )
-          .join("") || `<div class="empty-state" style="padding:16px 4px;">Empty</div>`}
+          .join("") || `<div class="empty-state" style="padding:16px 4px;">Empty</div>`}</div>
       </div>`;
     })
     .join("");
