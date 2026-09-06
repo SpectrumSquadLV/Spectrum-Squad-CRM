@@ -3514,12 +3514,21 @@ const DEFAULT_SETTINGS = {
   credentialing_link_bcba: "https://sparkz.clickup.com/forms/3501350/f/3av96-450954/AMW0KVAC3YL07DEEMM",
   credentialing_link_rbt: "https://sparkz.clickup.com/forms/3501350/f/3av96-450934/OFTQKDCKHXT758222Z",
   class_dojo_link: "https://teach.classdojo.com/#/singleLinkSignup/TT6SYWAH3",
-  // Where the sidebar's Rethink shortcut points. A SETTING, not a constant:
-  // this is the address the whole practice clicks, the CRM only ever talks to
-  // Rethink's id./dwh. API hosts (never the app itself), and a tenant can sit
-  // on a different host. Wrong here means everybody lands on a dead page, so
-  // it is correctable in Admin Settings without a deploy.
-  rethink_app_url: "https://app.rethinkbehavioralhealth.com",
+  // Where the sidebar's Rethink shortcut points. GIVEN BY THE PRACTICE, not
+  // inferred -- and the difference mattered.
+  //
+  // This shipped defaulted to https://app.rethinkbehavioralhealth.com, which
+  // looked reasonable next to the id. and dwh. hosts the CRM already talks to.
+  // IT DOES NOT RESOLVE: the apex, www, id, dwh and api all have DNS records
+  // and "app" has none, so the entry pointed the whole practice at a hostname
+  // that does not exist. The value below is the address they actually sign in
+  // at, and webapp. does resolve.
+  //
+  // It stays a SETTING, because a tenant can move and the next guess would be
+  // as wrong as the last. Blank draws no entry at all, which is still the
+  // right answer if this address ever stops working: an absent menu item is a
+  // question, a broken link is a support call.
+  rethink_app_url: "https://webapp.rethinkbehavioralhealth.com/Healthcare#/Login",
   shirt_count_full_time: "4",
   shirt_count_part_time: "3",
   // A draft, not a policy. Shirts are issued on the first day, so a new hire

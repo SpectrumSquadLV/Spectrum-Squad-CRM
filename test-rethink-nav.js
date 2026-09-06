@@ -71,6 +71,21 @@ const { chromium } = require("playwright");
 
   await login("admin@spectrumsquadlv.com", "TestOwner123!");
 
+  console.log("\n== The address it ships pointing at ==");
+  // PINNED, because the first value here was a guess and the guess was wrong.
+  // https://app.rethinkbehavioralhealth.com looked right beside the id. and
+  // dwh. hosts this CRM talks to, and has no DNS record at all -- the entry
+  // pointed the whole practice at a hostname that does not exist. The value
+  // below is the one the practice signs in at. Changing it should take a
+  // deliberate edit here as well, by somebody who has checked.
+  const serverSrc = require("fs").readFileSync(require("path").join(__dirname, "server.js"), "utf8");
+  const shipped = /rethink_app_url:\s*"([^"]*)"/.exec(serverSrc);
+  check("the default is the practice's real sign-in address",
+    !!shipped && shipped[1] === "https://webapp.rethinkbehavioralhealth.com/Healthcare#/Login",
+    shipped && shipped[1]);
+  check("AND NOT THE HOST THAT DOES NOT EXIST",
+    !!shipped && !/\/\/app\.rethinkbehavioralhealth\.com/.test(shipped[1]), shipped && shipped[1]);
+
   console.log("\n== It is there, and it is a link ==");
   const item = page.locator('[data-nav="rethink"]');
   check("the sidebar has a Rethink entry", await item.count() === 1, await item.count());
