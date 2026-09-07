@@ -248,6 +248,43 @@
   // Library filters. Module-level so they survive a re-render after an edit or
   // an acknowledgment, rather than snapping back to "everything".
   let polQ = "", polCat = "", polStatus = "";
+  // The question and its answers survive a re-render too -- acknowledging a
+  // policy you were pointed at should not throw away what you asked.
+  let polAsk = "", polAnswers = null, polAsking = false, polAskErr = "";
+
+  // Highlights the words the search actually matched. Stems are matched as
+  // PREFIXES because that is how they were produced: the question's "days"
+  // became "day", and the passage says "days".
+  function markTerms(text, terms) {
+    let html = esc(text);
+    (terms || []).forEach((t) => {
+      const safe = String(t).replace(/[^a-z0-9]/gi, "");
+      if (safe.length < 2) return;
+      html = html.replace(new RegExp("\\b(" + safe + "[a-z]*)\\b", "gi"), "<mark>$1</mark>");
+    });
+    return html;
+  }
+
+  const AMEND_CSS = `
+    .pol-memo { background:#fff8e8; border:1px solid #e6c98a; border-left:5px solid #e0a430; border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+    .pol-memo.scheduled { background:#f3f6ff; border-color:#c3cdf0; border-left-color:#3f56b5; }
+    .pol-memo.draft { background:#f7f7f9; border-color:#dfe1e8; border-left-color:#9aa0ad; }
+    .pol-memo.rescinded { background:#fafafa; border-color:#e5e7eb; border-left-color:#cbd0d8; color:#6b7280; }
+    .pol-memo-h { font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:#8a6516; margin-bottom:4px; }
+    .pol-memo.scheduled .pol-memo-h { color:#3f56b5; }
+    .pol-memo.draft .pol-memo-h, .pol-memo.rescinded .pol-memo-h { color:#6b7280; }
+    .pol-memo-t { font-weight:700; color:#1f2430; margin-bottom:5px; font-size:13.5px; }
+    .pol-memo-b { white-space:pre-wrap; font-size:13px; line-height:1.6; color:#2b2f3a; }
+    .pol-memo-f { font-size:11.5px; color:#6b7280; margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .pol-orig-h { font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:#9aa0ad; border-top:1px solid #eceef3; padding-top:10px; margin:14px 0 8px; }
+    .pol-ans { border:1px solid #e6e8f0; border-left:5px solid var(--pc,#3f56b5); border-radius:12px; padding:14px 16px; margin-bottom:12px; background:#fff; }
+    .pol-ans-t { font-weight:700; font-size:15px; color:#1f2430; }
+    .pol-ans-q { white-space:pre-wrap; font-size:13.5px; line-height:1.62; color:#2b2f3a; margin:9px 0 0; }
+    .pol-ans-q mark { background:#fdf0c8; color:inherit; border-radius:3px; padding:0 1px; }
+    .pol-ans-src { font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:#8a6516; margin-top:10px; }
+    .pol-ans-also { margin-top:10px; border-top:1px dashed #e6e8f0; padding-top:9px; }
+    .pol-ans-also summary { cursor:pointer; font-size:12px; color:#3f56b5; }
+  `;
 
   async function renderPolicies(mount) {
     let d;
@@ -287,6 +324,10 @@
         <span class="pol-badges">
           <span class="pol-badge" style="${STATUS_STYLE[st] || STATUS_STYLE.Archived}">${esc(st)}</span>
           <span class="pol-badge" style="background:#eef0f5; color:#4b5563;">v${esc(p.version || "1")}</span>
+          ${(p.amendments_in_force || []).length
+            ? `<span class="pol-badge" style="background:#fdf0c8; color:#8a6516;">amended ×${(p.amendments_in_force || []).length}</span>` : ""}
+          ${(p.amendments_scheduled || []).length
+            ? `<span class="pol-badge" style="background:#e9eefc; color:#3f56b5;">change scheduled</span>` : ""}
           ${ack}
         </span>
         <span class="pol-snip">${snippet(p)}</span>
@@ -308,8 +349,22 @@
           <button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
         </div>
       </div>
+      <div class="card" style="margin:0 0 16px; padding:16px 18px;">
+        <div style="font-weight:700; font-size:14px; margin-bottom:3px;">Ask a question</div>
+        <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:10px;">
+          Ask in your own words — &ldquo;how long do BCBAs have to finish a treatment plan?&rdquo; — and it points
+          you at the policy and the paragraph that answers it. It quotes the policy; it never writes one.
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <input id="pol-ask" placeholder="What do you want to know?" value="${esc(polAsk)}"
+            style="flex:1; min-width:220px; padding:10px 12px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:14px;" />
+          <button class="btn" id="pol-ask-go"${polAsking ? " disabled" : ""}>${polAsking ? "Looking…" : "Ask"}</button>
+          ${polAsk || polAnswers ? `<button class="btn secondary" id="pol-ask-clear">Clear</button>` : ""}
+        </div>
+        <div id="pol-ask-out" style="margin-top:14px;">${askResultsHTML(COLORS)}</div>
+      </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
-        <input id="pol-q" placeholder="Search policies…" value="${esc(polQ)}"
+        <input id="pol-q" placeholder="Search policies by keyword…" value="${esc(polQ)}"
           style="flex:1; min-width:200px; padding:8px 11px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;" />
         <select id="pol-cat" style="padding:8px 10px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;">
           <option value="">All categories</option>
@@ -339,6 +394,7 @@
         .pol-read { white-space:pre-wrap; font-size:13.5px; line-height:1.62; color:#2b2f3a; max-height:56vh; overflow:auto; padding-right:6px; }
         .pol-badges { display:flex; flex-wrap:wrap; gap:4px; }
         .pol-badge { border-radius:5px; padding:1px 6px; font-size:10px; font-weight:700; }
+        ${AMEND_CSS}
       </style>
       <div style="display:grid; grid-template-columns: 1.6fr 1fr; gap:20px;">
         <div class="card" style="margin:0;"><div id="pol-upload-status" style="font-size:12.5px; color:var(--text-muted); margin-bottom:8px;"></div>${list}</div>
@@ -358,6 +414,38 @@
       const v = e.target.value;
       qTimer = setTimeout(() => { polQ = v; renderPolicies(mount); }, 250);
     });
+    // ---- ask ----
+    const runAsk = async () => {
+      const inp = mount.querySelector("#pol-ask");
+      polAsk = inp ? inp.value.trim() : polAsk;
+      if (!polAsk) { polAnswers = null; polAskErr = ""; await renderPolicies(mount); return; }
+      polAsking = true; polAskErr = "";
+      await renderPolicies(mount);
+      try { polAnswers = await api("/api/policies/ask?q=" + encodeURIComponent(polAsk)); }
+      catch (e) { polAnswers = null; polAskErr = e.message || "Could not search the policies."; }
+      polAsking = false;
+      await renderPolicies(mount);
+      const again = mount.querySelector("#pol-ask");
+      if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+    };
+    on("#pol-ask-go", "click", runAsk);
+    on("#pol-ask", "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); runAsk(); } });
+    on("#pol-ask-clear", "click", async () => { polAsk = ""; polAnswers = null; polAskErr = ""; await renderPolicies(mount); });
+    mount.querySelectorAll("[data-ans-open]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const pol = d.policies.find((x) => String(x.id) === b.dataset.ansOpen);
+        if (pol) policyReader(pol, d, mount, colorOf);
+        // A policy filtered out of the library by the category or status
+        // dropdown is still a valid answer to a question -- it is simply not on
+        // screen, so the reader is opened from the answer's own copy instead of
+        // silently doing nothing.
+        else {
+          const a = (polAnswers && polAnswers.answers || []).find((x) => String(x.policy.id) === b.dataset.ansOpen);
+          if (a) policyReader({ ...a.policy, amendments_in_force: a.amendments_in_force,
+            amendments_scheduled: a.amendments_scheduled }, d, mount, colorOf);
+        }
+      }));
+
     on("#pol-cat", "change", (e) => { polCat = e.target.value; renderPolicies(mount); });
     on("#pol-status", "change", (e) => { polStatus = e.target.value; renderPolicies(mount); });
     on("#pol-clear", "click", () => { polQ = polCat = polStatus = ""; renderPolicies(mount); });
@@ -411,6 +499,224 @@
     });
   }
 
+  // The answer panel. Every answer is a POINTER -- the policy, and the
+  // paragraph of it that matched -- with the words that matched highlighted so
+  // it is obvious why this came back. Nothing here is written by the CRM: the
+  // quoted text is verbatim from the policy or from a memo.
+  function askResultsHTML(COLORS) {
+    if (polAsking) return `<div style="font-size:13px; color:var(--text-muted);">Reading the policies…</div>`;
+    if (polAskErr) return `<div class="empty-state" style="margin:0;">${esc(polAskErr)}</div>`;
+    if (!polAnswers) return "";
+    const a = polAnswers;
+    if (!a.answers || !a.answers.length) {
+      return `<div class="empty-state" style="margin:0;">
+        <strong>Nothing in the policy library answers that.</strong>
+        <div style="font-size:12.5px; margin-top:6px;">
+          ${a.note ? esc(a.note) : `Searched ${a.searched.passages} passage(s) across ${a.searched.policies} active
+          ${a.searched.policies === 1 ? "policy" : "policies"}${a.searched.not_active
+            ? ` (${a.searched.not_active} draft or archived ${a.searched.not_active === 1 ? "policy was" : "policies were"} not searched — a draft is not the rule)`
+            : ""}.`}
+        </div>
+        <div style="font-size:12.5px; margin-top:6px; color:var(--text-muted);">
+          That means no policy on file covers it, not that the answer is no. Ask whoever owns the area.
+        </div>
+      </div>`;
+    }
+    const memoLine = (m) => `<div class="pol-memo" style="margin-bottom:8px;">
+      <div class="pol-memo-h">Amended${m.effective_date ? " &middot; effective " + esc(String(m.effective_date).slice(0, 10)) : ""}</div>
+      <div class="pol-memo-t">${esc(m.title)}</div>
+      <div class="pol-memo-b">${esc(m.body)}</div>
+    </div>`;
+    return a.answers.map((ans) => {
+      const p = ans.policy;
+      const c = (p.color && /^#[0-9a-fA-F]{6}$/.test(p.color)) ? p.color : ((COLORS || {})[p.category] || "#3f56b5");
+      const fromMemo = ans.passage.source === "amendment";
+      return `<div class="pol-ans" style="--pc:${c};">
+        <div style="display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;">
+          <div style="flex:1; min-width:180px;">
+            <div class="pol-ans-t">${esc(p.title)}</div>
+            <div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">
+              ${esc(p.category || "Other")} &middot; v${esc(p.version || "1")}${
+                p.document ? " &middot; " + esc(p.document.title) : ""}${
+                p.section_ref ? " &middot; " + esc(p.section_ref) : ""}
+            </div>
+          </div>
+          <button class="btn small secondary" data-ans-open="${p.id}">Open policy</button>
+        </div>
+        ${ans.amended ? `<div style="margin-top:8px;"><span class="pol-badge" style="background:#fdf0c8; color:#8a6516;">This policy has been amended</span></div>` : ""}
+        ${fromMemo ? `<div class="pol-ans-src">From an amendment memo${
+          ans.passage.effective_date ? " &middot; effective " + esc(String(ans.passage.effective_date).slice(0, 10)) : ""}</div>` : ""}
+        <div class="pol-ans-q">${markTerms(ans.passage.text, ans.matched)}</div>
+        ${ans.also ? `<details class="pol-ans-also"><summary>${
+          ans.also.source === "amendment" ? "There is a memo on this too" : "What the original policy text says"
+        }</summary><div class="pol-ans-q">${markTerms(ans.also.text, ans.matched)}</div></details>` : ""}
+        ${!fromMemo && ans.amended ? `<div style="margin-top:10px;">
+          <div class="pol-ans-src">The memo(s) that changed this policy</div>
+          <div style="margin-top:6px;">${ans.amendments_in_force.map(memoLine).join("")}</div>
+        </div>` : ""}
+        ${(ans.amendments_scheduled || []).length ? `<div style="margin-top:8px; font-size:12px; color:#3f56b5;">
+          A change to this policy takes effect ${esc(String(ans.amendments_scheduled[0].effective_date || "").slice(0, 10))}: ${esc(ans.amendments_scheduled[0].title)}
+        </div>` : ""}
+      </div>`;
+    }).join("") + `<div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">
+      ${a.answers.length} ${a.answers.length === 1 ? "policy" : "policies"} matched
+      &ldquo;${esc(a.question)}&rdquo; out of ${a.searched.policies} searched. Passages are quoted from the policy, unedited.
+    </div>`;
+  }
+
+  // ---------------------------- AMENDMENT MEMOS ----------------------------
+  // What is in force goes ABOVE the original text, and the original is labelled
+  // as what it is. Somebody reading top to bottom reads the current rule first;
+  // somebody who stops reading half way has still read the current rule. Any
+  // other order asks a person to notice a correction after they have already
+  // acted on the thing it corrects.
+  function memoBlocks(pol) {
+    const inForce = pol.amendments_in_force || [];
+    const scheduled = pol.amendments_scheduled || [];
+    if (!inForce.length && !scheduled.length) return "";
+    const memo = (m, cls, head) => `<div class="pol-memo ${cls}">
+      <div class="pol-memo-h">${head}</div>
+      <div class="pol-memo-t">${esc(m.title)}</div>
+      <div class="pol-memo-b">${esc(m.body)}</div>
+      <div class="pol-memo-f">${m.created_by ? "Issued by " + esc(m.created_by) : ""}${
+        m.issued_at ? " &middot; " + esc(new Date(m.issued_at).toLocaleDateString()) : ""}${
+        m.policy_version ? " &middot; amends v" + esc(m.policy_version) : ""}</div>
+    </div>`;
+    return inForce.map((m) => memo(m, "", "In force" + (m.effective_date ? " &middot; since " + esc(String(m.effective_date).slice(0, 10)) : ""))).join("")
+      + scheduled.map((m) => memo(m, "scheduled", "Takes effect " + esc(String(m.effective_date || "").slice(0, 10)) + " &middot; not the rule yet")).join("")
+      + (inForce.length
+        ? `<div class="pol-orig-h">Original policy text — the amendment${inForce.length > 1 ? "s" : ""} above take${inForce.length > 1 ? "" : "s"} precedence</div>`
+        : "");
+  }
+
+  // The manager's view of the same thing: drafts nobody else can see, and the
+  // memos that no longer apply. Rescinded ones are listed rather than hidden --
+  // "what did this policy used to say, and who changed it" is the question this
+  // whole feature exists to be able to answer.
+  function memoAdmin(pol) {
+    const drafts = pol.amendments_drafts || [];
+    const gone = pol.amendments_rescinded || [];
+    if (!drafts.length && !gone.length && !(pol.amendments_in_force || []).length && !(pol.amendments_scheduled || []).length) return "";
+    const row = (m, cls, head, actions) => `<div class="pol-memo ${cls}">
+      <div class="pol-memo-h">${head}</div>
+      <div class="pol-memo-t">${esc(m.title)}</div>
+      <div class="pol-memo-f">${m.created_by ? "By " + esc(m.created_by) : ""}${
+        m.rescinded_at ? " &middot; withdrawn " + esc(String(m.rescinded_at).slice(0, 10)) + (m.rescinded_by ? " by " + esc(m.rescinded_by) : "") : ""}${
+        m.rescind_reason ? " &middot; " + esc(m.rescind_reason) : ""}
+        ${actions}</div>
+    </div>`;
+    const live = [...(pol.amendments_in_force || []), ...(pol.amendments_scheduled || [])];
+    return `<details style="margin-top:16px;" ${drafts.length ? "open" : ""}>
+      <summary style="cursor:pointer; font-size:12.5px; font-weight:700; color:var(--text-muted);">
+        Amendment memos (${live.length} in force or scheduled${drafts.length ? `, ${drafts.length} draft` : ""}${gone.length ? `, ${gone.length} rescinded` : ""})
+      </summary>
+      <div style="margin-top:10px;">
+        ${live.map((m) => row(m, "", m.in_force ? "In force" : "Scheduled",
+          `<button class="btn small secondary" data-amend-edit="${m.id}">Edit</button>
+           <button class="btn small secondary" data-amend-rescind="${m.id}">Rescind</button>`)).join("")}
+        ${drafts.map((m) => row(m, "draft", "Draft — not issued, and not visible to staff",
+          `<button class="btn small secondary" data-amend-edit="${m.id}">Edit</button>`)).join("")}
+        ${gone.map((m) => row(m, "rescinded", "Rescinded — kept as the record of what changed and when", "")).join("")}
+      </div>
+    </details>`;
+  }
+
+  // Writing one. The form is short on purpose: what is changing, when it starts,
+  // and whether it is issued yet. A memo that needs a page of fields is a policy
+  // rewrite wearing a memo's clothes.
+  function amendmentModal(pol, existing, mount) {
+    const a = existing || { title: "", body: "", effective_date: "", status: "Active" };
+    const editing = !!(existing && existing.id);
+    const bd = document.createElement("div"); bd.className = "modal-backdrop";
+    bd.innerHTML = `<div class="modal" style="width:640px; max-width:94vw;">
+      <div class="modal-header">
+        <h2>${editing ? "Edit amendment memo" : "Amendment memo"}</h2>
+        <button class="close-btn">✕</button>
+      </div>
+      <div style="font-size:12.5px; color:var(--text-muted); margin:-6px 0 14px;">
+        Amends <strong>${esc(pol.title)}</strong> (currently v${esc(pol.version || "1")}). The policy's own wording is not
+        changed — this memo sits on top of it, dated and attributed, and the original stays exactly as approved.
+      </div>
+      <div class="field" style="margin-bottom:10px;">
+        <label>What is changing</label>
+        <input id="am-title" value="${esc(a.title)}" maxlength="200"
+          placeholder="e.g. Treatment plan turnaround extended to 14 days" style="width:100%;" />
+      </div>
+      <div class="field" style="margin-bottom:10px;">
+        <label>The memo</label>
+        <textarea id="am-body" rows="8" style="width:100%; font-family:inherit;"
+          placeholder="State the change plainly, and what it replaces. e.g. Effective immediately, BCBAs have 14 calendar days to complete a treatment plan following the assessment. This replaces the 7-day turnaround in section 3.">${esc(a.body)}</textarea>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div class="field">
+          <label>Effective date</label>
+          <input id="am-date" type="date" value="${esc(String(a.effective_date || "").slice(0, 10))}" style="width:100%;" />
+          <div style="font-size:11.5px; color:var(--text-muted); margin-top:3px;">Leave blank to apply as soon as it is issued.</div>
+        </div>
+        <div class="field">
+          <label>Status</label>
+          <select id="am-status" style="width:100%;">
+            <option value="Active"${a.status !== "Draft" ? " selected" : ""}>Issue it now</option>
+            <option value="Draft"${a.status === "Draft" ? " selected" : ""}>Keep as a draft</option>
+          </select>
+        </div>
+      </div>
+      <div id="am-note" style="margin-top:12px; font-size:12.5px; background:#fff8e8; border:1px solid #e6c98a; border-radius:9px; padding:10px 12px; color:#8a6516;"></div>
+      <div id="am-err" style="color:#b91c1c; font-size:12.5px; margin-top:10px;"></div>
+      <div style="margin-top:14px; display:flex; gap:8px;">
+        <button class="btn" id="am-save">${editing ? "Save memo" : "Add memo to this policy"}</button>
+        <button class="btn secondary" id="am-cancel">Cancel</button>
+      </div>
+    </div>`;
+    document.body.appendChild(bd);
+    const close = () => bd.remove();
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.querySelector("#am-cancel").addEventListener("click", close);
+    bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+
+    // Says what is about to happen before it happens. Re-issuing a policy that
+    // asks for a signature means everybody signs again, and finding that out
+    // afterwards is how a feature gets a reputation.
+    const note = bd.querySelector("#am-note");
+    const paint = () => {
+      const issuing = bd.querySelector("#am-status").value === "Active";
+      note.style.display = issuing ? "" : "none";
+      if (!issuing) return;
+      note.innerHTML = `Issuing this memo re-issues <strong>${esc(pol.title)}</strong> as a new version.`
+        + (pol.requires_acknowledgment
+          ? " Because this policy requires acknowledgment, <strong>everyone will be asked to acknowledge it again</strong> — the signatures already given stay on file against the version they were given for."
+          : " Acknowledgments already on file are untouched.");
+    };
+    bd.querySelector("#am-status").addEventListener("change", paint);
+    paint();
+
+    bd.querySelector("#am-save").addEventListener("click", async () => {
+      const btn = bd.querySelector("#am-save");
+      const err = bd.querySelector("#am-err");
+      const body = {
+        title: bd.querySelector("#am-title").value.trim(),
+        body: bd.querySelector("#am-body").value.trim(),
+        effective_date: bd.querySelector("#am-date").value || null,
+        status: bd.querySelector("#am-status").value,
+      };
+      if (!body.title) { err.textContent = "Say what is changing."; return; }
+      if (!body.body) { err.textContent = "A memo needs to say what the change is."; return; }
+      err.textContent = "";
+      btn.disabled = true; btn.textContent = "Saving…";
+      try {
+        const r = editing
+          ? await api("/api/policies/amendments/" + existing.id, { method: "PATCH", body })
+          : await api("/api/policies/" + pol.id + "/amendments", { method: "POST", body });
+        close();
+        await renderPolicies(mount);
+        if (r.reissued_as) {
+          alert(`Memo added. "${pol.title}" is now version ${r.reissued_as}.`
+            + (r.resets_acknowledgments ? "\n\nEveryone will be asked to acknowledge the new version. The acknowledgments already given are kept against the version they were given for." : ""));
+        }
+      } catch (e2) { err.textContent = e2.message || "Could not save that."; btn.disabled = false; btn.textContent = editing ? "Save memo" : "Add memo to this policy"; }
+    });
+  }
+
   // Tap a card to read the whole policy without leaving the page.
   function policyReader(pol, d, mount, colorOf) {
     if (!pol) return;
@@ -427,6 +733,7 @@
           pol.updated_at ? " · updated " + esc(new Date(pol.updated_at).toLocaleDateString()) : ""}
         ${pol.document ? `<div style="margin-top:3px;">From <strong>${esc(pol.document.title)}</strong>${pol.section_ref ? " · " + esc(pol.section_ref) : ""}</div>` : ""}
       </div>
+      ${memoBlocks(pol)}
       <div class="pol-read">${esc(pol.body || "")}</div>
       ${pol.requires_acknowledgment ? `<div id="pol-ack-box" style="margin-top:14px; padding:11px 13px; border-radius:9px; ${
         pol.my_acknowledgment
@@ -437,7 +744,9 @@
           : `<div style="margin-bottom:8px;">This policy requires your acknowledgment${pol.version ? ` (version ${esc(pol.version)})` : ""}.</div>
              <button class="btn small" id="pol-ack-btn">I have read and acknowledge this policy</button>`}
       </div>` : ""}
+      ${d.can_manage ? memoAdmin(pol) : ""}
       <div style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;">
+        ${d.can_manage ? `<button class="btn" id="pol-r-amend">+ Amendment memo</button>` : ""}
         ${d.can_manage ? `<button class="btn secondary" id="pol-r-edit">Edit</button>` : ""}
         ${pol.document ? `<button class="btn secondary" id="pol-r-doc">View full source document</button>` : ""}
         <a class="btn secondary" href="/policies/${esc(pol.slug)}" target="_blank" rel="noopener">Open public page</a>
@@ -449,6 +758,23 @@
     bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
     const rOn = (sel, fn) => { const el = bd.querySelector(sel); if (el) el.addEventListener("click", fn); };
     rOn("#pol-r-edit", () => { close(); policyModal(pol, d, mount); });
+    rOn("#pol-r-amend", () => { close(); amendmentModal(pol, null, mount); });
+    bd.querySelectorAll("[data-amend-edit]").forEach((b) => b.addEventListener("click", () => {
+      const all = [...(pol.amendments_in_force || []), ...(pol.amendments_scheduled || []), ...(pol.amendments_drafts || [])];
+      const a = all.find((x) => String(x.id) === b.dataset.amendEdit);
+      if (a) { close(); amendmentModal(pol, a, mount); }
+    }));
+    bd.querySelectorAll("[data-amend-rescind]").forEach((b) => b.addEventListener("click", async () => {
+      const reason = prompt("Why is this memo being withdrawn? (Optional — it stays in the policy's history either way.)");
+      if (reason === null) return;
+      b.disabled = true; b.textContent = "Rescinding…";
+      try {
+        const r = await api("/api/policies/amendments/" + b.dataset.amendRescind + "/rescind", { method: "POST", body: { reason } });
+        close();
+        await renderPolicies(mount);
+        if (r.reissued_as) alert("Memo rescinded. The policy is now version " + r.reissued_as + ".");
+      } catch (err) { alert(err.message); b.disabled = false; b.textContent = "Rescind"; }
+    }));
 
     // Acknowledgment is recorded against the version being read, so a later
     // re-issue asks again rather than counting this one.

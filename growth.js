@@ -427,6 +427,43 @@ module.exports = function initGrowth(ctx) {
     )`).catch((e) => console.error("crm_policy_acknowledgments:", e.message));
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_policy_ack_policy ON crm_policy_acknowledgments(policy_id)`).catch(() => {});
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_policy_ack_employee ON crm_policy_acknowledgments(employee_id)`).catch(() => {});
+
+    // ---- Amendment memos -----------------------------------------------
+    // "Our SOP says the turnaround time for treatment plans is 7 days; we are
+    // changing it to 14." That is a memo, not a rewrite, and the difference
+    // matters: the approved language of the original stays exactly as it was
+    // approved, and the change is a dated, attributed record sitting on top of
+    // it. Anyone can see what the rule is now AND what it was, without
+    // anybody's word for it.
+    //
+    // WHY NOT JUST EDIT THE POLICY TEXT. Because then nothing anywhere says
+    // the rule used to be seven days, who changed it, or when it took effect
+    // -- and an acknowledgment somebody signed last year silently becomes an
+    // acknowledgment of language they never read. Editing is still there for
+    // fixing a typo. This is for changing a rule.
+    //
+    // Nothing here is ever deleted once it has been in force. A memo that no
+    // longer applies is RESCINDED: it stops applying, keeps its dates, and
+    // stays in the policy's history.
+    await dbRun(`CREATE TABLE IF NOT EXISTS crm_policy_amendments (
+      id SERIAL PRIMARY KEY,
+      policy_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      effective_date TEXT,           -- NULL = in force as soon as it is issued
+      status TEXT DEFAULT 'Active',  -- Draft | Active | Rescinded
+      policy_version TEXT,           -- the version of the policy it was issued against
+      created_by TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      issued_at TEXT,                -- when it first went Active
+      applied_at TEXT,               -- when it actually BECAME the rule
+      rescinded_at TEXT,
+      rescinded_by TEXT,
+      rescind_reason TEXT
+    )`).catch((e) => console.error("crm_policy_amendments:", e.message));
+    await dbRun(`ALTER TABLE crm_policy_amendments ADD COLUMN IF NOT EXISTS applied_at TEXT`).catch(() => {});
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_policy_amend_policy ON crm_policy_amendments(policy_id)`).catch(() => {});
   }
 
   // Postgres text columns cannot hold a NUL byte, and a failed PDF extraction
@@ -537,9 +574,246 @@ module.exports = function initGrowth(ctx) {
     return "";
   }
 
+  // ================= AMENDMENT MEMOS =================
+  const AMENDMENT_STATUSES = ["Draft", "Active", "Rescinded"];
+
+  // An amendment is IN FORCE when it has been issued and its effective date has
+  // arrived. A memo dated for the first of next month is real, saved and
+  // visible -- it is simply not the rule yet, and showing it as though it were
+  // would be worse than not having it.
+  function amendmentInForce(a, today) {
+    if (!a || (a.status || "Active") !== "Active") return false;
+    const eff = String(a.effective_date || "").slice(0, 10);
+    if (!eff) return true;
+    return eff <= (today || nowISO().slice(0, 10));
+  }
+
+  // Re-issuing on amendment. An amended policy is a different policy from the
+  // one people read, so it gets a new version -- which is exactly the
+  // mechanism acknowledgments already key on: the old signatures stay against
+  // the version they were given for, and everyone owes a fresh one. Getting
+  // this wrong in the other direction is the real risk: a rule changed under a
+  // signature that still reads as current.
+  //
+  // The last number in the string is the one that moves, so "1" -> "2",
+  // "2.3" -> "2.4" and "v7" -> "v8" all behave the way somebody would expect.
+  // A version with no number in it at all gets ".1" rather than a guess.
+  function nextVersion(v) {
+    const cur = String(v == null ? "" : v).trim() || "1";
+    const m = cur.match(/(\d+)(?!.*\d)/);
+    if (!m) return cur + ".1";
+    const n = String(Number(m[1]) + 1);
+    return cur.slice(0, m.index) + n + cur.slice(m.index + m[1].length);
+  }
+
+  function shapeAmendment(a) {
+    return {
+      id: a.id, policy_id: a.policy_id, title: a.title, body: a.body,
+      effective_date: a.effective_date, status: a.status || "Active",
+      policy_version: a.policy_version,
+      created_by: a.created_by, created_at: a.created_at, updated_at: a.updated_at,
+      issued_at: a.issued_at, applied_at: a.applied_at,
+      rescinded_at: a.rescinded_at, rescinded_by: a.rescinded_by, rescind_reason: a.rescind_reason,
+      in_force: amendmentInForce(a),
+    };
+  }
+
+  // Everything attached to a policy, split the way a reader needs it: what
+  // applies now, what is dated for later, and what no longer applies but
+  // happened. The last group is why nothing is deleted.
+  function groupAmendments(rows) {
+    const all = (rows || []).map(shapeAmendment);
+    return {
+      all,
+      in_force: all.filter((a) => a.in_force),
+      scheduled: all.filter((a) => a.status === "Active" && !a.in_force),
+      drafts: all.filter((a) => a.status === "Draft"),
+      rescinded: all.filter((a) => a.status === "Rescinded"),
+    };
+  }
+
+  // A memo dated for the first of next month has not changed anything yet, so
+  // the policy is not re-issued when it is written -- it is re-issued when the
+  // date arrives. There is no scheduler here, so the catch-up runs on the way
+  // in to any policies request: find the memos whose date has passed and that
+  // have not been applied, and apply them once. applied_at is what makes it
+  // once rather than every request.
+  async function applyDueAmendments() {
+    const today = nowISO().slice(0, 10);
+    const due = await dbAll(
+      `SELECT * FROM crm_policy_amendments
+        WHERE COALESCE(status, 'Active') = 'Active' AND applied_at IS NULL
+          AND effective_date IS NOT NULL AND effective_date <= ?`, [today]
+    ).catch(() => []);
+    for (const a of due) {
+      const pol = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [a.policy_id]).catch(() => null);
+      await dbRun("UPDATE crm_policy_amendments SET applied_at = ? WHERE id = ?", [nowISO(), a.id]).catch(() => {});
+      if (pol) await reissueForAmendment(pol, { name: "Scheduled amendment" });
+    }
+    return due.length;
+  }
+
+  // Bumps the policy's version and restarts its acknowledgment clock. Existing
+  // acknowledgments are NOT touched: they stay against the version they were
+  // given for, which is what makes them worth keeping.
+  async function reissueForAmendment(pol, user) {
+    const to = nextVersion(versionOf(pol));
+    await dbRun(
+      "UPDATE crm_policies SET version = ?, ack_required_since = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+      [to, nowISO(), (user && user.name) || null, nowISO(), pol.id]
+    ).catch(() => {});
+    return to;
+  }
+
+  // ================= ASK A QUESTION =================
+  // "People need to be able to put in a question and have it pull up the
+  // related policy."
+  //
+  // The library's existing search is a SUBSTRING MATCH, which is right for
+  // "attendance" and useless for a question: nothing in any document contains
+  // the string "how long do BCBAs have to finish a treatment plan". Typing a
+  // question into it returns nothing at all, which reads as "we have no policy
+  // on that" -- the worst possible wrong answer.
+  //
+  // So this is real retrieval, and deliberately the boring kind. No model
+  // touches the approved language: every word shown to a person is a verbatim
+  // passage from a policy or a memo, and the ranking is arithmetic anyone can
+  // check. What it returns is a POINTER -- "this policy, this paragraph" --
+  // never a composed answer, because a composed answer is where a policy tool
+  // starts quietly inventing rules.
+  const STOPWORDS = new Set([
+    "a", "about", "an", "and", "any", "are", "as", "at", "be", "been", "being",
+    "but", "by", "can", "could", "did", "do", "does", "doing", "for", "from",
+    "get", "got", "had", "has", "have", "he", "her", "his", "how", "i", "if",
+    "in", "into", "is", "it", "its", "just", "me", "must", "my", "of", "on",
+    "or", "our", "out", "per", "she", "should", "so", "some", "such", "than",
+    "that", "the", "their", "them", "then", "there", "these", "they", "this",
+    "those", "to", "us", "was", "we", "were", "what", "when", "where", "which",
+    "who", "whom", "why", "will", "with", "would", "you", "your",
+  ]);
+
+  // Deliberately crude. Enough that "days" finds "day" and "reporting" finds
+  // "report"; not so much that it starts conflating words a policy draws a
+  // distinction between.
+  function stem(w) {
+    let x = w;
+    if (x.length > 5 && /ing$/.test(x)) x = x.slice(0, -3);
+    else if (x.length > 5 && /ed$/.test(x)) x = x.slice(0, -2);
+    if (x.length > 3 && /ies$/.test(x)) x = x.slice(0, -3) + "y";
+    else if (x.length > 3 && /s$/.test(x) && !/ss$/.test(x)) x = x.slice(0, -1);
+    return x;
+  }
+
+  function termsOf(text, keepStopwords) {
+    const out = [];
+    for (const raw of String(text || "").toLowerCase().split(/[^a-z0-9]+/)) {
+      if (!raw) continue;
+      if (!keepStopwords && STOPWORDS.has(raw)) continue;
+      if (raw.length < 2) continue;
+      out.push(stem(raw));
+    }
+    return out;
+  }
+
+  // Passages, not whole documents. A handbook section that mentions the right
+  // word once in eight paragraphs is a bad answer even when it is the right
+  // policy: the person still has to find the sentence. Splitting on blank
+  // lines is the first cut; a paragraph long enough to hide a sentence in gets
+  // cut again on sentence boundaries, and anything too short to stand alone is
+  // folded into its neighbour.
+  function chunk(text) {
+    const MAX = 700, MIN = 110;
+    const paras = String(text || "").split(/\n\s*\n/).map((x) => x.trim()).filter(Boolean);
+    const pieces = [];
+    for (const para of paras) {
+      if (para.length <= MAX) { pieces.push(para); continue; }
+      let buf = "";
+      for (const sent of para.split(/(?<=[.!?])\s+/)) {
+        if (buf && (buf + " " + sent).length > MAX) { pieces.push(buf); buf = sent; }
+        else buf = buf ? buf + " " + sent : sent;
+      }
+      if (buf) pieces.push(buf);
+    }
+    const out = [];
+    for (const piece of pieces) {
+      if (out.length && piece.length < MIN) out[out.length - 1] += "\n\n" + piece;
+      else out.push(piece);
+    }
+    return out.slice(0, 120);
+  }
+
+  // Does the question want a number out of the policy? "How long", "how many
+  // days", "what is the deadline" -- when it does, a passage carrying a figure
+  // is far more likely to be the sentence somebody needs than the paragraph of
+  // preamble beside it.
+  const WANTS_NUMBER = /\b(how (long|many|much|often)|deadline|turnaround|within|due|timeframe|time ?frame|days?|hours?|weeks?|months?)\b/i;
+
+  // Term frequency, inverse document frequency, over passages. The two
+  // additions to plain tf-idf are both about answering a QUESTION rather than
+  // matching a word: the policy's own title counts for a lot (a question is
+  // usually about a subject, and the subject is the title), and two query words
+  // landing next to each other in the text -- "treatment plan", "drug test" --
+  // are worth more than the same two words in different paragraphs.
+  function rankPassages(corpus, qTerms) {
+    const N = corpus.length || 1;
+    const df = new Map();
+    corpus.forEach((c) => {
+      new Set(c.terms).forEach((t) => df.set(t, (df.get(t) || 0) + 1));
+    });
+    const idf = (t) => Math.log(1 + N / (1 + (df.get(t) || 0)));
+    const wantsNumber = qTerms.wantsNumber;
+
+    return corpus.map((c) => {
+      let score = 0;
+      const matched = new Set();
+      const counts = new Map();
+      c.terms.forEach((t) => counts.set(t, (counts.get(t) || 0) + 1));
+      for (const t of qTerms.unique) {
+        const tf = counts.get(t) || 0;
+        if (!tf) continue;
+        matched.add(t);
+        score += idf(t) * (1 + Math.log(tf));
+      }
+      if (!matched.size) return { ...c, score: 0, matched: [] };
+      // ONE WORD IN COMMON IS NOT AN ANSWER. "What is the policy on keeping
+      // tropical fish in the clinic aquarium" shares the word "policy" with
+      // every document in the library, and returning the leave policy for it
+      // is worse than returning nothing -- it is a confident wrong pointer.
+      // A one-word question is exempt: there it is all there is to go on.
+      if (qTerms.unique.length >= 2 && matched.size < 2) return { ...c, score: 0, matched: [] };
+
+      // How much of the question this passage actually covers. Two of six
+      // words is a weak answer however often they appear.
+      const coverage = matched.size / qTerms.unique.length;
+      score *= 0.4 + 0.6 * coverage;
+
+      // The title of the policy the passage belongs to.
+      const titleHits = qTerms.unique.filter((t) => c.titleTerms.includes(t)).length;
+      if (titleHits) score += titleHits * 1.9;
+
+      // Adjacent query words in the text.
+      for (let i = 0; i < qTerms.list.length - 1; i++) {
+        const pair = qTerms.list[i] + " " + qTerms.list[i + 1];
+        for (let j = 0; j < c.terms.length - 1; j++) {
+          if (c.terms[j] + " " + c.terms[j + 1] === pair) { score += 1.4; break; }
+        }
+      }
+
+      if (wantsNumber && /\d/.test(c.text)) score += 0.8;
+      // A memo is the newer instruction. When both the original and the memo
+      // answer the question, the memo is the one somebody needs to read.
+      if (c.source === "amendment") score *= 1.35;
+
+      return { ...c, score, matched: [...matched] };
+    }).filter((c) => c.score > 0).sort((a, b) => b.score - a.score);
+  }
+
   async function handleApi(req, res, pathname, method, query, user) {
     if (!pathname.startsWith("/api/leads") && !pathname.startsWith("/api/policies")) return false;
     try {
+      // Memos whose effective date has arrived become the rule before anything
+      // is read or answered, so no request can be served the old one.
+      if (pathname.startsWith("/api/policies")) await applyDueAmendments().catch(() => {});
       // ---- PUBLIC: published policies (for the QR viewer). No auth. ----
       if (pathname === "/api/policies/public" && method === "GET") {
         const rows = await dbAll("SELECT id, title, category, slug, color, summary, updated_at FROM crm_policies WHERE published = TRUE ORDER BY category, title");
@@ -549,7 +823,14 @@ module.exports = function initGrowth(ctx) {
       if (pubOne && method === "GET") {
         const p = await dbGet("SELECT id, title, category, body, slug, color, updated_at FROM crm_policies WHERE slug = ? AND published = TRUE", [pubOne[1]]);
         if (!p) return json(res, 404, { error: "Not found" });
-        return json(res, 200, p);
+        // The QR viewer is where most people actually read a policy. Serving
+        // it the original text with no mention of a memo that changed the rule
+        // would make this the one place in the practice showing the old one.
+        const pubAmend = await dbAll(
+          "SELECT * FROM crm_policy_amendments WHERE policy_id = ? ORDER BY COALESCE(effective_date, created_at), id",
+          [p.id]
+        ).catch(() => []);
+        return json(res, 200, { ...p, amendments: groupAmendments(pubAmend).in_force });
       }
 
       if (!user) return json(res, 401, { error: "Not authenticated" });
@@ -706,16 +987,29 @@ module.exports = function initGrowth(ctx) {
         const ackKey = (id, v) => `${id}::${v}`;
         const mine = new Map(myAcks.map((a) => [ackKey(a.policy_id, a.policy_version), a.acknowledged_at]));
 
+        // Amendment memos travel with the policy. A card that does not say it
+        // has been amended is a card that shows somebody the old rule.
+        const amendAll = await dbAll(
+          "SELECT * FROM crm_policy_amendments ORDER BY COALESCE(effective_date, created_at), id"
+        ).catch(() => []);
+        const amendBy = new Map();
+        amendAll.forEach((a) => {
+          if (!amendBy.has(a.policy_id)) amendBy.set(a.policy_id, []);
+          amendBy.get(a.policy_id).push(a);
+        });
+
         const filtered = policies.filter((p) => {
           const status = p.status || "Active";
           if (cat && p.category !== cat) return false;
           if (st && status !== st) return false;
           if (!q) return true;
-          return [p.title, p.category, p.summary, p.body, p.document_title]
+          const memos = (amendBy.get(p.id) || []).map((a) => a.title + " " + a.body).join(" ");
+          return [p.title, p.category, p.summary, p.body, p.document_title, memos]
             .some((f) => String(f || "").toLowerCase().includes(q));
         }).map((p) => {
           const v = versionOf(p);
           const acknowledgedAt = mine.get(ackKey(p.id, v)) || null;
+          const g = groupAmendments(amendBy.get(p.id) || []);
           return {
             id: p.id, title: p.title, category: p.category, slug: p.slug,
             summary: p.summary, body: p.body, color: colorFor(p.category, p.color),
@@ -727,6 +1021,11 @@ module.exports = function initGrowth(ctx) {
               : null,
             requires_acknowledgment: p.requires_acknowledgment === true || p.requires_acknowledgment === "t",
             my_acknowledgment: acknowledgedAt ? { version: v, acknowledged_at: acknowledgedAt } : null,
+            amendments_in_force: g.in_force,
+            amendments_scheduled: g.scheduled,
+            amendments_rescinded: g.rescinded,
+            amendments_drafts: canPolicyManage(user) ? g.drafts : [],
+            amended: g.in_force.length > 0,
           };
         });
 
@@ -747,6 +1046,290 @@ module.exports = function initGrowth(ctx) {
           category_colors: CATEGORY_COLORS,
           can_manage: canPolicyManage(user),
         });
+      }
+
+      // ---- ASK A QUESTION -------------------------------------------------
+      // Returns POINTERS: which policy, and which paragraph of it. Every word
+      // shown is verbatim from a policy or a memo. Nothing is composed, and
+      // nothing is summarised -- a policy tool that writes its own sentences is
+      // a policy tool that eventually invents a rule.
+      if (pathname === "/api/policies/ask" && method === "GET") {
+        const question = String((query && query.q) || "").trim();
+        if (!question) return json(res, 400, { error: "Ask a question." });
+
+        const list = termsOf(question);
+        if (!list.length) {
+          return json(res, 200, {
+            question, terms: [], answers: [], searched: { policies: 0, passages: 0 },
+            note: "That question was all common words, so there was nothing to search on. Try naming the thing you are asking about.",
+          });
+        }
+        const qTerms = { list, unique: [...new Set(list)], wantsNumber: WANTS_NUMBER.test(question) };
+
+        // Only what is actually in force answers a question. A draft is not the
+        // rule and an archived policy is not the rule; counting them is
+        // reported below rather than silently dropped, so "we have nothing on
+        // that" and "we have a draft on that" do not look the same.
+        const all = await dbAll(
+          `SELECT p.*, d.title AS document_title, d.doc_type AS document_type
+             FROM crm_policies p LEFT JOIN crm_policy_documents d ON d.id = p.document_id`
+        ).catch(() => []);
+        const active = all.filter((p) => (p.status || "Active") === "Active");
+        const notActive = all.length - active.length;
+
+        const amendRows = await dbAll(
+          "SELECT * FROM crm_policy_amendments ORDER BY COALESCE(effective_date, created_at)"
+        ).catch(() => []);
+        const byPolicy = new Map();
+        amendRows.forEach((a) => {
+          if (!byPolicy.has(a.policy_id)) byPolicy.set(a.policy_id, []);
+          byPolicy.get(a.policy_id).push(a);
+        });
+
+        const corpus = [];
+        for (const pol of active) {
+          const titleTerms = termsOf([pol.title, pol.category, pol.section_ref, pol.document_title].join(" "));
+          for (const text of chunk(pol.body)) {
+            corpus.push({ policyId: pol.id, source: "policy", text, titleTerms, terms: termsOf(text) });
+          }
+          // The summary is worth searching but is not an answer on its own, so
+          // it points at the policy without ever becoming the quoted passage.
+          if (pol.summary) {
+            corpus.push({ policyId: pol.id, source: "summary", text: String(pol.summary), titleTerms, terms: termsOf(pol.summary) });
+          }
+          for (const a of groupAmendments(byPolicy.get(pol.id) || []).in_force) {
+            // The memo's TITLE goes with its first paragraph rather than
+            // standing as a passage of its own. On its own it out-ranks the
+            // body -- it is short, and every word in it is a query word -- so
+            // the answer becomes the headline "turnaround extended to 14 days"
+            // instead of the sentence that says what the rule now is.
+            const parts = chunk(a.body);
+            if (!parts.length) parts.push("");
+            parts[0] = a.title + "\n\n" + parts[0];
+            for (const text of parts) {
+              corpus.push({
+                policyId: pol.id, source: "amendment", amendment: a, text,
+                titleTerms: titleTerms.concat(termsOf(a.title)), terms: termsOf(text),
+              });
+            }
+          }
+        }
+
+        const ranked = rankPassages(corpus, qTerms);
+        const polById = new Map(active.map((x) => [x.id, x]));
+        const seen = new Map();
+        for (const r of ranked) {
+          if (!seen.has(r.policyId)) seen.set(r.policyId, []);
+          seen.get(r.policyId).push(r);
+        }
+
+        const answers = [...seen.entries()]
+          .map(([pid, hits]) => {
+            const pol = polById.get(pid);
+            const groups = groupAmendments(byPolicy.get(pid) || []);
+            // A summary can bring a policy into the results but never speaks
+            // for it: if that is all there is, quote the body instead.
+            const quotable = hits.filter((h) => h.source !== "summary");
+            const best = quotable[0] || hits[0];
+            const other = quotable.find((h) => h.source !== best.source) || null;
+            return {
+              score: +hits[0].score.toFixed(3),
+              matched: best.matched,
+              policy: {
+                id: pol.id, title: pol.title, category: pol.category, slug: pol.slug,
+                // The whole text, so an answer can be opened and read even
+                // when the library's own filters have that policy hidden.
+                body: pol.body, summary: pol.summary,
+                color: colorFor(pol.category, pol.color), status: pol.status || "Active",
+                version: versionOf(pol), section_ref: pol.section_ref,
+                effective_date: pol.effective_date, updated_at: pol.updated_at,
+                document: pol.document_id ? { id: pol.document_id, title: pol.document_title, type: pol.document_type } : null,
+              },
+              passage: {
+                text: best.text,
+                source: best.source === "amendment" ? "amendment" : "policy",
+                amendment_id: best.amendment ? best.amendment.id : null,
+                amendment_title: best.amendment ? best.amendment.title : null,
+                effective_date: best.amendment ? best.amendment.effective_date : null,
+              },
+              // The other half of the picture: the original wording when the
+              // memo answered, the memo when the original did.
+              also: other ? {
+                text: other.text,
+                source: other.source === "amendment" ? "amendment" : "policy",
+                amendment_id: other.amendment ? other.amendment.id : null,
+                amendment_title: other.amendment ? other.amendment.title : null,
+              } : null,
+              // ALWAYS carried, whether or not a memo scored. This is what
+              // stops the answer being the superseded rule: a policy that has
+              // been amended says so on every answer it gives.
+              amended: groups.in_force.length > 0,
+              amendments_in_force: groups.in_force,
+              amendments_scheduled: groups.scheduled,
+            };
+          })
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 5);
+
+        return json(res, 200, {
+          question, terms: qTerms.unique, answers,
+          searched: { policies: active.length, passages: corpus.length, not_active: notActive },
+        });
+      }
+
+      // ---- AMENDMENT MEMOS -------------------------------------------------
+      const amendList = pathname.match(/^\/api\/policies\/(\d+)\/amendments$/);
+      if (amendList && method === "GET") {
+        const pid = Number(amendList[1]);
+        const pol = await dbGet("SELECT id, title, version FROM crm_policies WHERE id = ?", [pid]);
+        if (!pol) return json(res, 404, { error: "Policy not found." });
+        const rows = await dbAll(
+          "SELECT * FROM crm_policy_amendments WHERE policy_id = ? ORDER BY COALESCE(effective_date, created_at), id",
+          [pid]
+        ).catch(() => []);
+        const groups = groupAmendments(rows);
+        // A draft is not the rule and is nobody's business but the people who
+        // can write one. Everything that has been in force is everybody's.
+        const manage = canPolicyManage(user);
+        return json(res, 200, {
+          policy: { id: pol.id, title: pol.title, version: versionOf(pol) },
+          in_force: groups.in_force,
+          scheduled: groups.scheduled,
+          rescinded: groups.rescinded,
+          drafts: manage ? groups.drafts : [],
+          can_manage: manage,
+          statuses: AMENDMENT_STATUSES,
+        });
+      }
+
+      if (amendList && method === "POST") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const pid = Number(amendList[1]);
+        const pol = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [pid]);
+        if (!pol) return json(res, 404, { error: "Policy not found." });
+        const b = await readBody(req);
+        const title = String(b.title || "").trim();
+        const body = String(b.body || "").trim();
+        if (!title) return json(res, 400, { error: "Give the memo a title — what is changing." });
+        if (!body) return json(res, 400, { error: "A memo needs to say what the change is." });
+        const status = AMENDMENT_STATUSES.includes(b.status) ? b.status : "Active";
+        if (status === "Rescinded") {
+          return json(res, 400, { error: "A memo cannot be created already rescinded." });
+        }
+        const eff = b.effective_date ? String(b.effective_date).slice(0, 10) : null;
+        if (eff && !/^\d{4}-\d{2}-\d{2}$/.test(eff)) {
+          return json(res, 400, { error: "Effective date must be a date." });
+        }
+
+        const priorVersion = versionOf(pol);
+        // In force NOW, or dated for later? Only the first changes anything
+        // today, and only the first re-issues the policy.
+        const live = status === "Active" && amendmentInForce({ status, effective_date: eff });
+        const row = await dbGet(
+          `INSERT INTO crm_policy_amendments
+             (policy_id, title, body, effective_date, status, policy_version, created_by, created_at, updated_at, issued_at, applied_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+          [pid, title.slice(0, 200), body, eff, status, priorVersion,
+           (user && user.name) || null, nowISO(), nowISO(),
+           status === "Active" ? nowISO() : null, live ? nowISO() : null]
+        );
+
+        // Issuing a memo re-issues the policy. Everything that follows from a
+        // version change follows from this: acknowledgments already given stay
+        // against the version they were given for, and a policy that asks for
+        // a signature asks everyone again.
+        let reissued = null;
+        if (live) reissued = await reissueForAmendment(pol, user);
+        return json(res, 201, {
+          ok: true, amendment: shapeAmendment(row),
+          reissued_as: reissued, previous_version: reissued ? priorVersion : null,
+          resets_acknowledgments: !!reissued && (pol.requires_acknowledgment === true || pol.requires_acknowledgment === "t"),
+        });
+      }
+
+      const amendOne = pathname.match(/^\/api\/policies\/amendments\/(\d+)$/);
+      if (amendOne && method === "PATCH") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const id = Number(amendOne[1]);
+        const before = await dbGet("SELECT * FROM crm_policy_amendments WHERE id = ?", [id]);
+        if (!before) return json(res, 404, { error: "Memo not found." });
+        if ((before.status || "Active") === "Rescinded") {
+          // Rescinding is the end of a memo's life, not a stage in it. Letting
+          // a withdrawn memo be edited back into force would make the history
+          // it exists to preserve worthless.
+          return json(res, 400, { error: "A rescinded memo is part of the record and cannot be edited. Write a new one." });
+        }
+        const b = await readBody(req);
+        const allowed = ["title", "body", "effective_date", "status"];
+        const fields = Object.keys(b).filter((k) => allowed.includes(k));
+        if (!fields.length) return json(res, 400, { error: "Nothing to update." });
+        if (b.status !== undefined && !["Draft", "Active"].includes(b.status)) {
+          return json(res, 400, { error: "Use the rescind action to withdraw a memo." });
+        }
+        if (b.title !== undefined && !String(b.title).trim()) return json(res, 400, { error: "Title is required." });
+        if (b.body !== undefined && !String(b.body).trim()) return json(res, 400, { error: "A memo needs to say what the change is." });
+        if (b.effective_date && !/^\d{4}-\d{2}-\d{2}$/.test(String(b.effective_date).slice(0, 10))) {
+          return json(res, 400, { error: "Effective date must be a date." });
+        }
+
+        const goingLive = b.status === "Active" && (before.status || "Active") === "Draft";
+        const effAfter = b.effective_date !== undefined
+          ? (b.effective_date ? String(b.effective_date).slice(0, 10) : null)
+          : before.effective_date;
+        const nowInForce = goingLive && amendmentInForce({ status: "Active", effective_date: effAfter });
+        const extra = (goingLive ? ", issued_at = ?" : "") + (nowInForce ? ", applied_at = ?" : "");
+        await dbRun(
+          `UPDATE crm_policy_amendments SET ${fields.map((f) => `${f} = ?`).join(", ")}${extra}, updated_at = ? WHERE id = ?`,
+          [...fields.map((f) => (f === "effective_date" ? (b[f] ? String(b[f]).slice(0, 10) : null) : b[f])),
+           ...(goingLive ? [nowISO()] : []), ...(nowInForce ? [nowISO()] : []), nowISO(), id]
+        );
+
+        let reissued = null;
+        if (nowInForce) {
+          const pol = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [before.policy_id]);
+          if (pol) reissued = await reissueForAmendment(pol, user);
+        }
+        return json(res, 200, { ok: true, reissued_as: reissued });
+      }
+
+      const amendRescind = pathname.match(/^\/api\/policies\/amendments\/(\d+)\/rescind$/);
+      if (amendRescind && method === "POST") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const id = Number(amendRescind[1]);
+        const a = await dbGet("SELECT * FROM crm_policy_amendments WHERE id = ?", [id]);
+        if (!a) return json(res, 404, { error: "Memo not found." });
+        if ((a.status || "Active") === "Rescinded") return json(res, 200, { ok: true, already: true });
+        const b = await readBody(req);
+        await dbRun(
+          `UPDATE crm_policy_amendments
+              SET status = 'Rescinded', rescinded_at = ?, rescinded_by = ?, rescind_reason = ?, updated_at = ?
+            WHERE id = ?`,
+          [nowISO(), (user && user.name) || null, String(b.reason || "").trim() || null, nowISO(), id]
+        );
+        // Withdrawing a memo changes the rule back, which is as material as
+        // issuing one was. Same treatment -- but only if it had become the rule
+        // in the first place: withdrawing a memo dated for next month, or a
+        // draft, changes nothing today and re-issuing for it would ask the
+        // whole practice to re-sign a policy that never moved.
+        let reissued = null;
+        if (a.applied_at) {
+          const pol = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [a.policy_id]);
+          if (pol) reissued = await reissueForAmendment(pol, user);
+        }
+        return json(res, 200, { ok: true, reissued_as: reissued });
+      }
+
+      if (amendOne && method === "DELETE") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const a = await dbGet("SELECT * FROM crm_policy_amendments WHERE id = ?", [Number(amendOne[1])]);
+        if (!a) return json(res, 404, { error: "Memo not found." });
+        // A draft was never the rule, so deleting one destroys no record. A memo
+        // that has been issued is history and is rescinded, never removed.
+        if ((a.status || "Active") !== "Draft") {
+          return json(res, 400, { error: "This memo has been issued. Rescind it instead — it stays in the policy's history either way." });
+        }
+        await dbRun("DELETE FROM crm_policy_amendments WHERE id = ?", [a.id]);
+        return json(res, 200, { ok: true });
       }
 
       // ---- SOURCE DOCUMENTS ----------------------------------------------
@@ -1210,6 +1793,11 @@ module.exports = function initGrowth(ctx) {
   .back{background:none;border:0;color:var(--navy);font-weight:700;cursor:pointer;font-size:14px;padding:0;margin-bottom:10px;}
   .body{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;white-space:pre-wrap;line-height:1.6;}
   .body h2{color:var(--navy);margin-top:0;}
+  .memo{background:#fff8e8;border:1px solid #e6c98a;border-left:5px solid var(--gold);border-radius:10px;padding:14px 16px;margin:0 0 14px;white-space:pre-wrap;}
+  .memo-h{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#8a6516;margin-bottom:4px;}
+  .memo-t{font-weight:700;color:var(--navy);margin-bottom:6px;}
+  .memo-b{font-size:12px;color:var(--muted);margin-top:8px;}
+  .orig{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border-top:1px solid var(--line);padding-top:12px;margin-bottom:10px;}
 </style></head>
 <body>
 <div class="wrap" id="app"><p style="text-align:center;color:#64748b;">Loading…</p></div>
@@ -1254,7 +1842,15 @@ module.exports = function initGrowth(ctx) {
   function wire(){Array.prototype.forEach.call(document.querySelectorAll("[data-slug]"),function(el){el.addEventListener("click",function(){history.pushState({},"","/policies/"+el.getAttribute("data-slug"));showOne(el.getAttribute("data-slug"));});});}
   function showOne(s){
     fetch("/api/policies/public/"+encodeURIComponent(s)).then(function(r){return r.ok?r.json():Promise.reject();}).then(function(p){
-      app.innerHTML=header()+'<button class="back" id="back">← All policies</button><div class="body" style="border-top:6px solid '+colorOf(p)+'"><h2><span class="dot" style="background:'+colorOf(p)+'"></span>'+esc(p.title)+'</h2><div style="color:#64748b;font-size:12px;margin-bottom:12px;">'+esc(p.category||"")+' · '+esc(when(p.updated_at))+'</div>'+esc(p.body)+'</div>';
+      // Memos first, then the original. Somebody who scans the code and reads
+      // from the top has read the current rule before they reach the wording
+      // it replaced -- which is the only order that is safe to print.
+      var memos=(p.amendments||[]).map(function(a){
+        return '<div class="memo"><div class="memo-h">Amended'+(a.effective_date?' &middot; effective '+esc(String(a.effective_date).slice(0,10)):'')+'</div>'
+          +'<div class="memo-t">'+esc(a.title)+'</div>'+esc(a.body)
+          +(a.created_by?'<div class="memo-b">Issued by '+esc(a.created_by)+'</div>':'')+'</div>';
+      }).join("");
+      app.innerHTML=header()+'<button class="back" id="back">← All policies</button><div class="body" style="border-top:6px solid '+colorOf(p)+'"><h2><span class="dot" style="background:'+colorOf(p)+'"></span>'+esc(p.title)+'</h2><div style="color:#64748b;font-size:12px;margin-bottom:12px;">'+esc(p.category||"")+' · '+esc(when(p.updated_at))+'</div>'+memos+(memos?'<div class="orig">Original policy text — read the amendment(s) above, which take precedence.</div>':'')+esc(p.body)+'</div>';
       document.getElementById("back").addEventListener("click",function(){history.pushState({},"","/policies");showList();});
     }).catch(function(){app.innerHTML=header()+'<button class="back" id="back">← All policies</button><p style="text-align:center;color:#b91c1c;">Policy not found.</p>';var b=document.getElementById("back");if(b)b.addEventListener("click",function(){history.pushState({},"","/policies");showList();});});
   }

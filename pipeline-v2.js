@@ -41,6 +41,57 @@
   // pipeline and the owner's Access toggle for it did nothing. index.html now
   // renders "Client Pipeline" as a normal nav item with a proper role check.
 
+  // ---------------------------------------------------------------------
+  // LANES. A column used to be one card wide, so a phase holding twenty
+  // clients was twenty cards deep and the page just got longer -- which is
+  // exactly how it was reported: "each client card going down, making the
+  // page longer".
+  //
+  // The fix is not to widen every column. Four of the five phases hold a
+  // handful of clients at a time and a wide, mostly empty column is worse
+  // than a narrow full one. So a column earns lanes from how much it is
+  // actually holding: a second past six cards, a third past fourteen, and
+  // never more than three. The busy phase spreads sideways, the quiet ones
+  // stay exactly as they were, and the board gets wider only where there is
+  // something to put in the width.
+  //
+  // Below 1180px there is no width to spend, so every column collapses back
+  // to one lane -- two 130px cards side by side would be worse than the
+  // scrolling this is meant to shorten.
+  //
+  // Written as a stylesheet rather than the inline styles the rest of this
+  // file uses, because the collapse needs a media query and an inline style
+  // cannot hold one. Class names are prefixed: this file is loaded beside
+  // the shell's own stylesheet and a bare name here would style the whole
+  // application.
+  var STYLE_ID = "pv2-board-style";
+  function ensureStyle() {
+    if (document.getElementById(STYLE_ID)) return;
+    var el = document.createElement("style");
+    el.id = STYLE_ID;
+    el.textContent = [
+      ".pv2-board{display:flex;gap:16px;overflow-x:auto;padding-bottom:8px;align-items:flex-start;}",
+      ".pv2-col{--pv2-lanes:1;--pv2-lane:300px;flex:0 0 auto;",
+      "  width:calc(var(--pv2-lanes) * var(--pv2-lane) + (var(--pv2-lanes) - 1) * 10px + 24px);",
+      "  background:rgba(0,0,0,0.02);border-radius:12px;padding:12px;}",
+      ".pv2-col.pv2-l2{--pv2-lanes:2;--pv2-lane:264px;}",
+      ".pv2-col.pv2-l3{--pv2-lanes:3;--pv2-lane:264px;}",
+      ".pv2-cards{display:grid;grid-template-columns:repeat(var(--pv2-lanes),minmax(0,1fr));",
+      "  gap:10px;align-content:start;}",
+      "@media (max-width:1180px){.pv2-col.pv2-l2,.pv2-col.pv2-l3{--pv2-lanes:1;--pv2-lane:300px;}}",
+    ].join("\n");
+    document.head.appendChild(el);
+  }
+
+  // Six and fourteen are the thresholds, not a formula: below six a column
+  // fits on a screen already, and past fourteen two lanes are still seven
+  // rows deep.
+  function lanesFor(count) {
+    if (count > 14) return 3;
+    if (count > 6) return 2;
+    return 1;
+  }
+
   function setActiveNav(isActive) {
     const btn = document.querySelector('.sidebar nav [data-nav="pipeline"]');
     if (!btn) return;
@@ -149,7 +200,7 @@
     const missing = (c.missingItems || []).slice(0, 3);
     const missingKeys = c.missingItemKeys || [];
     return (
-      '<div style="background:#fff;border:1px solid #e6e1d4;border-radius:12px;padding:13px 14px;margin-bottom:10px;border-left:4px solid ' + ms.color + ';cursor:pointer;" data-pv2-open="' + c.id + '">' +
+      '<div style="background:#fff;border:1px solid #e6e1d4;border-radius:12px;padding:13px 14px;border-left:4px solid ' + ms.color + ';cursor:pointer;" data-pv2-open="' + c.id + '">' +
         '<div style="font-weight:700;font-size:14.5px;margin-bottom:6px;">' + esc(c.child_name) +
           // On the card, not behind a click. A waitlisted family is waiting on
           // purpose; without this the card is indistinguishable from one that
@@ -243,16 +294,20 @@
   function render() {
     const mount = document.getElementById("view-mount");
     if (!mount) return;
+    ensureStyle();
     const filtered = applyFilters(allClients);
     const columns = MILESTONES.map((m) => {
       const items = filtered.filter((c) => c.milestone === m.key);
+      var lanes = lanesFor(items.length);
       return (
-        '<div style="flex:0 0 300px;background:rgba(0,0,0,0.02);border-radius:12px;padding:12px;">' +
+        '<div class="pv2-col' + (lanes > 1 ? " pv2-l" + lanes : "") + '" data-pv2-lanes="' + lanes + '">' +
           '<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 12px;">' +
             '<div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:' + m.color + ';display:inline-block;"></span><h3 style="font-size:14px;margin:0;font-weight:700;">' + esc(m.label) + "</h3></div>" +
             '<span style="font-size:12px;color:#767488;background:#fff;border:1px solid #e6e1d4;border-radius:20px;padding:1px 9px;">' + items.length + "</span>" +
           "</div>" +
-          (items.length ? items.map(cardHTML).join("") : '<div style="font-size:12.5px;color:#767488;text-align:center;padding:20px 4px;">No clients here right now.</div>') +
+          (items.length
+            ? '<div class="pv2-cards">' + items.map(cardHTML).join("") + "</div>"
+            : '<div style="font-size:12.5px;color:#767488;text-align:center;padding:20px 4px;">No clients here right now.</div>') +
         "</div>"
       );
     }).join("");
@@ -262,7 +317,7 @@
         '<h1 style="font-size:24px;margin:0 0 4px;font-weight:700;color:#1b2a6b;">Client pipeline</h1>' +
         '<p style="margin:0 0 18px;color:#767488;font-size:14px;">Milestone view with progress, blockers, and next actions. Check off an item to mark it done, or click a card to open the full client record.</p>' +
         filterBarHTML() +
-        '<div style="display:flex;gap:16px;overflow-x:auto;padding-bottom:8px;align-items:flex-start;">' + columns + "</div>" +
+        '<div class="pv2-board">' + columns + "</div>" +
       "</div>";
     mount.dataset.pv2 = "1";
 
