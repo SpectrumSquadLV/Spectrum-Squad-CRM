@@ -887,6 +887,38 @@
     renderDuplicates();
   }
 
+  // Every name as it is actually stored, with its caseload count, and a merge
+  // an admin drives themselves.
+  //
+  // THIS IS THE PART THAT MAKES THE PANEL HONEST. The matching above only
+  // recognises two shapes, so it will keep missing real duplicates -- and the
+  // failure mode of a detector that finds nothing is that it says so, which
+  // reads as "there is no problem" to somebody looking straight at one. The
+  // roster shows what is on file whether or not anything was matched: two rows
+  // that look identical on screen ARE two different strings, and seeing them
+  // side by side with their counts is usually the whole diagnosis.
+  function rosterBlock(r) {
+    const opts = (sel) => r.names.map((n) =>
+      `<option value="${esc(n.name)}">${esc(n.name)} — ${n.clients} client${n.clients === 1 ? "" : "s"}</option>`).join("");
+    return `<div style="padding:13px 15px; border-top:1px solid #eceaf6;">
+      <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#6b6a86; margin-bottom:7px;">
+        ${esc(r.label)} — every name on file (${r.names.length})
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:11px;">
+        ${r.names.map((n) => `<span style="background:#f4f3fa; border:1px solid #e4e2f0; border-radius:999px; padding:3px 10px; font-size:12.5px;">
+          ${esc(n.name)} <span style="color:#6b6a86;">${n.clients}</span></span>`).join("")}
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:12.5px;">
+        <span>Move everyone filed under</span>
+        <select data-mm-from="${esc(r.field)}" style="max-width:220px;">${opts()}</select>
+        <span>onto</span>
+        <select data-mm-to="${esc(r.field)}" style="max-width:220px;">${opts()}</select>
+        <button class="bd-ql" data-manual-merge="${esc(r.field)}" style="cursor:pointer;">Merge</button>
+      </div>
+      <div data-mm-msg="${esc(r.field)}" style="font-size:12px; margin-top:6px;"></div>
+    </div>`;
+  }
+
   // ---- one person filed under two spellings ------------------------------
   //
   // assigned_bcba_name and the two beside it are free text, so the same person
@@ -900,25 +932,24 @@
     try { d = await api("/api/caseload/name-duplicates"); }
     catch (e) { box.innerHTML = ""; return; }
     const all = d.duplicates || [];
-    if (!all.length) {
-      box.innerHTML = `<div class="bd-panel" style="margin-top:16px;">
-        <div class="bd-ph"><div><h2 class="bd-pt">Staff filed under two names</h2>
-        <p class="bd-pn">Nothing looks duplicated. Every BCBA, Student Analyst and Squad Leader is spelled one way across your clients.</p>
-        </div></div></div>`;
-      return;
-    }
+    const rosters = (d.rosters || []).filter((r) => (r.names || []).length);
     const sure = all.filter((x) => x.confident);
     const unsure = all.filter((x) => !x.confident);
 
+    // Three shapes end up here: a merge we are sure of, a short name that could
+    // be one of several people, and a group who merely share a first name --
+    // which is a question, never a proposal.
     const row = (x, i) => `<div style="padding:12px 15px; border-top:1px solid #eceaf6;">
       <div style="display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;">
         <div style="min-width:0; flex:1;">
-          <strong>${esc(x.from)}</strong>
-          <span style="color:#6b6a86;"> (${x.from_clients} client${x.from_clients === 1 ? "" : "s"})</span>
+          ${x.group ? x.group.map((g) => `<div><strong>${esc(g.name)}</strong>
+            <span style="color:#6b6a86;"> &mdash; ${g.clients} client${g.clients === 1 ? "" : "s"}</span></div>`).join("")
+          : `<strong>${esc(x.from)}</strong>
+          <span style="color:#6b6a86;"> (${x.from_clients} client${x.from_clients === 1 ? "" : "s"})</span>`}
           ${x.to ? ` &rarr; <strong>${esc(x.to)}</strong>
             <span style="color:#6b6a86;"> (${x.to_clients} client${x.to_clients === 1 ? "" : "s"})</span>` : ""}
           <div style="font-size:12px; color:#6b6a86; margin-top:3px;">${esc(x.label)} &middot; ${esc(x.reason)}</div>
-          ${x.candidates ? `<div style="font-size:12px; color:#a3282e; margin-top:3px;">Could be: ${x.candidates.map(esc).join(", ")}</div>` : ""}
+          ${x.candidates && !x.group ? `<div style="font-size:12px; color:#a3282e; margin-top:3px;">Could be: ${x.candidates.map(esc).join(", ")}</div>` : ""}
         </div>
         ${x.to ? `<button class="bd-ql" data-merge="${i}" style="cursor:pointer;">Merge into ${esc(x.to)}</button>` : ""}
       </div>
@@ -929,11 +960,45 @@
       <div class="bd-ph"><div><h2 class="bd-pt">Staff filed under two names</h2>
       <p class="bd-pn">The BCBA, Student Analyst and Squad Leader on a client are typed in by hand, so one person can end up spelled two ways &mdash; which is why they appear twice on the caseload list with their clients split between them. Merging rewrites the name on those clients; nothing else about the record changes.</p>
       </div></div>
-      ${sure.map((x) => row(x, all.indexOf(x))).join("")}
+      ${sure.length ? sure.map((x) => row(x, all.indexOf(x))).join("") : ""}
       ${unsure.length ? `<div class="bd-note" style="border-top:1px solid #eceaf6;">
-        These need a person to decide, so no merge is offered:
+        These need a person to decide, so no merge is offered automatically:
       </div>${unsure.map((x) => row(x, all.indexOf(x))).join("")}` : ""}
+      ${!all.length ? `<div class="bd-note" style="border-top:1px solid #eceaf6;">
+        Nothing matched the patterns this looks for &mdash; a name that is another one shortened,
+        or the same name spelled with different spacing. That is not the same as saying there is no
+        duplicate: a surname typed two ways, a middle initial, or a slip in the spelling all read as
+        two different people here. <strong>If somebody is appearing twice on the caseload board, they
+        are below, spelled two ways.</strong>
+      </div>` : ""}
+      ${rosters.map(rosterBlock).join("")}
     </div>`;
+
+    box.querySelectorAll("[data-manual-merge]").forEach((b) => b.addEventListener("click", async () => {
+      const field = b.getAttribute("data-manual-merge");
+      const from = box.querySelector(`[data-mm-from="${field}"]`).value;
+      const to = box.querySelector(`[data-mm-to="${field}"]`).value;
+      const msg = box.querySelector(`[data-mm-msg="${field}"]`);
+      msg.style.color = "#a3282e";
+      if (!from || !to) { msg.textContent = "Pick both names."; return; }
+      if (from === to) { msg.textContent = "Those are the same name — pick the wrong spelling on the left and the right one on the right."; return; }
+      // Merging is a rewrite across client records and there is no undo, so the
+      // names are read back before it happens. A merge of the wrong two people
+      // is far more work to unpick than this prompt is to read.
+      if (!confirm(`Move every client filed under "${from}" onto "${to}"?
+
+This rewrites the name on those client records. It cannot be undone from here.`)) return;
+      b.disabled = true;
+      try {
+        const r = await api("/api/caseload/merge-name", { method: "POST", body: { field, from, to } });
+        msg.style.color = "#1c6b45";
+        msg.textContent = `Moved ${r.moved} client${r.moved === 1 ? "" : "s"} onto ${r.to}. ${r.now_on} now filed under that name${r.email_applied ? `, email ${r.email_applied}` : ""}.`;
+        setTimeout(renderDuplicates, 1200);
+      } catch (e) {
+        msg.textContent = e.message;
+        b.disabled = false;
+      }
+    }));
 
     box.querySelectorAll("[data-merge]").forEach((b) => b.addEventListener("click", async () => {
       const x = all[Number(b.getAttribute("data-merge"))];
