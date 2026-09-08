@@ -688,10 +688,14 @@ This locks the assessment, files the PDF in their personnel record and emails it
           <th style="padding:6px 8px;">Evaluator</th><th style="padding:6px 8px;">Critical</th><th style="padding:6px 8px;">Status</th>
         </tr></thead><tbody>
         ${d.history.map((h, i) => {
-          const next = d.history[i + 1];
-          const chg = next && h.percentage != null && next.percentage != null
+          // A change is only meaningful against the previous check that still
+          // COUNTS. Comparing against a superseded or voided row would print a
+          // swing that never happened.
+          const next = d.history.slice(i + 1).find((x) => x.counts_towards_history);
+          const chg = h.counts_towards_history && next && h.percentage != null && next.percentage != null
             ? Math.round((h.percentage - next.percentage) * 10) / 10 : null;
-          return `<tr data-fid-open="${h.id}" style="cursor:pointer;border-top:1px solid var(--border,#f1f1f4);">
+          const dead = !h.counts_towards_history;
+          return `<tr data-fid-open="${h.id}" style="cursor:pointer;border-top:1px solid var(--border,#f1f1f4);${dead ? "opacity:.55;" : ""}">
             <td style="padding:6px 8px;">${esc(dayLabel(h.assessment_date))}</td>
             <td style="padding:6px 8px;">${h.total_score}/${h.max_score}</td>
             <td style="padding:6px 8px;">${pct(h.percentage)}</td>
@@ -699,11 +703,22 @@ This locks the assessment, files the PDF in their personnel record and emails it
             <td style="padding:6px 8px;${chg == null ? "color:var(--text-muted);" : chg > 0 ? "color:#166534;font-weight:600;" : chg < 0 ? "color:#991b1b;font-weight:600;" : ""}">${chg == null ? "—" : (chg > 0 ? "+" : "") + chg + " pts"}</td>
             <td style="padding:6px 8px;">${esc(h.evaluator_name || "—")}</td>
             <td style="padding:6px 8px;">${h.critical_fail ? '<span style="color:#991b1b;font-weight:700;">Yes</span>' : "No"}</td>
-            <td style="padding:6px 8px;color:var(--text-muted);">${esc(h.employee_ack_at ? "Acknowledged" : h.emailed_at ? "Awaiting acknowledgment" : h.finalized_at ? "Finalized" : h.status)}</td>
+            <td style="padding:6px 8px;color:var(--text-muted);">${
+              h.superseded_by_check_id
+                ? `<span style="color:#92400e;font-weight:600;">Amended</span> — replaced by a corrected check`
+                : h.voided
+                  ? `<span style="color:#991b1b;font-weight:600;">Voided</span>${h.void_reason ? " — " + esc(h.void_reason) : ""}`
+                  : esc(h.employee_ack_at ? "Acknowledged" : h.emailed_at ? "Awaiting acknowledgment" : h.finalized_at ? "Finalized" : h.status)
+            }</td>
           </tr>`;
         }).join("")}
       </tbody></table></div>
-      <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">Every Fidelity Check is kept. A new one never replaces an old score.</div>
+      <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">
+        Every Fidelity Check is kept. A new one never replaces an old score.
+        ${(d.history || []).some((h) => !h.counts_towards_history)
+          ? "Greyed rows are still on the record but no longer count towards the average — an amended check is superseded by its correction, a voided one was withdrawn."
+          : ""}
+      </div>
     </div>`;
   }
 
@@ -777,6 +792,17 @@ This locks the assessment, files the PDF in their personnel record and emails it
     back.className = "modal-backdrop";
     back.innerHTML = `<div class="modal" style="max-width:780px;">
       <div class="modal-header"><h2>Fidelity Check — ${esc(dayLabel(c.assessment_date))}</h2><button class="close-btn">✕</button></div>
+      ${c.superseded_by_check_id ? `<div class="card" style="margin-bottom:12px;background:#fef3c7;color:#92400e;">
+        <strong>This assessment was amended.</strong> It is kept exactly as it was signed, and no longer counts towards the
+        average — the corrected check does. <button class="btn small secondary" data-fid-open-other="${c.superseded_by_check_id}" style="margin-left:6px;">Open the correction</button>
+      </div>` : ""}
+      ${c.amends_check_id ? `<div class="card" style="margin-bottom:12px;background:#e0e7ff;color:#3730a3;">
+        <strong>This is an amendment.</strong> ${c.amend_reason ? esc(c.amend_reason) : ""}
+        <button class="btn small secondary" data-fid-open-other="${c.amends_check_id}" style="margin-left:6px;">Open the original</button>
+      </div>` : ""}
+      ${c.voided ? `<div class="card" style="margin-bottom:12px;background:#fee2e2;color:#991b1b;">
+        <strong>This assessment was voided.</strong>${c.void_reason ? " " + esc(c.void_reason) : ""} It is kept on the record and does not count.
+      </div>` : ""}
       <div class="card" style="margin-bottom:12px;">
         <div style="font-size:20px;font-weight:800;">${c.total_score}/${c.max_score} · ${pct(c.percentage)} ${ratingChip(c.rating_key, c.rating_label)}</div>
         <div style="font-size:12.5px;color:var(--text-muted);margin-top:4px;">
@@ -803,10 +829,33 @@ This locks the assessment, files the PDF in their personnel record and emails it
           ? "Acknowledged by " + esc(c.employee_ack_name) + " on " + esc(dayLabel(c.employee_ack_at))
           : "Awaiting employee acknowledgment"}</div>
         ${c.pdf_document_id ? `<a class="btn small secondary" style="margin-top:9px;display:inline-block;" href="/api/hr/employee-documents/${c.pdf_document_id}" target="_blank">Download PDF</a>` : ""}
+        ${c.finalized_at && !c.voided && !c.superseded_by_check_id
+          ? `<button class="btn small secondary" style="margin-top:9px;margin-left:6px;" data-fid-amend="${c.id}">Amend this check</button>
+             <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">
+               A signed assessment is never edited. Amending it opens a corrected copy to score and sign; this one stays on the
+               record, exactly as it was signed, and stops counting once the correction is signed.</div>`
+          : ""}
       </div>
     </div>`;
     document.body.appendChild(back);
     back.querySelector(".close-btn").addEventListener("click", () => back.remove());
+    back.querySelectorAll("[data-fid-open-other]").forEach((b) =>
+      b.addEventListener("click", () => { back.remove(); openReadOnly(b.dataset.fidOpenOther); }));
+    const amendBtn = back.querySelector("[data-fid-amend]");
+    if (amendBtn) amendBtn.addEventListener("click", async () => {
+      const reason = prompt("What is being corrected?\n\nThe reason is kept on both the original and the amendment.");
+      if (reason == null) return;
+      if (!String(reason).trim()) { alert("A reason is required — it is kept on both records."); return; }
+      amendBtn.disabled = true; amendBtn.textContent = "Opening…";
+      try {
+        const r = await api(`/api/fidelity/check/${c.id}/amend`, { method: "POST", body: { reason: String(reason).trim() } });
+        back.remove();
+        openScoring(null, r.id);
+      } catch (e) {
+        amendBtn.disabled = false; amendBtn.textContent = "Amend this check";
+        alert(e.message || "Couldn't start an amendment.");
+      }
+    });
   }
 
   // ======================= THE PERSONNEL RECORD =======================

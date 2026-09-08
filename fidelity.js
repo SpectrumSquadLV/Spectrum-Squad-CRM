@@ -241,6 +241,8 @@ module.exports = function initFidelity(ctx) {
       voided_by TEXT,
       voided_at TEXT,
       amends_check_id INTEGER,
+      amend_reason TEXT,
+      superseded_by_check_id INTEGER,
       created_by TEXT,
       created_at TEXT,
       updated_at TEXT
@@ -331,6 +333,16 @@ module.exports = function initFidelity(ctx) {
     await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS annual_review_date TEXT")
       .catch((e) => console.error("annual_review_date column:", e.message));
 
+    // Amendment columns, added by ALTER as well as by the CREATE above: the
+    // table already exists everywhere this module has ever run, and
+    // CREATE TABLE IF NOT EXISTS adds nothing to a table that is already there.
+    for (const [col, type] of [
+      ["amends_check_id", "INTEGER"], ["amend_reason", "TEXT"], ["superseded_by_check_id", "INTEGER"],
+    ]) {
+      await dbRun(`ALTER TABLE fidelity_checks ADD COLUMN IF NOT EXISTS ${col} ${type}`)
+        .catch((e) => console.error(`fidelity_checks.${col}:`, e.message));
+    }
+
     // An annual review keeps the INPUTS it was calculated from, not just the
     // answer. Changing the matrix next year must not silently rewrite what
     // somebody was awarded this year.
@@ -419,11 +431,29 @@ module.exports = function initFidelity(ctx) {
     return { key: "stable", label: "Stable", change };
   }
 
+  // The checks that COUNT: finalized, not voided, and not superseded by an
+  // amendment. A superseded check is not deleted and not hidden -- it is
+  // still on the record and still shown -- but it must not sit in an average
+  // next to the corrected version of itself, or one observation would be
+  // counted twice and the wrong one of the two would drag the mean.
   async function finalizedChecks(employeeId) {
     return dbAll(
       `SELECT * FROM fidelity_checks
         WHERE employee_id = ? AND status IN ('finalized','sent','awaiting_ack','acknowledged','closed')
           AND COALESCE(voided, FALSE) = FALSE
+          AND superseded_by_check_id IS NULL
+        ORDER BY assessment_date DESC, id DESC`,
+      [employeeId]
+    ).catch(() => []);
+  }
+
+  // The whole record, including the ones that no longer count. This is what a
+  // history list reads: leaving a superseded or voided check out of the list
+  // entirely would be quietly rewriting what happened.
+  async function allChecksFor(employeeId) {
+    return dbAll(
+      `SELECT * FROM fidelity_checks
+        WHERE employee_id = ? AND finalized_at IS NOT NULL
         ORDER BY assessment_date DESC, id DESC`,
       [employeeId]
     ).catch(() => []);
@@ -896,7 +926,12 @@ module.exports = function initFidelity(ctx) {
   // each step records its own success or failure in the audit trail so a
   // half-finished automation is visible rather than assumed.
   const STATUSES = ["draft", "assigned", "in_progress", "awaiting_signature", "finalized",
-    "sent", "awaiting_ack", "acknowledged", "action_required", "closed"];
+    "sent", "awaiting_ack", "acknowledged", "action_required", "closed",
+    // A check that an amendment has replaced. It keeps its scores, its
+    // signature and its trail; it simply no longer counts. The screens read
+    // this list to label a status, so a value the module writes and the list
+    // does not contain would render as a raw word nobody chose.
+    "amended"];
 
   async function finalizeCheck(checkId, user, body = {}) {
     const check = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [checkId]);
@@ -968,9 +1003,29 @@ module.exports = function initFidelity(ctx) {
     await audit(checkId, "finalized", { actor, new: `${calc.total_score}/${MAX_SCORE} (${calc.percentage}%) ${calc.rating_label}` });
     await audit(checkId, "signed", { actor, field: "bcba_signed_name", new: signedName });
 
+    // ---- an amendment supersedes its original, at SIGNING, not before ----
+    // Marking the original the moment an amendment is started would drop it
+    // out of every average while somebody is still half-way through deciding
+    // whether to change anything -- and an abandoned amendment would leave
+    // the record permanently short of an assessment that really happened.
+    let supersededId = null;
+    if (check.amends_check_id) {
+      const orig = await dbGet("SELECT id, total_score, percentage FROM fidelity_checks WHERE id = ?", [check.amends_check_id]).catch(() => null);
+      if (orig) {
+        await dbRun("UPDATE fidelity_checks SET superseded_by_check_id = ?, status = 'amended', updated_at = ? WHERE id = ?",
+          [checkId, now, orig.id]);
+        await audit(orig.id, "superseded", { actor,
+          old: `${orig.total_score}/${MAX_SCORE} (${orig.percentage}%)`,
+          new: `amended by check ${checkId}: ${calc.total_score}/${MAX_SCORE} (${calc.percentage}%)` });
+        await audit(checkId, "amends", { actor, new: `supersedes check ${orig.id}` });
+        supersededId = orig.id;
+      }
+    }
+
     const fresh = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [checkId]);
     const emp = await dbGet("SELECT id, name, email, role_title FROM hr_employees WHERE id = ?", [check.employee_id]).catch(() => null);
-    const result = { ok: true, check_id: checkId, calc, pdf_document_id: null, emailed: false, action_plan_id: null };
+    const result = { ok: true, check_id: checkId, calc, pdf_document_id: null, emailed: false, action_plan_id: null,
+                     superseded_check_id: supersededId };
 
     // ---- 2. PDF ----
     try {
@@ -1094,6 +1149,7 @@ module.exports = function initFidelity(ctx) {
       `SELECT * FROM fidelity_checks
         WHERE status IN ('finalized','sent','awaiting_ack','acknowledged','closed')
           AND COALESCE(voided, FALSE) = FALSE
+          AND superseded_by_check_id IS NULL
         ORDER BY assessment_date DESC, id DESC`
     ).catch(() => []);
     const byEmp = new Map();
@@ -1558,6 +1614,10 @@ module.exports = function initFidelity(ctx) {
       if (!emp) return json(res, 404, { error: "That staff member is not on file." });
       const rows = await finalizedChecks(id);
       const sum = summarise(rows);
+      // The history shows everything that was ever signed, including the
+      // superseded and the voided, each marked. The summary and the graph
+      // read `rows` -- only the checks that still count.
+      const everything = await allChecksFor(id);
       const plans = await dbAll("SELECT * FROM fidelity_action_plans WHERE employee_id = ? ORDER BY id DESC", [id]).catch(() => []);
       // When the next check is due, worked out here rather than on whichever
       // screen happens to be showing it -- the dashboard and the personnel
@@ -1576,7 +1636,7 @@ module.exports = function initFidelity(ctx) {
         next_due: nextDue,
         overdue_check: !nextDue || nextDue <= todayStr,
         check_interval_days: settings.check_interval_days,
-        history: rows.map(shapeRow),
+        history: everything.map(shapeRow),
         // Oldest first, which is the direction a graph reads.
         trend_points: rows.slice().reverse().map((r) => ({
           date: r.assessment_date, percentage: Number(r.percentage), score: r.total_score,
@@ -1684,6 +1744,68 @@ module.exports = function initFidelity(ctx) {
       const b = await readBody(req);
       const out = await finalizeCheck(id, user, b);
       return json(res, out.ok ? 200 : (out.code || 400), out);
+    }
+
+    // ---- amend a signed check ----
+    // The CRM tells people to do this in two different refusal messages, so it
+    // has to exist. Voiding is the wrong tool for a mistyped score: it
+    // withdraws the assessment entirely, and the observation still happened.
+    //
+    // An amendment is a NEW check that starts as a copy of the original and
+    // supersedes it when it is signed. The original is never edited, never
+    // deleted and never hidden -- it stays on the record, marked, with its
+    // signature and its audit trail intact, because it is what somebody was
+    // actually told on a date.
+    const amendMatch = pathname.match(/^\/api\/fidelity\/check\/(\d+)\/amend$/);
+    if (amendMatch && method === "POST") {
+      const id = Number(amendMatch[1]);
+      const row = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
+      if (!row) return json(res, 404, { error: "Not found" });
+      if (!manage && Number(row.evaluator_user_id) !== Number(user.id)) {
+        return json(res, 403, { error: "This Fidelity Check is not assigned to you." });
+      }
+      if (!row.finalized_at) {
+        return json(res, 400, { error: "This Fidelity Check has not been signed yet — edit it directly instead of amending it." });
+      }
+      if (row.voided === true || row.voided === "t") {
+        return json(res, 400, { error: "This Fidelity Check was voided. A voided assessment is withdrawn, not corrected." });
+      }
+      if (row.superseded_by_check_id) {
+        return json(res, 409, { error: "This Fidelity Check has already been amended.", amendment_id: row.superseded_by_check_id });
+      }
+      const b = await readBody(req);
+      const reason = String(b.reason || "").trim();
+      // A correction to a signed assessment is a change to somebody's record.
+      // It is allowed, and it is never anonymous or unexplained.
+      if (!reason) return json(res, 400, { error: "Say what is being corrected — the reason is kept on both the original and the amendment." });
+
+      // An amendment already in progress is offered back rather than
+      // duplicated, so two half-finished corrections of one check cannot exist.
+      const open = await dbGet(
+        "SELECT id FROM fidelity_checks WHERE amends_check_id = ? AND finalized_at IS NULL AND COALESCE(voided, FALSE) = FALSE ORDER BY id DESC LIMIT 1",
+        [id]
+      ).catch(() => null);
+      if (open) return json(res, 200, { ok: true, id: open.id, already_open: true });
+
+      const now = nowISO();
+      const created = await dbGet(
+        `INSERT INTO fidelity_checks
+           (employee_id, evaluator_user_id, evaluator_name, evaluator_credentials, assessment_date,
+            client_initials, session_type, observation_minutes, scores_json,
+            strengths, areas_for_improvement, action_plan_narrative, action_plan_options,
+            unsafe_practice, unsafe_practice_detail, critical_fail_detail,
+            status, amends_check_id, amend_reason, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, ?) RETURNING id`,
+        [row.employee_id, user.id || row.evaluator_user_id, user.name || user.email || row.evaluator_name,
+         row.evaluator_credentials, row.assessment_date, row.client_initials, row.session_type,
+         row.observation_minutes, row.scores_json || "{}",
+         row.strengths, row.areas_for_improvement, row.action_plan_narrative, row.action_plan_options,
+         row.unsafe_practice === true || row.unsafe_practice === "t", row.unsafe_practice_detail, row.critical_fail_detail,
+         id, reason, actor, now, now]
+      );
+      await audit(id, "amendment_started", { actor, new: reason });
+      await audit(created.id, "created_as_amendment", { actor, old: `copy of check ${id}`, new: reason });
+      return json(res, 201, { ok: true, id: created.id, amends: id });
     }
 
     const voidMatch = pathname.match(/^\/api\/fidelity\/check\/(\d+)\/void$/);
@@ -1924,6 +2046,14 @@ module.exports = function initFidelity(ctx) {
       emailed_at: r.emailed_at, email_status: r.email_status,
       employee_ack_name: r.employee_ack_name, employee_ack_at: r.employee_ack_at,
       voided: r.voided === true || r.voided === "t", void_reason: r.void_reason,
+      amends_check_id: r.amends_check_id || null,
+      amend_reason: r.amend_reason || null,
+      superseded_by_check_id: r.superseded_by_check_id || null,
+      // Computed rather than stored, so a screen cannot decide for itself what
+      // "counts" and disagree with the average.
+      counts_towards_history: !!r.finalized_at
+        && !(r.voided === true || r.voided === "t")
+        && !r.superseded_by_check_id,
       created_at: r.created_at, updated_at: r.updated_at,
     };
     if (withScores) {
@@ -2102,7 +2232,7 @@ module.exports = function initFidelity(ctx) {
     SESSION_TYPES, OBSERVATION_LENGTHS,
     scoreOf, ratingFor, actionPlanRequired,
     initTables, audit, canManageFidelity, canEvaluate,
-    employeeSummary, summarise, trendOf, finalizedChecks,
+    employeeSummary, summarise, trendOf, finalizedChecks, allChecksFor,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
     buildPdf, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,

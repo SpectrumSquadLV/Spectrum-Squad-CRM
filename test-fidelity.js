@@ -451,6 +451,7 @@ function scoresTotalling(total, opts = {}) {
 
   r = await evaluator.req("/api/fidelity/rubric");
   check("an evaluator gets the blank rubric", r.status === 200, r.data && r.data.error);
+  const rubricStatuses = (r.data && r.data.statuses) || [];
   check("...with all thirty competencies",
     r.status === 200 && r.data.sections.reduce((a, s) => a + s.items.length, 0) === 30);
   check("...and the rating bands, so the screen shows the same ones the server uses",
@@ -817,6 +818,106 @@ function scoresTotalling(total, opts = {}) {
   r = await evaluator.req("/api/fidelity/settings", { method: "PUT", body: { check_interval_days: 1 } });
   check("an evaluator cannot change the raise policy", r.status === 403, r.status);
   await owner("/api/fidelity/settings", { method: "PUT", body: { check_interval_days: 90 } });
+
+  // ================================================================
+  section("Amending a signed check — the correction the CRM kept promising");
+
+  // Two refusal messages tell somebody to "create an amendment". Until now
+  // there was no way to do that, so the only remedy for a mistyped score was
+  // voiding -- which withdraws the assessment entirely, and the observation
+  // still happened.
+  const empAmend = await mkEmp("Juliet");
+  await doCheckFor(empAmend, 48);                       // 80%, Meets Standard
+  const wrongOne = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: empAmend, assessment_date: today } });
+  const wrongId = wrongOne.data.id;
+  await owner(`/api/fidelity/check/${wrongId}`, { method: "PATCH", body: { scores: scoresTotalling(36) } });
+  await owner(`/api/fidelity/check/${wrongId}/finalize`, {
+    method: "POST", body: { bcba_signed_name: "Jane Doe, BCBA", action_plan_narrative: "Retraining." },
+  });
+
+  let beforeAmend = await owner(`/api/fidelity/employee/${empAmend}`);
+  check("both checks count before anything is amended", beforeAmend.data.summary.checks === 2, beforeAmend.data.summary);
+  check("the average is 70% — 80 and 60", beforeAmend.data.summary.average === 70, beforeAmend.data.summary.average);
+
+  r = await owner(`/api/fidelity/check/${wrongId}/amend`, { method: "POST", body: {} });
+  check("an amendment without a reason is refused", r.status === 400, r.data);
+  check("...and says the reason is kept on both records", /kept on both/i.test(r.data.error || ""), r.data.error);
+
+  r = await owner(`/api/fidelity/check/${wrongId}/amend`, {
+    method: "POST", body: { reason: "Section totals transposed when entering from the paper form." },
+  });
+  check("with a reason, an amendment is created", r.status === 201 && r.data.id, r.data);
+  const amendId = r.data.id;
+  check("...as a NEW check, not an edit of the signed one", amendId !== wrongId, { amendId, wrongId });
+
+  const draft = await owner(`/api/fidelity/check/${amendId}`);
+  check("the amendment starts as a copy of the original's scores",
+    draft.data.check.calc.total_score === 36, draft.data.check.calc);
+  check("...and records what it amends", draft.data.check.amends_check_id === wrongId, draft.data.check);
+  check("...and why", /transposed/i.test(draft.data.check.amend_reason || ""), draft.data.check.amend_reason);
+
+  r = await owner(`/api/fidelity/check/${wrongId}/amend`, { method: "POST", body: { reason: "again" } });
+  check("a second amendment does not fork the record — the open one is handed back",
+    r.status === 200 && r.data.id === amendId && r.data.already_open === true, r.data);
+
+  // Nothing has changed yet: an unfinished amendment must not drop the
+  // original out of the average.
+  let during = await owner(`/api/fidelity/employee/${empAmend}`);
+  check("while the amendment is unsigned the original still counts",
+    during.data.summary.checks === 2 && during.data.summary.average === 70, during.data.summary);
+
+  await owner(`/api/fidelity/check/${amendId}`, { method: "PATCH", body: { scores: scoresTotalling(54) } });
+  r = await owner(`/api/fidelity/check/${amendId}/finalize`, { method: "POST", body: { bcba_signed_name: "Jane Doe, BCBA" } });
+  check("the amendment signs", r.status === 200 && r.data.ok === true, r.data);
+  check("...and reports which check it superseded", r.data.superseded_check_id === wrongId, r.data);
+
+  const afterAmend = await owner(`/api/fidelity/employee/${empAmend}`);
+  check("the corrected score replaces the wrong one in the average",
+    afterAmend.data.summary.average === 85, afterAmend.data.summary.average);
+  check("...and the count is still 2, not 3 — one observation is counted once",
+    afterAmend.data.summary.checks === 2, afterAmend.data.summary.checks);
+  check("the current score is the amendment", afterAmend.data.summary.current.percentage === 90, afterAmend.data.summary.current);
+
+  // The original is kept, in full.
+  const orig = await owner(`/api/fidelity/check/${wrongId}`);
+  check("the original still exists", orig.status === 200, orig.status);
+  check("...with the score that was actually signed, unedited",
+    orig.data.check.total_score === 36, orig.data.check.total_score);
+  check("...still carrying its signature", orig.data.check.bcba_signed_name === "Jane Doe, BCBA", orig.data.check.bcba_signed_name);
+  check("...marked as superseded, by which check",
+    orig.data.check.superseded_by_check_id === amendId, orig.data.check);
+  check("...and no longer counting towards the history",
+    orig.data.check.counts_towards_history === false, orig.data.check.counts_towards_history);
+  check("...and its status is one the module actually declares",
+    (rubricStatuses || []).includes(orig.data.check.status),
+    { status: orig.data.check.status, declared: rubricStatuses });
+  check("...with the supersession in its audit trail",
+    (orig.data.audit || []).some((a) => a.action === "superseded"), (orig.data.audit || []).map((a) => a.action));
+
+  const histIds = (afterAmend.data.history || []).map((h) => h.id);
+  check("the history still SHOWS the superseded check — nothing is hidden",
+    histIds.includes(wrongId) && histIds.includes(amendId), histIds);
+  check("...but the graph only plots what counts",
+    (afterAmend.data.trend_points || []).length === 2, afterAmend.data.trend_points);
+
+  r = await owner(`/api/fidelity/check/${wrongId}/amend`, { method: "POST", body: { reason: "third try" } });
+  check("an already-amended check cannot be amended again", r.status === 409, r.data);
+
+  // The two states an amendment does not apply to.
+  const freshDraft = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: empAmend, assessment_date: today } });
+  r = await owner(`/api/fidelity/check/${freshDraft.data.id}/amend`, { method: "POST", body: { reason: "x" } });
+  check("an unsigned check is edited, not amended", r.status === 400 && /has not been signed/i.test(r.data.error || ""), r.data);
+
+  const toVoid = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: empAmend, assessment_date: today } });
+  await owner(`/api/fidelity/check/${toVoid.data.id}`, { method: "PATCH", body: { scores: scoresTotalling(54) } });
+  await owner(`/api/fidelity/check/${toVoid.data.id}/finalize`, { method: "POST", body: { bcba_signed_name: "Jane Doe, BCBA" } });
+  await owner(`/api/fidelity/check/${toVoid.data.id}/void`, { method: "POST", body: { reason: "Wrong RBT." } });
+  r = await owner(`/api/fidelity/check/${toVoid.data.id}/amend`, { method: "POST", body: { reason: "x" } });
+  check("a voided check is withdrawn, not corrected",
+    r.status === 400 && /withdrawn, not corrected/i.test(r.data.error || ""), r.data);
+
+  r = await evaluator.req(`/api/fidelity/check/${wrongId}/amend`, { method: "POST", body: { reason: "x" } });
+  check("an evaluator cannot amend a check that is not theirs", r.status === 403, r.status);
 
   // ================================================================
   section("Supervision Compliance as a raise component");

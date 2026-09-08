@@ -247,6 +247,82 @@ const section = (t) => console.log("\n== " + t + " ==");
     (await page2.locator(".modal-backdrop").first().innerText()).slice(0, 400));
   await page2.close();
 
+  // ================================================================
+  section("Amending a signed check, from the personnel record");
+
+  await openCard(empScored);
+  await page.locator(`#staff-fidelity [data-fid-open="${newestScored}"]`).click();
+  await page.waitForTimeout(1400);
+  let ro2 = page.locator(".modal-backdrop").last();
+  check("a signed check offers to be amended", await ro2.locator("[data-fid-amend]").isVisible());
+  check("...and says the original is never edited",
+    /never edited/i.test(await ro2.innerText()), (await ro2.innerText()).slice(-400));
+
+  // The reason is asked for, and refusing to give one stops there.
+  page.once("dialog", async (d) => { await d.dismiss(); });
+  await ro2.locator("[data-fid-amend]").click();
+  await page.waitForTimeout(900);
+  check("cancelling the reason prompt starts nothing",
+    await page.locator("#fid-scoring").count() === 0);
+
+  page.once("dialog", async (d) => { await d.accept("Section totals transposed from the paper form."); });
+  await page.locator(".modal-backdrop").last().locator("[data-fid-amend]").click();
+  await page.waitForTimeout(2500);
+  check("giving a reason opens the scoring screen on a corrected copy",
+    await page.locator("#fid-scoring").count() === 1);
+  const liveText = await page.locator("#fid-scoring #fid-live").innerText().catch(() => "");
+  // Compared against what the ORIGINAL actually scored, read from the API,
+  // rather than a number typed into this test.
+  const origCheck = (await api(page, "/api/fidelity/check/" + newestScored)).body.check;
+  check("...pre-filled with the original's scores rather than blank",
+    liveText.includes(`${origCheck.total_score} / ${origCheck.max_score}`),
+    { want: `${origCheck.total_score} / ${origCheck.max_score}`, got: liveText.slice(0, 300) });
+  check("...and it is already complete, so the rating shows immediately",
+    liveText.includes(origCheck.percentage + "%"), { want: origCheck.percentage, got: liveText.slice(0, 300) });
+
+  // Sign the amendment through the API so the superseded state actually
+  // exists. Without this the assertions below would be skipped rather than
+  // run, and a skipped assertion looks exactly like a passing one.
+  await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
+  // Asking to amend again hands back the amendment already open rather than
+  // forking the record, which is also how the test learns its id: an unsigned
+  // check is not in the history, because the history is what was signed.
+  const reopened = await api(page, `/api/fidelity/check/${newestScored}/amend`,
+    { method: "POST", body: { reason: "Section totals transposed from the paper form." } });
+  check("asking again returns the amendment already open, not a second one",
+    reopened.status === 200 && reopened.body.already_open === true, reopened.body);
+  const draftAmend = reopened.body.id;
+  check("the amendment exists as an unsigned check", !!draftAmend, reopened.body);
+
+  const signed = await api(page, `/api/fidelity/check/${draftAmend}/finalize`, {
+    method: "POST", body: { bcba_signed_name: "Correcting BCBA" },
+  });
+  check("the amendment signs, and reports what it superseded",
+    signed.status === 200 && signed.body.superseded_check_id === newestScored, signed.body);
+
+  const afterUI = await api(page, "/api/fidelity/employee/" + empScored);
+  const supersededRow = (afterUI.body.history || []).find((h) => h.superseded_by_check_id);
+  check("the original is now marked superseded in the record", !!supersededRow, (afterUI.body.history || []).map((h) => h.id));
+
+  await openCard(empScored);
+  const sectionText = await page.locator("#staff-fidelity").innerText();
+  check("the personnel record now shows the corrected score",
+    sectionText.includes(`${signed.body.calc.total_score} / 60`), sectionText.slice(0, 200));
+
+  await page.locator(`#staff-fidelity [data-fid-open="${supersededRow.id}"]`).first().click();
+  await page.waitForTimeout(1500);
+  const supModal = page.locator(".modal-backdrop").last();
+  const supText = await supModal.innerText();
+  check("a superseded check says so at the top",
+    /This assessment was amended/i.test(supText), supText.slice(0, 400));
+  check("...and still shows the score that was signed, unedited",
+    supText.includes(`${supersededRow.total_score}/${supersededRow.max_score}`), supText.slice(0, 400));
+  check("...and offers to open the correction",
+    await supModal.locator("[data-fid-open-other]").count() >= 1);
+  check("...and no longer offers to be amended again",
+    await supModal.locator("[data-fid-amend]").count() === 0);
+  await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
+
   check("no uncaught JavaScript errors", errors.length === 0, errors.join(" ;; "));
   console.log(`\n  ${pass} passed, ${fail} failed`);
   await browser.close();
