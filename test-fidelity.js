@@ -806,6 +806,133 @@ function scoresTotalling(total, opts = {}) {
   await owner("/api/fidelity/settings", { method: "PUT", body: { check_interval_days: 90 } });
 
   // ================================================================
+  section("Notices: what the CRM tells people without being asked");
+
+  // The sweep reads notifications_log to prove what was actually sent, rather
+  // than trusting its own return value.
+  const mailSince = async (since, like) => {
+    const q = await pool.query(
+      "SELECT subject, body, recipient, type FROM notifications_log WHERE id > $1 AND type LIKE $2 ORDER BY id",
+      [since, like]
+    );
+    return q.rows;
+  };
+  const lastMailId = async () => {
+    const q = await pool.query("SELECT COALESCE(MAX(id), 0) AS n FROM notifications_log");
+    return Number(q.rows[0].n);
+  };
+
+  r = await evaluator.req("/api/fidelity/sweep", { method: "POST", body: {} });
+  check("an evaluator cannot run the notice sweep", r.status === 403, r.status);
+
+  // Somebody has to receive it. Configured the way every other module reads it.
+  const setCd = await owner("/api/admin/settings", {
+    method: "PATCH", body: { clinical_director_email: `fid.director.${stamp}@example.invalid` },
+  });
+  check("a Clinical Director address is configured, the way every module reads it", setCd.status === 200, setCd.data);
+
+  // An RBT nobody has ever observed, and an overdue Action Plan, both already
+  // exist from the sections above (empNever-equivalent: empC has a plan, and
+  // several RBTs have never been checked).
+  const empOverdue = await mkEmp("Golf");
+  const planCheck = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: empOverdue, assessment_date: today } });
+  await owner(`/api/fidelity/check/${planCheck.data.id}`, { method: "PATCH", body: { scores: scoresTotalling(42) } });
+  await owner(`/api/fidelity/check/${planCheck.data.id}/finalize`, {
+    method: "POST",
+    body: { bcba_signed_name: "Jane Doe, BCBA", action_plan_narrative: "Retraining on prompt fading.",
+            action_plan_options: ["Written Retraining"], action_plan_due_date: daysAgo(3) },
+  });
+
+  let mark = await lastMailId();
+  r = await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  check("the sweep runs", r.status === 200 && r.data.ok === true, r.data);
+  check("it reports how many of each notice it sent",
+    ["check_due", "plan_overdue", "ack_outstanding", "review_due"].every((k) => typeof r.data[k] === "number"), r.data);
+
+  const dueMail = await mailSince(mark, "fidelity_checks_due");
+  check("one digest goes out for the RBTs who are due, not one email each",
+    dueMail.length === 1, dueMail.map((m) => m.subject));
+  check("...addressed to the configured Clinical Director",
+    dueMail.length === 1 && dueMail[0].recipient.includes(`fid.director.${stamp}`), dueMail[0] && dueMail[0].recipient);
+  check("...naming the RBTs and how long it has been",
+    dueMail.length === 1 && /never observed/.test(dueMail[0].body), (dueMail[0] || {}).body ? dueMail[0].body.slice(0, 300) : null);
+  check("...and saying which interval made them due",
+    dueMail.length === 1 && /90-day interval/.test(dueMail[0].body), (dueMail[0] || {}).body ? dueMail[0].body.slice(0, 300) : null);
+
+  const planMail = await mailSince(mark, "fidelity_plans_overdue");
+  check("an overdue Action Plan raises its own digest", planMail.length === 1, planMail.map((m) => m.subject));
+  check("...naming the plan's due date and who it sits with",
+    planMail.length === 1 && planMail[0].body.includes(daysAgo(3)), (planMail[0] || {}).body ? planMail[0].body.slice(0, 400) : null);
+  check("...and saying an Action Plan closes when the retraining happened, not when the date passed",
+    planMail.length === 1 && /retraining happened, not that the date passed/i.test(planMail[0].body),
+    (planMail[0] || {}).body ? planMail[0].body.slice(-300) : null);
+
+  const tasks = await owner("/api/staff-tasks").catch(() => ({ data: [] }));
+  const taskList = Array.isArray(tasks.data) ? tasks.data : (tasks.data.tasks || []);
+  check("...and it becomes a task, because it is somebody's unfinished work",
+    taskList.some((t) => /Overdue Fidelity Action Plan/.test(String(t.title || ""))),
+    taskList.slice(0, 4).map((t) => t.title));
+
+  // ---- the whole point: running it again sends nothing ----
+  mark = await lastMailId();
+  r = await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  check("running the sweep again sends nothing at all",
+    r.data.check_due === 0 && r.data.plan_overdue === 0 && r.data.review_due === 0, r.data);
+  const again = await mailSince(mark, "fidelity_%");
+  check("...and no second copy reaches anybody", again.length === 0, again.map((m) => m.subject));
+
+  // ---- an acknowledgment that never came ----
+  // Back-dated past the grace period, which is the only way to reach the case
+  // without waiting a week.
+  const ackless = await pool.query(
+    "SELECT id, employee_id FROM fidelity_checks WHERE employee_ack_at IS NULL AND finalized_at IS NOT NULL AND ack_token IS NOT NULL ORDER BY id LIMIT 1"
+  );
+  check("there is a finalized check nobody acknowledged", ackless.rows.length === 1, ackless.rows);
+  if (ackless.rows.length) {
+    const cid = ackless.rows[0].id;
+    await pool.query("UPDATE fidelity_checks SET emailed_at = $1 WHERE id = $2",
+      [new Date(Date.now() - 20 * 86400000).toISOString(), cid]);
+    mark = await lastMailId();
+    r = await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+    check("an assessment unacknowledged for over a week is chased", r.data.ack_outstanding >= 1, r.data);
+    const ackMail = await mailSince(mark, "fidelity_ack_reminder");
+    check("...to the employee, who is the only person who can acknowledge it",
+      ackMail.length >= 1 && !ackMail.some((m) => m.recipient.includes("director")), ackMail.map((m) => m.recipient));
+    check("...carrying the same link their original email had",
+      ackMail.length >= 1 && /fidelity-ack\//.test(ackMail[0].body), (ackMail[0] || {}).body ? ackMail[0].body.slice(0, 400) : null);
+    mark = await lastMailId();
+    await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+    check("...once, not every day until they act",
+      (await mailSince(mark, "fidelity_ack_reminder")).length === 0);
+  }
+
+  // ---- an annual review coming up ----
+  const empReview = await mkEmp("Hotel");
+  await owner(`/api/fidelity/employee/${empReview}/pay`, {
+    method: "PUT", body: { annual_review_date: daysAgo(-14) },
+  });
+  mark = await lastMailId();
+  r = await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  check("a review inside the next 30 days is flagged in advance", r.data.review_due >= 1, r.data);
+  const revMail = await mailSince(mark, "fidelity_reviews_due");
+  check("...as a digest to leadership", revMail.length === 1, revMail.map((m) => m.subject));
+  check("...saying plainly that there are no Fidelity Checks to calculate from",
+    revMail.length === 1 && /no Fidelity Checks on file/.test(revMail[0].body),
+    (revMail[0] || {}).body ? revMail[0].body.slice(0, 400) : null);
+  check("...and that there is no hourly rate either",
+    revMail.length === 1 && /no hourly rate on file/.test(revMail[0].body),
+    (revMail[0] || {}).body ? revMail[0].body.slice(0, 400) : null);
+
+  // A review far out is not chased yet.
+  const empFar = await mkEmp("India");
+  await owner(`/api/fidelity/employee/${empFar}/pay`, { method: "PUT", body: { annual_review_date: daysAgo(-200) } });
+  mark = await lastMailId();
+  await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  check("a review 200 days out is not chased today",
+    !(await mailSince(mark, "fidelity_reviews_due")).some((m) => m.body.includes("India")),
+    (await mailSince(mark, "fidelity_reviews_due")).map((m) => m.subject));
+
+  // ================================================================
   await pool.end().catch(() => {});
   console.log(`\n  ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

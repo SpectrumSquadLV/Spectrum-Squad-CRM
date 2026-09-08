@@ -8364,6 +8364,10 @@ const fidelity = require("./fidelity")({
   // A critical result creates real work for a real person, through the task
   // system the rest of the CRM already uses rather than a private queue.
   createStaffTask: (opts) => createStaffTask(opts),
+  // Who hears about an overdue check or an overdue Action Plan: the same
+  // Clinical Director / owner addresses every other module reads, never a
+  // recipient list of Fidelity's own.
+  getAppSetting: (key, fallback) => getAppSetting(key, fallback),
 });
 
 const billable = require("./billable")({
@@ -8983,6 +8987,15 @@ async function start() {
   setInterval(() => {
     onboarding.deadlineSweep().catch((e) => console.error("Onboarding sweep failed:", e));
   }, 60 * 60 * 1000);
+
+  // RBT Fidelity: checks that have come due, Action Plans past their date,
+  // assessments nobody acknowledged and annual reviews coming up. Daily, and
+  // once on boot. Each notice is claimed in fidelity_notices before it is
+  // sent, so a redeploy cannot produce a second copy of this morning's email.
+  fidelity.sweep().catch((e) => console.error("Fidelity sweep failed:", e));
+  setInterval(() => {
+    fidelity.sweep().catch((e) => console.error("Fidelity sweep failed:", e));
+  }, 24 * 60 * 60 * 1000);
 
   // Rethink refresh. Every 4 hours -- six passes a day, which keeps the
   // month-to-date figure live without hammering an API whose rate limits we

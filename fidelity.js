@@ -22,6 +22,7 @@ module.exports = function initFidelity(ctx) {
     readBody, json, moduleGranted,
   } = ctx;
   const createStaffTask = ctx.createStaffTask || (async () => null);
+  const getAppSetting = ctx.getAppSetting || (async (k, fb) => fb);
   const HR_DOCS_DIR = ctx.HR_DOCS_DIR || null;
   const fs = require("fs");
   const path = require("path");
@@ -240,6 +241,22 @@ module.exports = function initFidelity(ctx) {
       created_at TEXT,
       updated_at TEXT
     )`).catch((e) => console.error("fidelity_checks initTables:", e.message));
+
+    // Every notice this module has already sent, so a redeploy cannot re-send
+    // one. The UNIQUE key is the whole mechanism: a notice is CLAIMED before it
+    // is sent, and the claim is released again only if the send throws. Timing
+    // an interval is not a substitute -- an interval resets on every restart,
+    // and a restart on a Tuesday would otherwise mean a second copy of
+    // Tuesday's email.
+    await dbRun(`CREATE TABLE IF NOT EXISTS fidelity_notices (
+      id SERIAL PRIMARY KEY,
+      notice_key TEXT UNIQUE,
+      kind TEXT,
+      employee_id INTEGER,
+      ref_id INTEGER,
+      sent_to TEXT,
+      sent_at TEXT
+    )`).catch((e) => console.error("fidelity_notices initTables:", e.message));
 
     // Action plans are their own rows, not a text field on the check. They have
     // their own dates, owner, status and completion, and they outlive the
@@ -1145,6 +1162,229 @@ module.exports = function initFidelity(ctx) {
     };
   }
 
+  // ======================= NOTICES =======================
+  // A Fidelity Check that is overdue, an Action Plan that has passed its date,
+  // an assessment nobody acknowledged and a raise review coming up are all
+  // things the CRM already knows and nobody was being told. The dashboard
+  // counts them, but a count only helps somebody who opens the dashboard.
+  //
+  // Digests, not one email per person. "Four RBTs are due a Fidelity Check"
+  // gets read; four separate emails on the same morning get filtered.
+  //
+  // Nothing here decides anything or changes a record. It reports.
+
+  // Who hears about it. The same chain the rest of the CRM uses -- the
+  // Clinical Director address if one is configured, the owner notification
+  // address otherwise, and failing both the highest-privilege real account --
+  // so a fresh install does not send leadership's post into a void, and no
+  // address is hard-coded in this file.
+  async function leadershipRecipients() {
+    const clean = (v) => String(v == null ? "" : v).trim();
+    const cd = clean(await getAppSetting("clinical_director_email", ""));
+    if (cd) return [cd.toLowerCase()];
+    const owner = clean(await getAppSetting("owner_notification_email", ""));
+    if (owner) return [owner.toLowerCase()];
+    const rows = await dbAll(
+      `SELECT email FROM users WHERE role IN ('owner','super_admin') AND email <> 'admin@spectrumsquadlv.com'
+        ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END`
+    ).catch(() => []);
+    return rows.length ? [String(rows[0].email).toLowerCase()] : [];
+  }
+
+  // Claim a notice, or find out somebody already sent it. Returns false when
+  // the key is taken, which is the whole restart-safety story.
+  async function claimNotice(key, kind, employeeId, refId, to) {
+    const row = await dbGet(
+      `INSERT INTO fidelity_notices (notice_key, kind, employee_id, ref_id, sent_to, sent_at)
+       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (notice_key) DO NOTHING RETURNING id`,
+      [key, kind, employeeId || null, refId || null, to || null, nowISO()]
+    ).catch(() => null);
+    return row && row.id ? row.id : null;
+  }
+  async function releaseNotice(id) {
+    if (id) await dbRun("DELETE FROM fidelity_notices WHERE id = ?", [id]).catch(() => {});
+  }
+
+  const noticeShell = (title, intro, body, footer) => `
+    <p style="font-size:15px;">${esc(intro)}</p>
+    <div style="font-size:13.5px;">${body}</div>
+    ${footer ? `<p style="font-size:12.5px;color:#6b7280;">${esc(footer)}</p>` : ""}
+    <p style="font-size:12px;color:#9ca3af;">${esc(title)} — Spectrum Squad CRM</p>`;
+
+  const noticeList = (items) =>
+    `<ul style="padding-left:18px;margin:10px 0;">${items.map((t) => `<li style="margin:4px 0;">${t}</li>`).join("")}</ul>`;
+
+  // A day count that reads as a sentence rather than a number to interpret.
+  function agoPhrase(days) {
+    if (days == null) return "never";
+    if (days === 0) return "today";
+    if (days === 1) return "1 day ago";
+    return `${days} days ago`;
+  }
+
+  async function sweep() {
+    const out = { check_due: 0, plan_overdue: 0, ack_outstanding: 0, review_due: 0, skipped_no_recipient: 0 };
+    const settings = await getSettings();
+    const today = nowISO().slice(0, 10);
+    const to = await leadershipRecipients();
+    const dash = await dashboard().catch(() => null);
+    if (!dash) return out;
+
+    // ---- 1. Fidelity Checks that are due ----
+    // Re-raised every 30 days while they stay overdue, rather than once and
+    // then silence: an RBT nobody has observed for six months is a bigger
+    // problem in month six than in month one, and one email in January is how
+    // that becomes invisible.
+    const dueNow = [];
+    for (const r of dash.employees) {
+      if (!r.overdue_check) continue;
+      const stale = r.days_since_last == null
+        ? `never observed`
+        : `last observed ${agoPhrase(r.days_since_last)}`;
+      const period = r.days_since_last == null
+        ? "never:" + today.slice(0, 7)
+        : `${r.next_due || "due"}:${Math.floor(Math.max(0, r.days_since_last - settings.check_interval_days) / 30)}`;
+      const id = to.length ? await claimNotice(`check_due:${r.employee_id}:${period}`, "check_due", r.employee_id, null, to.join(", ")) : null;
+      if (!to.length) { out.skipped_no_recipient++; continue; }
+      if (!id) continue;
+      dueNow.push({ claim: id, row: r, stale });
+    }
+    if (dueNow.length && to.length) {
+      const body = noticeList(dueNow.map((d) =>
+        `<strong>${esc(d.row.name)}</strong> — ${esc(d.stale)}${d.row.checks ? `, ${d.row.checks} check${d.row.checks === 1 ? "" : "s"} on file` : ""}`));
+      try {
+        await sendEmail({
+          to: to.join(", "),
+          subject: `${dueNow.length} RBT${dueNow.length === 1 ? " is" : "s are"} due a Fidelity Check`,
+          html: noticeShell("Fidelity Checks due", 
+            `${dueNow.length === 1 ? "One RBT is" : dueNow.length + " RBTs are"} due a Fidelity Check under the current ${settings.check_interval_days}-day interval.`,
+            body,
+            "Open RBT Fidelity in the CRM to schedule one, or use the random picker to choose fairly among everybody who is due."),
+          type: "fidelity_checks_due",
+        });
+        out.check_due = dueNow.length;
+      } catch (e) {
+        for (const d of dueNow) await releaseNotice(d.claim);
+      }
+    }
+
+    // ---- 2. Action Plans past their date ----
+    // These get a task as well as an email, because unlike the rest of this
+    // sweep an overdue plan is somebody's unfinished work rather than a
+    // reminder to look at something.
+    const plans = await dbAll(
+      `SELECT * FROM fidelity_action_plans WHERE status <> 'completed' AND due_date IS NOT NULL AND due_date < ?`,
+      [today]
+    ).catch(() => []);
+    const lateplans = [];
+    for (const pl of plans) {
+      if (!to.length) { out.skipped_no_recipient++; continue; }
+      const id = await claimNotice(`plan_overdue:${pl.id}:${pl.due_date}`, "plan_overdue", pl.employee_id, pl.id, to.join(", "));
+      if (!id) continue;
+      const emp = await dbGet("SELECT name FROM hr_employees WHERE id = ?", [pl.employee_id]).catch(() => null);
+      lateplans.push({ claim: id, plan: pl, name: emp ? emp.name : `Employee ${pl.employee_id}` });
+    }
+    if (lateplans.length) {
+      const body = noticeList(lateplans.map((d) =>
+        `<strong>${esc(d.name)}</strong> — due ${esc(d.plan.due_date)}, ${esc(d.plan.status || "not started")}`
+        + (d.plan.responsible_supervisor ? `, with ${esc(d.plan.responsible_supervisor)}` : "")
+        + (d.plan.description ? `<br><span style="color:#6b7280;">${esc(d.plan.description)}</span>` : "")));
+      try {
+        await sendEmail({
+          to: to.join(", "),
+          subject: `${lateplans.length} Fidelity Action Plan${lateplans.length === 1 ? " is" : "s are"} overdue`,
+          html: noticeShell("Action Plans overdue",
+            "These Action Plans have passed the date they were due and are not marked complete.",
+            body,
+            "An Action Plan exists because somebody needed retraining. Closing it means the retraining happened, not that the date passed."),
+          type: "fidelity_plans_overdue",
+        });
+        out.plan_overdue = lateplans.length;
+      } catch (e) {
+        for (const d of lateplans) await releaseNotice(d.claim);
+      }
+    }
+    for (const d of lateplans) {
+      await createStaffTask({
+        title: `Overdue Fidelity Action Plan — ${d.name}`,
+        notes: `Assigned ${d.plan.date_assigned || "—"}, due ${d.plan.due_date}. ${d.plan.description || ""}`.trim(),
+        created_by: "system",
+      }).catch(() => {});
+    }
+
+    // ---- 3. assessments nobody acknowledged ----
+    // To the employee, not to leadership: they are the one who has to act, and
+    // a manager cannot acknowledge on their behalf. Once, then it stays on the
+    // dashboard rather than becoming a weekly nag.
+    const ACK_GRACE_DAYS = 7;
+    const graceCutoff = new Date(Date.now() - ACK_GRACE_DAYS * 86400000).toISOString();
+    const unacked = await dbAll(
+      `SELECT * FROM fidelity_checks
+        WHERE finalized_at IS NOT NULL AND employee_ack_at IS NULL
+          AND emailed_at IS NOT NULL AND emailed_at < ?
+          AND COALESCE(voided, FALSE) = FALSE`,
+      [graceCutoff]
+    ).catch(() => []);
+    for (const c of unacked) {
+      const emp = await dbGet("SELECT id, name, email FROM hr_employees WHERE id = ?", [c.employee_id]).catch(() => null);
+      if (!emp || !emp.email) continue;
+      const id = await claimNotice(`ack_outstanding:${c.id}`, "ack_outstanding", c.employee_id, c.id, emp.email);
+      if (!id) continue;
+      const calc = scoreOf(parseJson(c.scores_json, {}),
+        { unsafe_practice: c.unsafe_practice === true || c.unsafe_practice === "t" });
+      try {
+        await sendEmail({
+          to: emp.email,
+          subject: "Reminder: your Fidelity Check is waiting for you",
+          html: fidelityEmailHtml(emp, c, calc, `${APP_BASE_URL}/fidelity-ack/${c.ack_token}`),
+          type: "fidelity_ack_reminder", refType: "fidelity_check", refId: c.id,
+        });
+        await audit(c.id, "ack_reminder_sent", { actor: "system", new: emp.email });
+        out.ack_outstanding++;
+      } catch (e) {
+        await releaseNotice(id);
+        await audit(c.id, "ack_reminder_failed", { actor: "system", new: e.message });
+      }
+    }
+
+    // ---- 4. annual reviews coming up ----
+    // Thirty days' notice, because a raise review needs the Fidelity Checks to
+    // already exist -- being told on the day is being told too late.
+    const REVIEW_NOTICE_DAYS = 30;
+    const horizon = new Date(Date.now() + REVIEW_NOTICE_DAYS * 86400000).toISOString().slice(0, 10);
+    const upcoming = dash.employees.filter((r) =>
+      r.annual_review_date && r.annual_review_date >= today && r.annual_review_date <= horizon);
+    const claimed = [];
+    for (const r of upcoming) {
+      if (!to.length) { out.skipped_no_recipient++; continue; }
+      const id = await claimNotice(`review_due:${r.employee_id}:${r.annual_review_date}`, "review_due", r.employee_id, null, to.join(", "));
+      if (id) claimed.push({ claim: id, row: r });
+    }
+    if (claimed.length) {
+      const body = noticeList(claimed.map((d) =>
+        `<strong>${esc(d.row.name)}</strong> — review ${esc(d.row.annual_review_date)}`
+        + (d.row.checks ? `, ${d.row.checks} Fidelity Check${d.row.checks === 1 ? "" : "s"} on file`
+                        : `, <span style="color:#b45309;">no Fidelity Checks on file</span>`)
+        + (d.row.hourly_rate == null ? `, <span style="color:#b45309;">no hourly rate on file</span>` : "")));
+      try {
+        await sendEmail({
+          to: to.join(", "),
+          subject: `${claimed.length} annual review${claimed.length === 1 ? "" : "s"} coming up`,
+          html: noticeShell("Annual reviews",
+            `${claimed.length === 1 ? "An annual review is" : claimed.length + " annual reviews are"} due within the next ${REVIEW_NOTICE_DAYS} days.`,
+            body,
+            "The CRM will calculate the recommended raise from the Fidelity Checks on file and show the working. Anyone without checks or without an hourly rate on file is flagged above, because those are the two things it cannot work around."),
+          type: "fidelity_reviews_due",
+        });
+        out.review_due = claimed.length;
+      } catch (e) {
+        for (const d of claimed) await releaseNotice(d.claim);
+      }
+    }
+
+    return out;
+  }
+
   // ======================= ROUTES =======================
   // Two gates, checked per route rather than once at the top, because the two
   // permissions genuinely differ: an evaluator may open and score a check but
@@ -1208,6 +1448,16 @@ module.exports = function initFidelity(ctx) {
     if (pathname === "/api/fidelity/dashboard" && method === "GET") {
       if (!manage) return json(res, 403, { error: "Not permitted to view the Fidelity dashboard." });
       return json(res, 200, await dashboard(query));
+    }
+    // Run the notice sweep now. It runs itself daily; this is for somebody who
+    // has just fixed an email address, or changed the interval, and wants to
+    // know what it would send rather than waiting until tomorrow. It reports
+    // exactly what it sent, and cannot send the same notice twice.
+    if (pathname === "/api/fidelity/sweep" && method === "POST") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      const result = await sweep();
+      await audit(null, "sweep_run", { actor, new: JSON.stringify(result) });
+      return json(res, 200, { ok: true, ...result });
     }
     if (pathname === "/api/fidelity/random" && method === "POST") {
       if (!manage) return json(res, 403, { error: "Not permitted." });
@@ -1804,6 +2054,7 @@ module.exports = function initFidelity(ctx) {
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure,
     buildPdf, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
+    sweep, leadershipRecipients,
     DEFAULT_BANDS, DEFAULT_WEIGHTS, CATEGORIES, FIDELITY_METHODS,
     _internal: { round1, round2, num },
   };
