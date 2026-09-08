@@ -71,6 +71,7 @@ function makeDb(seed) {
     log: [],
     sql: [],
     unmatchedStaff: [],
+    providerDay: [],
     createdEmployees: [],
     linked: [],
   };
@@ -147,6 +148,14 @@ function makeDb(seed) {
         hours: row.verified_hours, count: row.appointment_count, provisional: row.provisional,
         nameHint: row.staff_name_hint === undefined ? undefined : row.staff_name_hint,
         seen: row.appointments_seen === undefined ? undefined : row.appointments_seen,
+      });
+      return;
+    }
+    if (/INSERT INTO rethink_provider_day/i.test(sql)) {
+      state.providerDay.push({
+        staffId: p[0], day: p[1], month: p[2], employeeId: p[3],
+        billable: Number(p[4]), nonbillable: Number(p[5]),
+        unclassified: Number(p[6]), billableAppointments: Number(p[7]),
       });
       return;
     }
@@ -488,6 +497,71 @@ const initRethink = require("./rethink");
     check("linking to somebody not on file is refused", missing.ok === false, JSON.stringify(missing));
     const noArgs = await r.linkStaffToEmployee("", 1);
     check("linking with no staff id is refused", noArgs.ok === false);
+  }
+
+  // ---- BILLABLE HOURS, AND THE RULE IT MUST NOT MERGE WITH ---------------
+  // The BCBA requirement counts only appointments Rethink classifies as
+  // BILLABLE. Supervision and payroll count every delivered, verified session.
+  // Those are different questions about the same hour, and the whole risk in
+  // this change is that they quietly become one number.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [{ id: 1, name: "Billing BCBA", rethink_id: "S100" }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      // Same day, same provider, all delivered and verified.
+      { staffId: "S100", appointmentDate: "2026-08-03", actualDurationHours: 3, appointmentStatus: "Completed", staffVerification: true, appointmentType: "Billable - Direct" },
+      { staffId: "S100", appointmentDate: "2026-08-03", actualDurationHours: 2, appointmentStatus: "Completed", staffVerification: true, appointmentType: "Non-Billable Admin" },
+      // No label at all: must be counted neither way.
+      { staffId: "S100", appointmentDate: "2026-08-03", actualDurationHours: 1, appointmentStatus: "Completed", staffVerification: true },
+      // A boolean instead of a label.
+      { staffId: "S100", appointmentDate: "2026-08-04", actualDurationHours: 4, appointmentStatus: "Completed", staffVerification: true, isBillable: true },
+    ], pages: 1, truncated: false });
+
+    const r = initRethink(ctx);
+    await r.syncSupervisionHours("test", "2026-08");
+
+    // THE SEPARATION. Supervision counts all ten delivered hours.
+    const month = state.providerMonth.find((m) => m.staffId === "S100");
+    check("supervision still counts every delivered, verified hour",
+      month && Number(month.hours) === 10, month && month.hours);
+    check("including the non-billable ones — the rules are not merged",
+      month && Number(month.hours) !== 7, month && month.hours);
+
+    const d3 = state.providerDay.find((d) => d.day === "2026-08-03");
+    check("billable hours are recorded separately", d3 && d3.billable === 3, d3 && d3.billable);
+    check("non-billable hours are kept apart, not dropped", d3 && d3.nonbillable === 2, d3 && d3.nonbillable);
+    check("an unlabelled hour is counted neither way", d3 && d3.unclassified === 1, d3 && d3.unclassified);
+    check("and the three buckets account for every delivered hour",
+      d3 && d3.billable + d3.nonbillable + d3.unclassified === 6,
+      d3 && JSON.stringify(d3));
+    const d4 = state.providerDay.find((d) => d.day === "2026-08-04");
+    check("a boolean billable flag is read too", d4 && d4.billable === 4, d4 && d4.billable);
+
+    // "Non-Billable" contains "Billable"; testing the wrong one first counts
+    // every non-billable hour as billable.
+    const cls = r._billable.classifyBillable;
+    check("'Non-Billable' is not read as billable", cls("Non-Billable Admin") === false);
+    check("'Billable - Direct' is billable", cls("Billable - Direct") === true);
+    check("an unrecognised label is null, never assumed billable", cls("Cancellation") === null);
+    check("a blank label is null", cls("") === null);
+  }
+
+  // Weeks run Monday to Sunday, and a partial week is NOT pro-rated.
+  {
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, employees: [] });
+    const r = initRethink(ctx);
+    const ws = r._billable.weekStartOf, we = r._billable.weekEndOf;
+    check("a Wednesday belongs to the Monday before it", ws("2026-08-05") === "2026-08-03", ws("2026-08-05"));
+    check("a Monday is its own week start", ws("2026-08-03") === "2026-08-03", ws("2026-08-03"));
+    check("a Sunday belongs to the week that started six days earlier",
+      ws("2026-08-09") === "2026-08-03", ws("2026-08-09"));
+    check("a week ends on the Sunday", we("2026-08-03") === "2026-08-09", we("2026-08-03"));
+    // The boundary week is the reason days are stored rather than months.
+    check("a week can start in one month and end in the next",
+      ws("2026-10-01") === "2026-09-28" && we("2026-09-28") === "2026-10-04",
+      ws("2026-10-01") + " – " + we("2026-09-28"));
   }
 
   // Scenario 11: API failure must not destroy anything.

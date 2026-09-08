@@ -8295,6 +8295,13 @@ const pto = require("./pto")({
 // ===== BILLABLE add-on: per-BCBA monthly requirements + the monthly email =====
 const billable = require("./billable")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, readBody, json,
+  // BILLABLE hours only, and deliberately a different source from the one
+  // supervision and payroll read. verified_hours counts every delivered,
+  // verified session; this counts only the ones Rethink calls billable. The
+  // two must not be merged -- an hour can be genuinely worked, count towards
+  // supervision, and not be billable.
+  rethinkBillableWeeksForMonth: (employeeId, month) => rethink.billableWeeksForMonth(employeeId, month),
+  rethinkBillableForWeek: (employeeId, day) => rethink.billableForWeek(employeeId, day),
 });
 const clientForms = require("./client-forms")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
@@ -8485,6 +8492,11 @@ const bcbaDashboard = require("./bcba-dashboard")({
   // Read-only, unstored: see the note on fetchAppointments in rethink.js.
   fetchAppointments: (from, to) => rethink.fetchAppointments(from, to),
   verifiedHoursForMonths: (empId, months) => rethink.verifiedHoursForMonths(empId, months),
+  // BILLABLE hours for a week -- a different figure from the line above, and
+  // deliberately so. verifiedHoursForMonths is the supervision and payroll
+  // number and counts every delivered, verified session; this counts only the
+  // ones Rethink classifies as billable.
+  billableForWeek: (empId, day) => rethink.billableForWeek(empId, day),
   // The RBT Supervision tracker's own month computation, not a second copy of
   // it: the worked-hours denominator has a precedence rule (Rethink verified
   // hours, else the uploaded payroll figure) that must exist in one place.

@@ -28,6 +28,12 @@
 
 module.exports = function initBillable(ctx) {
   const { dbGet, dbAll, dbRun, sendEmail, nowISO, readBody, json } = ctx;
+  // Billable hours per week, from Rethink's own billable/non-billable
+  // classification. A DIFFERENT source from the supervision denominator on
+  // purpose: an hour can be genuinely delivered, count towards supervision and
+  // payroll, and still not be billable. Merging the two rules would move a
+  // compliance percentage every time the billable definition changed.
+  const billableWeeksForMonth = ctx.rethinkBillableWeeksForMonth || (async () => []);
 
   const today = () => new Date().toISOString().slice(0, 10);
   const thisMonth = () => today().slice(0, 7);
@@ -57,6 +63,13 @@ module.exports = function initBillable(ctx) {
   async function initTables() {
     // The requirement lives on the employee, because it is a property of the
     // person's role and contract rather than of any one month.
+    // The requirement is WEEKLY now. The monthly column is kept rather than
+    // dropped -- it is what every previously sent notice was measured against,
+    // and deleting it would rewrite the past. Nothing reads it for a new
+    // figure, and no weekly value is derived from it: monthly / 4.33 is a
+    // guess, and a guessed requirement is one somebody gets judged against.
+    await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS weekly_billable_target NUMERIC")
+      .catch((e) => console.error("weekly_billable_target column:", e.message));
     await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS monthly_billable_target NUMERIC")
       .catch((e) => console.error("[billable] target column:", e.message));
 
@@ -80,23 +93,22 @@ module.exports = function initBillable(ctx) {
     const period = /^\d{4}-\d{2}$/.test(month || "") ? month : previousMonth();
 
     const emps = await dbAll(
-      `SELECT id, name, email, role_title, monthly_billable_target
+      `SELECT id, name, email, role_title, weekly_billable_target, monthly_billable_target
          FROM hr_employees
         WHERE COALESCE(status, 'active') <> 'terminated'
         ORDER BY name`
     ).catch(() => []);
 
+    // Provisional still comes from the month row: it is a statement about
+    // whether the Rethink FILTER has been confirmed, which applies to every
+    // figure derived from that sync, billable or not.
     const hours = await dbAll(
-      "SELECT employee_id, verified_hours, appointment_count, provisional FROM rethink_provider_month WHERE month = ? AND employee_id IS NOT NULL",
+      "SELECT employee_id, provisional FROM rethink_provider_month WHERE month = ? AND employee_id IS NOT NULL",
       [period]
     ).catch(() => []);
     const byEmp = new Map();
     for (const h of hours) {
-      // A person can hold more than one Rethink staff id; their month is the
-      // sum, not whichever row happened to be read last.
-      const cur = byEmp.get(h.employee_id) || { hours: 0, appointments: 0, provisional: false };
-      cur.hours += num(h.verified_hours);
-      cur.appointments += num(h.appointment_count);
+      const cur = byEmp.get(h.employee_id) || { provisional: false };
       if (h.provisional === true || h.provisional === "t") cur.provisional = true;
       byEmp.set(h.employee_id, cur);
     }
@@ -110,63 +122,110 @@ module.exports = function initBillable(ctx) {
     ).catch(() => null);
     const syncOk = !!(lastSync && lastSync.status === "success");
 
-    const rows = emps.map((e) => {
-      const target = e.monthly_billable_target == null ? null : num(e.monthly_billable_target);
+    const rows = [];
+    for (const e of emps) {
+      const target = e.weekly_billable_target == null || e.weekly_billable_target === ""
+        ? null : num(e.weekly_billable_target);
       const h = byEmp.get(e.id) || null;
-      const actual = h ? round1(h.hours) : null;
+
+      // Every week that OVERLAPS the month. A partial first or last week
+      // expects the FULL weekly figure -- it is not pro-rated.
+      const weeksRaw = target == null ? [] : await billableWeeksForMonth(e.id, period).catch(() => []);
+      const weeks = weeksRaw.map((w) => ({
+        week_start: w.week_start,
+        week_end: w.week_end,
+        billable_hours: w.billable == null ? null : round1(w.billable),
+        nonbillable_hours: w.nonbillable == null ? null : round1(w.nonbillable),
+        unclassified_hours: w.unclassified == null ? null : round1(w.unclassified),
+        appointments: w.billable_appointments || 0,
+        // A week with nothing synced is not a week of zero hours, and is never
+        // scored as a miss.
+        met: w.billable == null ? null : round1(w.billable) >= target,
+      }));
+      const scored = weeks.filter((w) => w.met !== null);
+      const weeksMet = scored.filter((w) => w.met === true).length;
+      const actual = scored.length ? round1(scored.reduce((a, w) => a + w.billable_hours, 0)) : null;
+      const unclassified = scored.reduce((a, w) => a + (w.unclassified_hours || 0), 0);
 
       let trustworthy = true;
       let note = null;
       if (!syncOk) { trustworthy = false; note = `The Rethink sync for ${monthLabel(period)} has not completed successfully, so hours for this month are not final.`; }
       else if (!h) { trustworthy = false; note = "No Rethink appointments were matched to this person for this month."; }
       else if (h.provisional) { trustworthy = false; note = "These hours are still provisional — the Rethink verification filter has not been confirmed."; }
+      else if (target != null && !scored.length) { trustworthy = false; note = "No billable session hours were synced for this person in this month."; }
 
-      // Taken from the ROUNDED actual, not the raw one, so the three numbers
-      // in the email add up. 71.25 delivered against 100 shows as "71.3
-      // delivered, 28.7 under" -- a variance of 28.75 beside 71.3 would look
-      // like an arithmetic error to the person reading it about themselves.
-      const variance = (target != null && actual != null) ? round1(actual - target) : null;
-      return {
+      rows.push({
         employee_id: e.id,
         name: e.name,
         email: e.email || null,
         role_title: e.role_title || "",
-        target_hours: target,
+        weekly_target_hours: target,
+        weeks,
+        weeks_scored: scored.length,
+        weeks_met: weeksMet,
         actual_hours: actual,
-        appointments: h ? h.appointments : null,
-        variance,
-        met: (target != null && actual != null) ? actual >= target : null,
+        // Hours Rethink did not label either way. Reported rather than folded
+        // in: an unlabelled hour counted as billable would inflate the figure
+        // somebody is judged on.
+        unclassified_hours: round1(unclassified),
+        met: scored.length ? weeksMet === scored.length : null,
         trustworthy,
         note,
         has_requirement: target != null,
-      };
-    });
+        // Carried so a staff record still showing only the retired monthly
+        // figure can be spotted, rather than silently reading as "no
+        // requirement set".
+        legacy_monthly_target: e.monthly_billable_target == null ? null : num(e.monthly_billable_target),
+      });
+    }
 
     return { period, period_label: monthLabel(period), sync_ok: syncOk, staff: rows };
   }
 
+  function dayLabel(iso) {
+    const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return String(iso || "");
+    const names = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return (names[+m[2]] || m[2]) + " " + (+m[3]);
+  }
+
   function emailHtml(row, period) {
     const label = monthLabel(period);
-    const met = row.met === true;
-    const shortBy = row.variance == null ? null : Math.abs(row.variance);
+    const target = row.weekly_target_hours;
+    const allMet = row.met === true;
+
+    const weekRows = (row.weeks || []).map((w) => {
+      if (w.met === null) {
+        return `<tr><td style="padding:5px 14px 5px 0;color:#5b6472;">${esc(dayLabel(w.week_start))} – ${esc(dayLabel(w.week_end))}</td>
+          <td style="padding:5px 14px 5px 0;color:#6b7280;">no hours synced</td>
+          <td style="padding:5px 0;color:#6b7280;">—</td></tr>`;
+      }
+      const diff = Math.round((w.billable_hours - target) * 10) / 10;
+      return `<tr><td style="padding:5px 14px 5px 0;color:#5b6472;">${esc(dayLabel(w.week_start))} – ${esc(dayLabel(w.week_end))}</td>
+        <td style="padding:5px 14px 5px 0;font-weight:700;">${w.billable_hours} hrs</td>
+        <td style="padding:5px 0;font-weight:700;color:${w.met ? "#166534" : "#b45309"};">
+          ${w.met ? `+${Math.abs(diff)} over` : `${Math.abs(diff)} under`}</td></tr>`;
+    }).join("");
+
     return `
       <p>Hi ${esc((row.name || "").split(/\s+/)[0] || "there")},</p>
       <p>Here is your billable summary for <strong>${esc(label)}</strong>.</p>
-      <table style="border-collapse:collapse;font-size:15px;margin:14px 0;">
-        <tr><td style="padding:6px 14px 6px 0;color:#5b6472;">Your monthly requirement</td>
-            <td style="padding:6px 0;font-weight:700;">${row.target_hours} hours</td></tr>
-        <tr><td style="padding:6px 14px 6px 0;color:#5b6472;">Verified session hours delivered</td>
-            <td style="padding:6px 0;font-weight:700;">${row.actual_hours} hours</td></tr>
-        <tr><td style="padding:6px 14px 6px 0;color:#5b6472;">Difference</td>
-            <td style="padding:6px 0;font-weight:700;color:${met ? "#166534" : "#b45309"};">
-              ${met ? `+${shortBy} hours over` : `${shortBy} hours under`}</td></tr>
+      <p style="font-size:15px;">Your requirement is <strong>${target} billable hours a week</strong>.
+      You met it in <strong>${row.weeks_met} of ${row.weeks_scored}</strong> week${row.weeks_scored === 1 ? "" : "s"}.</p>
+      <table style="border-collapse:collapse;font-size:14.5px;margin:14px 0;">
+        <tr><th align="left" style="padding:0 14px 6px 0;font-size:12px;color:#6b7280;text-transform:uppercase;">Week</th>
+            <th align="left" style="padding:0 14px 6px 0;font-size:12px;color:#6b7280;text-transform:uppercase;">Billable</th>
+            <th align="left" style="padding:0 0 6px;font-size:12px;color:#6b7280;text-transform:uppercase;">vs ${target} hrs</th></tr>
+        ${weekRows}
       </table>
-      <p>${met
-        ? "Thank you — you met your requirement for the month."
-        : "You were under your requirement for the month. If that does not look right, or something affected your availability, please reply and let us know."}</p>
+      <p>${allMet
+        ? "Thank you — you met your weekly requirement every week this month."
+        : "Some weeks were under the requirement. If that does not look right, or something affected your availability, please reply and let us know."}</p>
       <p style="font-size:12.5px;color:#6b7280;margin-top:18px;">
-        "Verified session hours" are appointments recorded as delivered and verified in Rethink${row.appointments != null ? ` (${row.appointments} appointment${row.appointments === 1 ? "" : "s"} this month)` : ""}.
-        They are not a payroll or claims figure. If you think a session is missing, tell us and we will check it.
+        Each week runs Monday to Sunday and expects the full ${target} hours — a week is not reduced because the month started or ended partway through it.
+        Only appointments Rethink classifies as <strong>billable</strong> count towards this${row.unclassified_hours ? `; ${row.unclassified_hours} hour(s) this month were not labelled either way and were left out rather than assumed billable` : ""}.
+        This is not a payroll figure and it is not the same as your supervision hours — a session can be delivered and verified, count towards supervision, and not be billable.
+        If you think a session is missing, tell us and we will check it.
       </p>`;
   }
 
@@ -201,7 +260,11 @@ module.exports = function initBillable(ctx) {
            ON CONFLICT (employee_id, period) DO UPDATE
              SET target_hours = EXCLUDED.target_hours, actual_hours = EXCLUDED.actual_hours,
                  sent_to = EXCLUDED.sent_to, sent_at = EXCLUDED.sent_at`,
-          [row.employee_id, period, row.target_hours, row.actual_hours, row.email, nowISO()]
+          // The weekly figure, because that is what this month was measured
+          // against. Rows written before the requirement became weekly keep
+          // the monthly number they were measured against -- rewriting them
+          // would misreport what somebody was actually told at the time.
+          [row.employee_id, period, row.weekly_target_hours, row.actual_hours, row.email, nowISO()]
         );
         result.sent++;
       } catch (e) {
@@ -247,8 +310,12 @@ module.exports = function initBillable(ctx) {
             return true;
           }
         }
-        await dbRun("UPDATE hr_employees SET monthly_billable_target = ? WHERE id = ?", [target, targetMatch[1]]);
-        json(res, 200, { ok: true, target_hours: target });
+        // Writes the WEEKLY requirement. The monthly column is left exactly as
+        // it is: it is what earlier notices were measured against, and no
+        // weekly value is derived from it -- monthly / 4.33 is a guess, and a
+        // guessed requirement is one somebody gets judged against.
+        await dbRun("UPDATE hr_employees SET weekly_billable_target = ? WHERE id = ?", [target, targetMatch[1]]);
+        json(res, 200, { ok: true, weekly_target_hours: target });
         return true;
       }
 

@@ -347,6 +347,32 @@ module.exports = function initRethink(ctx) {
     )`).catch((e) => console.error("rethink_unmatched_staff initTables:", e.message));
     await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS last_staff_scan_at TEXT").catch(() => {});
 
+    // PER DAY, not per month, and that is the whole point of it.
+    //
+    // The BCBA billable requirement is WEEKLY, and a week straddles month
+    // boundaries -- the week of 29 September is four days of September and
+    // three of October. Monthly buckets cannot answer a weekly question without
+    // either double-counting the boundary week on re-sync or wiping half of it.
+    // A day belongs to exactly one month, so days can be replaced a month at a
+    // time and summed into whatever period is being asked about.
+    //
+    // billable_hours is kept SEPARATE from the supervision figure on purpose.
+    // Paid hours and billable hours are not the same thing, and the supervision
+    // denominator and payroll must not move because the billable rule changed.
+    await dbRun(`CREATE TABLE IF NOT EXISTS rethink_provider_day (
+      id SERIAL PRIMARY KEY,
+      rethink_staff_id TEXT NOT NULL,
+      day TEXT NOT NULL,
+      month TEXT NOT NULL,
+      employee_id INTEGER,
+      billable_hours NUMERIC DEFAULT 0,
+      nonbillable_hours NUMERIC DEFAULT 0,
+      unclassified_hours NUMERIC DEFAULT 0,
+      billable_appointments INTEGER DEFAULT 0,
+      computed_at TEXT,
+      UNIQUE (rethink_staff_id, day)
+    )`).catch((e) => console.error("rethink_provider_day initTables:", e.message));
+
     // Audit of every link an owner approved: who, when, and what it replaced.
     await dbRun(`CREATE TABLE IF NOT EXISTS rethink_client_link_log (
       id SERIAL PRIMARY KEY,
@@ -1353,6 +1379,42 @@ module.exports = function initRethink(ctx) {
     return joined ? joined.slice(0, 120) : null;
   }
 
+  // Billable or not, as RETHINK classifies it -- not as a list of CPT codes
+  // maintained here, which would go stale the first time a code was added.
+  //
+  // The rule itself is hr.js's classifyBillable(), reused rather than rewritten:
+  // it is the same question the timecard split already answers, and two rules
+  // that disagreed would put one number on a timecard and a different one on
+  // the same person's billable requirement. Its semantics matter here --
+  // "Non-Billable" is tested BEFORE "Billable" because the second matches
+  // inside the first, and anything it cannot read stays NULL rather than being
+  // quietly counted as billable.
+  //
+  // The field the API carries this in is not in any fixture in this repo, so
+  // the plausible keys are probed and the values are recorded in the observed
+  // panel, where an admin can see what Rethink actually sends.
+  const BILLABLE_KEYS = ["billableType", "appointmentType", "apptType", "billingType", "serviceType", "appointmentCategory"];
+  function billableRaw(row) {
+    for (const k of BILLABLE_KEYS) {
+      const v = row ? row[k] : null;
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+    // A plain boolean is just as likely as a labelled string.
+    for (const k of ["isBillable", "billable"]) {
+      const v = row ? row[k] : null;
+      if (v === true) return "Billable";
+      if (v === false) return "Non-Billable";
+    }
+    return null;
+  }
+  function classifyBillable(raw) {
+    const t = String(raw == null ? "" : raw).trim();
+    if (!t) return null;
+    if (/non[-\s_]*billable/i.test(t)) return false;
+    if (/billable/i.test(t)) return true;
+    return null;
+  }
+
   function decide(row, cfg) {
     const status = norm(row.appointmentStatus);
     const staffVer = norm(row.staffVerification);
@@ -1732,6 +1794,7 @@ module.exports = function initRethink(ctx) {
     // whole month is still awaiting verification is absent from it entirely,
     // and "which RBTs does Rethink know about" cannot be answered from it.
     const seenStaff = new Map();     // staffId -> { name, appointments }
+    const perDay = new Map();        // `${staffId}|${day}` -> billable split for that day
     const observed = new Map();      // `${field}|${norm}` -> { field, raw, norm, n, hours }
     let counted = 0, skippedNoDuration = 0, skippedFuture = 0;
     const cutoff = today();
@@ -1780,6 +1843,25 @@ module.exports = function initRethink(ctx) {
         cur.hours += hours; cur.count += 1;
         perStaff.set(staffId, cur);
         counted++;
+
+        // ---- the BILLABLE split, kept apart from the figure above ----------
+        // Same delivered-and-verified sessions, bucketed by what Rethink calls
+        // them. Unclassified hours are held in their own bucket rather than
+        // being counted either way: an unlabelled hour silently treated as
+        // billable would inflate somebody's requirement figure.
+        const cls = classifyBillable(billableRaw(row));
+        const day = String(row.appointmentDate || "").slice(0, 10);
+        if (day) {
+          const dk = staffId + "|" + day;
+          const dcur = perDay.get(dk) || {
+            staffId, day, billable: 0, nonbillable: 0, unclassified: 0, billableAppointments: 0,
+          };
+          if (cls === true) { dcur.billable += hours; dcur.billableAppointments += 1; }
+          else if (cls === false) { dcur.nonbillable += hours; }
+          else { dcur.unclassified += hours; }
+          perDay.set(dk, dcur);
+        }
+        observe("billableClassification", billableRaw(row), hours);
       } catch (e) {
         warnings.push(`A row could not be read: ${client.redact(e.message)}`);
       }
@@ -1838,6 +1920,30 @@ module.exports = function initRethink(ctx) {
            computed_at = EXCLUDED.computed_at`,
         [staffId, month, emp ? emp.id : null, seen.name, round2(agg.hours), agg.count, seen.appointments, provisional, nowISO()]
       ).catch((e) => warnings.push(`Could not store hours for a provider: ${e.message}`));
+    }
+
+    // ---- the per-day billable split -------------------------------------
+    // Replaced a month at a time, which is safe because a day belongs to
+    // exactly one month -- the property that lets a WEEK spanning two months be
+    // summed correctly from either side.
+    await dbRun("DELETE FROM rethink_provider_day WHERE month = ?", [month]).catch(() => {});
+    for (const d of perDay.values()) {
+      const emp = byRethinkId.get(d.staffId) || null;
+      await dbRun(
+        `INSERT INTO rethink_provider_day
+           (rethink_staff_id, day, month, employee_id, billable_hours, nonbillable_hours,
+            unclassified_hours, billable_appointments, computed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (rethink_staff_id, day) DO UPDATE SET
+           month = EXCLUDED.month, employee_id = EXCLUDED.employee_id,
+           billable_hours = EXCLUDED.billable_hours,
+           nonbillable_hours = EXCLUDED.nonbillable_hours,
+           unclassified_hours = EXCLUDED.unclassified_hours,
+           billable_appointments = EXCLUDED.billable_appointments,
+           computed_at = EXCLUDED.computed_at`,
+        [d.staffId, d.day, month, emp ? emp.id : null, round2(d.billable), round2(d.nonbillable),
+         round2(d.unclassified), d.billableAppointments, nowISO()]
+      ).catch((e) => warnings.push(`Could not store the billable split for a provider: ${e.message}`));
     }
 
     // ---- flag providers needing a match --------------------------------
@@ -2529,7 +2635,93 @@ module.exports = function initRethink(ctx) {
         RETURNING month`,
       [employeeId, id]
     ).catch(() => []);
-    return { updated: rows.length, months: rows.map((r) => r.month) };
+    // The per-day billable rows follow the same link, or the billable
+    // requirement would read empty for somebody whose supervision hours had
+    // just appeared.
+    const days = await dbAll(
+      `UPDATE rethink_provider_day SET employee_id = ?
+        WHERE rethink_staff_id = ? AND employee_id IS NULL
+        RETURNING day`,
+      [employeeId, id]
+    ).catch(() => []);
+    return { updated: rows.length, months: rows.map((r) => r.month), days: days.length };
+  }
+
+  // ======================= BILLABLE HOURS =====================
+  // Read ONLY by the BCBA billable requirement. Supervision and payroll read
+  // verified_hours, which this never touches: an hour that is delivered and
+  // verified still counts towards supervision whether or not it was billable,
+  // and a rule change here must not move a compliance percentage or a
+  // timecard.
+  //
+  // Weeks run Monday to Sunday, and a partial first week expects the FULL
+  // weekly figure -- it is not pro-rated.
+  function weekStartOf(dateStr) {
+    const d = new Date(String(dateStr).slice(0, 10) + "T00:00:00Z");
+    if (isNaN(d)) return null;
+    // getUTCDay: 0 = Sunday. Shift so Monday is the first day.
+    const shift = (d.getUTCDay() + 6) % 7;
+    d.setUTCDate(d.getUTCDate() - shift);
+    return d.toISOString().slice(0, 10);
+  }
+  function weekEndOf(weekStart) {
+    const d = new Date(weekStart + "T00:00:00Z");
+    d.setUTCDate(d.getUTCDate() + 6);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Billable hours for one employee over an inclusive day range.
+  async function billableHoursBetween(employeeId, from, to) {
+    if (!employeeId || !from || !to) return null;
+    const row = await dbGet(
+      `SELECT COALESCE(SUM(billable_hours), 0) AS billable,
+              COALESCE(SUM(nonbillable_hours), 0) AS nonbillable,
+              COALESCE(SUM(unclassified_hours), 0) AS unclassified,
+              COALESCE(SUM(billable_appointments), 0) AS appointments,
+              COUNT(*) AS days
+         FROM rethink_provider_day
+        WHERE employee_id = ? AND day >= ? AND day <= ?`,
+      [employeeId, from, to]
+    ).catch(() => null);
+    if (!row) return null;
+    // No rows at all is NOT zero hours -- it is "nothing has been synced for
+    // that period", and the two must never be shown the same way. A person
+    // reading 0 of 25 assumes a performance problem.
+    if (!Number(row.days)) return null;
+    return {
+      billable: num(row.billable),
+      nonbillable: num(row.nonbillable),
+      unclassified: num(row.unclassified),
+      billable_appointments: Number(row.appointments) || 0,
+    };
+  }
+
+  async function billableForWeek(employeeId, anyDayInWeek) {
+    const start = weekStartOf(anyDayInWeek || today());
+    if (!start) return null;
+    const end = weekEndOf(start);
+    const got = await billableHoursBetween(employeeId, start, end);
+    return got ? { week_start: start, week_end: end, ...got } : null;
+  }
+
+  // Every week that OVERLAPS the month, which is what a month-end summary needs
+  // -- the weeks a person was measured against, not a calendar slice of them.
+  async function billableWeeksForMonth(employeeId, month) {
+    if (!/^\d{4}-\d{2}$/.test(String(month || ""))) return [];
+    const [y, m] = month.split("-").map(Number);
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const out = [];
+    let cur = weekStartOf(`${month}-01`);
+    const monthEnd = `${month}-${String(lastDay).padStart(2, "0")}`;
+    while (cur && cur <= monthEnd) {
+      const end = weekEndOf(cur);
+      const got = await billableHoursBetween(employeeId, cur, end);
+      out.push({ week_start: cur, week_end: end, ...(got || { billable: null, nonbillable: null, unclassified: null, billable_appointments: 0 }) });
+      const nxt = new Date(cur + "T00:00:00Z");
+      nxt.setUTCDate(nxt.getUTCDate() + 7);
+      cur = nxt.toISOString().slice(0, 10);
+    }
+    return out;
   }
 
   // A day's appointments, straight from Rethink, for the BCBA dashboard's
@@ -2569,6 +2761,10 @@ module.exports = function initRethink(ctx) {
     verifiedHoursForMonths,
     unmatchedProvidersForMonth,
     adoptProviderRows,
+    billableForWeek,
+    billableWeeksForMonth,
+    billableHoursBetween,
+    _billable: { weekStartOf, weekEndOf, classifyBillable, billableRaw },
     scanStaffFromAppointments,
     staffMatchReview,
     createStaffFromRethink,
