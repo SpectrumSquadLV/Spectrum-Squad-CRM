@@ -3205,6 +3205,66 @@ module.exports = function initHr(ctx) {
         return json(res, 200, { ok: true, sent, skipped });
       }
 
+      // What was actually emailed to this person about this timecard.
+      //
+      // THE SIGN-IN LINK IS REDACTED. The email carries a magic link that
+      // accepts the timecard AS THE EMPLOYEE -- it is a credential, not a
+      // convenience. This file already refuses to put a password-reset link in
+      // a screen for the same reason; a link that signs somebody's hours is the
+      // same kind of thing. The reader is told the link was there and that it
+      // still works from the employee's own inbox, which is the useful fact,
+      // rather than being handed a working one.
+      const tcEmailsMatch = pathname.match(/^\/api\/hr\/timecards\/(\d+)\/emails$/);
+      if (tcEmailsMatch && method === "GET") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const tcId = Number(tcEmailsMatch[1]);
+        const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [tcId]);
+        if (!tc) return json(res, 404, { error: "Not found" });
+        const emp = tc.employee_id
+          ? await dbGet("SELECT name, email FROM hr_employees WHERE id = ?", [tc.employee_id]).catch(() => null)
+          : null;
+
+        const linked = await dbAll(
+          `SELECT id, type, recipient, subject, body, sent_at, delivered
+             FROM notifications_log
+            WHERE ref_type = 'timecard' AND ref_id = ?
+            ORDER BY sent_at DESC`, [tcId]
+        ).catch(() => []);
+
+        // Emails sent before the reference existed can only be matched by
+        // recipient, which cannot tell two pay periods apart. They are returned
+        // SEPARATELY and labelled, rather than being presented as this
+        // timecard's when nobody can actually know that.
+        const unlinked = emp && emp.email
+          ? await dbAll(
+              `SELECT id, type, recipient, subject, sent_at, delivered
+                 FROM notifications_log
+                WHERE type = 'hr_timecard' AND LOWER(recipient) = LOWER(?)
+                  AND (ref_type IS NULL OR ref_id IS NULL)
+                ORDER BY sent_at DESC LIMIT 20`, [emp.email]
+            ).catch(() => [])
+          : [];
+
+        const redact = (html) => String(html == null ? "" : html)
+          .replace(/(\/verify-timecard\/)[A-Za-z0-9._~+\/-]+/g, "$1[link removed]");
+
+        return json(res, 200, {
+          timecard_id: tcId,
+          employee_name: emp ? emp.name : null,
+          employee_email: emp ? emp.email : null,
+          verification_requested_at: tc.verification_requested_at || null,
+          status: tc.status,
+          signed_name: tc.signed_name || null,
+          emails: linked.map((r) => ({
+            id: r.id, type: r.type, recipient: r.recipient, subject: r.subject,
+            sent_at: r.sent_at, delivered: r.delivered, body: redact(r.body),
+          })),
+          // Subject and delivery only -- no body, because it is not known that
+          // these belong to this pay period.
+          earlier_unlinked: unlinked,
+        });
+      }
+
       const tcVerifyMatch = pathname.match(/^\/api\/hr\/timecards\/(\d+)\/request-verification$/);
       if (tcVerifyMatch && method === "POST") {
         if (!canManage) return json(res, 403, { error: "Not permitted" });
@@ -4758,6 +4818,12 @@ Write body as plain text with line breaks (no HTML).`;
       subject: "✨ Your timecard is ready to review — Spectrum Squad",
       html: timecardEmailHtml(firstNameOf(emp.name), period, url, timecardTotals(parseJson(tc.entries, []))),
       type: "hr_timecard",
+      // Stamped with the timecard it is about, so "what did we actually send
+      // this person" can be answered exactly rather than guessed at from the
+      // recipient and a timestamp -- which gets it wrong the moment somebody
+      // has two pay periods in flight.
+      refType: "timecard",
+      refId: tc.id,
     }).catch((e) => console.error("timecard verify email failed:", e.message));
     return { url, sent: true };
   }

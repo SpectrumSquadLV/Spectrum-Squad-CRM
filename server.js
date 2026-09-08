@@ -205,7 +205,13 @@ CREATE TABLE IF NOT EXISTS notifications_log (
   subject TEXT NOT NULL,
   body TEXT NOT NULL,
   sent_at TEXT,
-  delivered TEXT DEFAULT 'simulated' -- simulated | sent | failed
+  delivered TEXT DEFAULT 'simulated', -- simulated | sent | failed
+  -- What this email was ABOUT, when it was about a record rather than a
+  -- client. Without it an email can only be matched back to its subject by
+  -- recipient and timestamp, which guesses wrong the moment somebody has two
+  -- pay periods in flight.
+  ref_type TEXT,
+  ref_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS therapists (
@@ -461,6 +467,9 @@ ALTER TABLE clickup_config ADD COLUMN IF NOT EXISTS last_connection_status TEXT;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged_at TEXT;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS ack_token TEXT;
+-- What an email was about, when it was about a record rather than a client.
+ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS ref_type TEXT;
+ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS ref_id INTEGER;
 -- Which channel a notification went out on. Defaults to 'email' so every
 -- existing row keeps its meaning; SMS sends write 'sms'.
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'email';
@@ -1025,14 +1034,15 @@ function brandedEmail(innerHtml) {
   </div>`;
 }
 
-async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone", attachments = null }) {
+async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone", attachments = null, refType = null, refId = null }) {
   const branded = brandedEmail(html);
   const { delivered, errorMsg } = await deliverEmail({ to, subject, html: branded, attachments });
 
   await dbRun(
-    `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [clientId, type, to, subject, branded, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : "")]
+    `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered, ref_type, ref_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [clientId, type, to, subject, branded, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : ""),
+     refType, refId == null ? null : Number(refId)]
   );
 
   return { delivered, errorMsg };

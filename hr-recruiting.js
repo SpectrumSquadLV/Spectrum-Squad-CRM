@@ -1382,6 +1382,11 @@ async function hrRenderTimecards(body) {
           (t) => {
             const sendBtn = canManage ? `<button class="hr-btn sm" data-tcsend="${t.id}">${t.verification_requested_at ? "Resend" : "Send"}</button>` : "";
             const previewBtn = canManage ? `<button class="hr-btn sm ghost" data-tcpreview="${t.id}">Preview</button>` : "";
+            // Only offered once something has actually gone out. A "Sent email"
+            // button on a timecard nobody has sent invites a click that can only
+            // report nothing.
+            const sentBtn = canManage && t.verification_requested_at
+              ? `<button class="hr-btn sm ghost" data-tcsent="${t.id}">Sent email</button>` : "";
             const pdfLink = t.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${t.pdf_doc_id}" target="_blank">Signed PDF</a>` : "";
             const delBtn = hrCanDelete() ? `<button class="hr-btn sm ghost" data-tcdel="${t.id}" data-tcwho="${hrEsc(t.employee_name || "this timecard")}" style="color:#b91c1c">Delete</button>` : "";
             const check = canManage ? `<td><input type="checkbox" class="tc-pick" value="${t.id}" ${t.status === "accepted" ? "disabled" : ""} /></td>` : "";
@@ -1395,7 +1400,7 @@ async function hrRenderTimecards(body) {
               : t.verification_requested_at
               ? `<span class="hr-badge">Awaiting response</span>`
               : `<span class="hr-badge ${Number(t.open_flags) ? "paused" : "qualified"}">${hrEsc(t.status)}</span>`;
-            return `<tr>${check}<td>${hrEsc(t.employee_name || "—")}${sentMark}</td><td>${hrEsc((t.pay_period_start || "?") + " → " + (t.pay_period_end || "?"))}</td><td>${hrEsc(tcHours(t))}</td><td>${hrEsc(t.source || "")}</td><td>${st}</td><td>${t.open_flags}/${t.flag_count} open</td><td style="white-space:nowrap">${previewBtn} <button class="hr-btn sm ghost" data-tc="${t.id}">View</button> ${sendBtn} ${pdfLink} ${delBtn}</td></tr>`;
+            return `<tr>${check}<td>${hrEsc(t.employee_name || "—")}${sentMark}</td><td>${hrEsc((t.pay_period_start || "?") + " → " + (t.pay_period_end || "?"))}</td><td>${hrEsc(tcHours(t))}</td><td>${hrEsc(t.source || "")}</td><td>${st}</td><td>${t.open_flags}/${t.flag_count} open</td><td style="white-space:nowrap">${previewBtn} <button class="hr-btn sm ghost" data-tc="${t.id}">View</button> ${sentBtn} ${sendBtn} ${pdfLink} ${delBtn}</td></tr>`;
           }
         )
         .join("")}</tbody></table>`
@@ -1524,6 +1529,9 @@ async function hrRenderTimecards(body) {
     body.querySelectorAll("[data-tcpreview]").forEach((b) =>
       b.addEventListener("click", () => hrOpenTimecardPreview(b.dataset.tcpreview, body))
     );
+    body.querySelectorAll("[data-tcsent]").forEach((b) =>
+      b.addEventListener("click", () => hrOpenTimecardSentEmails(b.dataset.tcsent))
+    );
   }
   body.querySelectorAll("[data-tc]").forEach((b) => b.addEventListener("click", () => hrOpenTimecardModal(b.dataset.tc, body)));
   // Owner-only delete. Confirm first (destructive), then refresh the list.
@@ -1537,6 +1545,79 @@ async function hrRenderTimecards(body) {
       } catch (e) { alert(e.message || "Could not delete."); b.disabled = false; b.textContent = "Delete"; }
     })
   );
+}
+
+// What was ACTUALLY emailed to this person about this timecard -- the message
+// as it was sent, when it went, and whether it was delivered.
+//
+// THE SIGN-IN LINK IS REDACTED BY THE SERVER. The email carries a magic link
+// that accepts the timecard as the employee, which is a credential rather than
+// a convenience. Showing the message without handing over a working one is the
+// same rule this application already holds for password-reset links.
+//
+// Emails sent before the CRM recorded which timecard they were about are listed
+// SEPARATELY and by subject only: they can be matched to this person but not to
+// this pay period, and presenting a guess as a fact is worse than saying so.
+function hrOpenTimecardSentEmails(id) {
+  // Same modal furniture the preview next door uses -- hr-modal-back and
+  // hr-close are the classes this stylesheet actually defines.
+  const wrap = document.createElement("div");
+  wrap.className = "hr-modal-back";
+  wrap.innerHTML = `<div class="hr-modal" style="max-width:760px">
+    <button class="hr-close" data-x>×</button>
+    <h2>Sent email</h2>
+    <div id="tcsent-body"><p class="hr-muted">Loading…</p></div></div>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.querySelector("[data-x]").addEventListener("click", close);
+  wrap.addEventListener("click", (e) => { if (e.target === wrap) close(); });
+
+  hrApi("/api/hr/timecards/" + id + "/emails").then((d) => {
+    const box = wrap.querySelector("#tcsent-body");
+    const mails = d.emails || [];
+    const earlier = d.earlier_unlinked || [];
+
+    const head = `<div style="margin-bottom:12px">
+      <div><strong>${hrEsc(d.employee_name || "—")}</strong>
+        <span class="hr-muted">${hrEsc(d.employee_email || "no email on file")}</span></div>
+      ${d.status === "accepted"
+        ? `<div class="hr-muted" style="font-size:12px;margin-top:3px">Accepted${d.signed_name ? " by " + hrEsc(d.signed_name) : ""}.</div>`
+        : d.verification_requested_at
+        ? `<div class="hr-muted" style="font-size:12px;margin-top:3px">Sent ${hrEsc(hrFmtDateTime(d.verification_requested_at))} — no response yet.</div>`
+        : ""}
+    </div>`;
+
+    const body = mails.length
+      ? mails.map((m) => `<div class="card" style="margin-bottom:12px;padding:12px 14px">
+          <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <strong style="font-size:13.5px">${hrEsc(m.subject || "(no subject)")}</strong>
+            <span class="hr-muted" style="font-size:12px">${hrEsc(hrFmtDateTime(m.sent_at))}</span>
+          </div>
+          <div class="hr-muted" style="font-size:12px;margin:3px 0 8px">
+            To ${hrEsc(m.recipient)} · ${hrEsc(m.delivered || "unknown")}
+          </div>
+          <details><summary style="cursor:pointer;font-size:12.5px">Show the message as it was sent</summary>
+            <div style="border:1px solid #e6e1d4;border-radius:8px;padding:10px;margin-top:8px;background:#fff;max-height:420px;overflow:auto">${m.body}</div>
+            <p class="hr-muted" style="font-size:11.5px;margin-top:6px">
+              The review link is hidden here on purpose — it signs the timecard as ${hrEsc(d.employee_name || "the employee")}. It still works from their own inbox.
+            </p>
+          </details>
+        </div>`).join("")
+      : `<p class="hr-muted">No email has been recorded for this timecard.</p>`;
+
+    const tail = earlier.length
+      ? `<div style="margin-top:14px;padding-top:12px;border-top:1px solid #e6e1d4">
+          <div style="font-size:13px;font-weight:700;margin-bottom:4px">Earlier timecard emails to this person (${earlier.length})</div>
+          <p class="hr-muted" style="font-size:12px;margin:0 0 8px">Sent before the CRM recorded which timecard an email was about, so these can be matched to ${hrEsc(d.employee_name || "them")} but not to this pay period.</p>
+          ${earlier.map((m) => `<div class="hr-muted" style="font-size:12.5px;padding:3px 0">
+            ${hrEsc(hrFmtDateTime(m.sent_at))} — ${hrEsc(m.subject || "(no subject)")} · ${hrEsc(m.delivered || "unknown")}</div>`).join("")}
+        </div>`
+      : "";
+
+    box.innerHTML = head + body + tail;
+  }).catch((e) => {
+    wrap.querySelector("#tcsent-body").innerHTML = `<p class="hr-status err">${hrEsc(e.message || "Could not load the sent email.")}</p>`;
+  });
 }
 
 // Read-only look at exactly what the employee will receive, before anything
