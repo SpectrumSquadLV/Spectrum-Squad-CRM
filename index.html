@@ -5519,6 +5519,7 @@ async function openStaffModal(id, pageMount) {
       ${id ? `<div class="section-title">Documents</div><div id="staff-docs"></div>` : ""}
       ${id ? `<div class="section-title">Timecards</div><div id="staff-timecards">${timecardsHtml}</div>` : ""}
       ${id ? `<div class="section-title">Supervision</div><div id="staff-supervision"></div>` : ""}
+      ${id ? `<div data-fid-wrap style="display:none;"><div class="section-title">RBT Fidelity</div><div id="staff-fidelity"></div></div>` : ""}
       ${id ? `<div class="section-title">Attendance</div><div id="staff-attendance"></div>` : ""}
       ${id ? `<div class="section-title">Availability (submitted by staff)</div><div id="staff-availability">${availHtml}</div>` : ""}
       ${id ? `<div class="section-title">Activity log</div><div id="staff-activity">${activityHtml}</div>` : ""}
@@ -5611,6 +5612,13 @@ async function openStaffModal(id, pageMount) {
   if (id && window.HRSupervision) {
     const supEl = backdrop.querySelector("#staff-supervision");
     if (supEl) window.HRSupervision.renderStaffSection(supEl, id);
+  }
+  // Fidelity keeps its own counsel: the section stays hidden unless this
+  // viewer may see it AND this person is somebody it applies to, so a staff
+  // card is unchanged for everyone else.
+  if (id && window.FidelityUI) {
+    const fidEl = backdrop.querySelector("#staff-fidelity");
+    if (fidEl) window.FidelityUI.renderStaffSection(fidEl, id);
   }
 }
 

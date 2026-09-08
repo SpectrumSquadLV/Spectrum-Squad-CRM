@@ -240,6 +240,15 @@
   // never adds anything up, and never wonders what the score is "so far".
   let cur = { id: null, rubric: null, check: null, employee: null, scores: {}, calc: null, saveTimer: null };
 
+  // Whatever opened the scorer wants to know when it closes, so a section
+  // embedded in another screen can refresh itself. One at a time, like `cur`:
+  // only one Fidelity Check can be open at once.
+  let afterCheck = null;
+  function checkClosed() {
+    const f = afterCheck; afterCheck = null;
+    if (typeof f === "function") { try { f(); } catch (e) { /* the caller's problem, not the scorer's */ } }
+  }
+
   async function openNewCheck(mount, presetEmployeeId) {
     let rubric, staff;
     try {
@@ -330,6 +339,7 @@
       // Everything is saved as it is tapped, so closing loses nothing.
       back.remove();
       if (mount) fill(mount);
+      checkClosed();
     });
     drawScoring(mount, back);
   }
@@ -570,6 +580,7 @@ This locks the assessment, files the PDF in their personnel record and emails it
       alert(lines.join("\n"));
       back.remove();
       if (mount) fill(mount);
+      checkClosed();
     } catch (e) {
       btn.disabled = false; btn.textContent = "Sign & finalize";
       alert(e.message || "Couldn't finalize.");
@@ -798,6 +809,101 @@ This locks the assessment, files the PDF in their personnel record and emails it
     back.querySelector(".close-btn").addEventListener("click", () => back.remove());
   }
 
+  // ======================= THE PERSONNEL RECORD =======================
+  // Fidelity on the staff card, where somebody looking at an employee already
+  // is. It is a READ of the same figures the Fidelity page shows -- nothing is
+  // recalculated here -- plus the two actions that belong on a personnel
+  // record: observe them, or open their full history.
+  //
+  // It renders NOTHING at all when the viewer cannot see Fidelity, or when the
+  // person is not an RBT and never has been observed. A staff card should not
+  // grow an empty section about a module that does not apply to them, and an
+  // "access denied" notice on somebody's personnel record tells the reader
+  // nothing except that a screen exists that they cannot open.
+  async function renderStaffSection(el, employeeId) {
+    if (!el || !employeeId) return;
+    const wrap = el.closest("[data-fid-wrap]");
+    const show = () => { if (wrap) wrap.style.display = ""; };
+    const hide = () => { if (wrap) wrap.style.display = "none"; };
+    hide();
+
+    let d;
+    try { d = await api("/api/fidelity/employee/" + employeeId); }
+    catch (e) { return; }            // no permission, or no such record: say nothing
+    if (!d.is_rbt && !(d.history || []).length) return;
+
+    const s = d.summary;
+    const plans = (d.action_plans || []).filter((p) => p.status !== "completed");
+    const overdue = plans.filter((p) => p.overdue);
+    const due = d.overdue_check
+      ? '<span style="color:#991b1b;font-weight:700;">Due now</span>'
+      : "Next due <strong>" + esc(dayLabel(d.next_due)) + "</strong>";
+
+    const head = s.current
+      ? `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:baseline;">
+           <div style="font-size:19px;font-weight:800;">${s.current.score} / ${s.current.max}
+             <span style="font-size:14px;font-weight:600;color:var(--text-muted);">${pct(s.current.percentage)}</span></div>
+           <div>${ratingChip(s.current.rating_key, s.current.rating_label)}</div>
+           <div>${trendChip(s.trend)}</div>
+           <div style="font-size:12.5px;color:var(--text-muted);">
+             Average ${pct(s.average)} over ${s.checks} check${s.checks === 1 ? "" : "s"}</div>
+         </div>
+         <div style="font-size:12.5px;color:var(--text-muted);margin-top:6px;">
+           Last observed ${esc(dayLabel(s.last_check_date))}${s.days_since_last == null ? "" : ` (${s.days_since_last} days ago)`}
+           by ${esc(s.last_evaluator || "—")} · ${due}
+         </div>`
+      : `<div style="font-size:13px;">
+           <strong>No Fidelity Check has ever been completed.</strong>
+           <div style="color:var(--text-muted);margin-top:4px;">That is a gap in the record, not a good score.</div>
+         </div>`;
+
+    const concerns = [];
+    if (s.current && s.current.critical_fail) concerns.push("The most recent check recorded a critical fidelity concern.");
+    if (s.critical_fails_12mo) concerns.push(`${s.critical_fails_12mo} Critical Fail${s.critical_fails_12mo === 1 ? "" : "s"} in the last 12 months.`);
+    if (overdue.length) concerns.push(`${overdue.length} overdue Action Plan${overdue.length === 1 ? "" : "s"}.`);
+    else if (plans.length) concerns.push(`${plans.length} open Action Plan${plans.length === 1 ? "" : "s"}.`);
+
+    // The three most recent, because a personnel record wants the shape of the
+    // history rather than all of it; the full table is one click away.
+    const recent = (d.history || []).slice(0, 3);
+
+    el.innerHTML = `
+      <div class="card" style="margin-bottom:8px;">
+        ${head}
+        ${concerns.length ? `<div style="margin-top:9px;background:#fef3c7;color:#92400e;border-radius:8px;padding:8px 11px;font-size:12.5px;">
+          ${concerns.map((c) => esc(c)).join("<br>")}</div>` : ""}
+      </div>
+      ${graphHTML(d.trend_points)}
+      ${recent.length ? `<div class="card" style="margin-bottom:8px;">
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">Recent checks</div>
+        ${recent.map((h) => `<div data-fid-open="${h.id}" style="cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--border,#f1f1f4);font-size:12.5px;">
+          <span>${esc(dayLabel(h.assessment_date))}</span>
+          <span><strong>${h.total_score}/${h.max_score}</strong> ${pct(h.percentage)}</span>
+          <span>${ratingChip(h.rating_key, h.rating_label)}</span>
+          <span style="color:var(--text-muted);">${esc(h.employee_ack_at ? "Acknowledged" : h.emailed_at ? "Awaiting ack" : "Finalized")}</span>
+        </div>`).join("")}
+        ${(d.history || []).length > 3 ? `<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">${d.history.length - 3} earlier check${d.history.length - 3 === 1 ? "" : "s"} not shown.</div>` : ""}
+      </div>` : ""}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn small" data-fid-new>Start a Fidelity Check</button>
+        <button class="btn small secondary" data-fid-full>Open the full Fidelity record</button>
+      </div>`;
+    show();
+
+    el.querySelectorAll("[data-fid-open]").forEach((row) =>
+      row.addEventListener("click", () => openReadOnly(row.dataset.fidOpen)));
+    const newBtn = el.querySelector("[data-fid-new]");
+    if (newBtn) newBtn.addEventListener("click", () => {
+      // Come back to this section when the scorer closes, so the personnel
+      // record shows the check that was just completed without a reload.
+      afterCheck = () => renderStaffSection(el, employeeId);
+      openNewCheck(null, employeeId);
+    });
+    const fullBtn = el.querySelector("[data-fid-full]");
+    if (fullBtn) fullBtn.addEventListener("click", () => openEmployee(null, employeeId));
+  }
+
   window.__renderFidelity = renderFidelity;
+  window.FidelityUI = { renderStaffSection };
   window.__fidelityHelpers = { ratingChip, trendChip, dayLabel, pct, esc, attr, RATING_STYLE };
 })();

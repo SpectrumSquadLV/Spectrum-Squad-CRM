@@ -1256,13 +1256,28 @@ module.exports = function initFidelity(ctx) {
     if (empMatch && method === "GET") {
       if (!manage) return json(res, 403, { error: "Not permitted to view an employee's Fidelity history." });
       const id = Number(empMatch[1]);
-      const emp = await dbGet("SELECT id, name, email, role_title, hire_date, annual_review_date, hourly_rate FROM hr_employees WHERE id = ?", [id]);
+      const emp = await dbGet("SELECT id, name, email, role_title, status, hire_date, annual_review_date, hourly_rate FROM hr_employees WHERE id = ?", [id]);
       if (!emp) return json(res, 404, { error: "That staff member is not on file." });
       const rows = await finalizedChecks(id);
       const sum = summarise(rows);
       const plans = await dbAll("SELECT * FROM fidelity_action_plans WHERE employee_id = ? ORDER BY id DESC", [id]).catch(() => []);
+      // When the next check is due, worked out here rather than on whichever
+      // screen happens to be showing it -- the dashboard and the personnel
+      // record must not be able to disagree about whether somebody is overdue.
+      const settings = await getSettings();
+      const todayStr = nowISO().slice(0, 10);
+      const nextDue = sum.last_check_date
+        ? new Date(new Date(sum.last_check_date + "T00:00:00Z").getTime() + settings.check_interval_days * 86400000).toISOString().slice(0, 10)
+        : null;
       return json(res, 200, {
         employee: emp, summary: sum,
+        // Whether this person is somebody Fidelity applies to at all, decided
+        // by the same rule the dashboard uses rather than by the screen
+        // guessing from a job title.
+        is_rbt: isRbt(emp),
+        next_due: nextDue,
+        overdue_check: !nextDue || nextDue <= todayStr,
+        check_interval_days: settings.check_interval_days,
         history: rows.map(shapeRow),
         // Oldest first, which is the direction a graph reads.
         trend_points: rows.slice().reverse().map((r) => ({
