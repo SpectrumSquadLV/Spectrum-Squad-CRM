@@ -1246,6 +1246,7 @@ async function route() {
   else if (hash.startsWith("#/bcba-hub")) { if (window.__renderBcbaHub) await window.__renderBcbaHub(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/rethink-clients")) { if (window.__renderRethinkMatch) await window.__renderRethinkMatch(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/rethink-staff")) { if (window.__renderRethinkStaff) await window.__renderRethinkStaff(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/dob-check")) { if (window.__renderDobCheck) await window.__renderDobCheck(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/events")) { if (window.__renderEvents) await window.__renderEvents(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/grants")) { if (window.__renderGrants) await window.__renderGrants(mount); else await renderDashboard(mount); }
@@ -1307,7 +1308,7 @@ const NAV_GROUPS = [
   { key: "grp-practice", label: "Practice",
     members: ["events", "policies", "financial-center", "grants", "supply", "ot"] },
   { key: "grp-admin", label: "Admin",
-    members: ["admin", "rethink-clients", "rethink-staff", "signnow-import", "email-templates", "failed-emails"] },
+    members: ["admin", "rethink-clients", "rethink-staff", "dob-check", "signnow-import", "email-templates", "failed-emails"] },
 ];
 const NAV_GROUP_OF = new Map();
 NAV_GROUPS.forEach((g) => g.members.forEach((k) => NAV_GROUP_OF.set(k, g.key)));
@@ -1339,6 +1340,7 @@ const MODULE_CATALOG = {
   rethink: { label: "Rethink", icon: "⧉", external: true },
   "rethink-clients": { label: "Rethink Client Matching", icon: "⧉", hash: "#/rethink-clients" },
   "rethink-staff": { label: "Rethink Staff", icon: "⧉", hash: "#/rethink-staff" },
+  "dob-check": { label: "Date of Birth Check", icon: "⧉", hash: "#/dob-check" },
   leads: { label: "Lead Management", icon: "◎" },
   events: { label: "Events", icon: "▽" },
   policies: { label: "Policies & SOPs", icon: "▦" },
@@ -1457,6 +1459,7 @@ function renderShell(active) {
   if (["owner", "admin", "super_admin"].includes(state.user.role))
     navItems.push({ key: "rethink-clients", label: "Rethink Client Matching", icon: "⧉", hash: "#/rethink-clients" });
     navItems.push({ key: "rethink-staff", label: "Rethink Staff", icon: "⧉", hash: "#/rethink-staff" });
+    navItems.push({ key: "dob-check", label: "Date of Birth Check", icon: "⧉", hash: "#/dob-check" });
   if (["owner", "super_admin", "admin", "intake", "scheduling"].includes(state.user.role))
     navItems.push({ key: "leads", label: "Lead Management", icon: "◎" });
   // Events: the reusable community-event system. The nav entry is deliberately
@@ -6970,6 +6973,7 @@ function openAccessModal(u, onDone) {
   <script src="grants-frontend.js"></script>
   <script src="rethink-match-frontend.js"></script>
   <script src="rethink-staff-frontend.js"></script>
+  <script src="dob-check-frontend.js"></script>
   <script src="growth-frontend.js"></script>
   <script src="events-frontend.js"></script>
   <script src="supply-requests-frontend.js"></script>

@@ -5509,6 +5509,62 @@ async function handle(req, res, pathname, method, query = {}) {
     }
 
     // ---------- CLIENTS ----------
+    // Which birthdays on file might have been typed the wrong way round?
+    //
+    // <input type="date"> renders in the BROWSER's locale, so on a day-first
+    // browser this CRM asked for DD/MM/YYYY while everybody here reads dates
+    // month-first. The field is month-first now, but every birthday entered
+    // before that may have its month and day swapped -- and a transposed
+    // birthday is invisible: it saves cleanly and looks plausible on every
+    // screen afterwards.
+    //
+    // READ ONLY. It changes nothing and guesses nothing: it cannot know which
+    // reading is right, only which records are capable of being wrong. That is
+    // the useful list, because everything NOT on it is provably correct.
+    //
+    // A birthday is ambiguous only when swapping produces a DIFFERENT, REAL
+    // date: a day above 12 cannot be a month, and 03/03 swaps to itself. So a
+    // record with day 25 is certain, and only the genuinely two-way ones are
+    // reported.
+    if (pathname === "/api/clients/dob-check" && method === "GET") {
+      const rows = await dbAll(
+        "SELECT id, child_name, dob, stage, submitted_at FROM clients ORDER BY child_name"
+      );
+      const MONTHS = ["January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"];
+      const words = (y, m, d) => `${MONTHS[m - 1]} ${d}, ${y}`;
+
+      let withDob = 0, missing = 0, certain = 0;
+      const ambiguous = [];
+      for (const r of rows) {
+        const iso = String(r.dob || "").slice(0, 10);
+        const mm = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!mm) { missing++; continue; }
+        withDob++;
+        const y = Number(mm[1]), m = Number(mm[2]), d = Number(mm[3]);
+        if (d > 12 || d === m) { certain++; continue; }
+        // The swapped reading has to be a real date too.
+        const alt = new Date(Date.UTC(y, d - 1, m));
+        if (alt.getUTCMonth() !== d - 1 || alt.getUTCDate() !== m) { certain++; continue; }
+        ambiguous.push({
+          id: r.id,
+          child_name: r.child_name,
+          stored_iso: iso,
+          stored_reading: words(y, m, d),
+          swapped_reading: words(y, d, m),
+          stage: r.stage,
+          submitted_at: r.submitted_at || null,
+        });
+      }
+      return json(res, 200, {
+        total_clients: rows.length,
+        with_dob: withDob,
+        no_dob: missing,
+        unambiguous: certain,
+        ambiguous,
+      });
+    }
+
     if (pathname === "/api/clients" && method === "GET") {
       const clients = await dbAll("SELECT * FROM clients ORDER BY submitted_at DESC");
       return json(res, 200, clients.map((c) => authAlerts.sanitizeClientForRole(user, c)));
@@ -8107,6 +8163,7 @@ const PUBLIC_FILES = new Set([
   // silently falls back to the dashboard -- which is exactly what happened.
   "/rethink-match-frontend.js",
   "/rethink-staff-frontend.js",
+  "/dob-check-frontend.js",
   // Grant Finder. Same trap as the line above: leave it off and #/grants falls
   // back to the dashboard with no error anywhere.
   "/grants-frontend.js",
