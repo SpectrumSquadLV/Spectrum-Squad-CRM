@@ -3187,6 +3187,44 @@ function hint(text) {
   return `<span class="hint-badge" title="${d.innerHTML.replace(/"/g, "&quot;")}">i</span>`;
 }
 
+// WHO IS LOOKING AFTER THIS CHILD, on the client's own record.
+//
+// Reported as "the assigned BCBAs are not showing under the individual client
+// profile", and they were not: the BCBA appeared in exactly two places, both
+// inside collapsed cards, and both of them the wrong place to look. One was
+// the AUTHORIZATION card -- an insurance section -- and the other was buried in
+// First Day of ABA. The pipeline card, the caseload board and the dashboard all
+// showed it; the client's own record did not.
+//
+// The Student Analyst and Squad Leader were on the record and shown NOWHERE at
+// all, which is why a caseload could be re-assigned in the migration screen and
+// leave no trace anybody could see on the client.
+//
+// Rendered even when nothing is assigned, and saying so plainly. An empty care
+// team is a fact worth showing on a live client -- it is how somebody notices
+// that nobody is carrying them.
+function careTeamHtml(client) {
+  const row = (label, value, hintText) => `
+    <div class="field">
+      <label>${label}${hintText ? " " + hint(hintText) : ""}</label>
+      <div style="padding-top:5px; font-weight:600;">${value ? ea(value)
+        : `<span style="color:var(--text-muted); font-weight:400;">Not assigned</span>`}</div>
+    </div>`;
+  const anyone = client.assigned_bcba_name || client.assigned_student_analyst_name || client.squad_leader_name;
+  return `
+    <div class="card" style="margin:0 0 14px; padding:13px 15px;">
+      <div class="section-title" style="margin:0 0 9px;">Care team</div>
+      <div class="form-grid" style="gap:10px;">
+        ${row("Assigned BCBA", client.assigned_bcba_name, "Set on the Authorization section, or in bulk from Admin Settings \u2192 the assignment migration.")}
+        ${row("Student Analyst", client.assigned_student_analyst_name)}
+        ${row("Squad Leader", client.squad_leader_name)}
+      </div>
+      ${anyone ? "" : `<div style="font-size:12px; color:#946213; margin-top:8px;">
+        Nobody is assigned to this client yet.
+      </div>`}
+    </div>`;
+}
+
 function clientDetailsHtml(client, editing) {
   if (!editing) {
     return `
@@ -3293,6 +3331,8 @@ async function openClientModal(id) {
       </div>` : ""}
 
       ${clientDetailsHtml(client, clientDetailsEditing)}
+
+      ${careTeamHtml(client)}
 
       ${authSectionHtml(client)}
 
