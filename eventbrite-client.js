@@ -49,7 +49,11 @@ function mapAttendee(a) {
     email: String(profile.email || "").trim().toLowerCase() || null,
     quantity: Number.isFinite(qty) && qty > 0 ? qty : null,
     ticket_type: (a && a.ticket_class_name) || null,
-    external_ref: (a && (a.id || a.order_id)) ? String(a.id || a.order_id) : null,
+    // The attendee's own id, never the order's. Falling back to order_id put
+    // every attendee on one order under a single key, which de-duplication then
+    // collapsed to one registration -- the same bug the CSV path had.
+    external_ref: (a && a.id) ? String(a.id) : null,
+    order_ref: (a && a.order_id) ? String(a.order_id) : null,
     ordered_at: (a && a.created) || null,
     status_raw: (a && a.status) || null,
     attending: attendeeIsAttending(a),

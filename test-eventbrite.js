@@ -98,8 +98,14 @@ out = imp.parseAttendeeCsv("Ticket Name,Email\nGeneral Admission,z@example.com\n
 check("a ticket column is not mistaken for a name column", out.rows[0].name === null, out.rows[0]);
 check("it is read as the ticket type instead", out.rows[0].ticket_type === "General Admission");
 check("and the missing name is reported", out.report.problems.some((p) => /name column/i.test(p)));
-check("a broad alias does not steal a specific field's column",
-  imp.parseAttendeeCsv("Order Date,Order #,Email\n2026-10-24,55,a@b.co\n").rows[0].external_ref === "55");
+// This assertion used to read `.external_ref === "55"`, and that was the bug
+// written down: an ORDER number was being stored as the person's reference.
+// What it was really testing -- that "Order Date" does not steal the "Order #"
+// column -- is unchanged and still checked, on the field the order number
+// actually belongs in now.
+out = imp.parseAttendeeCsv("Order Date,Order #,Email\n2026-10-24,55,a@b.co\n");
+check("a broad alias does not steal a specific field's column", out.rows[0].order_ref === "55", out.rows[0]);
+check("AND AN ORDER NUMBER IS NOT A PERSON'S REFERENCE", out.rows[0].external_ref === null, out.rows[0]);
 check("word-boundary matching does not match inside another word",
   findColumn(["Reorder Code"], ["order"]) === -1);
 check("a missing column is -1, never column 0",
@@ -131,6 +137,49 @@ check("a row with neither has no key rather than sharing one",
   imp.dedupeKey({ name: "Ana" }) === null);
 check("rows that cannot be de-duplicated are counted and reported",
   imp.summarise([{ attending: true, name: "X" }, { attending: true, name: "Y" }]).undedupable === 2);
+
+section("An order is not a person -- several attendees can share one");
+// THE BUG THIS SECTION EXISTS FOR. A parent buying three tickets is ONE order
+// and THREE people. The order number was the de-duplication key, so everybody
+// on one order collapsed into a single registration -- silently, with
+// `undedupable` still 0, so nothing said anyone had been dropped.
+//
+// It undercounts, which is the direction nobody checks: the figure looks
+// plausible, and it is the one somebody plans catering against.
+const family = imp.parseAttendeeCsv(
+  "Order #,First Name,Last Name,Ticket Type,Order Status\n" +
+  "1001,Ana,Ruiz,General Admission,Attending\n" +
+  "1001,Beto,Ruiz,General Admission,Attending\n" +
+  "1002,Cleo,Diaz,General Admission,Attending\n").rows;
+check("THREE PEOPLE ON TWO ORDERS ARE THREE REGISTRATIONS",
+  imp.summarise(family).registrations === 3, imp.summarise(family));
+check("and three tickets", imp.summarise(family).tickets === 3, imp.summarise(family));
+check("nobody is quietly dropped as undedupable either",
+  imp.summarise(family).undedupable === 0, imp.summarise(family));
+// The other half: the reason the key existed at all still has to work.
+check("AND THE SAME FILE IMPORTED TWICE IS STILL THREE",
+  imp.summarise(family.concat(family)).registrations === 3, imp.summarise(family.concat(family)));
+
+check("an attendee reference is preferred over the order it belongs to",
+  imp.parseAttendeeCsv("Attendee #,Order #,First Name,Order Status\n9001,1001,Ana,Attending\n")
+    .rows[0].external_ref === "9001");
+check("with the order still carried, just not as the identity",
+  imp.parseAttendeeCsv("Attendee #,Order #,First Name,Order Status\n9001,1001,Ana,Attending\n")
+    .rows[0].order_ref === "1001");
+check("two attendees on one order, told apart by their own references",
+  imp.summarise(imp.parseAttendeeCsv(
+    "Attendee #,Order #,First Name,Order Status\n9001,1001,Ana,Attending\n9002,1001,Beto,Attending\n"
+  ).rows).registrations === 2);
+check("or by their emails when that is all there is",
+  imp.summarise(imp.parseAttendeeCsv(
+    "Order #,Email,First Name,Order Status\n1001,ana@x.co,Ana,Attending\n1001,beto@x.co,Beto,Attending\n"
+  ).rows).registrations === 2);
+check("the order-plus-name key separates two people on one order",
+  imp.dedupeKey({ order_ref: "1001", name: "Ana Ruiz" }) !== imp.dedupeKey({ order_ref: "1001", name: "Beto Ruiz" }));
+check("while the SAME person on that order keys the same both times",
+  imp.dedupeKey({ order_ref: "1001", name: "Ana Ruiz" }) === imp.dedupeKey({ order_ref: "1001", name: "Ana Ruiz" }));
+check("an order with no name on it still cannot be de-duplicated, and says so",
+  imp.dedupeKey({ order_ref: "1001" }) === null);
 
 section("Rubbish in does not become a confident number");
 for (const junk of ["", "   ", null, undefined]) {
@@ -169,6 +218,14 @@ check("the name comes through", mapped.name === "Ana Reyes", mapped);
 check("the email is lowercased", mapped.email === "ana@example.com", mapped.email);
 check("the quantity is a number", mapped.quantity === 3, mapped.quantity);
 check("it carries a de-duplication reference", mapped.external_ref === "555", mapped);
+// The API path had the same conflation: external_ref fell back to order_id, so
+// an attendee object without its own id put everyone on that order under one
+// key. The attendee's id is the identity; the order travels beside it.
+check("AND THE ORDER ID IS NEVER THAT REFERENCE",
+  api.mapAttendee({ order_id: "1001", profile: { name: "Ana" } }).external_ref === null,
+  api.mapAttendee({ order_id: "1001", profile: { name: "Ana" } }));
+check("the order id is still carried, separately",
+  api.mapAttendee({ order_id: "1001", profile: { name: "Ana" } }).order_ref === "1001");
 check("and reads as attending", mapped.attending === true);
 check("a first/last profile is joined when there is no full name",
   api.mapAttendee({ profile: { first_name: "Sam", last_name: "Cruz" } }).name === "Sam Cruz");
@@ -234,7 +291,19 @@ section("The two routes agree");
 const fromApi = [api.mapAttendee({
   id: "1001", quantity: 3, status: "Attending", profile: { name: "Ana Reyes", email: "ana@example.com" },
 })];
-const fromCsv = imp.parseAttendeeCsv(TYPICAL).rows.slice(0, 1);
+// The CSV fixture here carries an ATTENDEE # matching the API attendee's id,
+// because that is what they are: the API's `id` is the same value Eventbrite
+// prints in the "Attendee #" column of its own export.
+//
+// This used to run against TYPICAL, which has an Order # of 1001 and no
+// attendee column -- and it passed only because the API fixture happened to use
+// 1001 as its attendee id too. An order number and an attendee id are different
+// namespaces; matching them was a coincidence in the fixture, not a property of
+// the data, and it was the same conflation that let a whole family collapse
+// into one registration.
+const fromCsv = imp.parseAttendeeCsv(
+  "Attendee #,Order #,First Name,Last Name,Email,Quantity,Ticket Type,Status\n" +
+  "1001,77,Ana,Reyes,ANA@Example.com,3,Family Pass,Attending\n").rows;
 check("the same fields exist on both",
   Object.keys(fromApi[0]).sort().join(",") === Object.keys(fromCsv[0]).sort().join(","),
   { api: Object.keys(fromApi[0]).sort(), csv: Object.keys(fromCsv[0]).sort() });
@@ -243,6 +312,8 @@ check("and summarise reads either",
 check("de-duplication works across both, so one person counted twice is one",
   imp.summarise(fromApi.concat(fromCsv)).registrations === 1,
   imp.summarise(fromApi.concat(fromCsv)));
+check("and it is the attendee reference doing it, not a lucky order number",
+  fromCsv[0].external_ref === "1001" && fromCsv[0].order_ref === "77", fromCsv[0]);
 
 if (failures.length) console.log("\n  --- failures ---\n" + failures.join("\n"));
 console.log(`\n  ${pass} passed, ${fail} failed\n`);

@@ -33,7 +33,20 @@ const COLUMNS = {
   email: ["attendee email", "email address", "email", "buyer email"],
   quantity: ["quantity", "qty", "tickets", "number of tickets"],
   ticket_type: ["ticket type", "ticket name", "ticket class"],
-  order_ref: ["attendee number", "attendee id", "attendee", "order number", "order id", "order"],
+  // TWO DIFFERENT REFERENCES, AND CONFLATING THEM LOSES PEOPLE.
+  //
+  // An Eventbrite ORDER can hold several attendees -- a parent buying three
+  // tickets is one order and three people. An ATTENDEE reference identifies the
+  // person. These were one field, order-level aliases included, and the order
+  // number then served as the de-duplication key: everybody on one order
+  // collapsed into a single registration, silently, and `undedupable` stayed 0
+  // so nothing said anybody had been dropped.
+  //
+  // It undercounts, which is the direction nobody checks. Three people on two
+  // orders reported as two registrations, against a figure used to plan
+  // catering.
+  attendee_ref: ["attendee number", "attendee id", "attendee"],
+  order_ref: ["order number", "order id", "order"],
   order_date: ["order date", "date created", "created", "purchase date"],
   status: ["order status", "attendee status", "status"],
 };
@@ -45,7 +58,9 @@ const COLUMNS = {
 // list of people all called "General Admission".
 const RESOLUTION_ORDER = [
   "email", "quantity", "ticket_type", "status",
-  "order_date", "order_ref", "first_name", "last_name", "full_name",
+  // attendee_ref before order_ref: when a file carries both, the per-person one
+  // is the one worth keying on.
+  "order_date", "attendee_ref", "order_ref", "first_name", "last_name", "full_name",
 ];
 
 // Statuses that mean this person is not coming. Anything unrecognised counts as
@@ -128,7 +143,10 @@ function parseAttendeeCsv(text) {
       email: (cell(row, idx.email) || "").toLowerCase() || null,
       quantity: toPositiveInt(cell(row, idx.quantity)),
       ticket_type: cell(row, idx.ticket_type) || null,
-      external_ref: cell(row, idx.order_ref) || null,
+      // external_ref is the ATTENDEE-level reference only. The order number is
+      // carried separately and is never a person's identity on its own.
+      external_ref: cell(row, idx.attendee_ref) || null,
+      order_ref: cell(row, idx.order_ref) || null,
       ordered_at: cell(row, idx.order_date) || null,
       status_raw: status || null,
       attending: !isNotAttending(status),
@@ -157,14 +175,27 @@ function parseAttendeeCsv(text) {
   };
 }
 
-// Re-importing the same export must not double a total. Eventbrite's own
-// reference is used when the file carries one; otherwise the email. A row with
-// neither cannot be de-duplicated, which is counted and reported rather than
-// hidden.
+// Re-importing the same export must not double a total, and de-duplicating must
+// not MERGE TWO PEOPLE. Those pull in opposite directions, so the key is taken
+// from the most person-specific thing the row carries:
+//
+//   1. the attendee reference -- Eventbrite's own id for this person;
+//   2. the email address;
+//   3. the order number PLUS the name -- an order is shared, a person on it is
+//      not, so the pair separates the family that bought three tickets while
+//      still collapsing the same row seen twice;
+//
+// and a row with none of those cannot be de-duplicated at all. That is counted
+// and reported rather than hidden: it is the difference between "we can't tell"
+// and a number quietly going down.
 function dedupeKey(row) {
   if (!row) return null;
   if (row.external_ref) return "ref:" + String(row.external_ref).trim().toLowerCase();
   if (row.email) return "email:" + String(row.email).trim().toLowerCase();
+  if (row.order_ref && row.name) {
+    return "ord:" + String(row.order_ref).trim().toLowerCase()
+      + "|" + String(row.name).trim().toLowerCase();
+  }
   return null;
 }
 
