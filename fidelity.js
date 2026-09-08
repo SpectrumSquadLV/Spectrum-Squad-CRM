@@ -296,6 +296,20 @@ module.exports = function initFidelity(ctx) {
       updated_at TEXT
     )`).catch((e) => console.error("fidelity_settings initTables:", e.message));
 
+    // THE CRM HAS NEVER STORED WHAT ANYBODY IS PAID. There is a wage simulator
+    // in the financial centre, but it models hypothetical roles -- no
+    // per-employee rate exists anywhere. The raise calculator needs one, so it
+    // is added here rather than silently returning nulls and leaving somebody
+    // wondering why the dollar amounts are blank.
+    //
+    // Until a rate is entered the recommendation still works: it gives the
+    // percentage and says plainly that no rate is on file, rather than
+    // inventing one.
+    await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hourly_rate NUMERIC")
+      .catch((e) => console.error("hourly_rate column:", e.message));
+    await dbRun("ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS annual_review_date TEXT")
+      .catch((e) => console.error("annual_review_date column:", e.message));
+
     // An annual review keeps the INPUTS it was calculated from, not just the
     // answer. Changing the matrix next year must not silently rewrite what
     // somebody was awarded this year.
@@ -1486,6 +1500,33 @@ module.exports = function initFidelity(ctx) {
         old: rec.recommended_percent == null ? "leadership review" : rec.recommended_percent + "%",
         new: (finalPercent == null ? "none" : finalPercent + "%") + " for employee " + id });
       return json(res, 201, { ok: true, id: row.id, final_percent: finalPercent, final_new_rate: newRate, overridden });
+    }
+
+    // Pay and the review date. Leadership only -- an evaluator must never see,
+    // let alone set, what somebody earns.
+    const payMatch = pathname.match(/^\/api\/fidelity\/employee\/(\d+)\/pay$/);
+    if (payMatch && method === "PUT") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      const id = Number(payMatch[1]);
+      const emp = await dbGet("SELECT id, name, hourly_rate, annual_review_date FROM hr_employees WHERE id = ?", [id]);
+      if (!emp) return json(res, 404, { error: "That staff member is not on file." });
+      const b = await readBody(req);
+      const sets = [], vals = [];
+      if (b.hourly_rate !== undefined) {
+        const rate = b.hourly_rate === "" || b.hourly_rate == null ? null : Number(b.hourly_rate);
+        if (rate != null && (!isFinite(rate) || rate < 0)) {
+          return json(res, 400, { error: "An hourly rate must be a number, or blank to clear it." });
+        }
+        sets.push("hourly_rate = ?"); vals.push(rate);
+        await audit(null, "pay_rate_set", { actor, field: "hourly_rate", old: emp.hourly_rate, new: rate });
+      }
+      if (b.annual_review_date !== undefined) {
+        sets.push("annual_review_date = ?"); vals.push(b.annual_review_date || null);
+        await audit(null, "annual_review_date_set", { actor, field: "annual_review_date", old: emp.annual_review_date, new: b.annual_review_date });
+      }
+      if (!sets.length) return json(res, 200, { ok: true, unchanged: true });
+      await dbRun(`UPDATE hr_employees SET ${sets.join(", ")} WHERE id = ?`, [...vals, id]);
+      return json(res, 200, { ok: true });
     }
 
     if (pathname === "/api/fidelity/raise-reviews" && method === "GET") {

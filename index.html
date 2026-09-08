@@ -1247,6 +1247,7 @@ async function route() {
   else if (hash.startsWith("#/rethink-clients")) { if (window.__renderRethinkMatch) await window.__renderRethinkMatch(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/rethink-staff")) { if (window.__renderRethinkStaff) await window.__renderRethinkStaff(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/dob-check")) { if (window.__renderDobCheck) await window.__renderDobCheck(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/fidelity")) { if (window.__renderFidelity) await window.__renderFidelity(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/events")) { if (window.__renderEvents) await window.__renderEvents(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/grants")) { if (window.__renderGrants) await window.__renderGrants(mount); else await renderDashboard(mount); }
@@ -1300,7 +1301,7 @@ const NAV_GROUPS = [
   { key: "grp-clients", label: "Clients",
     members: ["pipeline", "client-behavior", "auth-alerts", "outbox", "leads"] },
   { key: "grp-staff", label: "Staff",
-    members: ["staff", "attendance", "supervision", "billable", "pto", "hr"] },
+    members: ["staff", "attendance", "supervision", "fidelity", "billable", "pto", "hr"] },
   // Map is deliberately NOT in here. Grouping put it behind a heading that
   // renders collapsed, and from the outside that is indistinguishable from the
   // Map having been removed -- which is exactly how it was reported. It goes
@@ -1341,6 +1342,10 @@ const MODULE_CATALOG = {
   "rethink-clients": { label: "Rethink Client Matching", icon: "⧉", hash: "#/rethink-clients" },
   "rethink-staff": { label: "Rethink Staff", icon: "⧉", hash: "#/rethink-staff" },
   "dob-check": { label: "Date of Birth Check", icon: "⧉", hash: "#/dob-check" },
+  // Two separate grants, because they are two different jobs: running the
+  // module, and conducting one observation.
+  "fidelity": { label: "RBT Fidelity Management", icon: "◈", hash: "#/fidelity" },
+  "fidelity-evaluator": { label: "Fidelity Evaluator", icon: "◈", hash: "#/fidelity" },
   leads: { label: "Lead Management", icon: "◎" },
   events: { label: "Events", icon: "▽" },
   policies: { label: "Policies & SOPs", icon: "▦" },
@@ -1361,6 +1366,13 @@ const MODULE_CATALOG = {
 const CLIENT_ACCESS_ROLES = ["owner", "super_admin", "admin", "intake", "clinical", "billing", "scheduling"];
 function canAccessClients() {
   return !!state.user && CLIENT_ACCESS_ROLES.includes(state.user.role);
+}
+// Does the signed-in user carry this grant? Mirrors moduleGranted() on the
+// server, so the sidebar entry and the route guard cannot disagree about who
+// may open RBT Fidelity.
+function fidelityGranted(key) {
+  const ma = getModuleAccess(state.user);
+  return !!ma && ma[key] === true;
 }
 function getModuleAccess(user) {
   if (!user || !user.module_access) return null;
@@ -1453,6 +1465,19 @@ function renderShell(active) {
     navItems.push({ key: "pto", label: "PTO Balances", icon: "◇" });
   if (["owner", "admin", "super_admin", "hr_admin", "clinical"].includes(state.user.role))
     navItems.push({ key: "supervision", label: "RBT Supervision", icon: "▥" });
+  // RBT Fidelity sits beside RBT Supervision because they are about the same
+  // people, and stays SEPARATE because they answer different questions.
+  //
+  // Unlike the entry above, this is NOT granted by CRM role. Fidelity holds
+  // performance and pay information, so only the owner sees it automatically;
+  // everybody else -- the Clinical Director included, since there is no such
+  // ROLE in this CRM -- needs an explicit grant. Braced deliberately: a
+  // braceless guard here is what put two admin-only screens in everybody's
+  // sidebar earlier in this branch.
+  if (state.user.role === "owner" || state.user.role === "super_admin"
+      || fidelityGranted("fidelity") || fidelityGranted("fidelity-evaluator")) {
+    navItems.push({ key: "fidelity", label: "RBT Fidelity", icon: "◈", hash: "#/fidelity" });
+  }
   // Rethink client matching. Owner/admin only, matching the server-side role
   // check on /api/rethink/client-match -- the nav entry hides it, the route
   // guard is what actually enforces it.
@@ -6980,6 +7005,7 @@ function openAccessModal(u, onDone) {
   <script src="rethink-match-frontend.js"></script>
   <script src="rethink-staff-frontend.js"></script>
   <script src="dob-check-frontend.js"></script>
+  <script src="fidelity-frontend.js"></script>
   <script src="growth-frontend.js"></script>
   <script src="events-frontend.js"></script>
   <script src="supply-requests-frontend.js"></script>

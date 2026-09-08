@@ -5045,6 +5045,14 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // RBT Fidelity add-on owns /api/fidelity/* and enforces its own two
+  // permissions internally -- management and evaluator are different answers,
+  // so a single gate here would be wrong.
+  if (pathname.startsWith("/api/fidelity")) {
+    const handled = await fidelity.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/supply/")) {
     const handled = await supply.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -8212,6 +8220,7 @@ const PUBLIC_FILES = new Set([
   "/rethink-match-frontend.js",
   "/rethink-staff-frontend.js",
   "/dob-check-frontend.js",
+  "/fidelity-frontend.js",
   // Grant Finder. Same trap as the line above: leave it off and #/grants falls
   // back to the dashboard with no error anywhere.
   "/grants-frontend.js",
@@ -8342,6 +8351,21 @@ const pto = require("./pto")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting,
 });
 // ===== BILLABLE add-on: per-BCBA monthly requirements + the monthly email =====
+// ===== RBT FIDELITY add-on: fidelity checks, performance history, action
+// plans and the annual raise calculator. Owns /api/fidelity/*. Sits beside RBT
+// Supervision in the navigation and reads the same staff records; the two are
+// deliberately separate features about the same people. =====
+const fidelity = require("./fidelity")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
+  // The PDF is filed in the personnel record through the same directory and
+  // the same hr_documents table every other employee document uses, so it
+  // appears where people already look for documents.
+  HR_DOCS_DIR: path.join(DATA_DIR, "hr-resumes"),
+  // A critical result creates real work for a real person, through the task
+  // system the rest of the CRM already uses rather than a private queue.
+  createStaffTask: (opts) => createStaffTask(opts),
+});
+
 const billable = require("./billable")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, readBody, json,
   // BILLABLE hours only, and deliberately a different source from the one
@@ -8756,6 +8780,7 @@ async function start() {
   await squad.initTables().catch((e) => console.error("Squad attendance initTables failed:", e));
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
+  await fidelity.initTables().catch((e) => console.error("Fidelity initTables failed:", e));
   await pto.initTables().catch((e) => console.error("PTO initTables failed:", e));
   await supervision.initTables().catch((e) => console.error("Supervision initTables failed:", e));
   await financialAdvisor.initTables().catch((e) => console.error("Financial advisor initTables failed:", e));
