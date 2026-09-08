@@ -1300,16 +1300,20 @@ module.exports = function initFidelity(ctx) {
           type: "fidelity_plans_overdue",
         });
         out.plan_overdue = lateplans.length;
+        // The tasks are raised only once the digest is away. A failed send
+        // releases the claims so the whole notice is retried tomorrow, and
+        // raising the tasks before that point would mean a second task for
+        // the same plan on every retry.
+        for (const d of lateplans) {
+          await createStaffTask({
+            title: `Overdue Fidelity Action Plan — ${d.name}`,
+            notes: `Assigned ${d.plan.date_assigned || "—"}, due ${d.plan.due_date}. ${d.plan.description || ""}`.trim(),
+            created_by: "system",
+          }).catch(() => {});
+        }
       } catch (e) {
         for (const d of lateplans) await releaseNotice(d.claim);
       }
-    }
-    for (const d of lateplans) {
-      await createStaffTask({
-        title: `Overdue Fidelity Action Plan — ${d.name}`,
-        notes: `Assigned ${d.plan.date_assigned || "—"}, due ${d.plan.due_date}. ${d.plan.description || ""}`.trim(),
-        created_by: "system",
-      }).catch(() => {});
     }
 
     // ---- 3. assessments nobody acknowledged ----

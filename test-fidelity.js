@@ -873,6 +873,9 @@ function scoresTotalling(total, opts = {}) {
     taskList.some((t) => /Overdue Fidelity Action Plan/.test(String(t.title || ""))),
     taskList.slice(0, 4).map((t) => t.title));
 
+  const taskCount = (list) => list.filter((t) => /Overdue Fidelity Action Plan/.test(String(t.title || ""))).length;
+  const tasksAfterFirst = taskCount(taskList);
+
   // ---- the whole point: running it again sends nothing ----
   mark = await lastMailId();
   r = await owner("/api/fidelity/sweep", { method: "POST", body: {} });
@@ -880,6 +883,12 @@ function scoresTotalling(total, opts = {}) {
     r.data.check_due === 0 && r.data.plan_overdue === 0 && r.data.review_due === 0, r.data);
   const again = await mailSince(mark, "fidelity_%");
   check("...and no second copy reaches anybody", again.length === 0, again.map((m) => m.subject));
+
+  await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  const tasks2 = await owner("/api/staff-tasks").catch(() => ({ data: [] }));
+  const taskList2 = Array.isArray(tasks2.data) ? tasks2.data : (tasks2.data.tasks || []);
+  check("...and an overdue plan does not grow a new task on every sweep",
+    taskCount(taskList2) === tasksAfterFirst, { first: tasksAfterFirst, now: taskCount(taskList2) });
 
   // ---- an acknowledgment that never came ----
   // Back-dated past the grace period, which is the only way to reach the case
