@@ -291,6 +291,7 @@
           <tbody>${rows || `<tr><td colspan="7"><div class="empty-state">No staff.</div></td></tr>`}</tbody>
         </table></div>
       </div>
+      ${rethinkGapHTML(d)}
       ${(d.excluded || []).length ? `<div class="card" style="margin-top:14px;">
         <div class="section-title" style="margin-top:0;">Not on this tracker (${d.excluded.length})</div>
         <p style="font-size:12.5px; color:var(--text-muted); margin:-4px 0 10px;">BCBAs supervise rather than being supervised, so they are left off — a certified BCBA on the list is a permanent 0% that makes the whole board read as non-compliant. Student analysts are RBTs and stay on. If someone is in the wrong place, move them.</p>
@@ -299,6 +300,7 @@
           <button class="btn small secondary" data-sup-track="${e.employee_id}">Put on the tracker</button>
         </div>`).join("")}
       </div>` : ""}`;
+    bindRethinkGap(box, () => fillTable(mount));
     box.querySelectorAll("[data-sup-emp]").forEach((tr) => tr.addEventListener("click", () => openEditor(tr.dataset.supEmp, curM, () => fillTable(mount))));
     box.querySelectorAll("[data-sup-untrack]").forEach((b) => b.addEventListener("click", async (ev) => {
       ev.stopPropagation();
@@ -580,6 +582,110 @@
   }
 
   // Compact section for the staff card.
+
+  // ---- active in Rethink, missing from this tracker ------------------------
+  // An RBT can be absent from a compliance tracker in two ways, and both look
+  // exactly like full compliance, because the only evidence is a name that
+  // isn't on the page:
+  //
+  //   1. They exist in Rethink and have no CRM staff record at all. The roster
+  //      is built from hr_employees, so no amount of syncing puts them here.
+  //   2. They are on the roster but carry no Rethink ID, so their verified
+  //      hours can never be matched and they sit at 0% looking negligent.
+  //
+  // Neither is fixed silently. A staff record invented from an external system
+  // would be a person who then carries documents, attendance, PTO and
+  // termination history that never happened; and this integration refuses to
+  // match a provider to an employee by NAME anywhere, because two RBTs sharing
+  // a surname produce a quietly wrong compliance record. So both gaps are shown
+  // and a human closes them in one click.
+  function rethinkGapHTML(d) {
+    const gaps = d.rethink_unlinked || [];
+    const noId = d.rethink_unlinked_staff || [];
+    if (!gaps.length && !noId.length) return "";
+
+    // Everyone on file, so the picker can reach somebody who was left off the
+    // tracker as well as somebody on it. Already-linked staff stay visible but
+    // unselectable rather than disappearing, which would read as "not in the CRM".
+    const people = [].concat(d.employees || [], d.excluded || [])
+      .map((e) => ({ id: e.employee_id, name: e.name, linked: !!e.rethink_linked }))
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+    const options = people.map((p) =>
+      `<option value="${p.id}"${p.linked ? " disabled" : ""}>${esc(p.name)}${p.linked ? " — already linked" : ""}</option>`
+    ).join("");
+
+    const gapRows = gaps.map((g) => {
+      // The name is whatever Rethink sent alongside the appointment. It is a
+      // label to recognise somebody by, never a match -- so a provider with no
+      // name in the payload is shown by staff id rather than a guess.
+      const who = g.name_hint ? esc(g.name_hint) : `Rethink staff ${esc(g.rethink_staff_id)}`;
+      const work = g.verified_hours > 0
+        ? `${g.verified_hours} verified hrs · ${g.appointment_count} session${g.appointment_count === 1 ? "" : "s"}`
+        : `${g.appointments_seen} session${g.appointments_seen === 1 ? "" : "s"} on the schedule, none verified yet`;
+      return `<div class="task-row" style="align-items:flex-start; flex-wrap:wrap; gap:8px;">
+        <div class="info" style="min-width:190px;">
+          <strong>${who}</strong>
+          <div class="due">Rethink staff ID ${esc(g.rethink_staff_id)} · ${esc(work)}${g.provisional ? " · provisional" : ""}</div>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          <select data-rl-emp="${esc(g.rethink_staff_id)}" style="padding:6px 8px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:12.5px; max-width:220px;">
+            <option value="">Which staff member is this?</option>
+            ${options}
+          </select>
+          <button class="btn small" data-rl-link="${esc(g.rethink_staff_id)}">Link</button>
+        </div>
+      </div>`;
+    }).join("");
+
+    return `<div class="card" data-sup-rethink-gap style="margin-top:14px; border-left:3px solid #b45309;">
+      <div class="section-title" style="margin-top:0;">Working in Rethink, missing from this tracker${gaps.length ? ` (${gaps.length})` : ""}</div>
+      <p style="font-size:12.5px; color:var(--text-muted); margin:-4px 0 10px;">
+        Nobody here is counted in the percentages above. A supervision tracker that silently leaves out the RBTs it cannot see reports full compliance for a caseload it never checked.
+      </p>
+      ${gaps.length ? gapRows : ""}
+      ${gaps.length ? `<p style="font-size:12px; color:var(--text-muted); margin:10px 0 0;">
+        If one of these is somebody the CRM has never had a record for, add them under <strong>Staff</strong> first — a staff record is not created from Rethink automatically, because it would carry documents, attendance and PTO history that never happened.
+      </p>` : ""}
+      ${noId.length ? `<div style="margin-top:${gaps.length ? "14px" : "0"}; padding-top:${gaps.length ? "12px" : "0"}; ${gaps.length ? "border-top:1px solid var(--border,#e5e7eb);" : ""}">
+        <div style="font-size:13px; font-weight:700; margin-bottom:4px;">On the tracker, but not linked to Rethink (${noId.length})</div>
+        <p style="font-size:12.5px; color:var(--text-muted); margin:0 0 8px;">These staff have no Rethink ID, so their verified hours can never sync and they will read as 0% however much they work. Add the Rethink ID on their staff record, or link them from the list above.</p>
+        <div style="font-size:12.5px;">${noId.map((e) => esc(e.name)).join(" · ")}</div>
+      </div>` : ""}
+    </div>`;
+  }
+
+  function bindRethinkGap(box, refresh) {
+    box.querySelectorAll("[data-rl-link]").forEach((b) => b.addEventListener("click", async () => {
+      const staffId = b.dataset.rlLink;
+      const sel = box.querySelector(`[data-rl-emp="${CSS.escape(staffId)}"]`);
+      const empId = sel && sel.value;
+      if (!empId) { alert("Choose which staff member this Rethink provider is."); return; }
+      const who = sel.options[sel.selectedIndex].textContent.trim();
+      // Read the choice back before writing it. Attaching a provider to the
+      // wrong person moves real verified hours onto the wrong compliance
+      // record, which is worse than the gap it was meant to close.
+      if (!confirm(`Link Rethink staff ID ${staffId} to ${who}?\n\nTheir Rethink hours will count towards ${who}'s supervision percentage from now on, including months already synced.`)) return;
+      b.disabled = true;
+      try {
+        const r = await api("/api/supervision/rethink-link", { method: "POST", body: { employee_id: Number(empId), rethink_staff_id: staffId } });
+        if (r && r.months_updated) alert(`Linked. ${r.months_updated} month(s) of Rethink hours now count towards ${who}'s supervision.`);
+        await refresh();
+      } catch (e) {
+        b.disabled = false;
+        // The server refuses a replacement rather than overwriting an existing
+        // mapping, so ask and send it back explicitly.
+        if (e && /already linked/i.test(e.message || "") && confirm((e.message || "") + "\n\nReplace it?")) {
+          try {
+            await api("/api/supervision/rethink-link", { method: "POST", body: { employee_id: Number(empId), rethink_staff_id: staffId, replace: true } });
+            await refresh();
+            return;
+          } catch (e2) { alert(e2.message || "Couldn't link that."); return; }
+        }
+        alert((e && e.message) || "Couldn't link that.");
+      }
+    }));
+  }
+
   async function renderStaffSection(container, empId) {
     if (!container) return;
     const month = curMonth();

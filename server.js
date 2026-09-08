@@ -750,7 +750,12 @@ async function createUser({ name, email, password, role, department_id = null })
 }
 
 async function findUserByEmail(email) {
-  return dbGet("SELECT * FROM users WHERE email = ?", [email.toLowerCase()]);
+  // Trimmed as well as lower-cased. Addresses are stored trimmed at creation,
+  // so a lookup that only lower-cased could not match one pasted with a
+  // trailing space -- and every caller of this (sign-in, password reset,
+  // "does this account exist") would then report no such account, which is
+  // indistinguishable from access never having been granted.
+  return dbGet("SELECT * FROM users WHERE email = ?", [String(email == null ? "" : email).trim().toLowerCase()]);
 }
 
 async function login(email, password) {
@@ -8268,6 +8273,10 @@ const supervision = require("./supervision")({
   // Returns {} until then, so the tracker keeps using the uploaded figure.
   rethinkVerifiedHours: (month) => rethink.verifiedHoursByEmployee(month),
   rethinkVerifiedHoursForMonths: (employeeId, months) => rethink.verifiedHoursForMonths(employeeId, months),
+  // Active Rethink providers no CRM employee claims -- the tracker shows them
+  // so an unlinked RBT is a visible gap rather than an invisible one.
+  rethinkUnmatchedProviders: (month) => rethink.unmatchedProvidersForMonth(month),
+  rethinkAdoptProvider: (staffId, employeeId) => rethink.adoptProviderRows(staffId, employeeId),
 });
 // ===== RETHINK INTEGRATION: the one place that talks to the Rethink API.
 // Owns /api/rethink/*. Supplies verified monthly service hours to the

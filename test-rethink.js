@@ -81,10 +81,24 @@ function makeDb(seed) {
     return null;
   };
 
-  const dbAll = async (sql) => {
+  const dbAll = async (sql, p = []) => {
     state.sql.push(sql);
     if (/FROM hr_employees/i.test(sql)) return state.employees;
     if (/FROM clients/i.test(sql)) return state.clients;
+    // Served out of what the sync actually wrote, so the unmatched-provider
+    // reader is exercised against real rows rather than a hand-built fixture
+    // that could agree with a broken write.
+    if (/FROM rethink_provider_month/i.test(sql)) {
+      const month = p[0];
+      return state.providerMonth
+        .filter((r) => r.month === month)
+        .filter((r) => (/employee_id IS NULL/i.test(sql) ? r.employeeId == null : true))
+        .map((r) => ({
+          rethink_staff_id: r.staffId, staff_name_hint: r.nameHint == null ? null : r.nameHint,
+          verified_hours: r.hours, appointment_count: r.count, appointments_seen: r.seen,
+          provisional: r.provisional, computed_at: seed.now,
+        }));
+    }
     return [];
   };
 
@@ -92,7 +106,25 @@ function makeDb(seed) {
     state.sql.push(sql);
     if (/^\s*DELETE FROM/i.test(sql)) { state.deletes.push(sql.trim().split("\n")[0]); return; }
     if (/INSERT INTO rethink_provider_month/i.test(sql)) {
-      state.providerMonth.push({ staffId: p[0], month: p[1], employeeId: p[2], hours: p[3], count: p[4], provisional: p[5] });
+      // By COLUMN NAME, not by position -- same reason as hr_supervision_logs
+      // below. Reading positionally meant that adding a column to the write
+      // silently shifted every assertion in this file onto the wrong value,
+      // which is a fake that reports failures for changes that are correct.
+      const cols = (sql.match(/INSERT INTO rethink_provider_month\s*\(([^)]*)\)/i) || [])[1] || "";
+      const names = cols.split(",").map((c) => c.trim());
+      const values = ((sql.match(/VALUES\s*\(([^)]*)\)/i) || [])[1] || "").split(",").map((v) => v.trim());
+      const row = {};
+      let pi = 0;
+      names.forEach((name, i) => {
+        const v = values[i];
+        row[name] = v === "?" ? p[pi++] : v.replace(/^'|'$/g, "");
+      });
+      state.providerMonth.push({
+        staffId: row.rethink_staff_id, month: row.month, employeeId: row.employee_id,
+        hours: row.verified_hours, count: row.appointment_count, provisional: row.provisional,
+        nameHint: row.staff_name_hint === undefined ? undefined : row.staff_name_hint,
+        seen: row.appointments_seen === undefined ? undefined : row.appointments_seen,
+      });
       return;
     }
     if (/INSERT INTO rethink_observed_values/i.test(sql)) {
@@ -242,6 +274,91 @@ const initRethink = require("./rethink");
     check("and says so in the warnings", out.warnings.some((w) => /not confirmed/i.test(w)));
     const hours = await r.verifiedHoursByEmployee("2026-08");
     check("verifiedHoursByEmployee returns nothing while unconfirmed", Object.keys(hours).length === 0);
+  }
+
+  // Scenarios: an active RBT who is invisible to the supervision tracker.
+  //
+  // The tracker's roster is built from hr_employees, so a provider who exists
+  // only in Rethink cannot appear on it however often the sync runs -- and an
+  // RBT missing from a compliance tracker is indistinguishable from full
+  // compliance. Worse, the ONLY providers the aggregate used to record were
+  // ones with a completed, verified, positive-duration session, so the RBT
+  // most likely to need chasing -- working all month with nothing verified --
+  // was the one guaranteed to leave no trace at all.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [{ id: 1, name: "Linked RBT", rethink_id: "S100" }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { staffId: "S100", appointmentStatus: "Completed", staffVerification: true, actualDurationHours: 3, appointmentDate: "2026-08-03" },
+      // In Rethink, no CRM employee, and PLENTY of verified work.
+      { staffId: "S900", staffName: "Unlinked RBT", appointmentStatus: "Completed", staffVerification: true, actualDurationHours: 6, appointmentDate: "2026-08-04" },
+      // In Rethink, no CRM employee, and nothing verified all month. This is
+      // the provider who used to vanish completely.
+      { staffId: "S901", staffName: "Unverified RBT", appointmentStatus: "Completed", staffVerification: false, actualDurationHours: 5, appointmentDate: "2026-08-05" },
+      { staffId: "S901", staffName: "Unverified RBT", appointmentStatus: "Completed", staffVerification: false, actualDurationHours: 4, appointmentDate: "2026-08-06" },
+    ], pages: 1, truncated: false });
+
+    const r = initRethink(ctx);
+    await r.syncSupervisionHours("test", "2026-08");
+
+    const byId = {};
+    state.providerMonth.forEach((row) => { byId[row.staffId] = row; });
+
+    check("a provider with nothing verified still gets a row", !!byId.S901,
+      Object.keys(byId).join(","));
+    check("that row carries zero hours rather than a guess", byId.S901 && Number(byId.S901.hours) === 0,
+      byId.S901 && byId.S901.hours);
+    check("but records the sessions they were actually scheduled for", byId.S901 && Number(byId.S901.seen) === 2,
+      byId.S901 && byId.S901.seen);
+    check("counted sessions stay separate from sessions seen", byId.S901 && Number(byId.S901.count) === 0,
+      byId.S901 && byId.S901.count);
+    check("a linked provider is unaffected", byId.S100 && Number(byId.S100.hours) === 3, byId.S100 && byId.S100.hours);
+
+    check("the provider name Rethink sent is captured", byId.S900 && byId.S900.nameHint === "Unlinked RBT",
+      byId.S900 && byId.S900.nameHint);
+    check("a name is captured even when nothing counted", byId.S901 && byId.S901.nameHint === "Unverified RBT",
+      byId.S901 && byId.S901.nameHint);
+    // The name is a label for a human to recognise somebody by. It must never
+    // become a match: two RBTs sharing a surname would otherwise produce a
+    // silently wrong compliance record.
+    check("a name hint never links a provider by itself", byId.S900 && byId.S900.employeeId == null,
+      byId.S900 && byId.S900.employeeId);
+
+    const gaps = await r.unmatchedProvidersForMonth("2026-08");
+    const gapIds = gaps.map((g) => g.rethink_staff_id).sort();
+    check("both unmatched providers are reported to the tracker", gapIds.join(",") === "S900,S901", gapIds.join(","));
+    check("the linked provider is not reported as a gap", !gapIds.includes("S100"));
+    check("the gap carries the hours that are going uncounted", (gaps.find((g) => g.rethink_staff_id === "S900") || {}).verified_hours === 6,
+      JSON.stringify(gaps));
+    check("the gap carries a name to recognise them by", (gaps.find((g) => g.rethink_staff_id === "S900") || {}).name_hint === "Unlinked RBT");
+    check("a month that was never synced reports no gaps", (await r.unmatchedProvidersForMonth("2026-07")).length === 0);
+    check("a malformed month is refused rather than guessed at", (await r.unmatchedProvidersForMonth("nonsense")).length === 0);
+  }
+
+  // A provider linked by hand must bring their ALREADY-SYNCED hours with them.
+  // Without that, linking somebody appears to do nothing until the next sync
+  // happens to overwrite the month, and the obvious conclusion is that the
+  // link failed.
+  {
+    const { state, ctx } = makeDb({ now: NOW, config: CONFIRMED, employees: [] });
+    const adopted = [];
+    const base = ctx.dbAll;
+    ctx.dbAll = async (sql, p = []) => {
+      if (/UPDATE rethink_provider_month/i.test(sql)) {
+        adopted.push({ employeeId: p[0], staffId: p[1] });
+        return [{ month: "2026-08" }, { month: "2026-07" }];
+      }
+      return base(sql, p);
+    };
+    const r = initRethink(ctx);
+    const out = await r.adoptProviderRows("S900", 7);
+    check("linking re-points the months already on file", out.updated === 2, JSON.stringify(out));
+    check("it re-points them to the chosen employee", adopted[0] && adopted[0].employeeId === 7, JSON.stringify(adopted));
+    check("with no staff id there is nothing to adopt", (await r.adoptProviderRows("", 7)).updated === 0);
+    check("with no employee there is nothing to adopt", (await r.adoptProviderRows("S900", null)).updated === 0);
+    void state;
   }
 
   // Scenario 11: API failure must not destroy anything.

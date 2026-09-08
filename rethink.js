@@ -177,10 +177,19 @@ module.exports = function initRethink(ctx) {
       staff_name_hint TEXT,
       verified_hours NUMERIC DEFAULT 0,
       appointment_count INTEGER DEFAULT 0,
+      appointments_seen INTEGER DEFAULT 0,
       provisional BOOLEAN NOT NULL DEFAULT TRUE,
       computed_at TEXT,
       UNIQUE (rethink_staff_id, month)
     )`).catch((e) => console.error("rethink_provider_month initTables:", e.message));
+    // appointment_count is sessions that COUNTED; appointments_seen is every
+    // session the provider appears on. The two differ for exactly the provider
+    // this feature exists for: one who is working but whose sessions have not
+    // been verified, and who therefore has hours of nothing.
+    await dbRun("ALTER TABLE rethink_provider_month ADD COLUMN IF NOT EXISTS appointments_seen INTEGER DEFAULT 0")
+      .catch((e) => console.error("appointments_seen column:", e.message));
+    await dbRun("ALTER TABLE rethink_provider_month ADD COLUMN IF NOT EXISTS staff_name_hint TEXT")
+      .catch((e) => console.error("staff_name_hint column:", e.message));
 
     // Distinct values seen in the two fields that drive the filter. This is the
     // whole point of the confirm-before-finalise design: it shows the operator
@@ -1418,9 +1427,35 @@ module.exports = function initRethink(ctx) {
 
     // ---- aggregate ------------------------------------------------------
     const perStaff = new Map();      // staffId -> { hours, count }
+    // Every staffId this month's appointments mention, whether or not any of
+    // their sessions counted. perStaff only ever holds providers with a
+    // completed, verified, positive-duration session -- so an active RBT whose
+    // whole month is still awaiting verification is absent from it entirely,
+    // and "which RBTs does Rethink know about" cannot be answered from it.
+    const seenStaff = new Map();     // staffId -> { name, appointments }
     const observed = new Map();      // `${field}|${norm}` -> { field, raw, norm, n, hours }
     let counted = 0, skippedNoDuration = 0, skippedFuture = 0;
     const cutoff = today();
+
+    // The appointment payload's provider-name field is not in any fixture in
+    // this repo, so this reads whichever plausible key is ACTUALLY present
+    // rather than assuming one. A provider with no name in the payload keeps a
+    // null hint and is shown by staff id -- never under a made-up name.
+    const STAFF_NAME_KEYS = ["staffName", "staffFullName", "providerName", "therapistName", "employeeName", "staff", "provider"];
+    const nameHint = (row) => {
+      for (const k of STAFF_NAME_KEYS) {
+        const v = row ? row[k] : null;
+        if (typeof v === "string" && v.trim()) return v.trim().slice(0, 120);
+        if (v && typeof v === "object") {
+          const n = v.name || v.fullName || [v.firstName, v.lastName].filter(Boolean).join(" ");
+          if (typeof n === "string" && n.trim()) return n.trim().slice(0, 120);
+        }
+      }
+      const first = row && (row.staffFirstName || row.providerFirstName);
+      const last = row && (row.staffLastName || row.providerLastName);
+      const joined = [first, last].filter((x) => typeof x === "string" && x.trim()).join(" ").trim();
+      return joined ? joined.slice(0, 120) : null;
+    };
 
     const observe = (field, raw, hours) => {
       const key = `${field}|${norm(raw)}`;
@@ -1440,6 +1475,16 @@ module.exports = function initRethink(ctx) {
         observe("appointmentStatus", row.appointmentStatus, hours);
         observe("staffVerification", row.staffVerification, hours);
         observe("clientVerification", row.clientVerification, hours);
+
+        // Recorded BEFORE the filter, so a provider is visible on the strength
+        // of having worked at all -- not only if their paperwork cleared.
+        const seenId = String(row.staffId == null ? "" : row.staffId).trim();
+        if (seenId) {
+          const seen = seenStaff.get(seenId) || { name: null, appointments: 0 };
+          seen.appointments += 1;
+          if (!seen.name) seen.name = nameHint(row);
+          seenStaff.set(seenId, seen);
+        }
 
         const verdict = decide(row, cfg);
         if (!verdict.counts) continue;
@@ -1488,19 +1533,31 @@ module.exports = function initRethink(ctx) {
     const unmatchedIds = [];
     const provisional = !cfg.filter_confirmed;
 
-    for (const [staffId, agg] of perStaff.entries()) {
+    // Written for EVERY provider Rethink mentioned this month, not only the
+    // ones with countable hours. A row at zero hours is how an active RBT whose
+    // sessions are all still unverified stays visible instead of vanishing --
+    // and zero never displaces a real figure, because supervision.js only lets
+    // a POSITIVE Rethink value take over the denominator.
+    const allStaffIds = new Set([...seenStaff.keys(), ...perStaff.keys()]);
+    for (const staffId of allStaffIds) {
+      const agg = perStaff.get(staffId) || { hours: 0, count: 0 };
+      const seen = seenStaff.get(staffId) || { name: null, appointments: 0 };
       const emp = byRethinkId.get(staffId) || null;
       if (emp) matched++; else { unmatched++; unmatchedIds.push(staffId); }
 
       await dbRun(
         `INSERT INTO rethink_provider_month
-           (rethink_staff_id, month, employee_id, verified_hours, appointment_count, provisional, computed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+           (rethink_staff_id, month, employee_id, staff_name_hint, verified_hours, appointment_count, appointments_seen, provisional, computed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (rethink_staff_id, month) DO UPDATE SET
-           employee_id = EXCLUDED.employee_id, verified_hours = EXCLUDED.verified_hours,
-           appointment_count = EXCLUDED.appointment_count, provisional = EXCLUDED.provisional,
+           employee_id = EXCLUDED.employee_id,
+           staff_name_hint = COALESCE(EXCLUDED.staff_name_hint, rethink_provider_month.staff_name_hint),
+           verified_hours = EXCLUDED.verified_hours,
+           appointment_count = EXCLUDED.appointment_count,
+           appointments_seen = EXCLUDED.appointments_seen,
+           provisional = EXCLUDED.provisional,
            computed_at = EXCLUDED.computed_at`,
-        [staffId, month, emp ? emp.id : null, round2(agg.hours), agg.count, provisional, nowISO()]
+        [staffId, month, emp ? emp.id : null, seen.name, round2(agg.hours), agg.count, seen.appointments, provisional, nowISO()]
       ).catch((e) => warnings.push(`Could not store hours for a provider: ${e.message}`));
     }
 
@@ -2111,6 +2168,57 @@ module.exports = function initRethink(ctx) {
     return out;
   }
 
+  // Providers Rethink worked this month that no CRM employee claims. This is
+  // the supervision tracker's blind spot made visible: an RBT nobody linked is
+  // running sessions that no compliance percentage counts, and until now the
+  // only trace of them was a truncated warning string in the sync log, on an
+  // admin page the people who run the tracker do not open.
+  //
+  // Name hints are whatever Rethink sent. They are a LABEL, never a match --
+  // linking is a person choosing an employee, because two RBTs sharing a
+  // surname would otherwise produce a silently wrong compliance record.
+  async function unmatchedProvidersForMonth(month) {
+    if (!/^\d{4}-\d{2}$/.test(String(month || ""))) return [];
+    const rows = await dbAll(
+      `SELECT rethink_staff_id, staff_name_hint, verified_hours, appointment_count,
+              appointments_seen, provisional, computed_at
+         FROM rethink_provider_month
+        WHERE month = ? AND employee_id IS NULL
+        ORDER BY verified_hours DESC, appointments_seen DESC, rethink_staff_id`,
+      [month]
+    ).catch(() => []);
+    return rows.map((r) => ({
+      rethink_staff_id: String(r.rethink_staff_id),
+      name_hint: r.staff_name_hint || null,
+      verified_hours: num(r.verified_hours),
+      appointment_count: Number(r.appointment_count) || 0,
+      appointments_seen: Number(r.appointments_seen) || 0,
+      provisional: r.provisional === true || r.provisional === "t",
+      computed_at: r.computed_at || null,
+    }));
+  }
+
+  // A provider has just been linked to an employee by hand. Re-point the months
+  // already on file for that staff id so the hours land on the tracker NOW,
+  // rather than staying invisible until the next sync happens to overwrite the
+  // month. rethink_provider_month is what the denominator reads, so this alone
+  // is enough -- nothing has to be re-fetched from Rethink.
+  //
+  // Only rows with NO employee are touched. A row already pointing at somebody
+  // is a mapping a person made, and reassigning it here would move somebody
+  // else's verified hours onto a different compliance record.
+  async function adoptProviderRows(rethinkStaffId, employeeId) {
+    const id = String(rethinkStaffId == null ? "" : rethinkStaffId).trim();
+    if (!id || !employeeId) return { updated: 0, months: [] };
+    const rows = await dbAll(
+      `UPDATE rethink_provider_month SET employee_id = ?
+        WHERE rethink_staff_id = ? AND employee_id IS NULL
+        RETURNING month`,
+      [employeeId, id]
+    ).catch(() => []);
+    return { updated: rows.length, months: rows.map((r) => r.month) };
+  }
+
   // A day's appointments, straight from Rethink, for the BCBA dashboard's
   // schedule panel. READ ONLY and deliberately unstored: Rethink is the source
   // of truth for scheduling, so the CRM displays what it says at the moment it
@@ -2146,6 +2254,8 @@ module.exports = function initRethink(ctx) {
     integrationStatus,
     verifiedHoursByEmployee,
     verifiedHoursForMonths,
+    unmatchedProvidersForMonth,
+    adoptProviderRows,
     getConfig,
     scanClientMatches,
     clientMatchReview,

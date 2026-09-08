@@ -33,6 +33,12 @@ module.exports = function initSupervision(ctx) {
     }
     return out;
   });
+  // Rethink providers with no CRM employee behind them. An RBT who exists only
+  // in Rethink can never appear on this tracker by the ordinary route -- the
+  // roster is built from hr_employees -- so their absence looks exactly like
+  // full compliance. This hook is what makes that gap visible.
+  const rethinkUnmatchedProviders = ctx.rethinkUnmatchedProviders || (async () => []);
+  const rethinkAdoptProvider = ctx.rethinkAdoptProvider || (async () => ({ updated: 0, months: [] }));
 
   const DATA_DIR = path.join(__dirname, "data");
   const SUP_DIR = path.join(DATA_DIR, "supervision");
@@ -291,6 +297,9 @@ module.exports = function initSupervision(ctx) {
     const excluded = allEmps.filter((e) => !isTracked(e)).map((e) => ({
       employee_id: e.id, name: e.name, role_title: e.role_title || "", reason: whyOff(e),
       manual: e.supervision_required === false || e.supervision_required === "f",
+      // Carried so the Rethink linking picker can offer everyone on file and
+      // still show who already holds an id.
+      rethink_linked: !!(e.rethink_id != null && String(e.rethink_id).trim() !== ""),
     }));
     const logs = await dbAll("SELECT * FROM hr_supervision_logs WHERE month = ?", [month]);
     const byEmp = {}; logs.forEach((l) => { byEmp[l.employee_id] = l; });
@@ -330,12 +339,37 @@ module.exports = function initSupervision(ctx) {
         signed_off: !!(l && l.signed_off), signed_by: l && l.signed_by, signed_at: l && l.signed_at,
         entry_count: entries.length,
         hours_current_through: through,
+        // On the tracker, but is Rethink able to reach them? Without a
+        // rethink_id their verified hours can never sync, so they sit at 0%
+        // forever and read as non-compliant rather than as unlinked.
+        rethink_linked: !!(e.rethink_id != null && String(e.rethink_id).trim() !== ""),
       };
     });
     // The latest date any uploaded hours are current through, across ALL months
     // -- so the "upload again?" banner is meaningful regardless of the month
     // being viewed.
     const gRow = await dbGet("SELECT MAX(hours_current_through) AS m FROM hr_supervision_logs").catch(() => null);
+
+    // ---- the two ways an active RBT goes missing from this tracker --------
+    // Both are silent by default, and both look identical to compliance: a
+    // name that is simply not on the page.
+    //
+    // 1. In Rethink, no CRM employee at all. The roster is built from
+    //    hr_employees, so they cannot appear here however hard the sync runs.
+    // 2. On the roster, but with no rethink_id. Present, and permanently at
+    //    zero hours, because nothing can ever match them to their sessions.
+    //
+    // Neither is repaired automatically. Creating a staff record from an
+    // external system would invent a person who then carries documents,
+    // attendance, PTO and termination history that never happened; and
+    // matching a provider to an employee by NAME is the one thing this
+    // integration refuses to do anywhere, because two RBTs sharing a surname
+    // produce a silently wrong compliance record. Both are surfaced for a
+    // human to resolve in one click.
+    const rethinkUnlinked = await rethinkUnmatchedProviders(month).catch(() => []);
+    const unlinkedOnRoster = list.filter((r) => !r.rethink_linked)
+      .map((r) => ({ employee_id: r.employee_id, name: r.name, role_title: r.role_title }));
+
     return {
       month, min_pct: BACB_MIN_PCT,
       employees: list,
@@ -356,6 +390,10 @@ module.exports = function initSupervision(ctx) {
       // unchanged, and the sign-off logic is untouched.
       hours_source_counts: { rethink: fromRethink, upload: fromUpload, none: needUpload },
       rethink_hours_active: fromRethink > 0,
+      // Working in Rethink this month, no CRM employee behind the staff id.
+      rethink_unlinked: rethinkUnlinked,
+      // On this tracker, but with no Rethink id to sync hours against.
+      rethink_unlinked_staff: unlinkedOnRoster,
     };
   }
 
@@ -602,6 +640,71 @@ module.exports = function initSupervision(ctx) {
           ? `Supervision tracking set back to automatic (by job title) by ${actor}.`
           : `${val ? "Added to" : "Removed from"} the RBT supervision tracker by ${actor}.`);
         return json(res, 200, { ok: true, employee_id: empId, supervision_required: val, tracked: isTracked({ ...emp, supervision_required: val }) });
+      }
+
+      // Attach a Rethink staff id to a CRM employee, which is what puts an
+      // active-in-Rethink RBT onto this tracker with real hours. Deliberately a
+      // PERSON choosing the employee: this integration matches providers on a
+      // permanent id and never on a name, because two RBTs sharing a surname
+      // would otherwise produce a silently wrong compliance record.
+      if (pathname === "/api/supervision/rethink-link" && method === "POST") {
+        const b = await readBody(req);
+        const empId = Number(b.employee_id);
+        const staffId = String(b.rethink_staff_id == null ? "" : b.rethink_staff_id).trim();
+        if (!empId || !staffId) return json(res, 400, { error: "A staff member and a Rethink staff id are both required." });
+
+        const emp = await dbGet(
+          "SELECT id, name, rethink_id, status FROM hr_employees WHERE id = ?", [empId]
+        );
+        if (!emp) return json(res, 404, { error: "That staff member is not on file." });
+        if (String(emp.status || "active") === "terminated") {
+          return json(res, 400, { error: `${emp.name} is terminated. Reinstate the record before linking it to Rethink.` });
+        }
+
+        // One provider, one employee. Two employees holding the same Rethink id
+        // would split one person's hours across two compliance records.
+        const taken = await dbGet(
+          "SELECT id, name FROM hr_employees WHERE TRIM(COALESCE(rethink_id,'')) = ? AND id <> ?", [staffId, empId]
+        ).catch(() => null);
+        if (taken) {
+          return json(res, 409, {
+            error: `Rethink staff id ${staffId} is already on ${taken.name}'s record.`,
+            code: "rethink_id_taken", employee_id: taken.id,
+          });
+        }
+
+        // An existing id is somebody's earlier decision and the join for every
+        // other Rethink workflow, not just this tracker. Replacing it is
+        // allowed, but only when asked for explicitly.
+        const current = String(emp.rethink_id == null ? "" : emp.rethink_id).trim();
+        if (current && current !== staffId && !b.replace) {
+          return json(res, 409, {
+            error: `${emp.name} is already linked to Rethink staff id ${current}. Confirm to replace it.`,
+            code: "already_linked", current_rethink_id: current,
+          });
+        }
+        if (current === staffId) {
+          const same = await rethinkAdoptProvider(staffId, empId).catch(() => ({ updated: 0, months: [] }));
+          return json(res, 200, { ok: true, employee_id: empId, rethink_staff_id: staffId, already: true, months_updated: same.updated });
+        }
+
+        await dbRun("UPDATE hr_employees SET rethink_id = ? WHERE id = ?", [staffId, empId]);
+        // Clear the sync's own "needs a match" flag so the Rethink panel agrees
+        // with this page without waiting for the next run.
+        await dbRun("UPDATE hr_employees SET rethink_match_needed = FALSE WHERE id = ?", [empId]).catch(() => {});
+        // Hours already synced under that staff id belong to them from now on.
+        const adopted = await rethinkAdoptProvider(staffId, empId).catch(() => ({ updated: 0, months: [] }));
+
+        await logActivity(empId, current
+          ? `Rethink staff id changed from ${current} to ${staffId} by ${actor}. `
+            + `${adopted.updated} month(s) of Rethink hours now count towards supervision.`
+          : `Linked to Rethink staff id ${staffId} by ${actor}. `
+            + `${adopted.updated} month(s) of Rethink hours now count towards supervision.`);
+
+        return json(res, 200, {
+          ok: true, employee_id: empId, name: emp.name, rethink_staff_id: staffId,
+          replaced: current || null, months_updated: adopted.updated, months: adopted.months,
+        });
       }
 
       const signMatch = pathname.match(/^\/api\/supervision\/employee\/(\d+)\/sign-off$/);

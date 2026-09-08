@@ -663,9 +663,21 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   if (res.status === 401) {
-    state.user = null;
-    location.hash = "#/login";
-    throw new Error("Not authenticated");
+    // The SERVER'S message is the useful one and it used to be thrown away.
+    // A 401 was turned into a flat "Not authenticated" without ever reading
+    // the body, so somebody signing in with the wrong password -- or with an
+    // address that has no login yet -- was told they were "not authenticated"
+    // rather than "Invalid email or password". That reads as "your account is
+    // broken", and it cost a new starter and an administrator a round trip
+    // each before anybody suspected the password.
+    const data = await res.json().catch(() => ({}));
+    // A failed SIGN-IN is not an expired session. Redirecting here re-renders
+    // the login card and discards the error the person needs to read.
+    if (path !== "/api/auth/login") {
+      state.user = null;
+      location.hash = "#/login";
+    }
+    throw new Error(data.error || "Not authenticated");
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
