@@ -42,6 +42,10 @@ const { dueFollowUps } = require("./followup-schedule");
 // Reading a stranger's form submission. An allowlist, not a denylist -- see
 // vendor-application.js and test-vendor-application.js.
 const vendorApp = require("./vendor-application");
+// Registrations from Eventbrite. Two routes, one shape: a CSV export that works
+// today, and an API adapter that has never reached the live service from here.
+const ebImport = require("./eventbrite-import");
+const ebClient = require("./eventbrite-client");
 
 module.exports = function initEvents(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, readBody, json } = ctx;
@@ -151,6 +155,28 @@ module.exports = function initEvents(ctx) {
       created_at TEXT,
       updated_at TEXT
     )`).catch((e) => console.error("events:", e.message));
+
+    // Phase 6: registrations from Eventbrite. The event id is per event; the
+    // token is an environment variable, because it is a credential.
+    await dbRun("ALTER TABLE events ADD COLUMN IF NOT EXISTS eventbrite_event_id TEXT").catch(() => {});
+    // The RESULT of the last sync, never a bare number. A registration count
+    // with no record of where it came from or whether the sync worked is the
+    // thing the dashboard has refused to show since Phase 2.
+    await dbRun(`CREATE TABLE IF NOT EXISTS event_registration_sync (
+      id SERIAL PRIMARY KEY,
+      event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,                 -- 'csv' | 'api'
+      status TEXT NOT NULL,                 -- 'success' | 'failed'
+      registrations INTEGER,
+      tickets INTEGER,
+      not_attending INTEGER,
+      undedupable INTEGER,
+      problems TEXT,
+      raw_sample TEXT,
+      synced_by TEXT,
+      synced_at TEXT
+    )`).catch((e) => console.error("event_registration_sync:", e.message));
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_reg_sync_event ON event_registration_sync(event_id, id DESC)`).catch(() => {});
 
     // Phase 5: the public vendor sign-up form. Applications are CLOSED until
     // somebody opens them, per event -- a public write endpoint that is on by
@@ -494,6 +520,34 @@ module.exports = function initEvents(ctx) {
     return t;
   }
 
+  // -------------------------------------------------- registrations (Ph 6)
+  //
+  // The dashboard has said "ticketing lives on Eventbrite -- the CRM has no
+  // registration count" since Phase 2. A number appears here ONLY when a sync
+  // actually succeeded, and it arrives with where it came from and when. A
+  // failed sync leaves the meter saying what it always said, rather than
+  // reporting zero registrations for a sold-out event.
+  async function latestRegistrationSync(eventId) {
+    return dbGet(
+      "SELECT * FROM event_registration_sync WHERE event_id = ? AND status = 'success' ORDER BY id DESC LIMIT 1",
+      [eventId]).catch(() => null);
+  }
+
+  async function recordSync(eventId, source, result, actorName) {
+    const problems = (result.problems || []).join(" | ") || null;
+    await dbRun(
+      `INSERT INTO event_registration_sync (event_id, source, status, registrations, tickets,
+         not_attending, undedupable, problems, raw_sample, synced_by, synced_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      [eventId, source, result.status, result.registrations ?? null, result.tickets ?? null,
+       result.not_attending ?? null, result.undedupable ?? null, problems,
+       result.raw_sample ? String(result.raw_sample).slice(0, 2000) : null,
+       actorName || "staff", nowISO()]
+    ).catch((e) => console.error("recordSync:", e.message));
+  }
+
+  const eventbriteToken = () => String(process.env.EVENTBRITE_TOKEN || "").trim();
+
   // ---------------------------------------------------------- dashboard
   //
   // Phase 2. Derived here rather than on the screen so the dashboard and the
@@ -551,7 +605,7 @@ module.exports = function initEvents(ctx) {
     };
   }
 
-  function buildDashboard({ event, prospects, sponsorships, donations, vendors, partners, levels, today }) {
+  function buildDashboard({ event, prospects, sponsorships, donations, vendors, partners, levels, today, registrationSync }) {
     const totals = rollup(sponsorships, donations, vendors, partners, prospects);
 
     const byStatus = {};
@@ -611,8 +665,13 @@ module.exports = function initEvents(ctx) {
         sponsorship: meter("Sponsorship raised", totals.sponsorship_paid, event.sponsorship_goal),
         sponsorship_committed: meter("Sponsorship committed", totals.sponsorship_committed, event.sponsorship_goal),
         vendors: meter("Vendors confirmed", totals.vendors_confirmed, event.vendor_goal),
-        registrations: meter("Registrations", null, event.registration_goal,
-          { actualUnknown: true, source: "Ticketing lives on Eventbrite — the CRM has no registration count." }),
+        // A real figure ONLY when a sync succeeded. Otherwise the meter says
+        // what it has always said rather than reporting zero.
+        registrations: registrationSync
+          ? meter("Registrations", registrationSync.registrations, event.registration_goal,
+              { source: `From Eventbrite (${registrationSync.source === "api" ? "API" : "CSV export"}), synced ${String(registrationSync.synced_at || "").slice(0, 10)}.` })
+          : meter("Registrations", null, event.registration_goal,
+              { actualUnknown: true, source: "Ticketing lives on Eventbrite — the CRM has no registration count." }),
         attendance: meter("Attendance", null, event.attendance_goal,
           { actualUnknown: true, source: "Counted on the day — the CRM has no attendance figure." }),
       },
@@ -857,6 +916,97 @@ module.exports = function initEvents(ctx) {
       return true;
     }
 
+    // ---- registrations from Eventbrite (Phase 6)
+    const regMatch = pathname.match(/^\/api\/events\/(\d+)\/registrations$/);
+    if (regMatch && method === "GET") {
+      const eventId = Number(regMatch[1]);
+      const ev = await dbGet("SELECT * FROM events WHERE id = ?", [eventId]);
+      if (!ev) { json(res, 404, { error: "Event not found" }); return true; }
+      const last = await latestRegistrationSync(eventId);
+      const history = await dbAll(
+        "SELECT id, source, status, registrations, tickets, problems, synced_by, synced_at FROM event_registration_sync WHERE event_id = ? ORDER BY id DESC LIMIT 10",
+        [eventId]);
+      json(res, 200, {
+        eventbrite_event_id: ev.eventbrite_event_id || null,
+        connector: ebClient.connectorStatus({
+          token: eventbriteToken(), eventbriteEventId: ev.eventbrite_event_id,
+        }),
+        // Said in the payload, not only in a comment: the adapter has never
+        // reached the live service from here.
+        api_note: "The Eventbrite API adapter has not been verified against the live service. "
+          + "The CSV export works today and needs no credentials.",
+        latest: last || null,
+        history,
+      });
+      return true;
+    }
+
+    // Import an Eventbrite attendee CSV. Works today, no credentials.
+    const regCsvMatch = pathname.match(/^\/api\/events\/(\d+)\/registrations\/import$/);
+    if (regCsvMatch && method === "POST") {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const eventId = Number(regCsvMatch[1]);
+      if (!(await eventExists(eventId))) { json(res, 404, { error: "Event not found" }); return true; }
+      const b = await readBody(req);
+      const parsed = ebImport.parseAttendeeCsv(b.csv || "");
+      const summary = ebImport.summarise(parsed.rows);
+      const dryRun = b.dry_run === true;
+
+      // A file nobody could read is a FAILED sync, recorded as such. It must
+      // not overwrite a good number with zero.
+      const usable = parsed.rows.length > 0;
+      if (!dryRun) {
+        await recordSync(eventId, "csv", {
+          status: usable ? "success" : "failed",
+          registrations: usable ? summary.registrations : null,
+          tickets: usable ? summary.tickets : null,
+          not_attending: summary.not_attending,
+          undedupable: summary.undedupable,
+          problems: parsed.report.problems,
+        }, actor);
+      }
+      json(res, 200, {
+        ok: usable, dry_run: dryRun,
+        report: parsed.report, summary,
+        recorded: usable && !dryRun,
+      });
+      return true;
+    }
+
+    // Run the API adapter. Reports honestly when it cannot.
+    const regSyncMatch = pathname.match(/^\/api\/events\/(\d+)\/registrations\/sync$/);
+    if (regSyncMatch && method === "POST") {
+      if (!canOutreach(user)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const eventId = Number(regSyncMatch[1]);
+      const ev = await dbGet("SELECT * FROM events WHERE id = ?", [eventId]);
+      if (!ev) { json(res, 404, { error: "Event not found" }); return true; }
+
+      const result = await ebClient.fetchAttendees({
+        token: eventbriteToken(),
+        eventbriteEventId: ev.eventbrite_event_id,
+        fetchImpl: ctx.eventbriteFetch || undefined,
+      });
+      if (!result.ok) {
+        // Recorded as a failure so the history shows it was tried, and the
+        // dashboard keeps whatever the last GOOD sync said rather than
+        // dropping to zero.
+        await recordSync(eventId, "api", {
+          status: "failed", problems: [result.error || result.status],
+          raw_sample: result.sample,
+        }, actor);
+        json(res, 200, { ok: false, status: result.status, error: result.error || null, connector: ebClient.connectorStatus({ token: eventbriteToken(), eventbriteEventId: ev.eventbrite_event_id }) });
+        return true;
+      }
+      const summary = ebImport.summarise(result.attendees);
+      await recordSync(eventId, "api", {
+        status: "success", registrations: summary.registrations, tickets: summary.tickets,
+        not_attending: summary.not_attending, undedupable: summary.undedupable,
+        problems: [], raw_sample: result.sample,
+      }, actor);
+      json(res, 200, { ok: true, summary, pages: result.pages });
+      return true;
+    }
+
     // ---- follow-up sweep, on demand
     //
     // Drafts only. There is deliberately no route anywhere that both generates
@@ -1086,6 +1236,7 @@ module.exports = function initEvents(ctx) {
       ]);
       const d = buildDashboard({
         event: ev, prospects, sponsorships, donations, vendors, partners, levels, today: nowISO(),
+        registrationSync: await latestRegistrationSync(id),
       });
       if (!seesMoney) {
         // Money is removed, not zeroed. A zero would read as "nobody has
@@ -1147,7 +1298,7 @@ module.exports = function initEvents(ctx) {
       }
       for (const f of ["description", "event_date", "start_time", "end_time", "venue_name", "address",
                        "city", "state", "zip", "registration_url", "public_contact_email", "public_contact_phone",
-                       "vendor_application_intro"]) {
+                       "vendor_application_intro", "eventbrite_event_id"]) {
         if (f in b) put(f, clean(b[f], f === "description" || f === "vendor_application_intro" ? 8000 : 500));
       }
       // Opening a public write endpoint is not the same kind of act as editing
