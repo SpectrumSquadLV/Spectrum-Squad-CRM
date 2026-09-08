@@ -994,6 +994,528 @@ module.exports = function initFidelity(ctx) {
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
+  // ======================= THE DASHBOARD =======================
+  // Everything the summary cards and the employee table need, computed here.
+  // The screen renders numbers; it never works any of them out.
+  //
+  // "Active RBT" is read from the job title the same way the supervision
+  // tracker does, so the two modules cannot disagree about who is an RBT.
+  const RBT_TITLE = /\bRBT\b|registered behavior technician|behavior tech|\bBT\b|student|in[- ]training|trainee/i;
+  function isRbt(emp) {
+    if (!emp) return false;
+    if (String(emp.status || "active") === "terminated") return false;
+    return RBT_TITLE.test(String(emp.role_title || ""));
+  }
+
+  async function dashboard(query = {}) {
+    const settings = await getSettings();
+    const emps = await dbAll(
+      `SELECT id, name, email, role_title, hire_date, status, annual_review_date, hourly_rate
+         FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated' ORDER BY name`
+    ).catch(() => []);
+    const rbts = emps.filter(isRbt);
+
+    const allChecks = await dbAll(
+      `SELECT * FROM fidelity_checks
+        WHERE status IN ('finalized','sent','awaiting_ack','acknowledged','closed')
+          AND COALESCE(voided, FALSE) = FALSE
+        ORDER BY assessment_date DESC, id DESC`
+    ).catch(() => []);
+    const byEmp = new Map();
+    for (const c of allChecks) {
+      if (!byEmp.has(c.employee_id)) byEmp.set(c.employee_id, []);
+      byEmp.get(c.employee_id).push(c);
+    }
+
+    const openPlans = await dbAll(
+      `SELECT * FROM fidelity_action_plans WHERE status IN ('not_started','in_progress','overdue')`
+    ).catch(() => []);
+    const plansByEmp = new Map();
+    for (const pl of openPlans) {
+      if (!plansByEmp.has(pl.employee_id)) plansByEmp.set(pl.employee_id, []);
+      plansByEmp.get(pl.employee_id).push(pl);
+    }
+
+    const today = nowISO().slice(0, 10);
+    const monthStart = today.slice(0, 7) + "-01";
+    const rows = rbts.map((e) => {
+      const sum = summarise(byEmp.get(e.id) || []);
+      const plans = plansByEmp.get(e.id) || [];
+      const overdue = plans.filter((pl) => pl.due_date && pl.due_date < today && pl.status !== "completed");
+      // Due = interval since the last check, or immediately if never checked.
+      const dueDate = sum.last_check_date
+        ? new Date(new Date(sum.last_check_date + "T00:00:00Z").getTime() + settings.check_interval_days * 86400000).toISOString().slice(0, 10)
+        : null;
+      return {
+        employee_id: e.id, name: e.name, role_title: e.role_title || "", email: e.email || null,
+        hire_date: e.hire_date || null,
+        annual_review_date: e.annual_review_date || null,
+        hourly_rate: e.hourly_rate == null ? null : Number(e.hourly_rate),
+        checks: sum.checks,
+        current_score: sum.current ? sum.current.score : null,
+        current_max: sum.current ? sum.current.max : MAX_SCORE,
+        current_percentage: sum.current ? sum.current.percentage : null,
+        current_rating: sum.current ? sum.current.rating_label : null,
+        current_rating_key: sum.current ? sum.current.rating_key : null,
+        previous_score: sum.previous ? sum.previous.score : null,
+        previous_percentage: sum.previous ? sum.previous.percentage : null,
+        change: sum.change,
+        trend: sum.trend,
+        average: sum.average,
+        last_check_date: sum.last_check_date,
+        days_since_last: sum.days_since_last,
+        last_evaluator: sum.last_evaluator,
+        critical_fail: sum.current ? sum.current.critical_fail : false,
+        critical_fails_12mo: sum.critical_fails_12mo,
+        open_action_plans: plans.length,
+        overdue_action_plans: overdue.length,
+        next_due: dueDate,
+        overdue_check: !dueDate || dueDate <= today,
+      };
+    });
+
+    const withScore = rows.filter((r) => r.current_percentage != null);
+    const avg = withScore.length
+      ? round1(withScore.reduce((a, r) => a + r.current_percentage, 0) / withScore.length)
+      : null;
+    const soon = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10);
+
+    return {
+      settings_summary: { check_interval_days: settings.check_interval_days },
+      cards: {
+        active_rbts: rows.length,
+        checks_this_month: allChecks.filter((c) => String(c.assessment_date || "") >= monthStart).length,
+        checks_due: rows.filter((r) => r.overdue_check).length,
+        // Never checked at all is a DIFFERENT problem from overdue, and gets
+        // its own number: nobody has ever watched these people work.
+        never_checked: rows.filter((r) => r.checks === 0).length,
+        average_score: avg,
+        below_standard: withScore.filter((r) => r.current_percentage < 80).length,
+        critical_concerns: rows.filter((r) => r.critical_fail || r.current_rating_key === "critical").length,
+        open_action_plans: rows.reduce((a, r) => a + r.open_action_plans, 0),
+        overdue_action_plans: rows.reduce((a, r) => a + r.overdue_action_plans, 0),
+        trending_down: rows.filter((r) => r.trend && r.trend.key === "declining").length,
+        upcoming_reviews: rows.filter((r) => r.annual_review_date && r.annual_review_date <= soon && r.annual_review_date >= today).length,
+      },
+      employees: rows,
+    };
+  }
+
+  // Who has waited longest, and a random pick among those actually eligible.
+  //
+  // Random means random, but never among people who were checked last week --
+  // the point of the feature is that nobody is unintentionally evaluated far
+  // more or far less than their colleagues, and a uniform draw over everybody
+  // would keep landing on the same names.
+  async function randomPick() {
+    const d = await dashboard();
+    const eligible = d.employees.filter((r) => r.overdue_check);
+    const pool = eligible.length ? eligible : d.employees;
+    if (!pool.length) return { ok: false, error: "There are no active RBTs to choose from." };
+    // Longest-waiting first, so the caller can see the queue it was drawn from.
+    const queue = [...pool].sort((a, b) => {
+      const A = a.days_since_last == null ? Infinity : a.days_since_last;
+      const B = b.days_since_last == null ? Infinity : b.days_since_last;
+      return B - A;
+    });
+    const pick = pool[crypto.randomBytes(4).readUInt32BE(0) % pool.length];
+    return {
+      ok: true,
+      picked: pick,
+      drawn_from: eligible.length ? "RBTs who are due a check" : "all active RBTs (nobody is currently due)",
+      pool_size: pool.length,
+      longest_waiting: queue.slice(0, 5).map((r) => ({
+        employee_id: r.employee_id, name: r.name,
+        days_since_last: r.days_since_last, last_check_date: r.last_check_date, checks: r.checks,
+      })),
+    };
+  }
+
+  // ======================= ROUTES =======================
+  // Two gates, checked per route rather than once at the top, because the two
+  // permissions genuinely differ: an evaluator may open and score a check but
+  // must not browse anybody's history, see rankings, or go near a raise.
+  async function handleApi(req, res, pathname, method, query, user) {
+    if (!pathname.startsWith("/api/fidelity")) return false;
+
+    // ---- the acknowledgment page is PUBLIC, by token ----
+    // The employee is not necessarily a CRM user; a token in their email is how
+    // they reach their own assessment. It shows and acknowledges. It can change
+    // no score.
+    if (pathname === "/api/fidelity/public/check" && method === "GET") {
+      const row = await dbGet("SELECT * FROM fidelity_checks WHERE ack_token = ?", [String(query.token || "")]).catch(() => null);
+      if (!row || !String(query.token || "")) return json(res, 404, { error: "That link is not valid." });
+      const emp = await dbGet("SELECT name FROM hr_employees WHERE id = ?", [row.employee_id]).catch(() => null);
+      return json(res, 200, shapePublic(row, emp));
+    }
+    if (pathname === "/api/fidelity/public/acknowledge" && method === "POST") {
+      const b = await readBody(req).catch(() => ({}));
+      const row = await dbGet("SELECT * FROM fidelity_checks WHERE ack_token = ?", [String(b.token || "")]).catch(() => null);
+      if (!row) return json(res, 404, { error: "That link is not valid." });
+      if (row.employee_ack_at) return json(res, 200, { ok: true, already: true, acknowledged_at: row.employee_ack_at });
+      const name = String(b.signed_name || "").trim();
+      if (!name) return json(res, 400, { error: "Type your name to acknowledge." });
+      const at = nowISO();
+      await dbRun("UPDATE fidelity_checks SET employee_ack_name = ?, employee_ack_at = ?, status = 'acknowledged', updated_at = ? WHERE id = ?",
+        [name, at, at, row.id]);
+      await audit(row.id, "employee_acknowledged", { actor: name, new: at });
+      // The filed PDF is regenerated so the copy in the personnel record shows
+      // the acknowledgment too, rather than the version signed before it.
+      try {
+        const fresh = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [row.id]);
+        const emp = await dbGet("SELECT id, name FROM hr_employees WHERE id = ?", [row.employee_id]).catch(() => null);
+        const docId = await buildPdf(fresh, emp);
+        if (docId) {
+          await dbRun("UPDATE fidelity_checks SET pdf_document_id = ?, pdf_generated_at = ? WHERE id = ?", [docId, nowISO(), row.id]);
+          await audit(row.id, "pdf_regenerated_with_acknowledgment", { actor: "system", new: String(docId) });
+        }
+      } catch (e) { await audit(row.id, "pdf_failed", { actor: "system", new: e.message }); }
+      return json(res, 200, { ok: true, acknowledged_at: at });
+    }
+
+    if (!user) return json(res, 401, { error: "Please sign in." });
+    const actor = (user && (user.email || user.name)) || "unknown";
+    const manage = canManageFidelity(user);
+    const evaluate = canEvaluate(user);
+    if (!evaluate) return json(res, 403, { error: "Not permitted to use RBT Fidelity." });
+
+    // What the rubric IS -- needed by the scoring screen, and safe for an
+    // evaluator: it is the blank form, not anybody's results.
+    if (pathname === "/api/fidelity/rubric" && method === "GET") {
+      return json(res, 200, {
+        sections: SECTIONS, max_score: MAX_SCORE, ratings: RATINGS,
+        action_plan_options: ACTION_PLAN_OPTIONS,
+        session_types: SESSION_TYPES, observation_lengths: OBSERVATION_LENGTHS,
+        statuses: STATUSES,
+      });
+    }
+
+    // ---- everything below here is leadership, except the evaluator's own check ----
+    if (pathname === "/api/fidelity/dashboard" && method === "GET") {
+      if (!manage) return json(res, 403, { error: "Not permitted to view the Fidelity dashboard." });
+      return json(res, 200, await dashboard(query));
+    }
+    if (pathname === "/api/fidelity/random" && method === "POST") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      return json(res, 200, await randomPick());
+    }
+    if (pathname === "/api/fidelity/settings" && method === "GET") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      return json(res, 200, { ...(await getSettings()), categories: CATEGORIES, methods: FIDELITY_METHODS });
+    }
+    if (pathname === "/api/fidelity/settings" && method === "PUT") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      const b = await readBody(req);
+      if (b.weights) {
+        const problem = weightsProblem(b.weights);
+        if (problem) return json(res, 400, { error: problem });
+      }
+      const cur = await getSettings();
+      await dbRun(
+        `INSERT INTO fidelity_settings (id, raise_bands_json, weights_json, fidelity_method, critical_fail_policy,
+           pip_policy, min_checks_required, max_raise_percent, min_performance_percent, assumed_weekly_hours,
+           check_interval_days, updated_by, updated_at)
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET
+           raise_bands_json = EXCLUDED.raise_bands_json, weights_json = EXCLUDED.weights_json,
+           fidelity_method = EXCLUDED.fidelity_method, critical_fail_policy = EXCLUDED.critical_fail_policy,
+           pip_policy = EXCLUDED.pip_policy, min_checks_required = EXCLUDED.min_checks_required,
+           max_raise_percent = EXCLUDED.max_raise_percent, min_performance_percent = EXCLUDED.min_performance_percent,
+           assumed_weekly_hours = EXCLUDED.assumed_weekly_hours, check_interval_days = EXCLUDED.check_interval_days,
+           updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
+        [JSON.stringify(b.bands || cur.bands), JSON.stringify(b.weights || cur.weights),
+         b.fidelity_method || cur.fidelity_method, b.critical_fail_policy || cur.critical_fail_policy,
+         b.pip_policy || cur.pip_policy,
+         b.min_checks_required != null ? Number(b.min_checks_required) : cur.min_checks_required,
+         b.max_raise_percent != null ? Number(b.max_raise_percent) : cur.max_raise_percent,
+         b.min_performance_percent != null ? Number(b.min_performance_percent) : cur.min_performance_percent,
+         b.assumed_weekly_hours != null ? Number(b.assumed_weekly_hours) : cur.assumed_weekly_hours,
+         b.check_interval_days != null ? Number(b.check_interval_days) : cur.check_interval_days,
+         actor, nowISO()]
+      );
+      await audit(null, "settings_updated", { actor });
+      return json(res, 200, { ok: true, ...(await getSettings()) });
+    }
+
+    // One employee's whole Fidelity picture: snapshot, history, trend points.
+    const empMatch = pathname.match(/^\/api\/fidelity\/employee\/(\d+)$/);
+    if (empMatch && method === "GET") {
+      if (!manage) return json(res, 403, { error: "Not permitted to view an employee's Fidelity history." });
+      const id = Number(empMatch[1]);
+      const emp = await dbGet("SELECT id, name, email, role_title, hire_date, annual_review_date, hourly_rate FROM hr_employees WHERE id = ?", [id]);
+      if (!emp) return json(res, 404, { error: "That staff member is not on file." });
+      const rows = await finalizedChecks(id);
+      const sum = summarise(rows);
+      const plans = await dbAll("SELECT * FROM fidelity_action_plans WHERE employee_id = ? ORDER BY id DESC", [id]).catch(() => []);
+      return json(res, 200, {
+        employee: emp, summary: sum,
+        history: rows.map(shapeRow),
+        // Oldest first, which is the direction a graph reads.
+        trend_points: rows.slice().reverse().map((r) => ({
+          date: r.assessment_date, percentage: Number(r.percentage), score: r.total_score,
+          rating: r.rating_label, evaluator: r.evaluator_name, id: r.id,
+        })),
+        action_plans: plans.map(shapePlan),
+      });
+    }
+
+    // ---- a single check ----
+    const oneMatch = pathname.match(/^\/api\/fidelity\/check\/(\d+)$/);
+    if (oneMatch && method === "GET") {
+      const row = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [Number(oneMatch[1])]);
+      if (!row) return json(res, 404, { error: "Not found" });
+      // An evaluator may open the check they are conducting, and no other.
+      if (!manage && Number(row.evaluator_user_id) !== Number(user.id)) {
+        return json(res, 403, { error: "This Fidelity Check is not assigned to you." });
+      }
+      const emp = await dbGet("SELECT id, name, email, role_title, hire_date FROM hr_employees WHERE id = ?", [row.employee_id]).catch(() => null);
+      const trail = manage
+        ? await dbAll("SELECT * FROM fidelity_audit WHERE check_id = ? ORDER BY id", [row.id]).catch(() => [])
+        : [];
+      // The evaluator sees the RBT's previous result for context, and nothing
+      // resembling a comparison against colleagues.
+      const prior = manage || Number(row.evaluator_user_id) === Number(user.id)
+        ? summarise((await finalizedChecks(row.employee_id)).filter((r) => r.id !== row.id))
+        : null;
+      return json(res, 200, { check: shapeRow(row, true), employee: emp, audit: trail, prior });
+    }
+
+    if (pathname === "/api/fidelity/check" && method === "POST") {
+      const b = await readBody(req);
+      const employeeId = Number(b.employee_id);
+      if (!employeeId) return json(res, 400, { error: "Choose which RBT is being observed." });
+      const emp = await dbGet("SELECT id, name FROM hr_employees WHERE id = ?", [employeeId]);
+      if (!emp) return json(res, 404, { error: "That staff member is not on file." });
+      const now = nowISO();
+      const row = await dbGet(
+        `INSERT INTO fidelity_checks
+           (employee_id, evaluator_user_id, evaluator_name, evaluator_credentials, assessment_date,
+            client_initials, session_type, observation_minutes, scores_json, status, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 'in_progress', ?, ?, ?) RETURNING id`,
+        [employeeId, b.evaluator_user_id != null ? Number(b.evaluator_user_id) : (user.id || null),
+         b.evaluator_name || user.name || user.email || null, b.evaluator_credentials || null,
+         b.assessment_date || now.slice(0, 10), b.client_initials || null,
+         b.session_type || null, b.observation_minutes != null ? Number(b.observation_minutes) : null,
+         actor, now, now]
+      );
+      await audit(row.id, "created", { actor, new: `for ${emp.name}` });
+      return json(res, 201, { ok: true, id: row.id });
+    }
+
+    if (oneMatch && method === "PATCH") {
+      const id = Number(oneMatch[1]);
+      const row = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
+      if (!row) return json(res, 404, { error: "Not found" });
+      if (!manage && Number(row.evaluator_user_id) !== Number(user.id)) {
+        return json(res, 403, { error: "This Fidelity Check is not assigned to you." });
+      }
+      if (row.finalized_at) {
+        return json(res, 409, { error: "This Fidelity Check is signed and can no longer be edited. Create an amendment instead." });
+      }
+      const b = await readBody(req);
+      const fields = ["assessment_date", "client_initials", "session_type", "observation_minutes",
+        "strengths", "areas_for_improvement", "action_plan_narrative", "unsafe_practice",
+        "unsafe_practice_detail", "critical_fail_detail", "evaluator_credentials"];
+      const sets = [], vals = [];
+      for (const f of fields) {
+        if (b[f] === undefined) continue;
+        sets.push(`${f} = ?`); vals.push(b[f]);
+        if (String(row[f] == null ? "" : row[f]) !== String(b[f] == null ? "" : b[f])) {
+          await audit(id, "edited", { actor, field: f, old: row[f], new: b[f] });
+        }
+      }
+      if (b.scores && typeof b.scores === "object") {
+        const merged = { ...parseJson(row.scores_json, {}), ...b.scores };
+        // Only 0, 1 and 2 are scores. Anything else is dropped rather than
+        // stored, so a stray value cannot end up in a total.
+        for (const k of Object.keys(merged)) {
+          if (![0, 1, 2].includes(merged[k])) delete merged[k];
+        }
+        sets.push("scores_json = ?"); vals.push(JSON.stringify(merged));
+      }
+      if (Array.isArray(b.action_plan_options)) {
+        sets.push("action_plan_options = ?"); vals.push(JSON.stringify(b.action_plan_options));
+      }
+      if (!sets.length) return json(res, 200, { ok: true, unchanged: true });
+      sets.push("updated_at = ?"); vals.push(nowISO());
+      await dbRun(`UPDATE fidelity_checks SET ${sets.join(", ")} WHERE id = ?`, [...vals, id]);
+      const fresh = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
+      const calc = scoreOf(parseJson(fresh.scores_json, {}),
+        { unsafe_practice: fresh.unsafe_practice === true || fresh.unsafe_practice === "t" });
+      // The live score comes back on every save, so the screen never adds up.
+      return json(res, 200, { ok: true, calc, action_plan_required: actionPlanRequired(calc) });
+    }
+
+    const finalMatch = pathname.match(/^\/api\/fidelity\/check\/(\d+)\/finalize$/);
+    if (finalMatch && method === "POST") {
+      const id = Number(finalMatch[1]);
+      const row = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
+      if (!row) return json(res, 404, { error: "Not found" });
+      if (!manage && Number(row.evaluator_user_id) !== Number(user.id)) {
+        return json(res, 403, { error: "This Fidelity Check is not assigned to you." });
+      }
+      const b = await readBody(req);
+      const out = await finalizeCheck(id, user, b);
+      return json(res, out.ok ? 200 : (out.code || 400), out);
+    }
+
+    const voidMatch = pathname.match(/^\/api\/fidelity\/check\/(\d+)\/void$/);
+    if (voidMatch && method === "POST") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      const b = await readBody(req);
+      const reason = String(b.reason || "").trim();
+      if (!reason) return json(res, 400, { error: "Say why this Fidelity Check is being voided — it is kept in the record." });
+      const id = Number(voidMatch[1]);
+      const row = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
+      if (!row) return json(res, 404, { error: "Not found" });
+      // VOID, never delete. The record stays, marked, with its audit trail.
+      await dbRun("UPDATE fidelity_checks SET voided = TRUE, void_reason = ?, voided_by = ?, voided_at = ?, updated_at = ? WHERE id = ?",
+        [reason, actor, nowISO(), nowISO(), id]);
+      await audit(id, "voided", { actor, new: reason });
+      return json(res, 200, { ok: true });
+    }
+
+    const resendMatch = pathname.match(/^\/api\/fidelity\/check\/(\d+)\/resend$/);
+    if (resendMatch && method === "POST") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      const id = Number(resendMatch[1]);
+      const row = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
+      if (!row) return json(res, 404, { error: "Not found" });
+      if (!row.finalized_at) return json(res, 400, { error: "This Fidelity Check has not been signed yet." });
+      const emp = await dbGet("SELECT id, name, email FROM hr_employees WHERE id = ?", [row.employee_id]).catch(() => null);
+      if (!emp || !emp.email) return json(res, 400, { error: "There is no email address on that staff record." });
+      const calc = scoreOf(parseJson(row.scores_json, {}),
+        { unsafe_practice: row.unsafe_practice === true || row.unsafe_practice === "t" });
+      try {
+        await sendEmail({
+          to: emp.email, subject: "Your Spectrum Squad RBT Fidelity Check",
+          html: fidelityEmailHtml(emp, row, calc, `${APP_BASE_URL}/fidelity-ack/${row.ack_token}`),
+          type: "fidelity_check", refType: "fidelity_check", refId: id,
+        });
+        await dbRun("UPDATE fidelity_checks SET emailed_at = ?, email_status = 'sent' WHERE id = ?", [nowISO(), id]);
+        await audit(id, "resent", { actor, new: emp.email });
+        return json(res, 200, { ok: true, to: emp.email });
+      } catch (e) {
+        await dbRun("UPDATE fidelity_checks SET email_status = ? WHERE id = ?", ["failed: " + e.message, id]);
+        await audit(id, "email_failed", { actor, new: e.message });
+        return json(res, 502, { ok: false, error: e.message });
+      }
+    }
+
+    // ---- action plans ----
+    if (pathname === "/api/fidelity/action-plans" && method === "GET") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      const rows = await dbAll("SELECT * FROM fidelity_action_plans ORDER BY id DESC LIMIT 500").catch(() => []);
+      return json(res, 200, { action_plans: rows.map(shapePlan) });
+    }
+    const planMatch = pathname.match(/^\/api\/fidelity\/action-plan\/(\d+)$/);
+    if (planMatch && method === "PATCH") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      const id = Number(planMatch[1]);
+      const row = await dbGet("SELECT * FROM fidelity_action_plans WHERE id = ?", [id]);
+      if (!row) return json(res, 404, { error: "Not found" });
+      const b = await readBody(req);
+      const fields = ["description", "responsible_supervisor", "due_date", "retraining_date",
+        "followup_fidelity_date", "notes", "completed_date", "status"];
+      const sets = [], vals = [];
+      for (const f of fields) {
+        if (b[f] === undefined) continue;
+        sets.push(`${f} = ?`); vals.push(b[f]);
+        await audit(row.check_id, "action_plan_edited", { actor, field: f, old: row[f], new: b[f] });
+      }
+      if (Array.isArray(b.plan_types)) { sets.push("plan_types = ?"); vals.push(JSON.stringify(b.plan_types)); }
+      if (!sets.length) return json(res, 200, { ok: true, unchanged: true });
+      sets.push("updated_at = ?"); vals.push(nowISO());
+      await dbRun(`UPDATE fidelity_action_plans SET ${sets.join(", ")} WHERE id = ?`, [...vals, id]);
+      return json(res, 200, { ok: true });
+    }
+
+    return json(res, 404, { error: "Unknown Fidelity route." });
+  }
+
+  // Overdue is COMPUTED, never a stored status that can go stale: a plan whose
+  // due date passed last night is overdue this morning without anybody running
+  // anything.
+  function shapePlan(p) {
+    const today = nowISO().slice(0, 10);
+    const overdue = p.status !== "completed" && p.due_date && String(p.due_date) < today;
+    return {
+      id: p.id, check_id: p.check_id, employee_id: p.employee_id,
+      plan_types: parseJson(p.plan_types, []),
+      description: p.description, responsible_supervisor: p.responsible_supervisor,
+      date_assigned: p.date_assigned, due_date: p.due_date, retraining_date: p.retraining_date,
+      followup_fidelity_date: p.followup_fidelity_date, notes: p.notes,
+      completed_date: p.completed_date,
+      status: overdue ? "overdue" : p.status,
+      stored_status: p.status, overdue,
+    };
+  }
+
+  function shapeRow(r, withScores) {
+    const out = {
+      id: r.id, employee_id: r.employee_id, assessment_date: r.assessment_date,
+      client_initials: r.client_initials, session_type: r.session_type,
+      observation_minutes: r.observation_minutes,
+      evaluator_name: r.evaluator_name, evaluator_credentials: r.evaluator_credentials,
+      total_score: r.total_score, max_score: r.max_score || MAX_SCORE,
+      percentage: r.percentage == null ? null : Number(r.percentage),
+      rating_key: r.rating_key, rating_label: r.rating_label,
+      critical_fail: r.critical_fail === true || r.critical_fail === "t",
+      critical_fail_reasons: parseJson(r.critical_fail_reasons, []),
+      critical_fail_detail: r.critical_fail_detail,
+      unsafe_practice: r.unsafe_practice === true || r.unsafe_practice === "t",
+      unsafe_practice_detail: r.unsafe_practice_detail,
+      strengths: r.strengths, areas_for_improvement: r.areas_for_improvement,
+      action_plan_narrative: r.action_plan_narrative,
+      action_plan_options: parseJson(r.action_plan_options, []),
+      status: r.status,
+      bcba_signed_name: r.bcba_signed_name, bcba_signed_at: r.bcba_signed_at,
+      finalized_at: r.finalized_at, pdf_document_id: r.pdf_document_id,
+      emailed_at: r.emailed_at, email_status: r.email_status,
+      employee_ack_name: r.employee_ack_name, employee_ack_at: r.employee_ack_at,
+      voided: r.voided === true || r.voided === "t", void_reason: r.void_reason,
+      created_at: r.created_at, updated_at: r.updated_at,
+    };
+    if (withScores) {
+      out.scores = parseJson(r.scores_json, {});
+      out.section_scores = parseJson(r.section_scores_json, null);
+      // Recomputed alongside the stored figures so a screen can show live
+      // totals on a draft, where nothing has been stored yet.
+      out.calc = scoreOf(out.scores, { unsafe_practice: out.unsafe_practice });
+      out.action_plan_required = actionPlanRequired(out.calc);
+    }
+    return out;
+  }
+
+  // What the employee sees on the acknowledgment page. Their own result in
+  // full -- there is nothing here they should be shielded from -- and no token,
+  // no audit trail, no other employee.
+  function shapePublic(r, emp) {
+    const scores = parseJson(r.scores_json, {});
+    return {
+      employee_name: emp ? emp.name : null,
+      assessment_date: r.assessment_date, session_type: r.session_type,
+      client_initials: r.client_initials, observation_minutes: r.observation_minutes,
+      evaluator_name: r.evaluator_name, evaluator_credentials: r.evaluator_credentials,
+      total_score: r.total_score, max_score: r.max_score || MAX_SCORE,
+      percentage: r.percentage == null ? null : Number(r.percentage),
+      rating_label: r.rating_label, rating_key: r.rating_key,
+      critical_fail: r.critical_fail === true || r.critical_fail === "t",
+      critical_fail_reasons: parseJson(r.critical_fail_reasons, []),
+      critical_fail_detail: r.critical_fail_detail,
+      strengths: r.strengths, areas_for_improvement: r.areas_for_improvement,
+      action_plan_narrative: r.action_plan_narrative,
+      action_plan_options: parseJson(r.action_plan_options, []),
+      sections: SECTIONS.map((sec) => ({
+        key: sec.key, label: sec.label, max: sec.max,
+        items: sec.items.map((i) => ({ key: i.key, label: i.label, score: scores[i.key] == null ? null : scores[i.key] })),
+      })),
+      bcba_signed_name: r.bcba_signed_name, bcba_signed_at: r.bcba_signed_at,
+      acknowledged_at: r.employee_ack_at, acknowledged_name: r.employee_ack_name,
+      finalized: !!r.finalized_at,
+    };
+  }
+
   module.exports.__rubric = SECTIONS;
 
   return {
@@ -1003,7 +1525,8 @@ module.exports = function initFidelity(ctx) {
     initTables, audit, canManageFidelity, canEvaluate,
     employeeSummary, summarise, trendOf, finalizedChecks,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure,
-    buildPdf, parseJson, finalizeCheck, STATUSES,
+    buildPdf, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
+    handleApi, shapeRow, shapePlan, shapePublic,
     DEFAULT_BANDS, DEFAULT_WEIGHTS, CATEGORIES, FIDELITY_METHODS,
     _internal: { round1, round2, num },
   };
