@@ -1402,6 +1402,98 @@ module.exports = function initFidelity(ctx) {
       }
     }
 
+    // ---- the raise recommendation ----
+    // Leadership only, and separate from the evaluator's world entirely: a BCBA
+    // who scores an RBT must not be able to see what that score does to their
+    // pay.
+    const raiseMatch = pathname.match(/^\/api\/fidelity\/raise\/(\d+)$/);
+    if (raiseMatch && method === "GET") {
+      if (!manage) return json(res, 403, { error: "Not permitted to view raise information." });
+      const id = Number(raiseMatch[1]);
+      const emp = await dbGet("SELECT id, name, hourly_rate, annual_review_date, hire_date FROM hr_employees WHERE id = ?", [id]);
+      if (!emp) return json(res, 404, { error: "That staff member is not on file." });
+      const settings = await getSettings();
+      const rows = await finalizedChecks(id);
+      const sum = summarise(rows);
+      // The review period defaults to the twelve months ending today, which is
+      // what "this year's review" means when nobody has said otherwise.
+      const end = query.period_end || nowISO().slice(0, 10);
+      const start = query.period_start ||
+        new Date(new Date(end + "T00:00:00Z").getTime() - 365 * 86400000).toISOString().slice(0, 10);
+      const openPlans = await dbAll(
+        "SELECT id, plan_types FROM fidelity_action_plans WHERE employee_id = ? AND status <> 'completed'", [id]
+      ).catch(() => []);
+      const openPip = openPlans.some((p) => (parseJson(p.plan_types, []) || []).includes("Performance Improvement Plan"));
+
+      const out = computeRaise({
+        settings, summary: sum, rows,
+        current_rate: emp.hourly_rate == null ? null : Number(emp.hourly_rate),
+        period_start: start, period_end: end, open_pip: openPip,
+      });
+      return json(res, 200, {
+        employee: { id: emp.id, name: emp.name, hourly_rate: emp.hourly_rate == null ? null : Number(emp.hourly_rate),
+                    annual_review_date: emp.annual_review_date },
+        review_period: { start, end },
+        ...out,
+      });
+    }
+
+    // Record the decision. The RECOMMENDATION and the FINAL figure are stored
+    // separately, alongside the inputs they were computed from, so changing the
+    // matrix next year cannot rewrite what somebody was awarded this year.
+    const decideMatch = pathname.match(/^\/api\/fidelity\/raise\/(\d+)\/decide$/);
+    if (decideMatch && method === "POST") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      const id = Number(decideMatch[1]);
+      const b = await readBody(req);
+      const emp = await dbGet("SELECT id, name, hourly_rate FROM hr_employees WHERE id = ?", [id]);
+      if (!emp) return json(res, 404, { error: "That staff member is not on file." });
+      const settings = await getSettings();
+      const rows = await finalizedChecks(id);
+      const sum = summarise(rows);
+      const end = b.period_end || nowISO().slice(0, 10);
+      const start = b.period_start ||
+        new Date(new Date(end + "T00:00:00Z").getTime() - 365 * 86400000).toISOString().slice(0, 10);
+      const rec = computeRaise({ settings, summary: sum, rows,
+        current_rate: emp.hourly_rate == null ? null : Number(emp.hourly_rate),
+        period_start: start, period_end: end, open_pip: !!b.open_pip });
+
+      const finalPercent = b.final_percent == null ? rec.recommended_percent : Number(b.final_percent);
+      const overridden = rec.recommended_percent == null
+        ? finalPercent != null
+        : Number(finalPercent) !== Number(rec.recommended_percent);
+      // An override is a person disagreeing with the formula about somebody's
+      // pay. It is allowed, and it is never silent.
+      if (overridden && !String(b.override_reason || "").trim()) {
+        return json(res, 400, { error: "Give a reason for changing the recommended raise — it is stored with the decision." });
+      }
+      const rate = emp.hourly_rate == null ? null : Number(emp.hourly_rate);
+      const newRate = (finalPercent != null && rate != null)
+        ? Math.round(rate * (1 + finalPercent / 100) * 100) / 100 : null;
+
+      const row = await dbGet(
+        `INSERT INTO fidelity_raise_reviews
+           (employee_id, review_period_start, review_period_end, inputs_json, performance_score,
+            recommended_percent, current_rate, recommended_increase, recommended_new_rate, explanation,
+            final_percent, final_new_rate, overridden, override_reason, decided_by, decided_at, status, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'decided', ?, ?) RETURNING id`,
+        [id, start, end, JSON.stringify({ settings, summary: sum, fidelity: rec.fidelity, components: rec.components }),
+         rec.performance_score, rec.recommended_percent, rate, rec.recommended_increase, rec.recommended_new_rate,
+         rec.explanation, finalPercent, newRate, overridden, b.override_reason || null,
+         actor, nowISO(), actor, nowISO()]
+      );
+      await audit(null, "raise_decided", { actor,
+        old: rec.recommended_percent == null ? "leadership review" : rec.recommended_percent + "%",
+        new: (finalPercent == null ? "none" : finalPercent + "%") + " for employee " + id });
+      return json(res, 201, { ok: true, id: row.id, final_percent: finalPercent, final_new_rate: newRate, overridden });
+    }
+
+    if (pathname === "/api/fidelity/raise-reviews" && method === "GET") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      const rows = await dbAll("SELECT * FROM fidelity_raise_reviews ORDER BY id DESC LIMIT 300").catch(() => []);
+      return json(res, 200, { reviews: rows });
+    }
+
     // ---- action plans ----
     if (pathname === "/api/fidelity/action-plans" && method === "GET") {
       if (!manage) return json(res, 403, { error: "Not permitted." });
