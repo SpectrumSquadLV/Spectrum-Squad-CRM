@@ -4458,6 +4458,29 @@ function json(res, status, data) {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(body),
+    // EVERY API RESPONSE SAYS IT MUST NOT BE REUSED, and it took somebody
+    // merging two caseloads and watching the old numbers stay on screen to
+    // notice that nothing here said so.
+    //
+    // A GET with NO cache headers is not "do not cache me". HTTP lets a cache
+    // reuse such a response without asking, on its own guess at how long it
+    // stays fresh -- RFC 9111 calls it heuristic freshness, and Safari applies
+    // it. So a merge, a status change, an assignment could all land in the
+    // database and the screen keep showing what it was handed earlier. That
+    // reads exactly like the write failed, which is the worst way for it to
+    // look: the next thing somebody does is run it again.
+    //
+    // "Marissa still has the old everything" was this same bug in its other
+    // half. That one was the STATIC files, fixed with an ETag and no-cache.
+    // The data responses were never touched.
+    //
+    // no-cache rather than no-store, and the difference was MEASURED, not
+    // assumed. no-store leaves a request pending in Chromium long enough that
+    // three existing browser suites never reach networkidle; the same page
+    // settles in 13s without it. no-cache still forbids reuse without
+    // revalidating, which is the whole of this bug, and it is what the static
+    // files next door already send.
+    "Cache-Control": "no-cache",
   });
   res.end(body);
   return true; // signals to the caller that the response has been written
