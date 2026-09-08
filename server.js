@@ -8089,6 +8089,7 @@ const PUBLIC_FILES = new Set([
   // window.__renderRethinkMatch global never defines, and #/rethink-clients
   // silently falls back to the dashboard -- which is exactly what happened.
   "/rethink-match-frontend.js",
+  "/rethink-staff-frontend.js",
   // Grant Finder. Same trap as the line above: leave it off and #/grants falls
   // back to the dashboard with no error anywhere.
   "/grants-frontend.js",

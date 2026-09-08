@@ -331,6 +331,22 @@ module.exports = function initRethink(ctx) {
       scanned_at TEXT
     )`).catch((e) => console.error("rethink_unmatched_clients initTables:", e.message));
 
+    // Providers seen delivering sessions in Rethink that no CRM staff record
+    // claims. Rebuilt wholesale by every scan, so somebody linked since the
+    // last run drops off without anybody having to dismiss them.
+    await dbRun(`CREATE TABLE IF NOT EXISTS rethink_unmatched_staff (
+      id SERIAL PRIMARY KEY,
+      rethink_staff_id TEXT NOT NULL UNIQUE,
+      name_hint TEXT,
+      appointments INTEGER DEFAULT 0,
+      hours NUMERIC DEFAULT 0,
+      distinct_clients INTEGER DEFAULT 0,
+      first_seen TEXT,
+      last_seen TEXT,
+      scanned_at TEXT
+    )`).catch((e) => console.error("rethink_unmatched_staff initTables:", e.message));
+    await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS last_staff_scan_at TEXT").catch(() => {});
+
     // Audit of every link an owner approved: who, when, and what it replaced.
     await dbRun(`CREATE TABLE IF NOT EXISTS rethink_client_link_log (
       id SERIAL PRIMARY KEY,
@@ -1313,6 +1329,30 @@ module.exports = function initRethink(ctx) {
   const PROVISIONAL_COMPLETED = /^(completed|complete|finalized|finalised|rendered)$/;
   const PROVISIONAL_VERIFIED = /^(true|verified|yes|y|1|approved|signed)$/;
 
+  // The appointment payload's provider-name field is not in any fixture in
+  // this repo, so this reads whichever plausible key is ACTUALLY present
+  // rather than assuming one. A provider with no name in the payload keeps a
+  // null hint and is shown by staff id -- never under a made-up name.
+  //
+  // Shared by the supervision sync and the staff scan deliberately: two probes
+  // that drifted apart would put one name on the tracker and a different one
+  // on the record created from it.
+  const STAFF_NAME_KEYS = ["staffName", "staffFullName", "providerName", "therapistName", "employeeName", "staff", "provider"];
+  function nameHint(row) {
+    for (const k of STAFF_NAME_KEYS) {
+      const v = row ? row[k] : null;
+      if (typeof v === "string" && v.trim()) return v.trim().slice(0, 120);
+      if (v && typeof v === "object") {
+        const n = v.name || v.fullName || [v.firstName, v.lastName].filter(Boolean).join(" ");
+        if (typeof n === "string" && n.trim()) return n.trim().slice(0, 120);
+      }
+    }
+    const first = row && (row.staffFirstName || row.providerFirstName);
+    const last = row && (row.staffLastName || row.providerLastName);
+    const joined = [first, last].filter((x) => typeof x === "string" && x.trim()).join(" ").trim();
+    return joined ? joined.slice(0, 120) : null;
+  }
+
   function decide(row, cfg) {
     const status = norm(row.appointmentStatus);
     const staffVer = norm(row.staffVerification);
@@ -1326,6 +1366,265 @@ module.exports = function initRethink(ctx) {
       : PROVISIONAL_VERIFIED.test(staffVer));
 
     return { statusOk, verifiedOk, counts: statusOk && verifiedOk };
+  }
+
+  // ======================= STAFF SCAN ========================
+  // "Scan Rethink for employees and put them in the CRM."
+  //
+  // BUILT ON APPOINTMENTS, not on a staff endpoint, because this account does
+  // not have one. The activity scan next door already records the finding in
+  // production terms: Appointments is the one endpoint this account can read.
+  // A staff list is therefore derived from who actually worked, which has the
+  // pleasant property of only ever finding people who are really delivering
+  // sessions -- an employee list from a directory would include leavers and
+  // people who never see a client.
+  //
+  // NOBODY IS CREATED HERE. The scan proposes; a person presses the button.
+  // That is the same rule the client matcher holds itself to, and it matters
+  // more for staff, not less: an hr_employees row is the anchor for documents,
+  // attendance, PTO, benefits and termination, so one invented from a schedule
+  // is a personnel file for somebody who may already have one under a
+  // different spelling.
+  const STAFF_SCAN_DAYS = 90;
+
+  async function scanStaffFromAppointments(opts = {}) {
+    if (!client.configured()) {
+      return { ok: false, kind: "config", error: "Rethink credentials are not configured on the server." };
+    }
+    const days = Math.max(1, Number(opts.days) || STAFF_SCAN_DAYS);
+    const to = today();
+    const from = new Date(nowMs() - days * 86400000).toISOString().slice(0, 10);
+
+    client.log("staff_scan_start", { endpoint: DWH_APPOINTMENTS, from, to, days });
+
+    let fetched;
+    try {
+      fetched = await client.dwhGetAllPages(DWH_APPOINTMENTS, {
+        From: from, To: to,
+        FilterByAppointmentDate: true,
+        IncludeDeleted: false,
+        IncludeCanceled: false,
+      }, { nowMs: nowMs(), pageSize: 500 });
+    } catch (e) {
+      client.log("sync_failed", {
+        kind: "staff_scan", endpoint: e.endpoint || DWH_APPOINTMENTS,
+        status: e.status, stage: e.stage, error: e.message,
+      });
+      return {
+        ok: false, kind: e.kind || "http", status: e.status || null, detail_in_server_logs: true,
+        error: e.safe || client.redact(e.message),
+      };
+    }
+
+    const rows = fetched.rows || [];
+    const warnings = [];
+    if (fetched.truncated) warnings.push(`Stopped at the page limit — the ${from}–${to} window may be incomplete.`);
+    if (!rows.length) {
+      return {
+        ok: false, kind: "empty",
+        error: `Rethink returned no appointments between ${from} and ${to}, so there is nobody to scan for. ` +
+          `Either no sessions were delivered in that window, or the account has lost the access it had.`,
+      };
+    }
+
+    // ---- who worked, and what we know about them ------------------------
+    const byStaff = new Map();
+    let skippedNoStaff = 0;
+    for (const row of rows) {
+      try {
+        const sid = String(row.staffId == null ? "" : row.staffId).trim();
+        if (!sid) { skippedNoStaff++; continue; }
+        const date = String(row.appointmentDate || "").slice(0, 10);
+        const cur = byStaff.get(sid) || {
+          rethink_staff_id: sid, name_hint: null, appointments: 0, hours: 0,
+          first_seen: null, last_seen: null, clients: new Set(),
+        };
+        cur.appointments += 1;
+        cur.hours += num(row.actualDurationHours);
+        if (!cur.name_hint) cur.name_hint = nameHint(row);
+        if (date) {
+          if (!cur.first_seen || date < cur.first_seen) cur.first_seen = date;
+          if (!cur.last_seen || date > cur.last_seen) cur.last_seen = date;
+        }
+        const cid = String(row.clientId == null ? "" : row.clientId).trim();
+        if (cid) cur.clients.add(cid);
+        byStaff.set(sid, cur);
+      } catch (e) {
+        warnings.push(`A row could not be read: ${client.redact(e.message)}`);
+      }
+    }
+    if (skippedNoStaff) warnings.push(`${skippedNoStaff} appointment(s) had no staff id and were skipped.`);
+
+    const { byRethinkId } = await buildStaffMap();
+
+    // Replaced wholesale each scan, so somebody linked since the last run drops
+    // off without anyone having to dismiss them.
+    await dbRun("DELETE FROM rethink_unmatched_staff").catch(() => {});
+
+    let matched = 0, unmatched = 0, unnamed = 0;
+    for (const v of byStaff.values()) {
+      const emp = byRethinkId.get(v.rethink_staff_id) || null;
+      if (emp) { matched++; continue; }
+      unmatched++;
+      if (!v.name_hint) unnamed++;
+      await dbRun(
+        `INSERT INTO rethink_unmatched_staff
+           (rethink_staff_id, name_hint, appointments, hours, distinct_clients, first_seen, last_seen, scanned_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (rethink_staff_id) DO UPDATE SET
+           name_hint = EXCLUDED.name_hint, appointments = EXCLUDED.appointments,
+           hours = EXCLUDED.hours, distinct_clients = EXCLUDED.distinct_clients,
+           first_seen = EXCLUDED.first_seen, last_seen = EXCLUDED.last_seen,
+           scanned_at = EXCLUDED.scanned_at`,
+        [v.rethink_staff_id, v.name_hint, v.appointments, round2(v.hours), v.clients.size,
+         v.first_seen, v.last_seen, nowISO()]
+      ).catch((e) => warnings.push(`Could not record a provider: ${e.message}`));
+    }
+
+    // Said plainly rather than left for somebody to infer from blank cells. If
+    // this account's appointments carry no provider name, every unmatched
+    // person can only be shown by staff id, and creating a record from that
+    // means typing the name -- which is a different job from approving a list.
+    if (unnamed) {
+      warnings.push(
+        unnamed === unmatched
+          ? `Rethink sent no provider name on any of these appointments, so the ${unnamed} unmatched provider(s) can only be shown by staff id. You will need to type each name.`
+          : `${unnamed} of the ${unmatched} unmatched provider(s) had no name in the Rethink payload and can only be shown by staff id.`
+      );
+    }
+
+    await dbRun("UPDATE rethink_config SET last_staff_scan_at = ? WHERE id = 1", [nowISO()]).catch(() => {});
+    client.log("staff_scan_done", { seen: byStaff.size, matched, unmatched, unnamed });
+
+    return {
+      ok: true, from, to, days,
+      providers_seen: byStaff.size,
+      already_linked: matched,
+      needs_linking: unmatched,
+      without_a_name: unnamed,
+      appointments_read: rows.length,
+      warnings,
+    };
+  }
+
+  // The review screen: who Rethink knows that the CRM does not, and who the CRM
+  // knows that Rethink cannot reach.
+  async function staffMatchReview() {
+    const unmatched = await dbAll(
+      `SELECT rethink_staff_id, name_hint, appointments, hours, distinct_clients,
+              first_seen, last_seen, scanned_at
+         FROM rethink_unmatched_staff
+        ORDER BY appointments DESC, rethink_staff_id`
+    ).catch(() => []);
+
+    const employees = await dbAll(
+      `SELECT id, name, email, role_title, rethink_id, status
+         FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated'
+        ORDER BY name`
+    ).catch(() => []);
+
+    const cfg = await getConfig().catch(() => ({}));
+    return {
+      unmatched: unmatched.map((r) => ({
+        rethink_staff_id: String(r.rethink_staff_id),
+        name_hint: r.name_hint || null,
+        appointments: Number(r.appointments) || 0,
+        hours: num(r.hours),
+        distinct_clients: Number(r.distinct_clients) || 0,
+        first_seen: r.first_seen || null,
+        last_seen: r.last_seen || null,
+      })),
+      employees: employees.map((e) => ({
+        id: e.id, name: e.name, email: e.email || null,
+        role_title: e.role_title || null,
+        rethink_id: e.rethink_id || null,
+        linked: !!(e.rethink_id != null && String(e.rethink_id).trim() !== ""),
+      })),
+      last_scan_at: cfg.last_staff_scan_at || null,
+      configured: client.configured(),
+    };
+  }
+
+  // Create the CRM staff record for a provider Rethink knows about. A NAME is
+  // required and is never invented: a record called "Staff 41207" is worse
+  // than no record, because it looks like a person and cannot be recognised as
+  // anybody. Everything else about them -- role, documents, attendance -- is
+  // filled in afterwards by the people who know it.
+  async function createStaffFromRethink(input = {}) {
+    const sid = String(input.rethink_staff_id == null ? "" : input.rethink_staff_id).trim();
+    const name = String(input.name == null ? "" : input.name).trim();
+    if (!sid) return { ok: false, error: "A Rethink staff id is required." };
+    if (!name) return { ok: false, error: "A name is required — a staff record cannot be created from a staff id alone." };
+
+    const taken = await dbGet(
+      "SELECT id, name FROM hr_employees WHERE TRIM(COALESCE(rethink_id,'')) = ?", [sid]
+    ).catch(() => null);
+    if (taken) return { ok: false, error: `Rethink staff id ${sid} is already on ${taken.name}'s record.`, employee_id: taken.id };
+
+    // Somebody already on the roster under this name is a LINK, not a second
+    // personnel file. Refused rather than merged, because two people really can
+    // share a name and this is not the screen to decide that.
+    const sameName = await dbGet(
+      "SELECT id, name, rethink_id FROM hr_employees WHERE LOWER(TRIM(name)) = LOWER(?) AND COALESCE(status,'active') <> 'terminated'",
+      [name]
+    ).catch(() => null);
+    if (sameName) {
+      return {
+        ok: false, code: "name_exists", employee_id: sameName.id,
+        error: `${sameName.name} is already in the staff directory. Link that record to Rethink instead of creating a second one.`,
+      };
+    }
+
+    const email = String(input.email == null ? "" : input.email).trim() || null;
+    if (email) {
+      const byEmail = await dbGet("SELECT id, name FROM hr_employees WHERE LOWER(TRIM(email)) = LOWER(?)", [email]).catch(() => null);
+      if (byEmail) return { ok: false, code: "email_exists", employee_id: byEmail.id, error: `That email is already on ${byEmail.name}'s record.` };
+    }
+
+    const row = await dbGet(
+      `INSERT INTO hr_employees (name, email, role_title, rethink_id, status, hr_stage, created_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?) RETURNING id`,
+      [name, email, String(input.role_title || "").trim() || null, sid, "active", nowISO()]
+    );
+
+    // Hours already synced under that staff id belong to them from now on.
+    const adopted = await adoptProviderRows(sid, row.id).catch(() => ({ updated: 0 }));
+    await dbRun("DELETE FROM rethink_unmatched_staff WHERE rethink_staff_id = ?", [sid]).catch(() => {});
+    client.log("staff_created", { employee_id: row.id, rethink_staff_id: sid });
+
+    return { ok: true, employee_id: row.id, name, rethink_staff_id: sid, months_adopted: adopted.updated || 0 };
+  }
+
+  // Attach a scanned provider to somebody already on the roster.
+  async function linkStaffToEmployee(rethinkStaffId, employeeId, opts = {}) {
+    const sid = String(rethinkStaffId == null ? "" : rethinkStaffId).trim();
+    const empId = Number(employeeId);
+    if (!sid || !empId) return { ok: false, error: "A staff member and a Rethink staff id are both required." };
+
+    const emp = await dbGet("SELECT id, name, rethink_id, status FROM hr_employees WHERE id = ?", [empId]);
+    if (!emp) return { ok: false, error: "That staff member is not on file." };
+    if (String(emp.status || "active") === "terminated") {
+      return { ok: false, error: `${emp.name} is terminated. Reinstate the record before linking it to Rethink.` };
+    }
+    const taken = await dbGet(
+      "SELECT id, name FROM hr_employees WHERE TRIM(COALESCE(rethink_id,'')) = ? AND id <> ?", [sid, empId]
+    ).catch(() => null);
+    if (taken) return { ok: false, code: "taken", error: `Rethink staff id ${sid} is already on ${taken.name}'s record.` };
+
+    const current = String(emp.rethink_id == null ? "" : emp.rethink_id).trim();
+    if (current && current !== sid && !opts.replace) {
+      return { ok: false, code: "already_linked", current_rethink_id: current,
+        error: `${emp.name} is already linked to Rethink staff id ${current}. Confirm to replace it.` };
+    }
+
+    await dbRun("UPDATE hr_employees SET rethink_id = ? WHERE id = ?", [sid, empId]);
+    await dbRun("UPDATE hr_employees SET rethink_match_needed = FALSE WHERE id = ?", [empId]).catch(() => {});
+    const adopted = await adoptProviderRows(sid, empId).catch(() => ({ updated: 0 }));
+    await dbRun("DELETE FROM rethink_unmatched_staff WHERE rethink_staff_id = ?", [sid]).catch(() => {});
+    client.log("staff_linked", { employee_id: empId, rethink_staff_id: sid });
+
+    return { ok: true, employee_id: empId, name: emp.name, rethink_staff_id: sid,
+      replaced: current || null, months_adopted: adopted.updated || 0 };
   }
 
   // ======================= PROVIDER MATCHING =================
@@ -1436,26 +1735,6 @@ module.exports = function initRethink(ctx) {
     const observed = new Map();      // `${field}|${norm}` -> { field, raw, norm, n, hours }
     let counted = 0, skippedNoDuration = 0, skippedFuture = 0;
     const cutoff = today();
-
-    // The appointment payload's provider-name field is not in any fixture in
-    // this repo, so this reads whichever plausible key is ACTUALLY present
-    // rather than assuming one. A provider with no name in the payload keeps a
-    // null hint and is shown by staff id -- never under a made-up name.
-    const STAFF_NAME_KEYS = ["staffName", "staffFullName", "providerName", "therapistName", "employeeName", "staff", "provider"];
-    const nameHint = (row) => {
-      for (const k of STAFF_NAME_KEYS) {
-        const v = row ? row[k] : null;
-        if (typeof v === "string" && v.trim()) return v.trim().slice(0, 120);
-        if (v && typeof v === "object") {
-          const n = v.name || v.fullName || [v.firstName, v.lastName].filter(Boolean).join(" ");
-          if (typeof n === "string" && n.trim()) return n.trim().slice(0, 120);
-        }
-      }
-      const first = row && (row.staffFirstName || row.providerFirstName);
-      const last = row && (row.staffLastName || row.providerLastName);
-      const joined = [first, last].filter((x) => typeof x === "string" && x.trim()).join(" ").trim();
-      return joined ? joined.slice(0, 120) : null;
-    };
 
     const observe = (field, raw, hours) => {
       const key = `${field}|${norm(raw)}`;
@@ -2067,6 +2346,40 @@ module.exports = function initRethink(ctx) {
     }
 
     // ---- client matching (owner/admin only) ----------------------------
+    // ---- staff matching: scan Rethink for people, put them in the CRM ----
+    // Same rule as the client matcher: the scan proposes, a person approves.
+    if (pathname.startsWith("/api/rethink/staff-match")) {
+      if (!canMatch(user)) { json(res, 403, { error: "Owner or admin only." }); return true; }
+
+      if (pathname === "/api/rethink/staff-match" && method === "GET") {
+        json(res, 200, await staffMatchReview());
+        return true;
+      }
+
+      if (pathname === "/api/rethink/staff-match/scan" && method === "POST") {
+        const b = await readBody(req).catch(() => ({}));
+        const out = await scanStaffFromAppointments({ days: b.days });
+        json(res, out.ok ? 200 : 502, out);
+        return true;
+      }
+
+      if (pathname === "/api/rethink/staff-match/link" && method === "POST") {
+        const b = await readBody(req).catch(() => ({}));
+        const out = await linkStaffToEmployee(b.rethink_staff_id, b.employee_id, { replace: !!b.replace });
+        json(res, out.ok ? 200 : (out.code === "already_linked" || out.code === "taken" ? 409 : 400), out);
+        return true;
+      }
+
+      if (pathname === "/api/rethink/staff-match/create" && method === "POST") {
+        const b = await readBody(req).catch(() => ({}));
+        const out = await createStaffFromRethink(b);
+        json(res, out.ok ? 201 : (out.code === "name_exists" || out.code === "email_exists" ? 409 : 400), out);
+        return true;
+      }
+      json(res, 404, { error: "Unknown staff-match route." });
+      return true;
+    }
+
     if (pathname.startsWith("/api/rethink/client-match")) {
       if (!canMatch(user)) { json(res, 403, { error: "Owner or admin only." }); return true; }
 
@@ -2256,6 +2569,10 @@ module.exports = function initRethink(ctx) {
     verifiedHoursForMonths,
     unmatchedProvidersForMonth,
     adoptProviderRows,
+    scanStaffFromAppointments,
+    staffMatchReview,
+    createStaffFromRethink,
+    linkStaffToEmployee,
     getConfig,
     scanClientMatches,
     clientMatchReview,

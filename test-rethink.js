@@ -70,6 +70,9 @@ function makeDb(seed) {
     deletes: [],
     log: [],
     sql: [],
+    unmatchedStaff: [],
+    createdEmployees: [],
+    linked: [],
   };
 
   const dbGet = async (sql, p = []) => {
@@ -78,6 +81,26 @@ function makeDb(seed) {
     if (/FROM rethink_config/i.test(sql)) return state.config;
     if (/FROM rethink_sync_log/i.test(sql)) return null;
     if (/FROM rethink_client_authorizations/i.test(sql)) return null;
+    if (/INSERT INTO hr_employees/i.test(sql)) {
+      state.createdEmployees.push({ name: p[0], email: p[1], role_title: p[2], rethink_id: p[3] });
+      return { id: 900 + state.createdEmployees.length };
+    }
+    if (/FROM hr_employees/i.test(sql)) {
+      // The guards ask three questions of this table: who holds this Rethink
+      // id, who is already called this, and who owns this email. Answered from
+      // the seeded roster so a refusal is tested against real rows.
+      const emps = state.employees || [];
+      if (/TRIM\(COALESCE\(rethink_id/i.test(sql)) {
+        return emps.find((e) => String(e.rethink_id || "") === String(p[0])) || null;
+      }
+      if (/LOWER\(TRIM\(name\)\)/i.test(sql)) {
+        return emps.find((e) => String(e.name || "").toLowerCase() === String(p[0]).toLowerCase()) || null;
+      }
+      if (/LOWER\(TRIM\(email\)\)/i.test(sql)) {
+        return emps.find((e) => String(e.email || "").toLowerCase() === String(p[0]).toLowerCase()) || null;
+      }
+      return emps.find((e) => Number(e.id) === Number(p[0])) || null;
+    }
     return null;
   };
 
@@ -125,6 +148,21 @@ function makeDb(seed) {
         nameHint: row.staff_name_hint === undefined ? undefined : row.staff_name_hint,
         seen: row.appointments_seen === undefined ? undefined : row.appointments_seen,
       });
+      return;
+    }
+    if (/INSERT INTO rethink_unmatched_staff/i.test(sql)) {
+      state.unmatchedStaff.push({
+        staffId: p[0], name: p[1], appointments: p[2], hours: p[3],
+        clients: p[4], first: p[5], last: p[6],
+      });
+      return;
+    }
+    if (/INSERT INTO hr_employees/i.test(sql)) {
+      state.createdEmployees.push({ name: p[0], email: p[1], role_title: p[2], rethink_id: p[3] });
+      return;
+    }
+    if (/UPDATE hr_employees SET rethink_id/i.test(sql)) {
+      state.linked.push({ rethink_id: p[0], employee_id: p[1] });
       return;
     }
     if (/INSERT INTO rethink_observed_values/i.test(sql)) {
@@ -359,6 +397,97 @@ const initRethink = require("./rethink");
     check("with no staff id there is nothing to adopt", (await r.adoptProviderRows("", 7)).updated === 0);
     check("with no employee there is nothing to adopt", (await r.adoptProviderRows("S900", null)).updated === 0);
     void state;
+  }
+
+  // ---- SCANNING RETHINK FOR EMPLOYEES ----------------------------------
+  // The CRM has no Rethink staff endpoint to call: this account can only read
+  // Appointments, which the activity scan already records in production terms.
+  // So the roster is derived from who actually delivered sessions -- and the
+  // scan must PROPOSE only, because an hr_employees row anchors documents,
+  // attendance, PTO, benefits and termination.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [{ id: 1, name: "Known RBT", email: "known@x.invalid", rethink_id: "S100" }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { staffId: "S100", clientId: "C1", appointmentDate: "2026-08-03", actualDurationHours: 2 },
+      { staffId: "S900", staffName: "Nina Alvarez", clientId: "C2", appointmentDate: "2026-08-04", actualDurationHours: 3 },
+      { staffId: "S900", staffName: "Nina Alvarez", clientId: "C3", appointmentDate: "2026-08-09", actualDurationHours: 1.5 },
+      // No name anywhere in the payload: this is the case that decides whether
+      // the feature can create anybody at all.
+      { staffId: "S901", clientId: "C4", appointmentDate: "2026-08-05", actualDurationHours: 4 },
+    ], pages: 1, truncated: false });
+
+    const r = initRethink(ctx);
+    const out = await r.scanStaffFromAppointments({ days: 90 });
+
+    check("the scan runs off appointments", out.ok === true, JSON.stringify(out).slice(0, 200));
+    check("it finds every provider who worked", out.providers_seen === 3, out.providers_seen);
+    check("somebody already linked is not offered again", out.already_linked === 1, out.already_linked);
+    check("and the rest need putting in the CRM", out.needs_linking === 2, out.needs_linking);
+    check("the scan CREATES NOBODY", state.createdEmployees.length === 0,
+      JSON.stringify(state.createdEmployees));
+
+    const nina = state.unmatchedStaff.find((u) => u.staffId === "S900");
+    check("a provider's sessions are counted", nina && nina.appointments === 2, JSON.stringify(nina));
+    check("their hours are totalled", nina && Number(nina.hours) === 4.5, nina && nina.hours);
+    check("distinct clients are counted, not sessions", nina && nina.clients === 2, nina && nina.clients);
+    check("the window they were seen in is recorded",
+      nina && nina.first === "2026-08-04" && nina.last === "2026-08-09", JSON.stringify(nina));
+    check("a name Rethink sent is carried through", nina && nina.name === "Nina Alvarez", nina && nina.name);
+
+    const anon = state.unmatchedStaff.find((u) => u.staffId === "S901");
+    check("a provider with no name is still found", !!anon, JSON.stringify(state.unmatchedStaff));
+    check("and is not given an invented one", anon && anon.name == null, anon && anon.name);
+    check("the scan says plainly that a name is missing",
+      out.without_a_name === 1 && out.warnings.some((w) => /no provider name|had no name/i.test(w)),
+      JSON.stringify(out.warnings));
+
+    // ---- creating the record is a separate, deliberate act ----
+    const noName = await r.createStaffFromRethink({ rethink_staff_id: "S901", name: "" });
+    check("a staff record cannot be created from an id alone", noName.ok === false, JSON.stringify(noName));
+    check("and it says why", /name is required/i.test(noName.error || ""), noName.error);
+
+    const dupe = await r.createStaffFromRethink({ rethink_staff_id: "S902", name: "Known RBT" });
+    check("somebody already on the roster is a link, not a second personnel file",
+      dupe.ok === false && dupe.code === "name_exists", JSON.stringify(dupe));
+
+    const taken = await r.createStaffFromRethink({ rethink_staff_id: "S100", name: "Someone Else" });
+    check("a Rethink id already on a record is refused", taken.ok === false, JSON.stringify(taken));
+
+    const made = await r.createStaffFromRethink({ rethink_staff_id: "S900", name: "Nina Alvarez", role_title: "RBT" });
+    check("a named provider can be added on purpose", made.ok === true, JSON.stringify(made));
+    const created = state.createdEmployees[state.createdEmployees.length - 1];
+    check("the record carries the Rethink id, so hours match from now on",
+      created && created.rethink_id === "S900", JSON.stringify(created));
+    check("and the job title that was typed", created && created.role_title === "RBT", JSON.stringify(created));
+  }
+
+  // Linking a scanned provider to somebody already on the roster.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [
+        { id: 1, name: "Unlinked RBT", email: "u@x.invalid", rethink_id: null },
+        { id: 2, name: "Taken RBT", email: "t@x.invalid", rethink_id: "S777" },
+      ],
+    });
+    const r = initRethink(ctx);
+
+    const ok = await r.linkStaffToEmployee("S900", 1);
+    check("a scanned provider links to an existing staff member", ok.ok === true, JSON.stringify(ok));
+    check("which writes the Rethink id onto their record",
+      state.linked.some((l) => l.rethink_id === "S900" && Number(l.employee_id) === 1), JSON.stringify(state.linked));
+
+    const clash = await r.linkStaffToEmployee("S777", 1);
+    check("one Rethink id cannot be given to two people", clash.ok === false && clash.code === "taken",
+      JSON.stringify(clash));
+
+    const missing = await r.linkStaffToEmployee("S900", 99999);
+    check("linking to somebody not on file is refused", missing.ok === false, JSON.stringify(missing));
+    const noArgs = await r.linkStaffToEmployee("", 1);
+    check("linking with no staff id is refused", noArgs.ok === false);
   }
 
   // Scenario 11: API failure must not destroy anything.
