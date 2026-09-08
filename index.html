@@ -1456,10 +1456,16 @@ function renderShell(active) {
   // Rethink client matching. Owner/admin only, matching the server-side role
   // check on /api/rethink/client-match -- the nav entry hides it, the route
   // guard is what actually enforces it.
-  if (["owner", "admin", "super_admin"].includes(state.user.role))
+  // BRACED. This was a braceless if with one statement under it, and adding two
+  // more put them OUTSIDE the guard -- so every role, clinical included, got
+  // these entries and with them an Admin group they should never see. The
+  // routes themselves were still enforced server-side, but a nav entry offering
+  // a screen somebody cannot open is its own kind of wrong.
+  if (["owner", "admin", "super_admin"].includes(state.user.role)) {
     navItems.push({ key: "rethink-clients", label: "Rethink Client Matching", icon: "⧉", hash: "#/rethink-clients" });
     navItems.push({ key: "rethink-staff", label: "Rethink Staff", icon: "⧉", hash: "#/rethink-staff" });
     navItems.push({ key: "dob-check", label: "Date of Birth Check", icon: "⧉", hash: "#/dob-check" });
+  }
   if (["owner", "super_admin", "admin", "intake", "scheduling"].includes(state.user.role))
     navItems.push({ key: "leads", label: "Lead Management", icon: "◎" });
   // Events: the reusable community-event system. The nav entry is deliberately
