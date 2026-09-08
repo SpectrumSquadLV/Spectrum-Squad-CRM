@@ -23,6 +23,10 @@ module.exports = function initFidelity(ctx) {
   } = ctx;
   const createStaffTask = ctx.createStaffTask || (async () => null);
   const getAppSetting = ctx.getAppSetting || (async (k, fb) => fb);
+  // Supervision compliance, asked of the module that owns it. Fidelity does
+  // not read supervision's tables directly -- the rule for what counts as a
+  // compliant month lives in one place, and it is not this one.
+  const supervisionCompliance = ctx.supervisionCompliance || null;
   const HR_DOCS_DIR = ctx.HR_DOCS_DIR || null;
   const fs = require("fs");
   const path = require("path");
@@ -508,12 +512,18 @@ module.exports = function initFidelity(ctx) {
   const CATEGORIES = [
     { key: "fidelity", label: "RBT Fidelity", live: true,
       source: "Finalized Fidelity Checks in the review period" },
+    // Attendance is deliberately still unwired. It is measured in POINTS,
+    // where fewer is better, and the attendance policy defines named bands
+    // ("Coaching Conversation", "Attendance Improvement Plan") rather than
+    // scores. Turning those into a percentage means choosing a number that
+    // changes what somebody is paid, and that is a decision for leadership to
+    // make explicitly rather than for this file to assume.
     { key: "attendance", label: "Attendance", live: false,
-      source: "Employee Attendance points (not yet wired in)" },
+      source: "Attendance points exist, but the policy defines bands rather than a score — leadership has to say what a band is worth before this can be weighted" },
     { key: "reliability", label: "Reliability", live: false, source: "Not yet wired in" },
     { key: "note_timeliness", label: "Session Note Timeliness", live: false, source: "Not yet wired in" },
-    { key: "supervision_compliance", label: "Supervision Compliance", live: false,
-      source: "RBT Supervision monthly percentage (not yet wired in)" },
+    { key: "supervision_compliance", label: "Supervision Compliance", live: true,
+      source: "The share of supervision months in the review period that met the BACB 5% minimum" },
     { key: "training", label: "Training Completion", live: false, source: "Not yet wired in" },
     { key: "professionalism", label: "Professionalism", live: false, source: "Not yet wired in" },
     { key: "performance_review", label: "Performance Reviews", live: false, source: "Not yet wired in" },
@@ -603,6 +613,35 @@ module.exports = function initFidelity(ctx) {
 
   const money = (n) => (n == null ? null : Math.round(Number(n) * 100) / 100);
 
+  // Everything the raise reads that is NOT Fidelity. Only categories that
+  // actually carry a weight are fetched, so an install that weights Fidelity
+  // at 100% -- the default -- does no extra work at all.
+  //
+  // A category that is weighted but cannot produce a number returns nothing
+  // rather than a zero, and computeRaise reports it as missing. That is the
+  // difference between "we have no attendance data" and "their attendance is
+  // 0%", and only one of those is true.
+  async function gatherCategories(settings, employeeId, periodStart, periodEnd) {
+    const values = {}, details = {};
+    const weights = settings.weights || {};
+
+    if (Number(weights.supervision_compliance) > 0 && supervisionCompliance) {
+      try {
+        const c = await supervisionCompliance(employeeId, periodStart, periodEnd);
+        if (c && c.percentage != null) {
+          values.supervision_compliance = c.percentage;
+          details.supervision_compliance =
+            `Supervision Compliance is ${c.percentage}%, from ${c.months_meeting} of ${c.months_counted} `
+            + `month${c.months_counted === 1 ? "" : "s"} meeting the BACB ${c.min_pct}% minimum during the review period`
+            + (c.months_without_hours
+                ? `; ${c.months_without_hours} further month${c.months_without_hours === 1 ? " was" : "s were"} left out because no worked hours are on file for ${c.months_without_hours === 1 ? "it" : "them"}.`
+                : ".");
+        }
+      } catch (e) { /* a category that cannot be read is reported as missing, not as zero */ }
+    }
+    return { values, details };
+  }
+
   // The whole recommendation, including the sentence that explains it.
   function computeRaise(input) {
     const { settings, summary, rows, current_rate, period_start, period_end, open_pip } = input;
@@ -617,9 +656,11 @@ module.exports = function initFidelity(ctx) {
       const w = Number(weight);
       if (!(w > 0)) continue;
       const cat = CATEGORIES.find((c) => c.key === key);
-      const value = key === "fidelity" ? fid.value : null;
-      if (value == null) { missing.push({ key, label: cat ? cat.label : key, weight: w }); continue; }
-      parts.push({ key, label: cat ? cat.label : key, weight: w, value });
+      const supplied = (input.category_values || {})[key];
+      const value = key === "fidelity" ? fid.value : (supplied == null ? null : Number(supplied));
+      if (value == null || !isFinite(value)) { missing.push({ key, label: cat ? cat.label : key, weight: w }); continue; }
+      parts.push({ key, label: cat ? cat.label : key, weight: w, value,
+                   detail: (input.category_details || {})[key] || null });
     }
     const usableWeight = parts.reduce((a, p) => a + p.weight, 0);
     const performance = usableWeight > 0
@@ -693,6 +734,9 @@ module.exports = function initFidelity(ctx) {
     if (x.parts.length > 1) {
       pieces.push("The overall performance score combines " +
         x.parts.map((p) => `${p.label} at ${p.weight}% (${p.value}%)`).join(", ") + ".");
+      // A weighted figure that arrived from somewhere else says where. "96%"
+      // is not a number anybody should have to go and look up the meaning of.
+      for (const p of x.parts) if (p.detail) pieces.push(p.detail);
     }
     if (x.performance != null) pieces.push(`The overall performance score is ${x.performance}%.`);
 
@@ -1708,10 +1752,12 @@ module.exports = function initFidelity(ctx) {
       ).catch(() => []);
       const openPip = openPlans.some((p) => (parseJson(p.plan_types, []) || []).includes("Performance Improvement Plan"));
 
+      const extra = await gatherCategories(settings, id, start, end);
       const out = computeRaise({
         settings, summary: sum, rows,
         current_rate: emp.hourly_rate == null ? null : Number(emp.hourly_rate),
         period_start: start, period_end: end, open_pip: openPip,
+        category_values: extra.values, category_details: extra.details,
       });
       return json(res, 200, {
         employee: { id: emp.id, name: emp.name, hourly_rate: emp.hourly_rate == null ? null : Number(emp.hourly_rate),
@@ -1737,9 +1783,11 @@ module.exports = function initFidelity(ctx) {
       const end = b.period_end || nowISO().slice(0, 10);
       const start = b.period_start ||
         new Date(new Date(end + "T00:00:00Z").getTime() - 365 * 86400000).toISOString().slice(0, 10);
+      const extraD = await gatherCategories(settings, id, start, end);
       const rec = computeRaise({ settings, summary: sum, rows,
         current_rate: emp.hourly_rate == null ? null : Number(emp.hourly_rate),
-        period_start: start, period_end: end, open_pip: !!b.open_pip });
+        period_start: start, period_end: end, open_pip: !!b.open_pip,
+        category_values: extraD.values, category_details: extraD.details });
 
       const finalPercent = b.final_percent == null ? rec.recommended_percent : Number(b.final_percent);
       const overridden = rec.recommended_percent == null
@@ -2055,7 +2103,7 @@ module.exports = function initFidelity(ctx) {
     scoreOf, ratingFor, actionPlanRequired,
     initTables, audit, canManageFidelity, canEvaluate,
     employeeSummary, summarise, trendOf, finalizedChecks,
-    getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure,
+    getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
     buildPdf, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
     sweep, leadershipRecipients,

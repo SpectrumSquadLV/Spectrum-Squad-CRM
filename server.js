@@ -8368,6 +8368,10 @@ const fidelity = require("./fidelity")({
   // Clinical Director / owner addresses every other module reads, never a
   // recipient list of Fidelity's own.
   getAppSetting: (key, fallback) => getAppSetting(key, fallback),
+  // Supervision compliance for the raise calculator, asked of the module that
+  // owns supervision rather than read out of its tables from here. What counts
+  // as a compliant month is supervision's rule, in one place.
+  supervisionCompliance: (empId, start, end) => supervision.complianceFor(empId, start, end),
 });
 
 const billable = require("./billable")({

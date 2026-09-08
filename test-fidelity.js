@@ -483,6 +483,16 @@ function scoresTotalling(total, opts = {}) {
     return id;
   };
 
+  const doCheckFor = async (empId, total) => {
+    const c = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: empId, assessment_date: today } });
+    await owner(`/api/fidelity/check/${c.data.id}`, { method: "PATCH", body: { scores: scoresTotalling(total) } });
+    const f = await owner(`/api/fidelity/check/${c.data.id}/finalize`, {
+      method: "POST",
+      body: { bcba_signed_name: "Jane Doe, BCBA", action_plan_narrative: "Retraining scheduled.", action_plan_options: ["Modeling"] },
+    });
+    return f;
+  };
+
   const empA = await mkEmp("Alpha");
   r = await evaluator.req("/api/fidelity/check", {
     method: "POST",
@@ -792,9 +802,12 @@ function scoresTotalling(total, opts = {}) {
   check("the settings load", r.status === 200 && Array.isArray(r.data.bands), r.status);
   check("every performance category is offered, with where its number comes from",
     (r.data.categories || []).length >= 5 && r.data.categories.every((c) => !!c.source), r.data.categories);
-  check("only Fidelity is wired in so far, and says so",
-    r.data.categories.filter((c) => c.live).map((c) => c.key).join() === "fidelity",
+  check("the categories that can actually produce a number are marked live",
+    r.data.categories.filter((c) => c.live).map((c) => c.key).sort().join() === "fidelity,supervision_compliance",
     r.data.categories.filter((c) => c.live).map((c) => c.key));
+  check("...and the ones that cannot are not, so a weight cannot be given to a blank",
+    r.data.categories.filter((c) => !c.live).length >= 6,
+    r.data.categories.filter((c) => !c.live).map((c) => c.key));
 
   r = await owner("/api/fidelity/settings", { method: "PUT", body: { weights: { fidelity: 80, attendance: 30 } } });
   check("weights that do not total 100 are refused", r.status === 400, r.data);
@@ -804,6 +817,94 @@ function scoresTotalling(total, opts = {}) {
   r = await evaluator.req("/api/fidelity/settings", { method: "PUT", body: { check_interval_days: 1 } });
   check("an evaluator cannot change the raise policy", r.status === 403, r.status);
   await owner("/api/fidelity/settings", { method: "PUT", body: { check_interval_days: 90 } });
+
+  // ================================================================
+  section("Supervision Compliance as a raise component");
+
+  // The trap this section exists for: supervision's monthly figure is
+  // supervision hours as a SHARE OF HOURS WORKED, where 5% is compliant.
+  // Feeding that straight into a weighted performance score would read as 5%
+  // performance. What gets weighted is the compliant/not-compliant judgement.
+  const empSup = await mkEmp("Sierra");
+  const monthOf = (n) => {
+    const d = new Date();
+    d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - n);
+    return d.toISOString().slice(0, 7);
+  };
+  const supMonth = async (month, supHours, workedHours) => {
+    const res = await owner(`/api/supervision/employee/${empSup}`, {
+      method: "POST",
+      body: {
+        month,
+        hours_worked: workedHours,
+        entries: supHours > 0 ? [{ date: month + "-15", activity: "Observation", duration: supHours,
+                                   face_to_face: true, supervisor: "A BCBA", observed: true }] : [],
+      },
+    });
+    return res;
+  };
+
+  // Three compliant months, one that misses the 5% minimum, and one with no
+  // worked hours at all.
+  let supOk = await supMonth(monthOf(1), 6, 100);   // 6%  -> meets
+  check("a supervision month can be recorded", supOk.status === 200, supOk.data);
+  await supMonth(monthOf(2), 8, 100);               // 8%  -> meets
+  await supMonth(monthOf(3), 5, 100);               // 5%  -> exactly the minimum, meets
+  await supMonth(monthOf(4), 2, 100);               // 2%  -> misses
+  await supMonth(monthOf(5), 4, 0);                 // no hours worked -> no denominator
+
+  await owner("/api/fidelity/settings", {
+    method: "PUT", body: { weights: { fidelity: 70, supervision_compliance: 30 } },
+  });
+  r = await owner("/api/fidelity/settings");
+  check("Supervision Compliance is offered as a live category now",
+    (r.data.categories || []).some((c) => c.key === "supervision_compliance" && c.live === true),
+    (r.data.categories || []).filter((c) => c.live).map((c) => c.key));
+  check("Attendance still says it is not wired, and why",
+    (r.data.categories || []).some((c) => c.key === "attendance" && c.live === false && /bands rather than a score/i.test(c.source)),
+    (r.data.categories || []).find((c) => c.key === "attendance"));
+
+  await doCheckFor(empSup, 54);
+  await owner(`/api/fidelity/employee/${empSup}/pay`, { method: "PUT", body: { hourly_rate: 20 } });
+
+  r = await owner(`/api/fidelity/raise/${empSup}`);
+  check("the raise view loads with two weighted components", r.status === 200, r.data);
+  const supPart = (r.data.components || []).find((c) => c.key === "supervision_compliance");
+  check("Supervision Compliance is one of them", !!supPart, r.data.components);
+  check("...scored 75%: three of the four judgeable months met the minimum",
+    supPart && supPart.value === 75, supPart);
+  check("...NOT 5-point-something — the monthly percentage is not the score",
+    supPart && supPart.value > 50, supPart);
+  check("a month with no worked hours was left out rather than failed",
+    supPart && supPart.value === 75, supPart);
+
+  // 90 at 70% + 75 at 30% = 85.5
+  check("the weighted performance score combines both",
+    r.data.performance_score === 85.5, { got: r.data.performance_score, parts: r.data.components });
+  check("...landing in the 85–89.99% band, a 3% raise", r.data.recommended_percent === 3, r.data.band);
+  check("...which is $0.60 on $20.00", r.data.recommended_increase === 0.6, r.data.recommended_increase);
+
+  const supWhy = r.data.explanation || "";
+  check("the explanation names both components and their weights",
+    /RBT Fidelity at 70%/.test(supWhy) && /Supervision Compliance at 30%/.test(supWhy), supWhy);
+  check("...and says where the supervision figure came from",
+    /3 of 4 months meeting the BACB 5% minimum/.test(supWhy), supWhy);
+  check("...including the month it could not judge, and why",
+    /1 further month was left out because no worked hours are on file/.test(supWhy), supWhy);
+
+  // Somebody with no supervision months at all is missing data, not 0%.
+  const empNoSup = await mkEmp("Tango");
+  await doCheckFor(empNoSup, 54);
+  r = await owner(`/api/fidelity/raise/${empNoSup}`);
+  check("no supervision months on file is reported as missing, never as 0%",
+    (r.data.missing_components || []).some((m) => m.key === "supervision_compliance"), r.data.missing_components);
+  check("...so the performance score is the Fidelity figure alone, not 63%",
+    r.data.performance_score === 90, r.data.performance_score);
+  check("...and it is flagged rather than quietly used",
+    (r.data.flags || []).some((f) => /No data for/.test(f)), r.data.flags);
+
+  // Put the weights back so the sections below read the default install.
+  await owner("/api/fidelity/settings", { method: "PUT", body: { weights: { fidelity: 100 } } });
 
   // ================================================================
   section("Notices: what the CRM tells people without being asked");
