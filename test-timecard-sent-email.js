@@ -118,20 +118,19 @@ const BASE = process.env.BASE || "http://localhost:3009";
   check("it is refused without a session", anon === 401 || anon === 403, anon);
 
   // ---------------- the screen ----------------
-  await page.evaluate(() => { location.hash = "#/hr"; });
-  // Wait for the TAB before clicking it. Clicking a tab that has not rendered
-  // yet is a silent no-op -- the screen stays on the recruiting dashboard and
-  // the failure then reads as "the button is missing" rather than "the tab was
-  // never opened", which is what sent the first two runs of this chasing the
-  // wrong thing.
-  await page.waitForSelector('[data-hrtab="timecards"]', { timeout: 25000 });
-  await page.click('[data-hrtab="timecards"]');
-  await page.waitForSelector(`[data-tcsent="${tcId}"]`, { timeout: 25000 }).catch(() => {});
-  check("there is a Sent email button on a timecard that has been sent",
-    await page.locator(`[data-tcsent="${tcId}"]`).count() === 1,
-    // One selector, not two: a comma-separated locator matching several
-    // elements throws in strict mode, and the message then says nothing.
-    await page.locator("#hr-body").innerText().then((t) => t.slice(0, 200)).catch((e) => "hr-body unreadable: " + e.message));
+  // Navigated by HASH, not by clicking the tab. The tab handler does exactly
+  // this -- location.hash = "#/hr/" + key -- so going straight there is the
+  // same code path with none of the race: a click can land before the handler
+  // is wired and silently do nothing, which reads afterwards as "the button is
+  // missing" and sent three runs of this chasing the wrong thing.
+  await page.evaluate(() => { location.hash = "#/hr/timecards"; });
+  const found = await page.waitForSelector(`[data-tcsent="${tcId}"]`, { timeout: 30000 })
+    .then(() => true).catch(() => false);
+  check("there is a Sent email button on a timecard that has been sent", found,
+    // Short timeout on the diagnostic itself: reading it must not be able to
+    // hang the suite for another 30 seconds when the screen never rendered.
+    await page.locator("#hr-body").innerText({ timeout: 3000 })
+      .then((t) => t.slice(0, 200)).catch((e) => "hr-body unreadable: " + e.message));
   check("and none on the one that has not been sent",
     await page.locator(`[data-tcsent="${tc2}"]`).count() === 0);
 

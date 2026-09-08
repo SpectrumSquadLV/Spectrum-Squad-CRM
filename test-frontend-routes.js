@@ -81,7 +81,15 @@ check("the sidebar entry points at the right hash",
   /key:\s*"rethink-clients"[^}]*hash:\s*"#\/rethink-clients"/.test(indexHtml));
 
 // Gated to the same roles the server enforces on /api/rethink/client-match.
-const navGuard = indexHtml.match(/if \((\[[^\]]*\])\.includes\(state\.user\.role\)\)\s*\n\s*navItems\.push\(\{ key: "rethink-clients"/);
+//
+// The optional brace is deliberate. This pattern used to require the BRACELESS
+// form, and that is precisely the shape that caused a bug: the guard had one
+// statement under it, two more nav entries were added, and they landed outside
+// the condition -- so every role got two admin-only screens in their sidebar.
+// A braced block is the safer way to write this, so the check must accept it;
+// what is being asserted is that the entry is GATED, not how the gate is
+// punctuated.
+const navGuard = indexHtml.match(/if \((\[[^\]]*\])\.includes\(state\.user\.role\)\)\s*\{?\s*\n\s*navItems\.push\(\{ key: "rethink-clients"/);
 check("the sidebar entry is owner/admin only", !!navGuard, navGuard && navGuard[1]);
 if (navGuard) {
   const roles = navGuard[1];
