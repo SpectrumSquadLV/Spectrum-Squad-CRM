@@ -693,6 +693,125 @@ async function api(path, opts = {}) {
 
 const stageMap = () => Object.fromEntries(state.stages.map((s) => [s.key, s]));
 
+// ---------------- Month/day/year date entry ----------------
+// <input type="date"> renders in the BROWSER's locale, not the page's. On a
+// day-first browser it asks for DD/MM/YYYY, and neither a lang attribute nor
+// anything else in this file can change that -- Chrome follows the browser's
+// language setting and Safari the OS region.
+//
+// For most fields that is a nuisance. For a DATE OF BIRTH it is a silent
+// clinical error: 03/04 and 04/03 are both real dates, so a transposed
+// birthday saves cleanly, looks plausible on every screen afterwards, and is
+// only ever caught by somebody who happens to know the child's actual
+// birthday. It also travels -- DOB goes to Rethink and onto authorizations.
+//
+// So the field is typed as text in an order this application decides, and the
+// parsed date is echoed back in words underneath. The echo is the point: a
+// transposition is invisible in "03/04/2019" and obvious in "March 4, 2019".
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
+
+// "MM/DD/YYYY" -> "YYYY-MM-DD", or null. Strict on purpose: a date this
+// rejects is one a person has to look at again, which is the whole intent.
+function usDateToISO(str) {
+  const m = String(str == null ? "" : str).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  const mo = Number(m[1]), d = Number(m[2]), y = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || y < 1900) return null;
+  // Round-tripped through a real Date so 02/30 is refused rather than rolling
+  // silently into March, which is exactly the kind of quiet wrong answer this
+  // field exists to stop.
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  const iso = `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  return iso;
+}
+
+function isoToUSDate(iso) {
+  const m = String(iso == null ? "" : iso).slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return "";
+  return `${m[2]}/${m[3]}/${m[1]}`;
+}
+
+// The confirmation echo. Written out in words so a transposition is visible.
+function usDateInWords(iso) {
+  const m = String(iso == null ? "" : iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return "";
+  return `${MONTH_NAMES[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}`;
+}
+
+// One date-of-birth field: a text box people type into, and a hidden input
+// carrying the ISO value every existing reader already expects. Nothing
+// downstream changes -- the shape of what is submitted is identical.
+function usDateFieldHtml(hiddenId, isoValue, opts = {}) {
+  const iso = String(isoValue == null ? "" : isoValue).slice(0, 10);
+  const name = opts.name ? ` name="${opts.name}"` : "";
+  return `<input type="text" data-usdate-for="${hiddenId}" inputmode="numeric" autocomplete="bday"
+      placeholder="MM/DD/YYYY" maxlength="10" value="${isoToUSDate(iso)}" />
+    <input type="hidden" id="${hiddenId}"${name} value="${iso}" />
+    <div data-usdate-echo="${hiddenId}" style="font-size:12px; margin-top:4px; min-height:15px; color:var(--text-muted);">${
+      iso ? usDateInWords(iso) : ""
+    }</div>`;
+}
+
+// Wires every date-of-birth field inside `root`. Safe to call more than once
+// on the same container: a field already wired is skipped.
+function wireUSDates(root) {
+  if (!root) return;
+  root.querySelectorAll("[data-usdate-for]").forEach((input) => {
+    if (input.dataset.usdateWired === "1") return;
+    input.dataset.usdateWired = "1";
+    const hidden = root.querySelector(`#${input.dataset.usdateFor}`);
+    const echo = root.querySelector(`[data-usdate-echo="${input.dataset.usdateFor}"]`);
+    if (!hidden) return;
+
+    const sync = () => {
+      const raw = input.value.trim();
+      const iso = usDateToISO(raw);
+      if (!raw) {
+        hidden.value = "";
+        if (echo) { echo.textContent = ""; echo.style.color = "var(--text-muted)"; }
+        input.setCustomValidity("");
+        return;
+      }
+      if (iso) {
+        // A birthday in the future is a typed year, every time.
+        const future = iso > new Date().toISOString().slice(0, 10);
+        hidden.value = future ? "" : iso;
+        if (echo) {
+          echo.textContent = future ? "That date is in the future — check the year." : usDateInWords(iso);
+          echo.style.color = future ? "#b45309" : "var(--text-muted)";
+        }
+        input.setCustomValidity(future ? "That date is in the future." : "");
+        return;
+      }
+      hidden.value = "";
+      if (echo) {
+        echo.textContent = raw.length >= 10 ? "That is not a real date — use MM/DD/YYYY." : "Month, then day, then year.";
+        echo.style.color = raw.length >= 10 ? "#b45309" : "var(--text-muted)";
+      }
+      input.setCustomValidity(raw.length >= 10 ? "Enter the date as MM/DD/YYYY." : "Finish the date, as MM/DD/YYYY.");
+    };
+
+    input.addEventListener("input", (e) => {
+      // Slashes are inserted as you type, but only while ADDING characters --
+      // doing it during a delete makes the separator impossible to backspace
+      // through, because it is put straight back.
+      const deleting = e.inputType && e.inputType.indexOf("delete") === 0;
+      if (!deleting) {
+        const digits = input.value.replace(/\D/g, "").slice(0, 8);
+        let out = digits.slice(0, 2);
+        if (digits.length > 2) out += "/" + digits.slice(2, 4);
+        if (digits.length > 4) out += "/" + digits.slice(4, 8);
+        if (out !== input.value) input.value = out;
+      }
+      sync();
+    });
+    input.addEventListener("blur", sync);
+    sync();
+  });
+}
+
 function fmtDate(d) {
   if (!d) return "—";
   const date = new Date(d);
@@ -3267,7 +3386,7 @@ function clientDetailsHtml(client, editing) {
     </div>
     <div class="form-grid">
       <div class="field"><label>Child's Name</label><input id="cd-child_name" value="${ea(client.child_name)}" /></div>
-      <div class="field"><label>Date of Birth</label><input id="cd-dob" type="date" value="${(client.dob || "").slice(0, 10)}" /></div>
+      <div class="field"><label>Date of Birth</label>${usDateFieldHtml("cd-dob", client.dob)}</div>
       <div class="field"><label>Parent / Guardian Name</label><input id="cd-parent_name" value="${ea(client.parent_name)}" /></div>
       <div class="field"><label>Relationship</label><input id="cd-parent_relationship" value="${ea(client.parent_relationship)}" /></div>
       <div class="field"><label>Parent Email</label><input id="cd-parent_email" type="email" value="${ea(client.parent_email)}" /></div>
@@ -3685,9 +3804,19 @@ async function openClientModal(id) {
       openClientModal(id);
     });
   }
+  wireUSDates(backdrop);
   const clientSaveBtn = backdrop.querySelector("#client-save-btn");
   if (clientSaveBtn) {
     clientSaveBtn.addEventListener("click", async () => {
+      // Same guard as the enrolment form: a birthday that did not parse must
+      // not be saved over a good one as an empty string.
+      const dobText = backdrop.querySelector('[data-usdate-for="cd-dob"]');
+      const dobIso = backdrop.querySelector("#cd-dob");
+      if (dobText && dobText.value.trim() && dobIso && !dobIso.value) {
+        alert("Check the date of birth — it needs to be MM/DD/YYYY (month first).");
+        dobText.focus();
+        return;
+      }
       const editableFields = [
         "child_name", "dob", "parent_name", "parent_relationship", "parent_email",
         "parent_phone", "address", "service_location", "insurance_provider",
@@ -4253,7 +4382,7 @@ function openNewClientModal() {
       <form id="new-client-form">
         <div class="form-grid">
           <div class="field"><label>Child's Name *</label><input name="child_name" required /></div>
-          <div class="field"><label>Date of Birth</label><input name="dob" type="date" /></div>
+          <div class="field"><label>Date of Birth</label>${usDateFieldHtml("nc-dob", "", { name: "dob" })}</div>
           <div class="field"><label>Parent/Guardian Name *</label><input name="parent_name" required /></div>
           <div class="field"><label>Relationship</label><input name="parent_relationship" value="Parent / Legal Guardian" /></div>
           <div class="field"><label>Parent Email *</label><input name="parent_email" type="email" required /></div>
@@ -4289,8 +4418,19 @@ function openNewClientModal() {
   backdrop.querySelector(".close-btn").addEventListener("click", close);
   backdrop.querySelector("#cancel-new").addEventListener("click", close);
 
+  wireUSDates(backdrop);
   backdrop.querySelector("#new-client-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    // A date that could not be parsed leaves the hidden field empty, and an
+    // empty DOB saving silently is how a typo becomes a client with no
+    // birthday at all. Say so instead.
+    const dobText = backdrop.querySelector('[data-usdate-for="nc-dob"]');
+    const dobIso = backdrop.querySelector("#nc-dob");
+    if (dobText && dobText.value.trim() && dobIso && !dobIso.value) {
+      alert("Check the date of birth — it needs to be MM/DD/YYYY (month first).");
+      dobText.focus();
+      return;
+    }
     const fd = new FormData(e.target);
     const body = Object.fromEntries(fd.entries());
     // Object.fromEntries keeps only the LAST value of a repeated field name, so

@@ -5030,7 +5030,18 @@ async function handle(req, res, pathname, method, query = {}) {
   // including HR-side roles (hiring_manager, interviewer) that have no reason
   // to see them. An explicit "pipeline" grant from the Access editor still
   // opens it for a specific person.
-  if (/^\/api\/clients(\/|$)/.test(pathname) || /^\/api\/stages(\/|$)/.test(pathname)) {
+  //
+  // /api/dashboard/pipeline-v2 is HERE, not with the other dashboard routes,
+  // because of what it returns rather than what it is called: every client's
+  // name, their parent's name, their insurance provider and their assigned
+  // BCBA. The module map below files anything under /api/dashboard as
+  // "dashboard", so this endpoint was never covered by the role gate at all --
+  // a hiring_manager or an interviewer, refused by /api/clients precisely so
+  // they cannot see a child's PHI, got the whole client list from it with a
+  // 200. Verified against a running server before it was changed: /api/clients
+  // answered 403 and this answered 200 with the families in it.
+  if (/^\/api\/clients(\/|$)/.test(pathname) || /^\/api\/stages(\/|$)/.test(pathname)
+      || /^\/api\/dashboard\/pipeline-v2(\/|$)/.test(pathname)) {
     if (!canAccessClients(user) && !moduleGranted(user, "pipeline")) {
       json(res, 403, { error: "Not permitted to access client records" });
       return true;
