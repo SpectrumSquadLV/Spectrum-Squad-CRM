@@ -6417,13 +6417,30 @@ async function handle(req, res, pathname, method, query = {}) {
     }
 
 if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
-      const clients = await dbAll(
-        "SELECT * FROM clients WHERE stage NOT IN ('discharged','not_moving_forward') ORDER BY submitted_at DESC"
-      );
+      // DISCHARGED AND NOT-MOVING-FORWARD CLIENTS ARE INCLUDED, flagged rather
+      // than filtered out in SQL.
+      //
+      // They used to be excluded here, which had two consequences nobody could
+      // see from the screen. This board has no discharged view of its own -- the
+      // one that exists lives on the older #/pipeline board, which was dropped
+      // from the sidebar when this became the default -- so a deactivated
+      // client was not merely hidden, they were absent from the data and
+      // unreachable from the Clients section entirely. And searching could
+      // never find them, however the search was written.
+      //
+      // Including them is safe for the board itself: computeMilestoneView
+      // already returns milestone null for both stages (it always did), and the
+      // columns are built by matching a milestone key, so a client with none
+      // lands in no column. Nothing about the board changes.
+      const clients = await dbAll("SELECT * FROM clients ORDER BY submitted_at DESC");
       const shaped = clients.map((c) => ({
         id: c.id,
         child_name: c.child_name,
         parent_name: c.parent_name,
+        // The stage itself, so a deactivated client can say WHICH kind they
+        // are: discharged and not-moving-forward mean very different things.
+        stage: c.stage,
+        inactive: c.stage === "discharged" || c.stage === "not_moving_forward",
         insurance_provider: c.insurance_provider,
         service_location: c.service_location,
         assigned_bcba_name: c.assigned_bcba_name,
