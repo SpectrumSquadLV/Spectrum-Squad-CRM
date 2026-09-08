@@ -70,6 +70,10 @@ function makeDb(seed) {
     deletes: [],
     log: [],
     sql: [],
+    unmatchedStaff: [],
+    providerDay: [],
+    createdEmployees: [],
+    linked: [],
   };
 
   const dbGet = async (sql, p = []) => {
@@ -78,13 +82,47 @@ function makeDb(seed) {
     if (/FROM rethink_config/i.test(sql)) return state.config;
     if (/FROM rethink_sync_log/i.test(sql)) return null;
     if (/FROM rethink_client_authorizations/i.test(sql)) return null;
+    if (/INSERT INTO hr_employees/i.test(sql)) {
+      state.createdEmployees.push({ name: p[0], email: p[1], role_title: p[2], rethink_id: p[3] });
+      return { id: 900 + state.createdEmployees.length };
+    }
+    if (/FROM hr_employees/i.test(sql)) {
+      // The guards ask three questions of this table: who holds this Rethink
+      // id, who is already called this, and who owns this email. Answered from
+      // the seeded roster so a refusal is tested against real rows.
+      const emps = state.employees || [];
+      if (/TRIM\(COALESCE\(rethink_id/i.test(sql)) {
+        return emps.find((e) => String(e.rethink_id || "") === String(p[0])) || null;
+      }
+      if (/LOWER\(TRIM\(name\)\)/i.test(sql)) {
+        return emps.find((e) => String(e.name || "").toLowerCase() === String(p[0]).toLowerCase()) || null;
+      }
+      if (/LOWER\(TRIM\(email\)\)/i.test(sql)) {
+        return emps.find((e) => String(e.email || "").toLowerCase() === String(p[0]).toLowerCase()) || null;
+      }
+      return emps.find((e) => Number(e.id) === Number(p[0])) || null;
+    }
     return null;
   };
 
-  const dbAll = async (sql) => {
+  const dbAll = async (sql, p = []) => {
     state.sql.push(sql);
     if (/FROM hr_employees/i.test(sql)) return state.employees;
     if (/FROM clients/i.test(sql)) return state.clients;
+    // Served out of what the sync actually wrote, so the unmatched-provider
+    // reader is exercised against real rows rather than a hand-built fixture
+    // that could agree with a broken write.
+    if (/FROM rethink_provider_month/i.test(sql)) {
+      const month = p[0];
+      return state.providerMonth
+        .filter((r) => r.month === month)
+        .filter((r) => (/employee_id IS NULL/i.test(sql) ? r.employeeId == null : true))
+        .map((r) => ({
+          rethink_staff_id: r.staffId, staff_name_hint: r.nameHint == null ? null : r.nameHint,
+          verified_hours: r.hours, appointment_count: r.count, appointments_seen: r.seen,
+          provisional: r.provisional, computed_at: seed.now,
+        }));
+    }
     return [];
   };
 
@@ -92,7 +130,48 @@ function makeDb(seed) {
     state.sql.push(sql);
     if (/^\s*DELETE FROM/i.test(sql)) { state.deletes.push(sql.trim().split("\n")[0]); return; }
     if (/INSERT INTO rethink_provider_month/i.test(sql)) {
-      state.providerMonth.push({ staffId: p[0], month: p[1], employeeId: p[2], hours: p[3], count: p[4], provisional: p[5] });
+      // By COLUMN NAME, not by position -- same reason as hr_supervision_logs
+      // below. Reading positionally meant that adding a column to the write
+      // silently shifted every assertion in this file onto the wrong value,
+      // which is a fake that reports failures for changes that are correct.
+      const cols = (sql.match(/INSERT INTO rethink_provider_month\s*\(([^)]*)\)/i) || [])[1] || "";
+      const names = cols.split(",").map((c) => c.trim());
+      const values = ((sql.match(/VALUES\s*\(([^)]*)\)/i) || [])[1] || "").split(",").map((v) => v.trim());
+      const row = {};
+      let pi = 0;
+      names.forEach((name, i) => {
+        const v = values[i];
+        row[name] = v === "?" ? p[pi++] : v.replace(/^'|'$/g, "");
+      });
+      state.providerMonth.push({
+        staffId: row.rethink_staff_id, month: row.month, employeeId: row.employee_id,
+        hours: row.verified_hours, count: row.appointment_count, provisional: row.provisional,
+        nameHint: row.staff_name_hint === undefined ? undefined : row.staff_name_hint,
+        seen: row.appointments_seen === undefined ? undefined : row.appointments_seen,
+      });
+      return;
+    }
+    if (/INSERT INTO rethink_provider_day/i.test(sql)) {
+      state.providerDay.push({
+        staffId: p[0], day: p[1], month: p[2], employeeId: p[3],
+        billable: Number(p[4]), nonbillable: Number(p[5]),
+        unclassified: Number(p[6]), billableAppointments: Number(p[7]),
+      });
+      return;
+    }
+    if (/INSERT INTO rethink_unmatched_staff/i.test(sql)) {
+      state.unmatchedStaff.push({
+        staffId: p[0], name: p[1], appointments: p[2], hours: p[3],
+        clients: p[4], first: p[5], last: p[6],
+      });
+      return;
+    }
+    if (/INSERT INTO hr_employees/i.test(sql)) {
+      state.createdEmployees.push({ name: p[0], email: p[1], role_title: p[2], rethink_id: p[3] });
+      return;
+    }
+    if (/UPDATE hr_employees SET rethink_id/i.test(sql)) {
+      state.linked.push({ rethink_id: p[0], employee_id: p[1] });
       return;
     }
     if (/INSERT INTO rethink_observed_values/i.test(sql)) {
@@ -242,6 +321,247 @@ const initRethink = require("./rethink");
     check("and says so in the warnings", out.warnings.some((w) => /not confirmed/i.test(w)));
     const hours = await r.verifiedHoursByEmployee("2026-08");
     check("verifiedHoursByEmployee returns nothing while unconfirmed", Object.keys(hours).length === 0);
+  }
+
+  // Scenarios: an active RBT who is invisible to the supervision tracker.
+  //
+  // The tracker's roster is built from hr_employees, so a provider who exists
+  // only in Rethink cannot appear on it however often the sync runs -- and an
+  // RBT missing from a compliance tracker is indistinguishable from full
+  // compliance. Worse, the ONLY providers the aggregate used to record were
+  // ones with a completed, verified, positive-duration session, so the RBT
+  // most likely to need chasing -- working all month with nothing verified --
+  // was the one guaranteed to leave no trace at all.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [{ id: 1, name: "Linked RBT", rethink_id: "S100" }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { staffId: "S100", appointmentStatus: "Completed", staffVerification: true, actualDurationHours: 3, appointmentDate: "2026-08-03" },
+      // In Rethink, no CRM employee, and PLENTY of verified work.
+      { staffId: "S900", staffName: "Unlinked RBT", appointmentStatus: "Completed", staffVerification: true, actualDurationHours: 6, appointmentDate: "2026-08-04" },
+      // In Rethink, no CRM employee, and nothing verified all month. This is
+      // the provider who used to vanish completely.
+      { staffId: "S901", staffName: "Unverified RBT", appointmentStatus: "Completed", staffVerification: false, actualDurationHours: 5, appointmentDate: "2026-08-05" },
+      { staffId: "S901", staffName: "Unverified RBT", appointmentStatus: "Completed", staffVerification: false, actualDurationHours: 4, appointmentDate: "2026-08-06" },
+    ], pages: 1, truncated: false });
+
+    const r = initRethink(ctx);
+    await r.syncSupervisionHours("test", "2026-08");
+
+    const byId = {};
+    state.providerMonth.forEach((row) => { byId[row.staffId] = row; });
+
+    check("a provider with nothing verified still gets a row", !!byId.S901,
+      Object.keys(byId).join(","));
+    check("that row carries zero hours rather than a guess", byId.S901 && Number(byId.S901.hours) === 0,
+      byId.S901 && byId.S901.hours);
+    check("but records the sessions they were actually scheduled for", byId.S901 && Number(byId.S901.seen) === 2,
+      byId.S901 && byId.S901.seen);
+    check("counted sessions stay separate from sessions seen", byId.S901 && Number(byId.S901.count) === 0,
+      byId.S901 && byId.S901.count);
+    check("a linked provider is unaffected", byId.S100 && Number(byId.S100.hours) === 3, byId.S100 && byId.S100.hours);
+
+    check("the provider name Rethink sent is captured", byId.S900 && byId.S900.nameHint === "Unlinked RBT",
+      byId.S900 && byId.S900.nameHint);
+    check("a name is captured even when nothing counted", byId.S901 && byId.S901.nameHint === "Unverified RBT",
+      byId.S901 && byId.S901.nameHint);
+    // The name is a label for a human to recognise somebody by. It must never
+    // become a match: two RBTs sharing a surname would otherwise produce a
+    // silently wrong compliance record.
+    check("a name hint never links a provider by itself", byId.S900 && byId.S900.employeeId == null,
+      byId.S900 && byId.S900.employeeId);
+
+    const gaps = await r.unmatchedProvidersForMonth("2026-08");
+    const gapIds = gaps.map((g) => g.rethink_staff_id).sort();
+    check("both unmatched providers are reported to the tracker", gapIds.join(",") === "S900,S901", gapIds.join(","));
+    check("the linked provider is not reported as a gap", !gapIds.includes("S100"));
+    check("the gap carries the hours that are going uncounted", (gaps.find((g) => g.rethink_staff_id === "S900") || {}).verified_hours === 6,
+      JSON.stringify(gaps));
+    check("the gap carries a name to recognise them by", (gaps.find((g) => g.rethink_staff_id === "S900") || {}).name_hint === "Unlinked RBT");
+    check("a month that was never synced reports no gaps", (await r.unmatchedProvidersForMonth("2026-07")).length === 0);
+    check("a malformed month is refused rather than guessed at", (await r.unmatchedProvidersForMonth("nonsense")).length === 0);
+  }
+
+  // A provider linked by hand must bring their ALREADY-SYNCED hours with them.
+  // Without that, linking somebody appears to do nothing until the next sync
+  // happens to overwrite the month, and the obvious conclusion is that the
+  // link failed.
+  {
+    const { state, ctx } = makeDb({ now: NOW, config: CONFIRMED, employees: [] });
+    const adopted = [];
+    const base = ctx.dbAll;
+    ctx.dbAll = async (sql, p = []) => {
+      if (/UPDATE rethink_provider_month/i.test(sql)) {
+        adopted.push({ employeeId: p[0], staffId: p[1] });
+        return [{ month: "2026-08" }, { month: "2026-07" }];
+      }
+      return base(sql, p);
+    };
+    const r = initRethink(ctx);
+    const out = await r.adoptProviderRows("S900", 7);
+    check("linking re-points the months already on file", out.updated === 2, JSON.stringify(out));
+    check("it re-points them to the chosen employee", adopted[0] && adopted[0].employeeId === 7, JSON.stringify(adopted));
+    check("with no staff id there is nothing to adopt", (await r.adoptProviderRows("", 7)).updated === 0);
+    check("with no employee there is nothing to adopt", (await r.adoptProviderRows("S900", null)).updated === 0);
+    void state;
+  }
+
+  // ---- SCANNING RETHINK FOR EMPLOYEES ----------------------------------
+  // The CRM has no Rethink staff endpoint to call: this account can only read
+  // Appointments, which the activity scan already records in production terms.
+  // So the roster is derived from who actually delivered sessions -- and the
+  // scan must PROPOSE only, because an hr_employees row anchors documents,
+  // attendance, PTO, benefits and termination.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [{ id: 1, name: "Known RBT", email: "known@x.invalid", rethink_id: "S100" }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { staffId: "S100", clientId: "C1", appointmentDate: "2026-08-03", actualDurationHours: 2 },
+      { staffId: "S900", staffName: "Nina Alvarez", clientId: "C2", appointmentDate: "2026-08-04", actualDurationHours: 3 },
+      { staffId: "S900", staffName: "Nina Alvarez", clientId: "C3", appointmentDate: "2026-08-09", actualDurationHours: 1.5 },
+      // No name anywhere in the payload: this is the case that decides whether
+      // the feature can create anybody at all.
+      { staffId: "S901", clientId: "C4", appointmentDate: "2026-08-05", actualDurationHours: 4 },
+    ], pages: 1, truncated: false });
+
+    const r = initRethink(ctx);
+    const out = await r.scanStaffFromAppointments({ days: 90 });
+
+    check("the scan runs off appointments", out.ok === true, JSON.stringify(out).slice(0, 200));
+    check("it finds every provider who worked", out.providers_seen === 3, out.providers_seen);
+    check("somebody already linked is not offered again", out.already_linked === 1, out.already_linked);
+    check("and the rest need putting in the CRM", out.needs_linking === 2, out.needs_linking);
+    check("the scan CREATES NOBODY", state.createdEmployees.length === 0,
+      JSON.stringify(state.createdEmployees));
+
+    const nina = state.unmatchedStaff.find((u) => u.staffId === "S900");
+    check("a provider's sessions are counted", nina && nina.appointments === 2, JSON.stringify(nina));
+    check("their hours are totalled", nina && Number(nina.hours) === 4.5, nina && nina.hours);
+    check("distinct clients are counted, not sessions", nina && nina.clients === 2, nina && nina.clients);
+    check("the window they were seen in is recorded",
+      nina && nina.first === "2026-08-04" && nina.last === "2026-08-09", JSON.stringify(nina));
+    check("a name Rethink sent is carried through", nina && nina.name === "Nina Alvarez", nina && nina.name);
+
+    const anon = state.unmatchedStaff.find((u) => u.staffId === "S901");
+    check("a provider with no name is still found", !!anon, JSON.stringify(state.unmatchedStaff));
+    check("and is not given an invented one", anon && anon.name == null, anon && anon.name);
+    check("the scan says plainly that a name is missing",
+      out.without_a_name === 1 && out.warnings.some((w) => /no provider name|had no name/i.test(w)),
+      JSON.stringify(out.warnings));
+
+    // ---- creating the record is a separate, deliberate act ----
+    const noName = await r.createStaffFromRethink({ rethink_staff_id: "S901", name: "" });
+    check("a staff record cannot be created from an id alone", noName.ok === false, JSON.stringify(noName));
+    check("and it says why", /name is required/i.test(noName.error || ""), noName.error);
+
+    const dupe = await r.createStaffFromRethink({ rethink_staff_id: "S902", name: "Known RBT" });
+    check("somebody already on the roster is a link, not a second personnel file",
+      dupe.ok === false && dupe.code === "name_exists", JSON.stringify(dupe));
+
+    const taken = await r.createStaffFromRethink({ rethink_staff_id: "S100", name: "Someone Else" });
+    check("a Rethink id already on a record is refused", taken.ok === false, JSON.stringify(taken));
+
+    const made = await r.createStaffFromRethink({ rethink_staff_id: "S900", name: "Nina Alvarez", role_title: "RBT" });
+    check("a named provider can be added on purpose", made.ok === true, JSON.stringify(made));
+    const created = state.createdEmployees[state.createdEmployees.length - 1];
+    check("the record carries the Rethink id, so hours match from now on",
+      created && created.rethink_id === "S900", JSON.stringify(created));
+    check("and the job title that was typed", created && created.role_title === "RBT", JSON.stringify(created));
+  }
+
+  // Linking a scanned provider to somebody already on the roster.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [
+        { id: 1, name: "Unlinked RBT", email: "u@x.invalid", rethink_id: null },
+        { id: 2, name: "Taken RBT", email: "t@x.invalid", rethink_id: "S777" },
+      ],
+    });
+    const r = initRethink(ctx);
+
+    const ok = await r.linkStaffToEmployee("S900", 1);
+    check("a scanned provider links to an existing staff member", ok.ok === true, JSON.stringify(ok));
+    check("which writes the Rethink id onto their record",
+      state.linked.some((l) => l.rethink_id === "S900" && Number(l.employee_id) === 1), JSON.stringify(state.linked));
+
+    const clash = await r.linkStaffToEmployee("S777", 1);
+    check("one Rethink id cannot be given to two people", clash.ok === false && clash.code === "taken",
+      JSON.stringify(clash));
+
+    const missing = await r.linkStaffToEmployee("S900", 99999);
+    check("linking to somebody not on file is refused", missing.ok === false, JSON.stringify(missing));
+    const noArgs = await r.linkStaffToEmployee("", 1);
+    check("linking with no staff id is refused", noArgs.ok === false);
+  }
+
+  // ---- BILLABLE HOURS, AND THE RULE IT MUST NOT MERGE WITH ---------------
+  // The BCBA requirement counts only appointments Rethink classifies as
+  // BILLABLE. Supervision and payroll count every delivered, verified session.
+  // Those are different questions about the same hour, and the whole risk in
+  // this change is that they quietly become one number.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [{ id: 1, name: "Billing BCBA", rethink_id: "S100" }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      // Same day, same provider, all delivered and verified.
+      { staffId: "S100", appointmentDate: "2026-08-03", actualDurationHours: 3, appointmentStatus: "Completed", staffVerification: true, appointmentType: "Billable - Direct" },
+      { staffId: "S100", appointmentDate: "2026-08-03", actualDurationHours: 2, appointmentStatus: "Completed", staffVerification: true, appointmentType: "Non-Billable Admin" },
+      // No label at all: must be counted neither way.
+      { staffId: "S100", appointmentDate: "2026-08-03", actualDurationHours: 1, appointmentStatus: "Completed", staffVerification: true },
+      // A boolean instead of a label.
+      { staffId: "S100", appointmentDate: "2026-08-04", actualDurationHours: 4, appointmentStatus: "Completed", staffVerification: true, isBillable: true },
+    ], pages: 1, truncated: false });
+
+    const r = initRethink(ctx);
+    await r.syncSupervisionHours("test", "2026-08");
+
+    // THE SEPARATION. Supervision counts all ten delivered hours.
+    const month = state.providerMonth.find((m) => m.staffId === "S100");
+    check("supervision still counts every delivered, verified hour",
+      month && Number(month.hours) === 10, month && month.hours);
+    check("including the non-billable ones — the rules are not merged",
+      month && Number(month.hours) !== 7, month && month.hours);
+
+    const d3 = state.providerDay.find((d) => d.day === "2026-08-03");
+    check("billable hours are recorded separately", d3 && d3.billable === 3, d3 && d3.billable);
+    check("non-billable hours are kept apart, not dropped", d3 && d3.nonbillable === 2, d3 && d3.nonbillable);
+    check("an unlabelled hour is counted neither way", d3 && d3.unclassified === 1, d3 && d3.unclassified);
+    check("and the three buckets account for every delivered hour",
+      d3 && d3.billable + d3.nonbillable + d3.unclassified === 6,
+      d3 && JSON.stringify(d3));
+    const d4 = state.providerDay.find((d) => d.day === "2026-08-04");
+    check("a boolean billable flag is read too", d4 && d4.billable === 4, d4 && d4.billable);
+
+    // "Non-Billable" contains "Billable"; testing the wrong one first counts
+    // every non-billable hour as billable.
+    const cls = r._billable.classifyBillable;
+    check("'Non-Billable' is not read as billable", cls("Non-Billable Admin") === false);
+    check("'Billable - Direct' is billable", cls("Billable - Direct") === true);
+    check("an unrecognised label is null, never assumed billable", cls("Cancellation") === null);
+    check("a blank label is null", cls("") === null);
+  }
+
+  // Weeks run Monday to Sunday, and a partial week is NOT pro-rated.
+  {
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, employees: [] });
+    const r = initRethink(ctx);
+    const ws = r._billable.weekStartOf, we = r._billable.weekEndOf;
+    check("a Wednesday belongs to the Monday before it", ws("2026-08-05") === "2026-08-03", ws("2026-08-05"));
+    check("a Monday is its own week start", ws("2026-08-03") === "2026-08-03", ws("2026-08-03"));
+    check("a Sunday belongs to the week that started six days earlier",
+      ws("2026-08-09") === "2026-08-03", ws("2026-08-09"));
+    check("a week ends on the Sunday", we("2026-08-03") === "2026-08-09", we("2026-08-03"));
+    // The boundary week is the reason days are stored rather than months.
+    check("a week can start in one month and end in the next",
+      ws("2026-10-01") === "2026-09-28" && we("2026-09-28") === "2026-10-04",
+      ws("2026-10-01") + " – " + we("2026-09-28"));
   }
 
   // Scenario 11: API failure must not destroy anything.

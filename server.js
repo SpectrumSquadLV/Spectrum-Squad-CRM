@@ -205,7 +205,13 @@ CREATE TABLE IF NOT EXISTS notifications_log (
   subject TEXT NOT NULL,
   body TEXT NOT NULL,
   sent_at TEXT,
-  delivered TEXT DEFAULT 'simulated' -- simulated | sent | failed
+  delivered TEXT DEFAULT 'simulated', -- simulated | sent | failed
+  -- What this email was ABOUT, when it was about a record rather than a
+  -- client. Without it an email can only be matched back to its subject by
+  -- recipient and timestamp, which guesses wrong the moment somebody has two
+  -- pay periods in flight.
+  ref_type TEXT,
+  ref_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS therapists (
@@ -461,6 +467,9 @@ ALTER TABLE clickup_config ADD COLUMN IF NOT EXISTS last_connection_status TEXT;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS acknowledged_at TEXT;
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS ack_token TEXT;
+-- What an email was about, when it was about a record rather than a client.
+ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS ref_type TEXT;
+ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS ref_id INTEGER;
 -- Which channel a notification went out on. Defaults to 'email' so every
 -- existing row keeps its meaning; SMS sends write 'sms'.
 ALTER TABLE notifications_log ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'email';
@@ -750,7 +759,12 @@ async function createUser({ name, email, password, role, department_id = null })
 }
 
 async function findUserByEmail(email) {
-  return dbGet("SELECT * FROM users WHERE email = ?", [email.toLowerCase()]);
+  // Trimmed as well as lower-cased. Addresses are stored trimmed at creation,
+  // so a lookup that only lower-cased could not match one pasted with a
+  // trailing space -- and every caller of this (sign-in, password reset,
+  // "does this account exist") would then report no such account, which is
+  // indistinguishable from access never having been granted.
+  return dbGet("SELECT * FROM users WHERE email = ?", [String(email == null ? "" : email).trim().toLowerCase()]);
 }
 
 async function login(email, password) {
@@ -1020,14 +1034,15 @@ function brandedEmail(innerHtml) {
   </div>`;
 }
 
-async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone", attachments = null }) {
+async function sendEmail({ to, subject, html, clientId = null, type = "parent_milestone", attachments = null, refType = null, refId = null }) {
   const branded = brandedEmail(html);
   const { delivered, errorMsg } = await deliverEmail({ to, subject, html: branded, attachments });
 
   await dbRun(
-    `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [clientId, type, to, subject, branded, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : "")]
+    `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered, ref_type, ref_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [clientId, type, to, subject, branded, nowISO(), delivered + (errorMsg ? `: ${errorMsg}` : ""),
+     refType, refId == null ? null : Number(refId)]
   );
 
   return { delivered, errorMsg };
@@ -1371,6 +1386,43 @@ async function saveClientDocument(opts) {
 // substituted at first-send time) and updates the SAME notifications_log row
 // in place, so a recovered email drops off the failed list instead of leaving
 // a duplicate row behind.
+// ---- Magic links in a stored email body are CREDENTIALS ---------------------
+//
+// Every one of these opens a page AS the person it was mailed to: accepting a
+// timecard, signing an offer, submitting availability, uploading a child's
+// documents, answering a screener. notifications_log keeps the email body
+// verbatim, and the Message Outbox renders that body to owner / super_admin /
+// admin -- so a screen for checking what was sent doubles as a way to act as
+// anybody the CRM has ever emailed.
+//
+// sendPasswordResetEmail above already refuses to log its link for exactly this
+// reason. This applies the same rule to the rest, and applies it at DISPLAY
+// rather than storage:
+//
+//   * the stored body keeps its real link, so the recipient's own copy still
+//     works and resendFailedEmail still re-sends a working email;
+//   * the route is left visible, so a reader can still see WHAT was sent
+//     rather than being shown a blank where a link used to be.
+const TOKEN_PATH_ROUTES = ["verify-timecard", "offer", "screener", "schedule", "apply", "new-hire"];
+const TOKEN_PATH_RE = new RegExp("(/(?:" + TOKEN_PATH_ROUTES.join("|") + ")/)[A-Za-z0-9._~+-]{6,}", "g");
+function redactSecretLinks(html) {
+  if (html == null) return html;
+  return String(html)
+    // token=... in a query string, however the link was built.
+    .replace(/([?&]token=)[^"'&<\s)]+/gi, "$1[link removed]")
+    // /route/<token> links, where the secret is a path segment.
+    .replace(TOKEN_PATH_RE, "$1[link removed]");
+}
+
+// One notification row as it may be SHOWN. Drops ack_token outright -- it is a
+// one-click acknowledgement credential and no screen needs it.
+function shapeNotificationForDisplay(row) {
+  if (!row) return row;
+  const { ack_token, ...safe } = row;
+  if (safe.body !== undefined) safe.body = redactSecretLinks(safe.body);
+  return safe;
+}
+
 async function listFailedEmails() {
   return dbAll(
     `SELECT id, client_id, type, recipient, subject, sent_at, delivered
@@ -5025,7 +5077,18 @@ async function handle(req, res, pathname, method, query = {}) {
   // including HR-side roles (hiring_manager, interviewer) that have no reason
   // to see them. An explicit "pipeline" grant from the Access editor still
   // opens it for a specific person.
-  if (/^\/api\/clients(\/|$)/.test(pathname) || /^\/api\/stages(\/|$)/.test(pathname)) {
+  //
+  // /api/dashboard/pipeline-v2 is HERE, not with the other dashboard routes,
+  // because of what it returns rather than what it is called: every client's
+  // name, their parent's name, their insurance provider and their assigned
+  // BCBA. The module map below files anything under /api/dashboard as
+  // "dashboard", so this endpoint was never covered by the role gate at all --
+  // a hiring_manager or an interviewer, refused by /api/clients precisely so
+  // they cannot see a child's PHI, got the whole client list from it with a
+  // 200. Verified against a running server before it was changed: /api/clients
+  // answered 403 and this answered 200 with the families in it.
+  if (/^\/api\/clients(\/|$)/.test(pathname) || /^\/api\/stages(\/|$)/.test(pathname)
+      || /^\/api\/dashboard\/pipeline-v2(\/|$)/.test(pathname)) {
     if (!canAccessClients(user) && !moduleGranted(user, "pipeline")) {
       json(res, 403, { error: "Not permitted to access client records" });
       return true;
@@ -5493,6 +5556,62 @@ async function handle(req, res, pathname, method, query = {}) {
     }
 
     // ---------- CLIENTS ----------
+    // Which birthdays on file might have been typed the wrong way round?
+    //
+    // <input type="date"> renders in the BROWSER's locale, so on a day-first
+    // browser this CRM asked for DD/MM/YYYY while everybody here reads dates
+    // month-first. The field is month-first now, but every birthday entered
+    // before that may have its month and day swapped -- and a transposed
+    // birthday is invisible: it saves cleanly and looks plausible on every
+    // screen afterwards.
+    //
+    // READ ONLY. It changes nothing and guesses nothing: it cannot know which
+    // reading is right, only which records are capable of being wrong. That is
+    // the useful list, because everything NOT on it is provably correct.
+    //
+    // A birthday is ambiguous only when swapping produces a DIFFERENT, REAL
+    // date: a day above 12 cannot be a month, and 03/03 swaps to itself. So a
+    // record with day 25 is certain, and only the genuinely two-way ones are
+    // reported.
+    if (pathname === "/api/clients/dob-check" && method === "GET") {
+      const rows = await dbAll(
+        "SELECT id, child_name, dob, stage, submitted_at FROM clients ORDER BY child_name"
+      );
+      const MONTHS = ["January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"];
+      const words = (y, m, d) => `${MONTHS[m - 1]} ${d}, ${y}`;
+
+      let withDob = 0, missing = 0, certain = 0;
+      const ambiguous = [];
+      for (const r of rows) {
+        const iso = String(r.dob || "").slice(0, 10);
+        const mm = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!mm) { missing++; continue; }
+        withDob++;
+        const y = Number(mm[1]), m = Number(mm[2]), d = Number(mm[3]);
+        if (d > 12 || d === m) { certain++; continue; }
+        // The swapped reading has to be a real date too.
+        const alt = new Date(Date.UTC(y, d - 1, m));
+        if (alt.getUTCMonth() !== d - 1 || alt.getUTCDate() !== m) { certain++; continue; }
+        ambiguous.push({
+          id: r.id,
+          child_name: r.child_name,
+          stored_iso: iso,
+          stored_reading: words(y, m, d),
+          swapped_reading: words(y, d, m),
+          stage: r.stage,
+          submitted_at: r.submitted_at || null,
+        });
+      }
+      return json(res, 200, {
+        total_clients: rows.length,
+        with_dob: withDob,
+        no_dob: missing,
+        unambiguous: certain,
+        ambiguous,
+      });
+    }
+
     if (pathname === "/api/clients" && method === "GET") {
       const clients = await dbAll("SELECT * FROM clients ORDER BY submitted_at DESC");
       return json(res, 200, clients.map((c) => authAlerts.sanitizeClientForRole(user, c)));
@@ -6401,13 +6520,30 @@ async function handle(req, res, pathname, method, query = {}) {
     }
 
 if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
-      const clients = await dbAll(
-        "SELECT * FROM clients WHERE stage NOT IN ('discharged','not_moving_forward') ORDER BY submitted_at DESC"
-      );
+      // DISCHARGED AND NOT-MOVING-FORWARD CLIENTS ARE INCLUDED, flagged rather
+      // than filtered out in SQL.
+      //
+      // They used to be excluded here, which had two consequences nobody could
+      // see from the screen. This board has no discharged view of its own -- the
+      // one that exists lives on the older #/pipeline board, which was dropped
+      // from the sidebar when this became the default -- so a deactivated
+      // client was not merely hidden, they were absent from the data and
+      // unreachable from the Clients section entirely. And searching could
+      // never find them, however the search was written.
+      //
+      // Including them is safe for the board itself: computeMilestoneView
+      // already returns milestone null for both stages (it always did), and the
+      // columns are built by matching a milestone key, so a client with none
+      // lands in no column. Nothing about the board changes.
+      const clients = await dbAll("SELECT * FROM clients ORDER BY submitted_at DESC");
       const shaped = clients.map((c) => ({
         id: c.id,
         child_name: c.child_name,
         parent_name: c.parent_name,
+        // The stage itself, so a deactivated client can say WHICH kind they
+        // are: discharged and not-moving-forward mean very different things.
+        stage: c.stage,
+        inactive: c.stage === "discharged" || c.stage === "not_moving_forward",
         insurance_provider: c.insurance_provider,
         service_location: c.service_location,
         assigned_bcba_name: c.assigned_bcba_name,
@@ -7100,7 +7236,8 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       //    never returned to them).
       //  - anyone without client access is refused outright.
       if (canSeeAllMessages(user)) {
-        return json(res, 200, await dbAll("SELECT * FROM notifications_log ORDER BY sent_at DESC LIMIT 100"));
+        const all = await dbAll("SELECT * FROM notifications_log ORDER BY sent_at DESC LIMIT 100");
+        return json(res, 200, all.map(shapeNotificationForDisplay));
       }
       if (!canAccessClients(user)) {
         return json(res, 403, { error: "Not permitted to view the message outbox" });
@@ -7112,7 +7249,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         `SELECT * FROM notifications_log WHERE client_id IN (${placeholders}) ORDER BY sent_at DESC LIMIT 100`,
         ids
       );
-      return json(res, 200, rows);
+      return json(res, 200, rows.map(shapeNotificationForDisplay));
     }
 
     // Manually (re)send the Benefits & Eligibility Check for a client -- used
@@ -8073,6 +8210,8 @@ const PUBLIC_FILES = new Set([
   // window.__renderRethinkMatch global never defines, and #/rethink-clients
   // silently falls back to the dashboard -- which is exactly what happened.
   "/rethink-match-frontend.js",
+  "/rethink-staff-frontend.js",
+  "/dob-check-frontend.js",
   // Grant Finder. Same trap as the line above: leave it off and #/grants falls
   // back to the dashboard with no error anywhere.
   "/grants-frontend.js",
@@ -8186,6 +8325,7 @@ const screener = require("./screener")({
 // ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
 const hr = require("./hr")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR, moduleGranted,
+  redactSecretLinks,
   onCompletion: (...a) => completions.record(...a),
   // New-hire employment packet (SignNow). Passed in rather than reimplemented so
   // there is one SignNow client, one token cache, and one place that knows how
@@ -8204,6 +8344,13 @@ const pto = require("./pto")({
 // ===== BILLABLE add-on: per-BCBA monthly requirements + the monthly email =====
 const billable = require("./billable")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, readBody, json,
+  // BILLABLE hours only, and deliberately a different source from the one
+  // supervision and payroll read. verified_hours counts every delivered,
+  // verified session; this counts only the ones Rethink calls billable. The
+  // two must not be merged -- an hour can be genuinely worked, count towards
+  // supervision, and not be billable.
+  rethinkBillableWeeksForMonth: (employeeId, month) => rethink.billableWeeksForMonth(employeeId, month),
+  rethinkBillableForWeek: (employeeId, day) => rethink.billableForWeek(employeeId, day),
 });
 const clientForms = require("./client-forms")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
@@ -8214,6 +8361,8 @@ const clientForms = require("./client-forms")({
 });
 const ot = require("./ot")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
+  // One redaction rule for every screen that renders a stored email body.
+  redactSecretLinks,
 });
 // ===== EMPLOYEE ATTENDANCE MANAGEMENT add-on: points engine, discipline,
 // bonus cycles, policy editor, attendance emails, historical import. Reuses the
@@ -8268,6 +8417,10 @@ const supervision = require("./supervision")({
   // Returns {} until then, so the tracker keeps using the uploaded figure.
   rethinkVerifiedHours: (month) => rethink.verifiedHoursByEmployee(month),
   rethinkVerifiedHoursForMonths: (employeeId, months) => rethink.verifiedHoursForMonths(employeeId, months),
+  // Active Rethink providers no CRM employee claims -- the tracker shows them
+  // so an unlinked RBT is a visible gap rather than an invisible one.
+  rethinkUnmatchedProviders: (month) => rethink.unmatchedProvidersForMonth(month),
+  rethinkAdoptProvider: (staffId, employeeId) => rethink.adoptProviderRows(staffId, employeeId),
 });
 // ===== RETHINK INTEGRATION: the one place that talks to the Rethink API.
 // Owns /api/rethink/*. Supplies verified monthly service hours to the
@@ -8390,6 +8543,11 @@ const bcbaDashboard = require("./bcba-dashboard")({
   // Read-only, unstored: see the note on fetchAppointments in rethink.js.
   fetchAppointments: (from, to) => rethink.fetchAppointments(from, to),
   verifiedHoursForMonths: (empId, months) => rethink.verifiedHoursForMonths(empId, months),
+  // BILLABLE hours for a week -- a different figure from the line above, and
+  // deliberately so. verifiedHoursForMonths is the supervision and payroll
+  // number and counts every delivered, verified session; this counts only the
+  // ones Rethink classifies as billable.
+  billableForWeek: (empId, day) => rethink.billableForWeek(empId, day),
   // The RBT Supervision tracker's own month computation, not a second copy of
   // it: the worked-hours denominator has a precedence rule (Rethink verified
   // hours, else the uploaded payroll figure) that must exist in one place.

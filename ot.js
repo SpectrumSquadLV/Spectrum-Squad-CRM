@@ -507,7 +507,12 @@ module.exports = function initOt(ctx) {
       const rows = await dbAll(
         "SELECT id, client_id, type, recipient, subject, body, sent_at, delivered FROM notifications_log WHERE type LIKE 'ot%' ORDER BY sent_at DESC LIMIT 200"
       );
-      return (json(res, 200, rows), true);
+      // Magic links are stripped from what is DISPLAYED. An OT email can carry
+      // a document-upload or scheduling link that opens as the family it was
+      // sent to; the stored body keeps the real one so their own copy still
+      // works. See redactSecretLinks in server.js.
+      const redact = ctx.redactSecretLinks || ((x) => x);
+      return (json(res, 200, rows.map((r) => ({ ...r, body: redact(r.body) }))), true);
     }
 
     // OT client detail (shared demographics + OT record + docs + history).

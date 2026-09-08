@@ -39,6 +39,12 @@ const PROBES = [
   "/api/staff",
   "/api/staff-tasks",
   "/api/clients",
+  // Returns every client's name, their parent's name, their insurance and
+  // their BCBA -- the same PHI as /api/clients, under a /api/dashboard path
+  // that the module map filed as "dashboard", so the client-record role gate
+  // never applied to it and HR-side roles read the whole list with a 200.
+  // Probed alongside /api/clients so the two can never drift apart again.
+  "/api/dashboard/pipeline-v2",
   "/api/admin/users",
   "/api/hr/employees",
   "/api/billable/summary",

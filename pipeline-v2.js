@@ -33,6 +33,8 @@
 
   let allClients = [];
   let filters = {};
+  let search = "";
+  let showInactive = false;
   let loaded = false;
   let mountObserver = null;
 
@@ -147,8 +149,30 @@
       (window.__parseServiceLocation(raw).extra === wanted);
   }
 
+  // ---- searching every client, active or not ------------------------------
+  // The board answers "where is everybody"; this answers "where is THIS child",
+  // which the board could not do at all -- a name is found by scanning columns,
+  // and a deactivated client was not in them to be scanned.
+  //
+  // Matching runs ONLY over fields already on the card. Searching a parent's
+  // email or phone would mean widening what this endpoint returns to every
+  // role that can open the board, and quietly increasing who can read contact
+  // details is not a side effect a search box should have.
+  function searchMatches(c, q) {
+    if (!q) return true;
+    const hay = [c.child_name, c.parent_name, c.insurance_provider, c.assigned_bcba_name,
+      c.assigned_intake_coordinator_name, c.service_location]
+      .filter(Boolean).join(" ").toLowerCase();
+    // Every word must appear somewhere, so "ruiz medicaid" narrows rather than
+    // widening the way an any-word match would.
+    return q.toLowerCase().split(/\s+/).filter(Boolean).every((t) => hay.indexOf(t) !== -1);
+  }
+
   function applyFilters(list) {
     return list.filter((c) => {
+      // Deactivated clients are in the data so search and the deactivated view
+      // can reach them; they are never in the milestone columns.
+      if (c.inactive) return false;
       if (filters.milestone && String(c.milestone) !== filters.milestone) return false;
       if (filters.blocker && c.blocker !== filters.blocker) return false;
       if (filters.priority && c.priority !== filters.priority) return false;
@@ -240,6 +264,65 @@
     );
   }
 
+  // The search row sits ABOVE the filters: it answers a different question and
+  // it ignores them. Somebody looking up a name should find that child whatever
+  // the board happens to be filtered to -- a search that silently obeyed a
+  // stale insurer filter would report "no such client" about a client who is
+  // right there.
+  function searchBarHTML() {
+    const n = allClients.filter((c) => c.inactive).length;
+    return (
+      '<div style="background:#fff;border:1px solid #e6e1d4;border-radius:12px;padding:12px 16px;margin-bottom:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;">' +
+        '<input id="pv2-search" type="search" placeholder="Search every client by name, parent, insurer or BCBA…" ' +
+          'value="' + esc(search) + '" style="flex:1;min-width:260px;padding:8px 11px;border:1px solid #e6e1d4;border-radius:9px;font-size:13.5px;" />' +
+        '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:#767488;white-space:nowrap;cursor:pointer;">' +
+          '<input type="checkbox" id="pv2-show-inactive"' + (showInactive ? " checked" : "") + " /> Show deactivated (" + n + ")</label>" +
+      "</div>"
+    );
+  }
+
+  // One row per client. Deactivated clients are GREYED rather than left out --
+  // "we have no record of that child" and "that child was discharged in March"
+  // are different answers, and only one of them is true.
+  function resultRow(c) {
+    const ms = MILESTONES.find((m) => m.key === c.milestone);
+    const where = c.inactive ? (c.milestoneLabel || "Deactivated") : (ms ? ms.label : "—");
+    const dim = c.inactive ? "opacity:0.55;" : "";
+    return (
+      '<div data-pv2-open="' + c.id + '" style="' + dim + 'display:flex;gap:12px;align-items:center;justify-content:space-between;' +
+        'background:#fff;border:1px solid #e6e1d4;border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;">' +
+        '<div style="min-width:180px;">' +
+          '<div style="font-weight:700;font-size:14px;">' + esc(c.child_name) +
+            (c.inactive ? ' <span style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#e5e7eb;color:#4b5563;vertical-align:middle;">' + esc(where.toUpperCase()) + "</span>" : "") +
+            (c.waitlisted ? ' <span style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#fef3c7;color:#92400e;vertical-align:middle;">WAITLIST</span>' : "") +
+          "</div>" +
+          '<div style="font-size:12px;color:#767488;margin-top:2px;">' + esc(c.parent_name || "—") +
+            (c.insurance_provider ? " · " + esc(String(c.insurance_provider).split(",")[0]) : "") + "</div>" +
+        "</div>" +
+        '<div style="font-size:12px;color:#767488;text-align:right;white-space:nowrap;">' +
+          (c.inactive ? "" : '<div>' + esc(where) + "</div>") +
+          '<div>' + esc(c.assigned_bcba_name || "No BCBA") + "</div>" +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  function wireSearch(mount) {
+    const box = mount.querySelector("#pv2-search");
+    if (box) {
+      box.addEventListener("input", () => {
+        search = box.value;
+        render();
+        // Re-render replaces the input, so the caret has to be put back or
+        // typing a second character moves focus away from the box.
+        const again = document.getElementById("pv2-search");
+        if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+      });
+    }
+    const chk = mount.querySelector("#pv2-show-inactive");
+    if (chk) chk.addEventListener("change", () => { showInactive = chk.checked; render(); });
+  }
+
   function wireFilters(mount) {
     const map = { milestone: "pv2-f-milestone", blocker: "pv2-f-blocker", priority: "pv2-f-priority", insurance: "pv2-f-insurance", bcba: "pv2-f-bcba", service: "pv2-f-service", days: "pv2-f-days", waitlist: "pv2-f-waitlist" };
     Object.keys(map).forEach((key) => {
@@ -312,16 +395,53 @@
       );
     }).join("");
 
+    // A search spans EVERY client -- active and deactivated -- and replaces the
+    // board while it is running. Showing matches inside milestone columns would
+    // hide the deactivated ones all over again, since they belong to no column.
+    const q = search.trim();
+    const hits = q ? allClients.filter((c) => searchMatches(c, q)) : [];
+    const liveHits = hits.filter((c) => !c.inactive);
+    const goneHits = hits.filter((c) => c.inactive);
+
+    let body;
+    if (q) {
+      body =
+        '<div style="font-size:13px;color:#767488;margin:0 0 10px;">' +
+          (hits.length
+            ? hits.length + " client" + (hits.length === 1 ? "" : "s") + " matching “" + esc(q) + "”" +
+              (goneHits.length ? " — including " + goneHits.length + " deactivated" : "")
+            : "No client matches “" + esc(q) + "”. Every client is searched, active and deactivated, by name, parent, insurer and BCBA.") +
+        "</div>" +
+        liveHits.map(resultRow).join("") +
+        (goneHits.length
+          ? '<div style="font-size:12px;font-weight:700;color:#767488;text-transform:uppercase;margin:14px 0 7px;">Deactivated</div>' +
+            goneHits.map(resultRow).join("")
+          : "");
+    } else {
+      const gone = showInactive ? allClients.filter((c) => c.inactive) : [];
+      body =
+        '<div class="pv2-board">' + columns + "</div>" +
+        (showInactive
+          ? '<div style="margin-top:22px;">' +
+              '<h2 style="font-size:16px;margin:0 0 4px;font-weight:700;color:#1b2a6b;">Deactivated clients (' + gone.length + ")</h2>" +
+              '<p style="margin:0 0 12px;color:#767488;font-size:13px;">Discharged and not-moving-forward clients. They are kept, never deleted — open one to read the record.</p>' +
+              (gone.length ? gone.map(resultRow).join("") : '<div style="font-size:13px;color:#767488;">No deactivated clients.</div>') +
+            "</div>"
+          : "");
+    }
+
     mount.innerHTML =
       '<div style="padding:24px 28px 60px;">' +
         '<h1 style="font-size:24px;margin:0 0 4px;font-weight:700;color:#1b2a6b;">Client pipeline</h1>' +
         '<p style="margin:0 0 18px;color:#767488;font-size:14px;">Milestone view with progress, blockers, and next actions. Check off an item to mark it done, or click a card to open the full client record.</p>' +
-        filterBarHTML() +
-        '<div class="pv2-board">' + columns + "</div>" +
+        searchBarHTML() +
+        (q ? "" : filterBarHTML()) +
+        body +
       "</div>";
     mount.dataset.pv2 = "1";
 
-    wireFilters(mount);
+    wireSearch(mount);
+    if (!q) wireFilters(mount);
     wireChecklist(mount);
     mount.querySelectorAll("[data-pv2-open]").forEach((card) => {
       card.addEventListener("click", () => {

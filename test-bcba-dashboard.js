@@ -59,6 +59,9 @@ function makeCtx(opts) {
       canAccessClients: (u) => ["owner", "super_admin", "admin", "intake", "clinical", "billing", "scheduling"].includes(u.role),
       fetchAppointments: opts.fetchAppointments || (async () => ({ ok: true, rows: [] })),
       verifiedHoursForMonths: opts.verifiedHoursForMonths || (async () => ({})),
+      // Billable hours for a week -- a DIFFERENT source from the line above,
+      // which is the supervision and payroll figure.
+      billableForWeek: opts.billableForWeek || (async () => null),
       supervisionMonth: opts.supervisionMonth || (async () => ({ month: "2026-09", employees: [], min_pct: 5 })),
     },
   };
@@ -91,8 +94,12 @@ check("THE SCHEDULE IS NEVER WRITTEN -- no insert or update touches an appointme
   !/INSERT INTO .*appointment|UPDATE .*appointment/i.test(SRC));
 check("nor is any appointment stored in a table of its own",
   !/CREATE TABLE .*appointment/i.test(SRC));
-check("billable comes from the existing requirement, not a new one",
-  /monthly_billable_target/.test(SRC) && !/CREATE TABLE .*billable/i.test(SRC));
+check("billable reads the weekly requirement off the existing staff record",
+  /weekly_billable_target/.test(SRC) && !/CREATE TABLE .*billable/i.test(SRC));
+// The whole risk in making billable hours their own figure is that it quietly
+// becomes the supervision one. The panel must not read verified hours at all.
+check("the billable panel does not read the supervision hours figure",
+  !/billableFor[\s\S]{0,900}verifiedHoursForMonths/.test(SRC));
 check("supervision figures are NOT recomputed here",
   /supervisionMonth/.test(SRC) && !/BACB_MIN_PCT|function supHours/.test(SRC));
 check("tasks come from staff_tasks", /FROM staff_tasks/.test(SRC));
@@ -492,38 +499,52 @@ const R = (n, b, ins, s, e, tp, tx, an) => `| ${n} | ${b || ""} | ${ins || ""} |
   section("Billable says what it does not know");
   {
     const { mod } = load({
-      responses: [[/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 10, name: "W", email: "w@x.com", monthly_billable_target: 90 }],
+      responses: [[/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 10, name: "W", email: "w@x.com", weekly_billable_target: 25 }],
                   [/FROM clients/, []]],
-      verifiedHoursForMonths: async () => ({}),
+      billableForWeek: async () => null,
     });
     const res = {};
     await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
     const b = res.payload.summary.billable;
     check("UNSYNCED HOURS ARE NOT REPORTED AS ZERO", b.available === false && b.completed === undefined, b);
     check("and the reason is given", /not available yet/.test(b.note || ""), b);
-    check("the requirement is still shown", b.required === 90, b);
+    check("the requirement is still shown", b.required === 25, b);
   }
   {
     const { mod } = load({
-      responses: [[/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 10, name: "W", email: "w@x.com", monthly_billable_target: 90 }],
+      responses: [[/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 10, name: "W", email: "w@x.com", weekly_billable_target: 25 }],
                   [/FROM clients/, []]],
-      verifiedHoursForMonths: async () => ({ [new Date().toISOString().slice(0, 7)]: 45 }),
+      // 12 billable, 6 non-billable, 3 unlabelled. Only the 12 may be counted.
+      billableForWeek: async () => ({
+        week_start: "2026-08-03", week_end: "2026-08-09",
+        billable: 12, nonbillable: 6, unclassified: 3, billable_appointments: 4,
+      }),
     });
     const res = {};
     await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
     const b = res.payload.summary.billable;
     check("a real figure is reported with its percentage",
-      b.available === true && b.completed === 45 && b.required === 90 && b.percent === 50 && b.remaining === 45, b);
+      b.available === true && b.completed === 12 && b.required === 25 && b.percent === 48 && b.remaining === 13, b);
+    check("non-billable hours are not counted towards the requirement", b.completed !== 18, b);
+    check("unlabelled hours are not counted towards it either", b.completed !== 15 && b.completed !== 21, b);
+    check("but they are reported rather than hidden",
+      b.nonbillable === 6 && b.unclassified === 3, b);
+    check("and the week it covers is named", b.week_start === "2026-08-03" && b.week_end === "2026-08-09", b);
   }
   {
     const { mod } = load({
-      responses: [[/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 10, name: "W", email: "w@x.com", monthly_billable_target: null }],
+      responses: [[/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 10, name: "W", email: "w@x.com", weekly_billable_target: null, monthly_billable_target: 90 }],
                   [/FROM clients/, []]],
     });
     const res = {};
     await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
-    check("no requirement set is said plainly, not shown as 0%",
-      res.payload.summary.billable.available === false && /No monthly billable requirement/.test(res.payload.summary.billable.note));
+    check("no weekly requirement set is said plainly, not shown as 0%",
+      res.payload.summary.billable.available === false && /No weekly billable requirement/.test(res.payload.summary.billable.note));
+    // A retired monthly figure is neither used nor silently converted -- it is
+    // named, so the person is not left looking like they have no requirement.
+    check("an old monthly figure is reported, not converted into a weekly one",
+      /old monthly figure was 90/.test(res.payload.summary.billable.note || ""),
+      res.payload.summary.billable.note);
   }
 
   // ============================================================== the caseload

@@ -34,6 +34,10 @@ module.exports = function initBcbaDashboard(ctx) {
   const {
     dbGet, dbAll, dbRun, nowISO, readBody, json,
     canAccessClients, fetchAppointments, verifiedHoursForMonths, supervisionMonth,
+    // Billable hours for a week, from Rethink's own billable classification.
+    // Separate from verifiedHoursForMonths above, which is the supervision and
+    // payroll figure and must not move when the billable rule changes.
+    billableForWeek,
   } = ctx;
 
   // ---- who may see what ---------------------------------------------------
@@ -300,32 +304,52 @@ module.exports = function initBcbaDashboard(ctx) {
   // ---- billable -----------------------------------------------------------
   // Straight from the existing system: the target lives on hr_employees and the
   // actual is Rethink verified hours. Nothing is computed a second way here.
+  // THIS WEEK's billable hours against a WEEKLY requirement.
+  //
+  // Two things changed here and they are separate. The requirement is weekly
+  // rather than monthly; and the hours counted are BILLABLE hours, not the
+  // verified-hours figure that supervision and payroll read. That second one
+  // matters most: verified hours include sessions that were genuinely
+  // delivered but are not billable, so this panel was counting non-billable
+  // time towards a billable requirement.
+  //
+  // The supervision figure is untouched. An hour can be delivered, verified,
+  // count towards supervision, and not be billable -- the two rules are
+  // deliberately not merged.
   async function billableFor(bcba) {
-    const month = today().slice(0, 7);
     const emp = await employeeFor(bcba);
-    if (!emp) return { month, available: false, note: "No staff record matched this BCBA, so the monthly target could not be read." };
-    if (emp.monthly_billable_target == null || emp.monthly_billable_target === "") {
-      return { month, available: false, employee_id: emp.id, note: "No monthly billable requirement is set for this BCBA." };
-    }
-    const required = num(emp.monthly_billable_target);
-    let completed = null;
-    if (typeof verifiedHoursForMonths === "function") {
-      const map = await verifiedHoursForMonths(emp.id, [month]).catch(() => ({}));
-      if (Object.prototype.hasOwnProperty.call(map || {}, month)) completed = num(map[month]);
-    }
-    if (completed === null) {
-      // Said plainly rather than shown as zero. "0 of 90 hours" reads as a
-      // performance problem; the truth is that the figure is not in yet.
+    if (!emp) return { available: false, note: "No staff record matched this BCBA, so the weekly target could not be read." };
+    if (emp.weekly_billable_target == null || emp.weekly_billable_target === "") {
       return {
-        month, available: false, required, employee_id: emp.id,
-        note: "Verified hours for this month are not available yet from Rethink.",
+        available: false, employee_id: emp.id,
+        note: emp.monthly_billable_target != null && emp.monthly_billable_target !== ""
+          ? `No weekly billable requirement is set for this BCBA. Their old monthly figure was ${round1(num(emp.monthly_billable_target))} hours — set a weekly one to replace it.`
+          : "No weekly billable requirement is set for this BCBA.",
       };
     }
-    const remaining = Math.max(0, round1(required - completed));
+    const required = num(emp.weekly_billable_target);
+    const wk = typeof billableForWeek === "function"
+      ? await billableForWeek(emp.id, today()).catch(() => null)
+      : null;
+    if (!wk) {
+      // Said plainly rather than shown as zero. "0 of 25 hours" reads as a
+      // performance problem; the truth is that the figure is not in yet.
+      return {
+        available: false, required: round1(required), employee_id: emp.id,
+        note: "Billable hours for this week are not available yet from Rethink.",
+      };
+    }
+    const completed = round1(wk.billable);
     return {
-      month, available: true, employee_id: emp.id,
-      required: round1(required), completed: round1(completed), remaining,
+      available: true, employee_id: emp.id,
+      week_start: wk.week_start, week_end: wk.week_end,
+      required: round1(required), completed,
+      remaining: Math.max(0, round1(required - completed)),
       percent: required > 0 ? Math.round((completed / required) * 100) : null,
+      // Reported, never folded in: an hour Rethink did not label is not
+      // quietly counted as billable.
+      unclassified: round1(wk.unclassified),
+      nonbillable: round1(wk.nonbillable),
     };
   }
 
@@ -333,13 +357,13 @@ module.exports = function initBcbaDashboard(ctx) {
     const email = lower(bcba.email), name = lower(bcba.name);
     if (email) {
       const byEmail = await dbGet(
-        "SELECT id, name, email, monthly_billable_target, rethink_id FROM hr_employees WHERE LOWER(TRIM(email)) = ? LIMIT 1",
+        "SELECT id, name, email, weekly_billable_target, monthly_billable_target, rethink_id FROM hr_employees WHERE LOWER(TRIM(email)) = ? LIMIT 1",
         [email]).catch(() => null);
       if (byEmail) return byEmail;
     }
     if (name) {
       const rows = await dbAll(
-        "SELECT id, name, email, monthly_billable_target, rethink_id FROM hr_employees WHERE LOWER(TRIM(name)) = ?",
+        "SELECT id, name, email, weekly_billable_target, monthly_billable_target, rethink_id FROM hr_employees WHERE LOWER(TRIM(name)) = ?",
         [name]).catch(() => []);
       // Two employees with the same name is not something to resolve by
       // picking one -- the wrong billable target on a performance panel is a

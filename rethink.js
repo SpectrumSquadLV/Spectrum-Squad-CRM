@@ -177,10 +177,19 @@ module.exports = function initRethink(ctx) {
       staff_name_hint TEXT,
       verified_hours NUMERIC DEFAULT 0,
       appointment_count INTEGER DEFAULT 0,
+      appointments_seen INTEGER DEFAULT 0,
       provisional BOOLEAN NOT NULL DEFAULT TRUE,
       computed_at TEXT,
       UNIQUE (rethink_staff_id, month)
     )`).catch((e) => console.error("rethink_provider_month initTables:", e.message));
+    // appointment_count is sessions that COUNTED; appointments_seen is every
+    // session the provider appears on. The two differ for exactly the provider
+    // this feature exists for: one who is working but whose sessions have not
+    // been verified, and who therefore has hours of nothing.
+    await dbRun("ALTER TABLE rethink_provider_month ADD COLUMN IF NOT EXISTS appointments_seen INTEGER DEFAULT 0")
+      .catch((e) => console.error("appointments_seen column:", e.message));
+    await dbRun("ALTER TABLE rethink_provider_month ADD COLUMN IF NOT EXISTS staff_name_hint TEXT")
+      .catch((e) => console.error("staff_name_hint column:", e.message));
 
     // Distinct values seen in the two fields that drive the filter. This is the
     // whole point of the confirm-before-finalise design: it shows the operator
@@ -321,6 +330,48 @@ module.exports = function initRethink(ctx) {
       possible_closed_crm_name TEXT,
       scanned_at TEXT
     )`).catch((e) => console.error("rethink_unmatched_clients initTables:", e.message));
+
+    // Providers seen delivering sessions in Rethink that no CRM staff record
+    // claims. Rebuilt wholesale by every scan, so somebody linked since the
+    // last run drops off without anybody having to dismiss them.
+    await dbRun(`CREATE TABLE IF NOT EXISTS rethink_unmatched_staff (
+      id SERIAL PRIMARY KEY,
+      rethink_staff_id TEXT NOT NULL UNIQUE,
+      name_hint TEXT,
+      appointments INTEGER DEFAULT 0,
+      hours NUMERIC DEFAULT 0,
+      distinct_clients INTEGER DEFAULT 0,
+      first_seen TEXT,
+      last_seen TEXT,
+      scanned_at TEXT
+    )`).catch((e) => console.error("rethink_unmatched_staff initTables:", e.message));
+    await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS last_staff_scan_at TEXT").catch(() => {});
+
+    // PER DAY, not per month, and that is the whole point of it.
+    //
+    // The BCBA billable requirement is WEEKLY, and a week straddles month
+    // boundaries -- the week of 29 September is four days of September and
+    // three of October. Monthly buckets cannot answer a weekly question without
+    // either double-counting the boundary week on re-sync or wiping half of it.
+    // A day belongs to exactly one month, so days can be replaced a month at a
+    // time and summed into whatever period is being asked about.
+    //
+    // billable_hours is kept SEPARATE from the supervision figure on purpose.
+    // Paid hours and billable hours are not the same thing, and the supervision
+    // denominator and payroll must not move because the billable rule changed.
+    await dbRun(`CREATE TABLE IF NOT EXISTS rethink_provider_day (
+      id SERIAL PRIMARY KEY,
+      rethink_staff_id TEXT NOT NULL,
+      day TEXT NOT NULL,
+      month TEXT NOT NULL,
+      employee_id INTEGER,
+      billable_hours NUMERIC DEFAULT 0,
+      nonbillable_hours NUMERIC DEFAULT 0,
+      unclassified_hours NUMERIC DEFAULT 0,
+      billable_appointments INTEGER DEFAULT 0,
+      computed_at TEXT,
+      UNIQUE (rethink_staff_id, day)
+    )`).catch((e) => console.error("rethink_provider_day initTables:", e.message));
 
     // Audit of every link an owner approved: who, when, and what it replaced.
     await dbRun(`CREATE TABLE IF NOT EXISTS rethink_client_link_log (
@@ -1304,6 +1355,66 @@ module.exports = function initRethink(ctx) {
   const PROVISIONAL_COMPLETED = /^(completed|complete|finalized|finalised|rendered)$/;
   const PROVISIONAL_VERIFIED = /^(true|verified|yes|y|1|approved|signed)$/;
 
+  // The appointment payload's provider-name field is not in any fixture in
+  // this repo, so this reads whichever plausible key is ACTUALLY present
+  // rather than assuming one. A provider with no name in the payload keeps a
+  // null hint and is shown by staff id -- never under a made-up name.
+  //
+  // Shared by the supervision sync and the staff scan deliberately: two probes
+  // that drifted apart would put one name on the tracker and a different one
+  // on the record created from it.
+  const STAFF_NAME_KEYS = ["staffName", "staffFullName", "providerName", "therapistName", "employeeName", "staff", "provider"];
+  function nameHint(row) {
+    for (const k of STAFF_NAME_KEYS) {
+      const v = row ? row[k] : null;
+      if (typeof v === "string" && v.trim()) return v.trim().slice(0, 120);
+      if (v && typeof v === "object") {
+        const n = v.name || v.fullName || [v.firstName, v.lastName].filter(Boolean).join(" ");
+        if (typeof n === "string" && n.trim()) return n.trim().slice(0, 120);
+      }
+    }
+    const first = row && (row.staffFirstName || row.providerFirstName);
+    const last = row && (row.staffLastName || row.providerLastName);
+    const joined = [first, last].filter((x) => typeof x === "string" && x.trim()).join(" ").trim();
+    return joined ? joined.slice(0, 120) : null;
+  }
+
+  // Billable or not, as RETHINK classifies it -- not as a list of CPT codes
+  // maintained here, which would go stale the first time a code was added.
+  //
+  // The rule itself is hr.js's classifyBillable(), reused rather than rewritten:
+  // it is the same question the timecard split already answers, and two rules
+  // that disagreed would put one number on a timecard and a different one on
+  // the same person's billable requirement. Its semantics matter here --
+  // "Non-Billable" is tested BEFORE "Billable" because the second matches
+  // inside the first, and anything it cannot read stays NULL rather than being
+  // quietly counted as billable.
+  //
+  // The field the API carries this in is not in any fixture in this repo, so
+  // the plausible keys are probed and the values are recorded in the observed
+  // panel, where an admin can see what Rethink actually sends.
+  const BILLABLE_KEYS = ["billableType", "appointmentType", "apptType", "billingType", "serviceType", "appointmentCategory"];
+  function billableRaw(row) {
+    for (const k of BILLABLE_KEYS) {
+      const v = row ? row[k] : null;
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+    // A plain boolean is just as likely as a labelled string.
+    for (const k of ["isBillable", "billable"]) {
+      const v = row ? row[k] : null;
+      if (v === true) return "Billable";
+      if (v === false) return "Non-Billable";
+    }
+    return null;
+  }
+  function classifyBillable(raw) {
+    const t = String(raw == null ? "" : raw).trim();
+    if (!t) return null;
+    if (/non[-\s_]*billable/i.test(t)) return false;
+    if (/billable/i.test(t)) return true;
+    return null;
+  }
+
   function decide(row, cfg) {
     const status = norm(row.appointmentStatus);
     const staffVer = norm(row.staffVerification);
@@ -1317,6 +1428,265 @@ module.exports = function initRethink(ctx) {
       : PROVISIONAL_VERIFIED.test(staffVer));
 
     return { statusOk, verifiedOk, counts: statusOk && verifiedOk };
+  }
+
+  // ======================= STAFF SCAN ========================
+  // "Scan Rethink for employees and put them in the CRM."
+  //
+  // BUILT ON APPOINTMENTS, not on a staff endpoint, because this account does
+  // not have one. The activity scan next door already records the finding in
+  // production terms: Appointments is the one endpoint this account can read.
+  // A staff list is therefore derived from who actually worked, which has the
+  // pleasant property of only ever finding people who are really delivering
+  // sessions -- an employee list from a directory would include leavers and
+  // people who never see a client.
+  //
+  // NOBODY IS CREATED HERE. The scan proposes; a person presses the button.
+  // That is the same rule the client matcher holds itself to, and it matters
+  // more for staff, not less: an hr_employees row is the anchor for documents,
+  // attendance, PTO, benefits and termination, so one invented from a schedule
+  // is a personnel file for somebody who may already have one under a
+  // different spelling.
+  const STAFF_SCAN_DAYS = 90;
+
+  async function scanStaffFromAppointments(opts = {}) {
+    if (!client.configured()) {
+      return { ok: false, kind: "config", error: "Rethink credentials are not configured on the server." };
+    }
+    const days = Math.max(1, Number(opts.days) || STAFF_SCAN_DAYS);
+    const to = today();
+    const from = new Date(nowMs() - days * 86400000).toISOString().slice(0, 10);
+
+    client.log("staff_scan_start", { endpoint: DWH_APPOINTMENTS, from, to, days });
+
+    let fetched;
+    try {
+      fetched = await client.dwhGetAllPages(DWH_APPOINTMENTS, {
+        From: from, To: to,
+        FilterByAppointmentDate: true,
+        IncludeDeleted: false,
+        IncludeCanceled: false,
+      }, { nowMs: nowMs(), pageSize: 500 });
+    } catch (e) {
+      client.log("sync_failed", {
+        kind: "staff_scan", endpoint: e.endpoint || DWH_APPOINTMENTS,
+        status: e.status, stage: e.stage, error: e.message,
+      });
+      return {
+        ok: false, kind: e.kind || "http", status: e.status || null, detail_in_server_logs: true,
+        error: e.safe || client.redact(e.message),
+      };
+    }
+
+    const rows = fetched.rows || [];
+    const warnings = [];
+    if (fetched.truncated) warnings.push(`Stopped at the page limit — the ${from}–${to} window may be incomplete.`);
+    if (!rows.length) {
+      return {
+        ok: false, kind: "empty",
+        error: `Rethink returned no appointments between ${from} and ${to}, so there is nobody to scan for. ` +
+          `Either no sessions were delivered in that window, or the account has lost the access it had.`,
+      };
+    }
+
+    // ---- who worked, and what we know about them ------------------------
+    const byStaff = new Map();
+    let skippedNoStaff = 0;
+    for (const row of rows) {
+      try {
+        const sid = String(row.staffId == null ? "" : row.staffId).trim();
+        if (!sid) { skippedNoStaff++; continue; }
+        const date = String(row.appointmentDate || "").slice(0, 10);
+        const cur = byStaff.get(sid) || {
+          rethink_staff_id: sid, name_hint: null, appointments: 0, hours: 0,
+          first_seen: null, last_seen: null, clients: new Set(),
+        };
+        cur.appointments += 1;
+        cur.hours += num(row.actualDurationHours);
+        if (!cur.name_hint) cur.name_hint = nameHint(row);
+        if (date) {
+          if (!cur.first_seen || date < cur.first_seen) cur.first_seen = date;
+          if (!cur.last_seen || date > cur.last_seen) cur.last_seen = date;
+        }
+        const cid = String(row.clientId == null ? "" : row.clientId).trim();
+        if (cid) cur.clients.add(cid);
+        byStaff.set(sid, cur);
+      } catch (e) {
+        warnings.push(`A row could not be read: ${client.redact(e.message)}`);
+      }
+    }
+    if (skippedNoStaff) warnings.push(`${skippedNoStaff} appointment(s) had no staff id and were skipped.`);
+
+    const { byRethinkId } = await buildStaffMap();
+
+    // Replaced wholesale each scan, so somebody linked since the last run drops
+    // off without anyone having to dismiss them.
+    await dbRun("DELETE FROM rethink_unmatched_staff").catch(() => {});
+
+    let matched = 0, unmatched = 0, unnamed = 0;
+    for (const v of byStaff.values()) {
+      const emp = byRethinkId.get(v.rethink_staff_id) || null;
+      if (emp) { matched++; continue; }
+      unmatched++;
+      if (!v.name_hint) unnamed++;
+      await dbRun(
+        `INSERT INTO rethink_unmatched_staff
+           (rethink_staff_id, name_hint, appointments, hours, distinct_clients, first_seen, last_seen, scanned_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (rethink_staff_id) DO UPDATE SET
+           name_hint = EXCLUDED.name_hint, appointments = EXCLUDED.appointments,
+           hours = EXCLUDED.hours, distinct_clients = EXCLUDED.distinct_clients,
+           first_seen = EXCLUDED.first_seen, last_seen = EXCLUDED.last_seen,
+           scanned_at = EXCLUDED.scanned_at`,
+        [v.rethink_staff_id, v.name_hint, v.appointments, round2(v.hours), v.clients.size,
+         v.first_seen, v.last_seen, nowISO()]
+      ).catch((e) => warnings.push(`Could not record a provider: ${e.message}`));
+    }
+
+    // Said plainly rather than left for somebody to infer from blank cells. If
+    // this account's appointments carry no provider name, every unmatched
+    // person can only be shown by staff id, and creating a record from that
+    // means typing the name -- which is a different job from approving a list.
+    if (unnamed) {
+      warnings.push(
+        unnamed === unmatched
+          ? `Rethink sent no provider name on any of these appointments, so the ${unnamed} unmatched provider(s) can only be shown by staff id. You will need to type each name.`
+          : `${unnamed} of the ${unmatched} unmatched provider(s) had no name in the Rethink payload and can only be shown by staff id.`
+      );
+    }
+
+    await dbRun("UPDATE rethink_config SET last_staff_scan_at = ? WHERE id = 1", [nowISO()]).catch(() => {});
+    client.log("staff_scan_done", { seen: byStaff.size, matched, unmatched, unnamed });
+
+    return {
+      ok: true, from, to, days,
+      providers_seen: byStaff.size,
+      already_linked: matched,
+      needs_linking: unmatched,
+      without_a_name: unnamed,
+      appointments_read: rows.length,
+      warnings,
+    };
+  }
+
+  // The review screen: who Rethink knows that the CRM does not, and who the CRM
+  // knows that Rethink cannot reach.
+  async function staffMatchReview() {
+    const unmatched = await dbAll(
+      `SELECT rethink_staff_id, name_hint, appointments, hours, distinct_clients,
+              first_seen, last_seen, scanned_at
+         FROM rethink_unmatched_staff
+        ORDER BY appointments DESC, rethink_staff_id`
+    ).catch(() => []);
+
+    const employees = await dbAll(
+      `SELECT id, name, email, role_title, rethink_id, status
+         FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated'
+        ORDER BY name`
+    ).catch(() => []);
+
+    const cfg = await getConfig().catch(() => ({}));
+    return {
+      unmatched: unmatched.map((r) => ({
+        rethink_staff_id: String(r.rethink_staff_id),
+        name_hint: r.name_hint || null,
+        appointments: Number(r.appointments) || 0,
+        hours: num(r.hours),
+        distinct_clients: Number(r.distinct_clients) || 0,
+        first_seen: r.first_seen || null,
+        last_seen: r.last_seen || null,
+      })),
+      employees: employees.map((e) => ({
+        id: e.id, name: e.name, email: e.email || null,
+        role_title: e.role_title || null,
+        rethink_id: e.rethink_id || null,
+        linked: !!(e.rethink_id != null && String(e.rethink_id).trim() !== ""),
+      })),
+      last_scan_at: cfg.last_staff_scan_at || null,
+      configured: client.configured(),
+    };
+  }
+
+  // Create the CRM staff record for a provider Rethink knows about. A NAME is
+  // required and is never invented: a record called "Staff 41207" is worse
+  // than no record, because it looks like a person and cannot be recognised as
+  // anybody. Everything else about them -- role, documents, attendance -- is
+  // filled in afterwards by the people who know it.
+  async function createStaffFromRethink(input = {}) {
+    const sid = String(input.rethink_staff_id == null ? "" : input.rethink_staff_id).trim();
+    const name = String(input.name == null ? "" : input.name).trim();
+    if (!sid) return { ok: false, error: "A Rethink staff id is required." };
+    if (!name) return { ok: false, error: "A name is required — a staff record cannot be created from a staff id alone." };
+
+    const taken = await dbGet(
+      "SELECT id, name FROM hr_employees WHERE TRIM(COALESCE(rethink_id,'')) = ?", [sid]
+    ).catch(() => null);
+    if (taken) return { ok: false, error: `Rethink staff id ${sid} is already on ${taken.name}'s record.`, employee_id: taken.id };
+
+    // Somebody already on the roster under this name is a LINK, not a second
+    // personnel file. Refused rather than merged, because two people really can
+    // share a name and this is not the screen to decide that.
+    const sameName = await dbGet(
+      "SELECT id, name, rethink_id FROM hr_employees WHERE LOWER(TRIM(name)) = LOWER(?) AND COALESCE(status,'active') <> 'terminated'",
+      [name]
+    ).catch(() => null);
+    if (sameName) {
+      return {
+        ok: false, code: "name_exists", employee_id: sameName.id,
+        error: `${sameName.name} is already in the staff directory. Link that record to Rethink instead of creating a second one.`,
+      };
+    }
+
+    const email = String(input.email == null ? "" : input.email).trim() || null;
+    if (email) {
+      const byEmail = await dbGet("SELECT id, name FROM hr_employees WHERE LOWER(TRIM(email)) = LOWER(?)", [email]).catch(() => null);
+      if (byEmail) return { ok: false, code: "email_exists", employee_id: byEmail.id, error: `That email is already on ${byEmail.name}'s record.` };
+    }
+
+    const row = await dbGet(
+      `INSERT INTO hr_employees (name, email, role_title, rethink_id, status, hr_stage, created_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?) RETURNING id`,
+      [name, email, String(input.role_title || "").trim() || null, sid, "active", nowISO()]
+    );
+
+    // Hours already synced under that staff id belong to them from now on.
+    const adopted = await adoptProviderRows(sid, row.id).catch(() => ({ updated: 0 }));
+    await dbRun("DELETE FROM rethink_unmatched_staff WHERE rethink_staff_id = ?", [sid]).catch(() => {});
+    client.log("staff_created", { employee_id: row.id, rethink_staff_id: sid });
+
+    return { ok: true, employee_id: row.id, name, rethink_staff_id: sid, months_adopted: adopted.updated || 0 };
+  }
+
+  // Attach a scanned provider to somebody already on the roster.
+  async function linkStaffToEmployee(rethinkStaffId, employeeId, opts = {}) {
+    const sid = String(rethinkStaffId == null ? "" : rethinkStaffId).trim();
+    const empId = Number(employeeId);
+    if (!sid || !empId) return { ok: false, error: "A staff member and a Rethink staff id are both required." };
+
+    const emp = await dbGet("SELECT id, name, rethink_id, status FROM hr_employees WHERE id = ?", [empId]);
+    if (!emp) return { ok: false, error: "That staff member is not on file." };
+    if (String(emp.status || "active") === "terminated") {
+      return { ok: false, error: `${emp.name} is terminated. Reinstate the record before linking it to Rethink.` };
+    }
+    const taken = await dbGet(
+      "SELECT id, name FROM hr_employees WHERE TRIM(COALESCE(rethink_id,'')) = ? AND id <> ?", [sid, empId]
+    ).catch(() => null);
+    if (taken) return { ok: false, code: "taken", error: `Rethink staff id ${sid} is already on ${taken.name}'s record.` };
+
+    const current = String(emp.rethink_id == null ? "" : emp.rethink_id).trim();
+    if (current && current !== sid && !opts.replace) {
+      return { ok: false, code: "already_linked", current_rethink_id: current,
+        error: `${emp.name} is already linked to Rethink staff id ${current}. Confirm to replace it.` };
+    }
+
+    await dbRun("UPDATE hr_employees SET rethink_id = ? WHERE id = ?", [sid, empId]);
+    await dbRun("UPDATE hr_employees SET rethink_match_needed = FALSE WHERE id = ?", [empId]).catch(() => {});
+    const adopted = await adoptProviderRows(sid, empId).catch(() => ({ updated: 0 }));
+    await dbRun("DELETE FROM rethink_unmatched_staff WHERE rethink_staff_id = ?", [sid]).catch(() => {});
+    client.log("staff_linked", { employee_id: empId, rethink_staff_id: sid });
+
+    return { ok: true, employee_id: empId, name: emp.name, rethink_staff_id: sid,
+      replaced: current || null, months_adopted: adopted.updated || 0 };
   }
 
   // ======================= PROVIDER MATCHING =================
@@ -1418,6 +1788,13 @@ module.exports = function initRethink(ctx) {
 
     // ---- aggregate ------------------------------------------------------
     const perStaff = new Map();      // staffId -> { hours, count }
+    // Every staffId this month's appointments mention, whether or not any of
+    // their sessions counted. perStaff only ever holds providers with a
+    // completed, verified, positive-duration session -- so an active RBT whose
+    // whole month is still awaiting verification is absent from it entirely,
+    // and "which RBTs does Rethink know about" cannot be answered from it.
+    const seenStaff = new Map();     // staffId -> { name, appointments }
+    const perDay = new Map();        // `${staffId}|${day}` -> billable split for that day
     const observed = new Map();      // `${field}|${norm}` -> { field, raw, norm, n, hours }
     let counted = 0, skippedNoDuration = 0, skippedFuture = 0;
     const cutoff = today();
@@ -1441,6 +1818,16 @@ module.exports = function initRethink(ctx) {
         observe("staffVerification", row.staffVerification, hours);
         observe("clientVerification", row.clientVerification, hours);
 
+        // Recorded BEFORE the filter, so a provider is visible on the strength
+        // of having worked at all -- not only if their paperwork cleared.
+        const seenId = String(row.staffId == null ? "" : row.staffId).trim();
+        if (seenId) {
+          const seen = seenStaff.get(seenId) || { name: null, appointments: 0 };
+          seen.appointments += 1;
+          if (!seen.name) seen.name = nameHint(row);
+          seenStaff.set(seenId, seen);
+        }
+
         const verdict = decide(row, cfg);
         if (!verdict.counts) continue;
 
@@ -1456,6 +1843,25 @@ module.exports = function initRethink(ctx) {
         cur.hours += hours; cur.count += 1;
         perStaff.set(staffId, cur);
         counted++;
+
+        // ---- the BILLABLE split, kept apart from the figure above ----------
+        // Same delivered-and-verified sessions, bucketed by what Rethink calls
+        // them. Unclassified hours are held in their own bucket rather than
+        // being counted either way: an unlabelled hour silently treated as
+        // billable would inflate somebody's requirement figure.
+        const cls = classifyBillable(billableRaw(row));
+        const day = String(row.appointmentDate || "").slice(0, 10);
+        if (day) {
+          const dk = staffId + "|" + day;
+          const dcur = perDay.get(dk) || {
+            staffId, day, billable: 0, nonbillable: 0, unclassified: 0, billableAppointments: 0,
+          };
+          if (cls === true) { dcur.billable += hours; dcur.billableAppointments += 1; }
+          else if (cls === false) { dcur.nonbillable += hours; }
+          else { dcur.unclassified += hours; }
+          perDay.set(dk, dcur);
+        }
+        observe("billableClassification", billableRaw(row), hours);
       } catch (e) {
         warnings.push(`A row could not be read: ${client.redact(e.message)}`);
       }
@@ -1488,20 +1894,56 @@ module.exports = function initRethink(ctx) {
     const unmatchedIds = [];
     const provisional = !cfg.filter_confirmed;
 
-    for (const [staffId, agg] of perStaff.entries()) {
+    // Written for EVERY provider Rethink mentioned this month, not only the
+    // ones with countable hours. A row at zero hours is how an active RBT whose
+    // sessions are all still unverified stays visible instead of vanishing --
+    // and zero never displaces a real figure, because supervision.js only lets
+    // a POSITIVE Rethink value take over the denominator.
+    const allStaffIds = new Set([...seenStaff.keys(), ...perStaff.keys()]);
+    for (const staffId of allStaffIds) {
+      const agg = perStaff.get(staffId) || { hours: 0, count: 0 };
+      const seen = seenStaff.get(staffId) || { name: null, appointments: 0 };
       const emp = byRethinkId.get(staffId) || null;
       if (emp) matched++; else { unmatched++; unmatchedIds.push(staffId); }
 
       await dbRun(
         `INSERT INTO rethink_provider_month
-           (rethink_staff_id, month, employee_id, verified_hours, appointment_count, provisional, computed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+           (rethink_staff_id, month, employee_id, staff_name_hint, verified_hours, appointment_count, appointments_seen, provisional, computed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (rethink_staff_id, month) DO UPDATE SET
-           employee_id = EXCLUDED.employee_id, verified_hours = EXCLUDED.verified_hours,
-           appointment_count = EXCLUDED.appointment_count, provisional = EXCLUDED.provisional,
+           employee_id = EXCLUDED.employee_id,
+           staff_name_hint = COALESCE(EXCLUDED.staff_name_hint, rethink_provider_month.staff_name_hint),
+           verified_hours = EXCLUDED.verified_hours,
+           appointment_count = EXCLUDED.appointment_count,
+           appointments_seen = EXCLUDED.appointments_seen,
+           provisional = EXCLUDED.provisional,
            computed_at = EXCLUDED.computed_at`,
-        [staffId, month, emp ? emp.id : null, round2(agg.hours), agg.count, provisional, nowISO()]
+        [staffId, month, emp ? emp.id : null, seen.name, round2(agg.hours), agg.count, seen.appointments, provisional, nowISO()]
       ).catch((e) => warnings.push(`Could not store hours for a provider: ${e.message}`));
+    }
+
+    // ---- the per-day billable split -------------------------------------
+    // Replaced a month at a time, which is safe because a day belongs to
+    // exactly one month -- the property that lets a WEEK spanning two months be
+    // summed correctly from either side.
+    await dbRun("DELETE FROM rethink_provider_day WHERE month = ?", [month]).catch(() => {});
+    for (const d of perDay.values()) {
+      const emp = byRethinkId.get(d.staffId) || null;
+      await dbRun(
+        `INSERT INTO rethink_provider_day
+           (rethink_staff_id, day, month, employee_id, billable_hours, nonbillable_hours,
+            unclassified_hours, billable_appointments, computed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (rethink_staff_id, day) DO UPDATE SET
+           month = EXCLUDED.month, employee_id = EXCLUDED.employee_id,
+           billable_hours = EXCLUDED.billable_hours,
+           nonbillable_hours = EXCLUDED.nonbillable_hours,
+           unclassified_hours = EXCLUDED.unclassified_hours,
+           billable_appointments = EXCLUDED.billable_appointments,
+           computed_at = EXCLUDED.computed_at`,
+        [d.staffId, d.day, month, emp ? emp.id : null, round2(d.billable), round2(d.nonbillable),
+         round2(d.unclassified), d.billableAppointments, nowISO()]
+      ).catch((e) => warnings.push(`Could not store the billable split for a provider: ${e.message}`));
     }
 
     // ---- flag providers needing a match --------------------------------
@@ -2010,6 +2452,40 @@ module.exports = function initRethink(ctx) {
     }
 
     // ---- client matching (owner/admin only) ----------------------------
+    // ---- staff matching: scan Rethink for people, put them in the CRM ----
+    // Same rule as the client matcher: the scan proposes, a person approves.
+    if (pathname.startsWith("/api/rethink/staff-match")) {
+      if (!canMatch(user)) { json(res, 403, { error: "Owner or admin only." }); return true; }
+
+      if (pathname === "/api/rethink/staff-match" && method === "GET") {
+        json(res, 200, await staffMatchReview());
+        return true;
+      }
+
+      if (pathname === "/api/rethink/staff-match/scan" && method === "POST") {
+        const b = await readBody(req).catch(() => ({}));
+        const out = await scanStaffFromAppointments({ days: b.days });
+        json(res, out.ok ? 200 : 502, out);
+        return true;
+      }
+
+      if (pathname === "/api/rethink/staff-match/link" && method === "POST") {
+        const b = await readBody(req).catch(() => ({}));
+        const out = await linkStaffToEmployee(b.rethink_staff_id, b.employee_id, { replace: !!b.replace });
+        json(res, out.ok ? 200 : (out.code === "already_linked" || out.code === "taken" ? 409 : 400), out);
+        return true;
+      }
+
+      if (pathname === "/api/rethink/staff-match/create" && method === "POST") {
+        const b = await readBody(req).catch(() => ({}));
+        const out = await createStaffFromRethink(b);
+        json(res, out.ok ? 201 : (out.code === "name_exists" || out.code === "email_exists" ? 409 : 400), out);
+        return true;
+      }
+      json(res, 404, { error: "Unknown staff-match route." });
+      return true;
+    }
+
     if (pathname.startsWith("/api/rethink/client-match")) {
       if (!canMatch(user)) { json(res, 403, { error: "Owner or admin only." }); return true; }
 
@@ -2111,6 +2587,143 @@ module.exports = function initRethink(ctx) {
     return out;
   }
 
+  // Providers Rethink worked this month that no CRM employee claims. This is
+  // the supervision tracker's blind spot made visible: an RBT nobody linked is
+  // running sessions that no compliance percentage counts, and until now the
+  // only trace of them was a truncated warning string in the sync log, on an
+  // admin page the people who run the tracker do not open.
+  //
+  // Name hints are whatever Rethink sent. They are a LABEL, never a match --
+  // linking is a person choosing an employee, because two RBTs sharing a
+  // surname would otherwise produce a silently wrong compliance record.
+  async function unmatchedProvidersForMonth(month) {
+    if (!/^\d{4}-\d{2}$/.test(String(month || ""))) return [];
+    const rows = await dbAll(
+      `SELECT rethink_staff_id, staff_name_hint, verified_hours, appointment_count,
+              appointments_seen, provisional, computed_at
+         FROM rethink_provider_month
+        WHERE month = ? AND employee_id IS NULL
+        ORDER BY verified_hours DESC, appointments_seen DESC, rethink_staff_id`,
+      [month]
+    ).catch(() => []);
+    return rows.map((r) => ({
+      rethink_staff_id: String(r.rethink_staff_id),
+      name_hint: r.staff_name_hint || null,
+      verified_hours: num(r.verified_hours),
+      appointment_count: Number(r.appointment_count) || 0,
+      appointments_seen: Number(r.appointments_seen) || 0,
+      provisional: r.provisional === true || r.provisional === "t",
+      computed_at: r.computed_at || null,
+    }));
+  }
+
+  // A provider has just been linked to an employee by hand. Re-point the months
+  // already on file for that staff id so the hours land on the tracker NOW,
+  // rather than staying invisible until the next sync happens to overwrite the
+  // month. rethink_provider_month is what the denominator reads, so this alone
+  // is enough -- nothing has to be re-fetched from Rethink.
+  //
+  // Only rows with NO employee are touched. A row already pointing at somebody
+  // is a mapping a person made, and reassigning it here would move somebody
+  // else's verified hours onto a different compliance record.
+  async function adoptProviderRows(rethinkStaffId, employeeId) {
+    const id = String(rethinkStaffId == null ? "" : rethinkStaffId).trim();
+    if (!id || !employeeId) return { updated: 0, months: [] };
+    const rows = await dbAll(
+      `UPDATE rethink_provider_month SET employee_id = ?
+        WHERE rethink_staff_id = ? AND employee_id IS NULL
+        RETURNING month`,
+      [employeeId, id]
+    ).catch(() => []);
+    // The per-day billable rows follow the same link, or the billable
+    // requirement would read empty for somebody whose supervision hours had
+    // just appeared.
+    const days = await dbAll(
+      `UPDATE rethink_provider_day SET employee_id = ?
+        WHERE rethink_staff_id = ? AND employee_id IS NULL
+        RETURNING day`,
+      [employeeId, id]
+    ).catch(() => []);
+    return { updated: rows.length, months: rows.map((r) => r.month), days: days.length };
+  }
+
+  // ======================= BILLABLE HOURS =====================
+  // Read ONLY by the BCBA billable requirement. Supervision and payroll read
+  // verified_hours, which this never touches: an hour that is delivered and
+  // verified still counts towards supervision whether or not it was billable,
+  // and a rule change here must not move a compliance percentage or a
+  // timecard.
+  //
+  // Weeks run Monday to Sunday, and a partial first week expects the FULL
+  // weekly figure -- it is not pro-rated.
+  function weekStartOf(dateStr) {
+    const d = new Date(String(dateStr).slice(0, 10) + "T00:00:00Z");
+    if (isNaN(d)) return null;
+    // getUTCDay: 0 = Sunday. Shift so Monday is the first day.
+    const shift = (d.getUTCDay() + 6) % 7;
+    d.setUTCDate(d.getUTCDate() - shift);
+    return d.toISOString().slice(0, 10);
+  }
+  function weekEndOf(weekStart) {
+    const d = new Date(weekStart + "T00:00:00Z");
+    d.setUTCDate(d.getUTCDate() + 6);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Billable hours for one employee over an inclusive day range.
+  async function billableHoursBetween(employeeId, from, to) {
+    if (!employeeId || !from || !to) return null;
+    const row = await dbGet(
+      `SELECT COALESCE(SUM(billable_hours), 0) AS billable,
+              COALESCE(SUM(nonbillable_hours), 0) AS nonbillable,
+              COALESCE(SUM(unclassified_hours), 0) AS unclassified,
+              COALESCE(SUM(billable_appointments), 0) AS appointments,
+              COUNT(*) AS days
+         FROM rethink_provider_day
+        WHERE employee_id = ? AND day >= ? AND day <= ?`,
+      [employeeId, from, to]
+    ).catch(() => null);
+    if (!row) return null;
+    // No rows at all is NOT zero hours -- it is "nothing has been synced for
+    // that period", and the two must never be shown the same way. A person
+    // reading 0 of 25 assumes a performance problem.
+    if (!Number(row.days)) return null;
+    return {
+      billable: num(row.billable),
+      nonbillable: num(row.nonbillable),
+      unclassified: num(row.unclassified),
+      billable_appointments: Number(row.appointments) || 0,
+    };
+  }
+
+  async function billableForWeek(employeeId, anyDayInWeek) {
+    const start = weekStartOf(anyDayInWeek || today());
+    if (!start) return null;
+    const end = weekEndOf(start);
+    const got = await billableHoursBetween(employeeId, start, end);
+    return got ? { week_start: start, week_end: end, ...got } : null;
+  }
+
+  // Every week that OVERLAPS the month, which is what a month-end summary needs
+  // -- the weeks a person was measured against, not a calendar slice of them.
+  async function billableWeeksForMonth(employeeId, month) {
+    if (!/^\d{4}-\d{2}$/.test(String(month || ""))) return [];
+    const [y, m] = month.split("-").map(Number);
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const out = [];
+    let cur = weekStartOf(`${month}-01`);
+    const monthEnd = `${month}-${String(lastDay).padStart(2, "0")}`;
+    while (cur && cur <= monthEnd) {
+      const end = weekEndOf(cur);
+      const got = await billableHoursBetween(employeeId, cur, end);
+      out.push({ week_start: cur, week_end: end, ...(got || { billable: null, nonbillable: null, unclassified: null, billable_appointments: 0 }) });
+      const nxt = new Date(cur + "T00:00:00Z");
+      nxt.setUTCDate(nxt.getUTCDate() + 7);
+      cur = nxt.toISOString().slice(0, 10);
+    }
+    return out;
+  }
+
   // A day's appointments, straight from Rethink, for the BCBA dashboard's
   // schedule panel. READ ONLY and deliberately unstored: Rethink is the source
   // of truth for scheduling, so the CRM displays what it says at the moment it
@@ -2146,6 +2759,16 @@ module.exports = function initRethink(ctx) {
     integrationStatus,
     verifiedHoursByEmployee,
     verifiedHoursForMonths,
+    unmatchedProvidersForMonth,
+    adoptProviderRows,
+    billableForWeek,
+    billableWeeksForMonth,
+    billableHoursBetween,
+    _billable: { weekStartOf, weekEndOf, classifyBillable, billableRaw },
+    scanStaffFromAppointments,
+    staffMatchReview,
+    createStaffFromRethink,
+    linkStaffToEmployee,
     getConfig,
     scanClientMatches,
     clientMatchReview,
