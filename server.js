@@ -3820,6 +3820,24 @@ const AUTH_FIELDS = [
   "auth_notes",
 ];
 
+// WHAT IS WITHHELD ON READ, which is NOT the same list as what is editable
+// through the authorization endpoint -- and conflating the two is what put a
+// clinician's name behind an insurance gate.
+//
+// "Who is this child's BCBA" is care-team information. It is already on the
+// pipeline card, the caseload board and the dashboard for everyone who can see
+// clients at all; only the client's own record hid it. The effect was worse
+// than a blank: the First Day of ABA card read "Not assigned yet" and "no
+// confirmation will be sent until a BCBA is assigned" to intake and scheduling
+// -- the two roles that actually work that card -- about clients who HAVE a
+// BCBA. A screen that states something false about a client is worse than one
+// that says nothing.
+//
+// Everything genuinely about the authorization stays withheld: the payer, the
+// dates, the status, the notes, the billing contact, and the BCBA's email
+// address (a staff contact detail, which is a different thing from their name).
+const AUTH_PRIVATE_FIELDS = AUTH_FIELDS.filter((f) => f !== "assigned_bcba_name");
+
 function initialsOf(name) {
   return (name || "?")
     .split(/\s+/)
@@ -3852,7 +3870,7 @@ function sanitizeClientForRole(user, client) {
   if (!client) return client;
   if (canViewAuth(user)) return client;
   const copy = { ...client };
-  for (const f of AUTH_FIELDS) delete copy[f];
+  for (const f of AUTH_PRIVATE_FIELDS) delete copy[f];
   return copy;
 }
 
@@ -4022,6 +4040,7 @@ const authAlerts = {
   AUTH_MILESTONES,
   AUTH_ALERT_LEVELS,
   AUTH_FIELDS,
+  AUTH_PRIVATE_FIELDS,
   initialsOf,
   daysUntil,
   canViewAuth,
