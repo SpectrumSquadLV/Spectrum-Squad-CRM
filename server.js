@@ -8702,6 +8702,12 @@ const server = http.createServer(async (req, res) => {
     if (await hr.servePage(req, res, pathname)) return;
   }
 
+  // The RBT's own acknowledgment page. Reached from the email, by token, with
+  // no CRM session -- the person being assessed is not necessarily a user.
+  if (pathname.startsWith("/fidelity-ack/")) {
+    if (await fidelity.servePage(req, res, pathname)) return;
+  }
+
   // Client-facing form pages (financial responsibility, schedule picker, etc.)
   if (
     pathname === "/financial-form" || pathname.startsWith("/financial-form/") ||

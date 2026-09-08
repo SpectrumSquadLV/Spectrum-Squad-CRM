@@ -1649,6 +1649,135 @@ module.exports = function initFidelity(ctx) {
     };
   }
 
+  // ======================= THE ACKNOWLEDGMENT PAGE =======================
+  // Served at /fidelity-ack/<token>, which is where the email points. Standalone
+  // HTML with no CRM session, because the RBT being assessed is not necessarily
+  // a CRM user -- and the whole assessment is shown, every item and every score,
+  // because it is about them and there is nothing here to withhold.
+  //
+  // It can acknowledge. It can change no score.
+  function ackPageHtml() {
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Your Fidelity Check — Spectrum Squad</title>
+<style>
+  :root { --navy:#1b2a6b; --ink:#201a4d; --muted:#6b6a86; --line:#e6e1d4; --bg:#faf8f2; }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 "Outfit",system-ui,-apple-system,"Segoe UI",sans-serif;}
+  .wrap{max-width:760px;margin:0 auto;padding:22px 16px 60px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:14px}
+  h1{font-size:21px;margin:0 0 4px;color:var(--navy)} h2{font-size:15px;margin:0 0 9px;color:var(--navy)}
+  .muted{color:var(--muted);font-size:13px}
+  .big{font-size:31px;font-weight:800;color:var(--navy)}
+  .chip{display:inline-block;font-size:12px;font-weight:700;padding:3px 11px;border-radius:20px}
+  .item{display:flex;gap:10px;padding:5px 0;border-top:1px solid #f1f1f4;font-size:13.5px}
+  .sc{min-width:26px;height:26px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:13px}
+  .crit{background:#fee2e2;color:#991b1b;border-radius:9px;padding:11px 14px;margin-top:10px}
+  input[type=text]{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:9px;font-size:15px}
+  button{background:#e0a430;color:var(--navy);font-weight:700;border:0;border-radius:999px;
+    padding:13px 26px;font-size:15px;cursor:pointer;width:100%}
+  button[disabled]{opacity:.55;cursor:default}
+  .ok{background:#dcfce7;color:#166534;border-radius:9px;padding:13px 15px;font-weight:600}
+  .err{color:#a3282e}
+</style></head><body><div class="wrap" id="root">
+  <div class="card"><p class="muted">Loading your Fidelity Check…</p></div>
+</div>
+<script>
+(function(){
+  var token = location.pathname.split("/").filter(Boolean).pop();
+  var root = document.getElementById("root");
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
+  function chipFor(k){
+    var m={exceptional:["#dcfce7","#166534"],meets:["#e0e7ff","#3730a3"],
+           needs_improvement:["#fef3c7","#92400e"],critical:["#fee2e2","#991b1b"]};
+    return m[k]||["#e5e7eb","#374151"];
+  }
+  function scoreColour(v){ return v===0?"#b91c1c":v===1?"#b45309":v===2?"#166534":"#9ca3af"; }
+  function render(d){
+    var c = chipFor(d.rating_key);
+    var sections = d.sections.map(function(sec){
+      return '<div class="card"><h2>'+esc(sec.label)+'</h2>'+
+        sec.items.map(function(i){
+          return '<div class="item"><span class="sc" style="background:'+scoreColour(i.score)+'">'+
+            (i.score==null?"—":i.score)+'</span><span>'+esc(i.label)+'</span></div>';
+        }).join("")+'</div>';
+    }).join("");
+    var narrative = [["Strengths observed",d.strengths],["Areas for improvement",d.areas_for_improvement],
+                     ["Action plan",d.action_plan_narrative]]
+      .filter(function(x){return x[1] && String(x[1]).trim();})
+      .map(function(x){return '<div class="card"><h2>'+esc(x[0])+'</h2><div style="white-space:pre-wrap">'+esc(x[1])+'</div></div>';})
+      .join("");
+    var already = !!d.acknowledged_at;
+    root.innerHTML =
+      '<div class="card">'+
+        '<h1>Your Fidelity Check</h1>'+
+        '<div class="muted">'+esc(d.assessment_date||"")+' · '+esc(d.session_type||"")+
+          ' · '+(d.observation_minutes?esc(d.observation_minutes)+" minutes":"")+
+          ' · completed by '+esc(d.evaluator_name||"your supervisor")+'</div>'+
+        '<div style="margin-top:14px"><span class="big">'+d.total_score+' / '+d.max_score+'</span>'+
+          '<span style="font-size:20px;font-weight:700;margin-left:9px">'+d.percentage+'%</span>'+
+          '<span class="chip" style="background:'+c[0]+';color:'+c[1]+';margin-left:9px">'+esc(d.rating_label||"")+'</span></div>'+
+        (d.critical_fail ? '<div class="crit"><strong>A critical fidelity concern was recorded.</strong><div style="font-size:13px;margin-top:4px">'+
+            esc((d.critical_fail_reasons||[]).join("; "))+(d.critical_fail_detail?'<br>'+esc(d.critical_fail_detail):"")+
+            '</div><div style="font-size:13px;margin-top:6px">Your supervisor will follow up with you directly.</div></div>' : "")+
+      '</div>'+
+      narrative + sections +
+      '<div class="card">'+
+        '<h2>Acknowledgment</h2>'+
+        '<p class="muted">Acknowledging confirms you have received and read this assessment. '+
+          'It does <strong>not</strong> mean you agree with every part of it. If something looks wrong, tell your supervisor — '+
+          'this page cannot change any score.</p>'+
+        (already
+          ? '<div class="ok">Acknowledged by '+esc(d.acknowledged_name)+' on '+esc(String(d.acknowledged_at).slice(0,10))+'.</div>'
+          : '<label class="muted" for="nm">Type your full name to sign</label>'+
+            '<input id="nm" type="text" autocomplete="name" placeholder="Your full name" value="'+esc(d.employee_name||"")+'"/>'+
+            '<div id="msg" class="muted" style="margin:8px 0"></div>'+
+            '<button id="go">I acknowledge receipt</button>')+
+      '</div>'+
+      '<p class="muted" style="text-align:center">Signed by '+esc(d.bcba_signed_name||"—")+
+        (d.bcba_signed_at?' on '+esc(String(d.bcba_signed_at).slice(0,10)):"")+'.</p>';
+
+    var go = document.getElementById("go");
+    if (go) go.addEventListener("click", function(){
+      var nm = document.getElementById("nm").value.trim();
+      var msg = document.getElementById("msg");
+      if (!nm) { msg.className="err"; msg.textContent="Type your name to acknowledge."; return; }
+      go.disabled = true; go.textContent = "Saving…";
+      fetch("/api/fidelity/public/acknowledge",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({token:token,signed_name:nm})})
+        .then(function(r){return r.json();})
+        .then(function(j){
+          if (j.error) throw new Error(j.error);
+          load();
+        })
+        .catch(function(e){ go.disabled=false; go.textContent="I acknowledge receipt";
+          msg.className="err"; msg.textContent=e.message||"Could not save that."; });
+    });
+  }
+  function load(){
+    fetch("/api/fidelity/public/check?token="+encodeURIComponent(token))
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if (d.error) { root.innerHTML='<div class="card"><p class="err">'+esc(d.error)+'</p></div>'; return; }
+        render(d);
+      })
+      .catch(function(){ root.innerHTML='<div class="card"><p class="err">This page could not be loaded.</p></div>'; });
+  }
+  load();
+})();
+</script></body></html>`;
+  }
+
+  // Served without a session, like the other token pages in this CRM.
+  async function servePage(req, res, pathname) {
+    if (pathname.startsWith("/fidelity-ack/")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(ackPageHtml());
+      return true;
+    }
+    return false;
+  }
+
   module.exports.__rubric = SECTIONS;
 
   return {
@@ -1659,7 +1788,7 @@ module.exports = function initFidelity(ctx) {
     employeeSummary, summarise, trendOf, finalizedChecks,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure,
     buildPdf, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
-    handleApi, shapeRow, shapePlan, shapePublic,
+    handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
     DEFAULT_BANDS, DEFAULT_WEIGHTS, CATEGORIES, FIDELITY_METHODS,
     _internal: { round1, round2, num },
   };
