@@ -1386,6 +1386,43 @@ async function saveClientDocument(opts) {
 // substituted at first-send time) and updates the SAME notifications_log row
 // in place, so a recovered email drops off the failed list instead of leaving
 // a duplicate row behind.
+// ---- Magic links in a stored email body are CREDENTIALS ---------------------
+//
+// Every one of these opens a page AS the person it was mailed to: accepting a
+// timecard, signing an offer, submitting availability, uploading a child's
+// documents, answering a screener. notifications_log keeps the email body
+// verbatim, and the Message Outbox renders that body to owner / super_admin /
+// admin -- so a screen for checking what was sent doubles as a way to act as
+// anybody the CRM has ever emailed.
+//
+// sendPasswordResetEmail above already refuses to log its link for exactly this
+// reason. This applies the same rule to the rest, and applies it at DISPLAY
+// rather than storage:
+//
+//   * the stored body keeps its real link, so the recipient's own copy still
+//     works and resendFailedEmail still re-sends a working email;
+//   * the route is left visible, so a reader can still see WHAT was sent
+//     rather than being shown a blank where a link used to be.
+const TOKEN_PATH_ROUTES = ["verify-timecard", "offer", "screener", "schedule", "apply", "new-hire"];
+const TOKEN_PATH_RE = new RegExp("(/(?:" + TOKEN_PATH_ROUTES.join("|") + ")/)[A-Za-z0-9._~+-]{6,}", "g");
+function redactSecretLinks(html) {
+  if (html == null) return html;
+  return String(html)
+    // token=... in a query string, however the link was built.
+    .replace(/([?&]token=)[^"'&<\s)]+/gi, "$1[link removed]")
+    // /route/<token> links, where the secret is a path segment.
+    .replace(TOKEN_PATH_RE, "$1[link removed]");
+}
+
+// One notification row as it may be SHOWN. Drops ack_token outright -- it is a
+// one-click acknowledgement credential and no screen needs it.
+function shapeNotificationForDisplay(row) {
+  if (!row) return row;
+  const { ack_token, ...safe } = row;
+  if (safe.body !== undefined) safe.body = redactSecretLinks(safe.body);
+  return safe;
+}
+
 async function listFailedEmails() {
   return dbAll(
     `SELECT id, client_id, type, recipient, subject, sent_at, delivered
@@ -7199,7 +7236,8 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       //    never returned to them).
       //  - anyone without client access is refused outright.
       if (canSeeAllMessages(user)) {
-        return json(res, 200, await dbAll("SELECT * FROM notifications_log ORDER BY sent_at DESC LIMIT 100"));
+        const all = await dbAll("SELECT * FROM notifications_log ORDER BY sent_at DESC LIMIT 100");
+        return json(res, 200, all.map(shapeNotificationForDisplay));
       }
       if (!canAccessClients(user)) {
         return json(res, 403, { error: "Not permitted to view the message outbox" });
@@ -7211,7 +7249,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         `SELECT * FROM notifications_log WHERE client_id IN (${placeholders}) ORDER BY sent_at DESC LIMIT 100`,
         ids
       );
-      return json(res, 200, rows);
+      return json(res, 200, rows.map(shapeNotificationForDisplay));
     }
 
     // Manually (re)send the Benefits & Eligibility Check for a client -- used
@@ -8287,6 +8325,7 @@ const screener = require("./screener")({
 // ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
 const hr = require("./hr")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR, moduleGranted,
+  redactSecretLinks,
   onCompletion: (...a) => completions.record(...a),
   // New-hire employment packet (SignNow). Passed in rather than reimplemented so
   // there is one SignNow client, one token cache, and one place that knows how
@@ -8322,6 +8361,8 @@ const clientForms = require("./client-forms")({
 });
 const ot = require("./ot")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
+  // One redaction rule for every screen that renders a stored email body.
+  redactSecretLinks,
 });
 // ===== EMPLOYEE ATTENDANCE MANAGEMENT add-on: points engine, discipline,
 // bonus cycles, policy editor, attendance emails, historical import. Reuses the
