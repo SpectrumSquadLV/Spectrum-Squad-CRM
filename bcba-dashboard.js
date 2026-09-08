@@ -856,13 +856,84 @@ module.exports = function initBcbaDashboard(ctx) {
               confident: false });
           }
         }
+
+        // ---- SHARING A FIRST NAME ------------------------------------------
+        // The two rules above only fire on a name that is a WORD PREFIX of
+        // another, or one that differs only in spacing. Between them they miss
+        // the shapes people actually type:
+        //
+        //   "Marissa Gaut"  vs  "Marissa Gauthier"     (surname typed short)
+        //   "Marissa Gaut"  vs  "Marissa A Gaut"       (middle initial)
+        //   "Marissa Gaut"  vs  "Marissa G"            (surname initialled)
+        //   "Marissa Gaut"  vs  "Marisa Gaut"          (a slip)
+        //
+        // Each of those puts one clinician on the caseload board twice with
+        // their clients split, and the panel reported "nothing looks
+        // duplicated" -- which is worse than saying nothing, because it tells
+        // somebody looking straight at two of the same person that there is no
+        // problem to fix.
+        //
+        // Sharing a first name is NOT evidence they are the same person: two
+        // Marissas is entirely ordinary in a practice this size. So this NEVER
+        // proposes a merge. It raises the group for a person to look at, and
+        // the merge underneath it is theirs to choose.
+        const byFirst = new Map();
+        for (const n of names) {
+          const first = normName(n.name).split(" ")[0];
+          if (!first) continue;
+          if (!byFirst.has(first)) byFirst.set(first, []);
+          byFirst.get(first).push(n);
+        }
+        for (const group of byFirst.values()) {
+          if (group.length < 2) continue;
+          // Anything the confident rules already offered to merge is not
+          // raised a second time as a question.
+          const named = new Set(group.map((g) => g.name));
+          const already = out.some((o) => o.field === col && named.has(o.from)
+            && (o.to === null || named.has(o.to)));
+          if (already) continue;
+          out.push({
+            field: col, label: meta.label, from: null, to: null,
+            group: group.map((g) => ({ name: g.name, clients: g.clients })),
+            candidates: group.map((g) => g.name),
+            reason: `${group.length} people share the first name "${group[0].name.split(/\s+/)[0]}". `
+              + "If these are one person spelled two ways, merge them; if they are two people, leave them.",
+            confident: false,
+          });
+        }
+      }
+      return out;
+    }
+
+    // Every name on file in each column, with its count. THE PANEL MUST NEVER
+    // BE A DEAD END: whatever the rules above do or do not spot, an admin can
+    // see exactly what is stored -- two entries that look identical on screen
+    // are two different strings, and this is where that becomes visible -- and
+    // merge any of them by hand.
+    async function nameRosters() {
+      const out = [];
+      for (const [col, meta] of Object.entries(MERGEABLE_FIELDS)) {
+        try {
+          const rows = await dbAll(
+            `SELECT TRIM(${col}) AS name,
+                    COUNT(*) AS clients,
+                    MIN(NULLIF(LOWER(TRIM(COALESCE(${meta.email_col}, ''))), '')) AS email
+               FROM clients
+              WHERE ${col} IS NOT NULL AND TRIM(${col}) <> ''
+                AND stage NOT IN ('discharged','not_moving_forward')
+              GROUP BY TRIM(${col}) ORDER BY TRIM(${col})`);
+          out.push({
+            field: col, label: meta.label,
+            names: rows.map((r) => ({ name: r.name, clients: Number(r.clients) || 0, email: r.email || null })),
+          });
+        } catch (e) { continue; }
       }
       return out;
     }
 
     if (pathname === "/api/caseload/name-duplicates" && method === "GET") {
       if (!canPick(user)) { json(res, 403, { error: "Not permitted" }); return true; }
-      json(res, 200, { duplicates: await nameDuplicates() });
+      json(res, 200, { duplicates: await nameDuplicates(), rosters: await nameRosters() });
       return true;
     }
 

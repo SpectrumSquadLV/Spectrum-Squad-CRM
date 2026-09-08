@@ -159,6 +159,66 @@ const countBy = async (name) => Number((await pool.query(
   });
   check("merging a name into itself is refused", same.status === 400, same.data);
 
+  // =========================================================================
+  console.log("\n== The shapes the matcher does NOT recognise ==");
+  // Reported straight from the practice: two Marissas on the caseload board,
+  // and this panel answering "nothing looks duplicated".
+  //
+  // It only ever recognised a name that is another one SHORTENED ("Marissa"
+  // inside "Marissa Gaut") or the same name spaced differently. A surname typed
+  // two ways, a middle initial, an initialled surname or a slip in the spelling
+  // all read as two separate people -- and the panel then said so, which is
+  // worse than saying nothing to somebody looking straight at the duplicate.
+  //
+  // These stay UNMATCHED on purpose: guessing that "Marissa Gaut" and "Marissa
+  // Gauthier" are one person would, when they are not, move an entire caseload
+  // onto the wrong clinician. What is checked here is that the tool STOPS
+  // BEING A DEAD END -- it raises the pair and shows what is on file.
+  await addClient("Roster Child A", "Nadia Okonkwo", "nadia@example.invalid");
+  await addClient("Roster Child B", "Nadia Okonkow", "nadia@example.invalid");
+  await addClient("Roster Child C", "Nadia A Okonkwo", null);
+
+  const d3 = (await owner("/api/caseload/name-duplicates")).data;
+  const bcbaRoster = (d3.rosters || []).find((r) => r.field === "assigned_bcba_name");
+  check("THE PANEL NOW REPORTS EVERY NAME ON FILE, matched or not", !!bcbaRoster, (d3.rosters || []).map((r) => r.field));
+  const rosterNames = (bcbaRoster.names || []).map((n) => n.name);
+  check("including the surname typed two ways", rosterNames.includes("Nadia Okonkwo") && rosterNames.includes("Nadia Okonkow"), rosterNames);
+  check("and the one with a middle initial", rosterNames.includes("Nadia A Okonkwo"), rosterNames);
+  check("each carrying its caseload count, which is what makes the split visible",
+    (bcbaRoster.names || []).every((n) => typeof n.clients === "number" && n.clients > 0),
+    bcbaRoster.names);
+
+  const nadia = (d3.duplicates || []).filter((x) => (x.candidates || []).some((c) => /^Nadia/.test(c)));
+  check("A GROUP SHARING A FIRST NAME IS RAISED rather than passed over in silence",
+    nadia.length === 1, d3.duplicates);
+  check("but NEVER as a merge -- two people can share a first name",
+    nadia.length === 1 && nadia[0].confident === false && nadia[0].to === null, nadia[0]);
+  check("it names all three so a person can see what they are choosing between",
+    nadia.length === 1 && (nadia[0].group || []).length === 3, nadia[0] && nadia[0].group);
+
+  console.log("\n== The manual merge is the escape hatch, and it is still guarded ==");
+  // The same endpoint the automatic suggestions use, so every rule already
+  // proved above still applies to it -- it is only the CHOICE that moves to a
+  // person. Worth stating: this is why the manual path needed no new endpoint,
+  // and why it cannot be used to reach a field that is not on the allowlist.
+  const manual = await owner("/api/caseload/merge-name", {
+    method: "POST", body: { field: "assigned_bcba_name", from: "Nadia Okonkow", to: "Nadia Okonkwo" },
+  });
+  check("an admin can merge a pair the matcher would not touch", manual.status === 200, manual.data);
+  check("and the clients move", (await countBy("Nadia Okonkwo")) === 2, await countBy("Nadia Okonkwo"));
+  check("leaving nobody behind on the old spelling", (await countBy("Nadia Okonkow")) === 0);
+  const stillThere = (await owner("/api/caseload/name-duplicates")).data;
+  check("the middle-initial one is untouched, because nobody said to merge it",
+    ((stillThere.rosters || []).find((r) => r.field === "assigned_bcba_name").names || [])
+      .some((n) => n.name === "Nadia A Okonkwo"));
+
+  const asBcba = await bcba("/api/caseload/merge-name", {
+    method: "POST", body: { field: "assigned_bcba_name", from: "Nadia A Okonkwo", to: "Nadia Okonkwo" },
+  });
+  check("A BCBA CANNOT DRIVE THE MANUAL MERGE EITHER -- refused on the route", asBcba.status === 403, asBcba.status);
+  check("and nothing moved on that attempt", (await countBy("Nadia A Okonkwo")) === 1);
+  check("a BCBA cannot even read the roster of names", (await bcba("/api/caseload/name-duplicates")).status === 403);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   await pool.end();
   process.exit(fail ? 1 : 0);
