@@ -22,7 +22,9 @@ module.exports = function initFidelity(ctx) {
     readBody, json, moduleGranted,
   } = ctx;
   const createStaffTask = ctx.createStaffTask || (async () => null);
-  const saveEmployeeDocument = ctx.saveEmployeeDocument || (async () => null);
+  const HR_DOCS_DIR = ctx.HR_DOCS_DIR || null;
+  const fs = require("fs");
+  const path = require("path");
 
   // ======================= THE RUBRIC =======================
   // The five sections and thirty competencies of the Spectrum Squad checklist,
@@ -684,6 +686,314 @@ module.exports = function initFidelity(ctx) {
     return pieces.join(" ");
   }
 
+  // ======================= THE PDF =======================
+  // Everything on the paper form, in the order somebody reading the paper form
+  // expects, including the items that scored full marks. A PDF that only listed
+  // the problems would be a different document from the one that was signed.
+  //
+  // pdfkit is required lazily, so a missing dependency cannot crash finalizing
+  // an assessment -- the scores are already saved by then and losing them
+  // because a library is absent would be the worst possible trade.
+  async function buildPdf(check, employee) {
+    if (!HR_DOCS_DIR) return null;
+    let PDFDocument;
+    try { PDFDocument = require("pdfkit"); }
+    catch (e) { console.error("[fidelity] pdfkit unavailable:", e.message); return null; }
+
+    const scores = parseJson(check.scores_json, {});
+    const calc = scoreOf(scores, { unsafe_practice: check.unsafe_practice === true || check.unsafe_practice === "t" });
+    const storedName = `${crypto.randomBytes(10).toString("hex")}.pdf`;
+    const full = path.join(HR_DOCS_DIR, storedName);
+    const NAVY = "#1b2a6b", MUTED = "#6b6a86", WARN = "#b45309", BAD = "#a3282e", GOOD = "#166534";
+
+    await new Promise((resolve, reject) => {
+      try {
+        const doc = new PDFDocument({ size: "LETTER", margin: 48 });
+        const stream = fs.createWriteStream(full);
+        stream.on("finish", resolve);
+        stream.on("error", reject);
+        doc.pipe(stream);
+
+        doc.fillColor(NAVY).fontSize(19).text("Spectrum Squad", { continued: false });
+        doc.fillColor("#201a4d").fontSize(15).text("Session Fidelity Checklist");
+        doc.moveDown(0.5);
+
+        const line = (label, value) => {
+          doc.fillColor(MUTED).fontSize(9.5).text(label, { continued: true })
+             .fillColor("#201a4d").fontSize(10.5).text("   " + (value == null || value === "" ? "—" : String(value)));
+        };
+        line("RBT", employee ? employee.name : "—");
+        line("Client initials", check.client_initials);   // initials only, never a full name
+        line("Session type", check.session_type);
+        line("Date", check.assessment_date);
+        line("Observation length", check.observation_minutes ? check.observation_minutes + " minutes" : null);
+        line("Completed by", (check.evaluator_name || "—") + (check.evaluator_credentials ? ", " + check.evaluator_credentials : ""));
+        doc.moveDown(0.6);
+
+        // ---- headline ----
+        const pct = check.percentage != null ? Number(check.percentage) : calc.percentage;
+        const ratingColor = check.rating_key === "exceptional" || check.rating_key === "meets" ? GOOD
+          : check.rating_key === "needs_improvement" ? WARN : BAD;
+        doc.fillColor(NAVY).fontSize(13).text(
+          `TOTAL SCORE  ${check.total_score}/${check.max_score || MAX_SCORE}      ${pct}%`);
+        doc.fillColor(ratingColor).fontSize(12).text(String(check.rating_label || "").toUpperCase());
+        doc.moveDown(0.4);
+
+        const criticalFail = check.critical_fail === true || check.critical_fail === "t";
+        if (criticalFail) {
+          const reasons = parseJson(check.critical_fail_reasons, []);
+          doc.fillColor(BAD).fontSize(11).text("CRITICAL FIDELITY CONCERN — IMMEDIATE REVIEW REQUIRED");
+          doc.fillColor("#201a4d").fontSize(9.5).text(reasons.join("; "));
+          if (check.critical_fail_detail) doc.fillColor("#201a4d").fontSize(9.5).text(check.critical_fail_detail);
+          doc.moveDown(0.4);
+        }
+
+        // ---- every item, including the ones that scored 2 ----
+        for (const sec of SECTIONS) {
+          const ss = calc.section_scores[sec.key];
+          doc.moveDown(0.35);
+          doc.fillColor(NAVY).fontSize(11).text(`${sec.label}: ${ss.score} / ${sec.max}`);
+          for (const item of sec.items) {
+            const v = scores[item.key];
+            const shown = v === 0 || v === 1 || v === 2 ? String(v) : "—";
+            const col = v === 0 ? BAD : v === 1 ? WARN : "#201a4d";
+            doc.fillColor(col).fontSize(9.5).text(`   ${shown}   ${item.label}` +
+              (item.critical && v === 0 ? "   ** CRITICAL **" : ""));
+          }
+        }
+        doc.moveDown(0.6);
+
+        const narrative = (title, body) => {
+          doc.fillColor(NAVY).fontSize(11).text(title);
+          doc.fillColor("#201a4d").fontSize(9.5).text(body && String(body).trim() ? String(body) : "—");
+          doc.moveDown(0.3);
+        };
+        narrative("Strengths Observed", check.strengths);
+        narrative("Areas for Improvement", check.areas_for_improvement);
+        narrative("Action Plan", check.action_plan_narrative);
+        const opts = parseJson(check.action_plan_options, []);
+        if (opts.length) narrative("Action Plan interventions", opts.join(", "));
+
+        doc.moveDown(0.5);
+        doc.fillColor(NAVY).fontSize(11).text("Signatures");
+        doc.fillColor("#201a4d").fontSize(9.5).text(
+          `BCBA / Supervising Clinician: ${check.bcba_signed_name || "—"}` +
+          (check.evaluator_credentials ? `, ${check.evaluator_credentials}` : "") +
+          `    Signed: ${check.bcba_signed_at || "—"}`);
+        doc.fillColor("#201a4d").fontSize(9.5).text(
+          check.employee_ack_at
+            ? `RBT acknowledgment: ${check.employee_ack_name}    ${check.employee_ack_at}`
+            : "RBT acknowledgment: awaiting employee");
+        doc.moveDown(0.4);
+        doc.fillColor(MUTED).fontSize(8).text(
+          "Acknowledgment confirms receipt of this assessment. It does not necessarily indicate agreement with every part of the evaluation.");
+
+        doc.end();
+      } catch (e) { reject(e); }
+    });
+
+    const safeName = String(employee && employee.name ? employee.name : "Employee").replace(/[^A-Za-z0-9]+/g, " ").trim();
+    const filename = `RBT Fidelity - ${safeName} - ${check.assessment_date || ""}.pdf`.replace(/\s+/g, " ");
+    const row = await dbRun(
+      `INSERT INTO hr_documents (employee_id, kind, filename, stored_name, mime_type, created_at)
+       VALUES (?, 'fidelity', ?, ?, 'application/pdf', ?) RETURNING id`,
+      [check.employee_id, filename, storedName, nowISO()]
+    );
+    return row && row.rows && row.rows[0] ? row.rows[0].id : null;
+  }
+
+  function parseJson(v, fb) {
+    if (v == null) return fb;
+    if (typeof v === "object") return v;
+    try { const p = JSON.parse(v); return p == null ? fb : p; } catch (e) { return fb; }
+  }
+
+  // ======================= FINALIZE =======================
+  // ONE action, everything downstream. The BCBA presses Sign & Finalize and the
+  // CRM locks the record, generates the PDF, files it in the personnel record,
+  // emails the employee, raises the follow-up work and writes the audit trail.
+  // Nobody is asked to download a PDF and upload it somewhere.
+  //
+  // The ORDER matters. The scores are locked FIRST and everything else is
+  // best-effort after: if the PDF library is missing or the mail provider is
+  // down, the assessment is still signed and saved. Losing a completed
+  // observation because an email failed would be the worst possible trade, and
+  // each step records its own success or failure in the audit trail so a
+  // half-finished automation is visible rather than assumed.
+  const STATUSES = ["draft", "assigned", "in_progress", "awaiting_signature", "finalized",
+    "sent", "awaiting_ack", "acknowledged", "action_required", "closed"];
+
+  async function finalizeCheck(checkId, user, body = {}) {
+    const check = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [checkId]);
+    if (!check) return { ok: false, code: 404, error: "That Fidelity Check no longer exists." };
+    if (check.voided === true || check.voided === "t") {
+      return { ok: false, code: 400, error: "This Fidelity Check has been voided." };
+    }
+    if (check.finalized_at) {
+      // Signed means signed. A correction goes through an amendment so the
+      // original stays exactly as the person signed it.
+      return { ok: false, code: 409, code_key: "already_finalized",
+        error: "This Fidelity Check was already signed and finalized. Create an amendment to correct it." };
+    }
+
+    const scores = parseJson(check.scores_json, {});
+    const unsafe = body.unsafe_practice === true || check.unsafe_practice === true || check.unsafe_practice === "t";
+    const calc = scoreOf(scores, { unsafe_practice: unsafe });
+
+    // ---- refusals, each naming what is missing ----
+    if (!calc.complete) {
+      const missing = ALL_ITEMS.filter((i) => ![0, 1, 2].includes(scores[i.key]));
+      return { ok: false, code: 400, error:
+        `${missing.length} competenc${missing.length === 1 ? "y has" : "ies have"} not been scored yet.`,
+        missing: missing.map((i) => i.key) };
+    }
+    const signedName = String(body.bcba_signed_name || "").trim();
+    if (!signedName) return { ok: false, code: 400, error: "An electronic signature is required to finalize." };
+
+    if (unsafe && !String(body.unsafe_practice_detail || check.unsafe_practice_detail || "").trim()) {
+      return { ok: false, code: 400, error: "Unsafe or unethical practice must be documented before finalizing." };
+    }
+    if (calc.critical_fail && !String(body.critical_fail_detail || check.critical_fail_detail || "").trim()) {
+      return { ok: false, code: 400, error: "A Critical Fidelity Concern must be described before finalizing." };
+    }
+    // An action plan is required when the result says somebody needs help.
+    // Refusing here rather than warning is deliberate: "Needs Improvement" with
+    // no plan is how a retraining never happens.
+    const planTypes = Array.isArray(body.action_plan_options) ? body.action_plan_options : parseJson(check.action_plan_options, []);
+    const planText = String(body.action_plan_narrative || check.action_plan_narrative || "").trim();
+    if (actionPlanRequired(calc) && !planText && !planTypes.length) {
+      return { ok: false, code: 400, code_key: "action_plan_required", error:
+        `A ${calc.critical_fail ? "Critical Fidelity Concern" : calc.rating_label} result requires an Action Plan before it can be finalized.` };
+    }
+
+    const actor = (user && (user.email || user.name)) || "unknown";
+    const now = nowISO();
+    const ackToken = crypto.randomBytes(24).toString("hex");
+
+    // ---- 1. LOCK. Everything else is best-effort after this line. ----
+    await dbRun(
+      `UPDATE fidelity_checks SET
+         scores_json = ?, section_scores_json = ?, total_score = ?, max_score = ?, percentage = ?,
+         rating_key = ?, rating_label = ?, unsafe_practice = ?, unsafe_practice_detail = ?,
+         critical_fail = ?, critical_fail_reasons = ?, critical_fail_detail = ?,
+         strengths = ?, areas_for_improvement = ?, action_plan_narrative = ?, action_plan_options = ?,
+         bcba_signed_name = ?, bcba_signed_at = ?, evaluator_credentials = ?,
+         finalized_at = ?, status = 'finalized', ack_token = ?, updated_at = ?
+       WHERE id = ?`,
+      [JSON.stringify(scores), JSON.stringify(calc.section_scores), calc.total_score, MAX_SCORE, calc.percentage,
+       calc.rating_key, calc.rating_label, !!unsafe, body.unsafe_practice_detail || check.unsafe_practice_detail || null,
+       calc.critical_fail, JSON.stringify(calc.critical_fail_reasons),
+       body.critical_fail_detail || check.critical_fail_detail || null,
+       body.strengths != null ? body.strengths : check.strengths,
+       body.areas_for_improvement != null ? body.areas_for_improvement : check.areas_for_improvement,
+       planText || null, JSON.stringify(planTypes),
+       signedName, now, body.evaluator_credentials || check.evaluator_credentials || null,
+       now, ackToken, now, checkId]
+    );
+    await audit(checkId, "finalized", { actor, new: `${calc.total_score}/${MAX_SCORE} (${calc.percentage}%) ${calc.rating_label}` });
+    await audit(checkId, "signed", { actor, field: "bcba_signed_name", new: signedName });
+
+    const fresh = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [checkId]);
+    const emp = await dbGet("SELECT id, name, email, role_title FROM hr_employees WHERE id = ?", [check.employee_id]).catch(() => null);
+    const result = { ok: true, check_id: checkId, calc, pdf_document_id: null, emailed: false, action_plan_id: null };
+
+    // ---- 2. PDF ----
+    try {
+      const docId = await buildPdf(fresh, emp);
+      if (docId) {
+        await dbRun("UPDATE fidelity_checks SET pdf_document_id = ?, pdf_generated_at = ? WHERE id = ?", [docId, nowISO(), checkId]);
+        await audit(checkId, "pdf_generated", { actor: "system", new: String(docId) });
+        result.pdf_document_id = docId;
+      } else {
+        await audit(checkId, "pdf_failed", { actor: "system", new: "PDF could not be generated; the assessment is still signed and saved." });
+      }
+    } catch (e) {
+      await audit(checkId, "pdf_failed", { actor: "system", new: e.message });
+    }
+
+    // ---- 3. an action plan row, when one is required ----
+    if (actionPlanRequired(calc)) {
+      try {
+        const row = await dbGet(
+          `INSERT INTO fidelity_action_plans
+             (check_id, employee_id, plan_types, description, responsible_supervisor,
+              date_assigned, due_date, status, created_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'not_started', ?, ?, ?) RETURNING id`,
+          [checkId, check.employee_id, JSON.stringify(planTypes), planText || null,
+           signedName, now.slice(0, 10), body.action_plan_due_date || null, actor, now, now]
+        );
+        result.action_plan_id = row ? row.id : null;
+        await audit(checkId, "action_plan_created", { actor, new: planTypes.join(", ") || planText });
+      } catch (e) {
+        await audit(checkId, "action_plan_failed", { actor: "system", new: e.message });
+      }
+    }
+
+    // ---- 4. email the employee, with the acknowledgment link ----
+    if (emp && emp.email) {
+      const url = `${APP_BASE_URL}/fidelity-ack/${ackToken}`;
+      try {
+        await sendEmail({
+          to: emp.email,
+          subject: "Your Spectrum Squad RBT Fidelity Check",
+          html: fidelityEmailHtml(emp, fresh, calc, url),
+          type: "fidelity_check",
+          refType: "fidelity_check", refId: checkId,
+        });
+        await dbRun("UPDATE fidelity_checks SET emailed_at = ?, email_status = 'sent', status = 'awaiting_ack' WHERE id = ?", [nowISO(), checkId]);
+        await audit(checkId, "emailed", { actor: "system", new: emp.email });
+        result.emailed = true;
+      } catch (e) {
+        await dbRun("UPDATE fidelity_checks SET email_status = ? WHERE id = ?", ["failed: " + e.message, checkId]);
+        await audit(checkId, "email_failed", { actor: "system", new: e.message });
+      }
+    } else {
+      await dbRun("UPDATE fidelity_checks SET email_status = 'no_email_on_file' WHERE id = ?", [checkId]);
+      await audit(checkId, "email_skipped", { actor: "system", new: "No email address on the employee record." });
+    }
+
+    // ---- 5. follow-up work, for the results that need a human ----
+    if (calc.critical_fail || calc.rating_key === "critical" || calc.rating_key === "needs_improvement") {
+      try {
+        await createStaffTask({
+          title: calc.critical_fail
+            ? `CRITICAL Fidelity concern — ${emp ? emp.name : "RBT"}`
+            : `Fidelity follow-up (${calc.rating_label}) — ${emp ? emp.name : "RBT"}`,
+          notes: `Fidelity Check on ${check.assessment_date}: ${calc.total_score}/${MAX_SCORE} (${calc.percentage}%), ${calc.rating_label}.`
+               + (calc.critical_fail ? ` Critical: ${calc.critical_fail_reasons.join("; ")}.` : ""),
+          created_by: actor,
+        });
+        await audit(checkId, "followup_task_created", { actor: "system" });
+      } catch (e) {
+        await audit(checkId, "followup_task_failed", { actor: "system", new: e.message });
+      }
+    }
+
+    return result;
+  }
+
+  function fidelityEmailHtml(emp, check, calc, ackUrl) {
+    const first = String(emp.name || "there").split(/\s+/)[0];
+    return `
+      <p>Hi ${esc(first)},</p>
+      <p>Your Fidelity Check from <strong>${esc(check.assessment_date || "")}</strong> has been completed and signed by ${esc(check.bcba_signed_name || "your supervisor")}.</p>
+      <table style="border-collapse:collapse;font-size:15px;margin:14px 0;">
+        <tr><td style="padding:5px 14px 5px 0;color:#5b6472;">Score</td><td style="padding:5px 0;font-weight:700;">${calc.total_score} / ${MAX_SCORE}</td></tr>
+        <tr><td style="padding:5px 14px 5px 0;color:#5b6472;">Percentage</td><td style="padding:5px 0;font-weight:700;">${calc.percentage}%</td></tr>
+        <tr><td style="padding:5px 14px 5px 0;color:#5b6472;">Rating</td><td style="padding:5px 0;font-weight:700;">${esc(calc.rating_label)}</td></tr>
+      </table>
+      ${calc.critical_fail ? `<p style="color:#a3282e;"><strong>This assessment recorded a critical fidelity concern.</strong> Your supervisor will follow up with you directly.</p>` : ""}
+      <p style="text-align:center;margin:24px 0;">
+        <a href="${ackUrl}" style="background:#e0a430;color:#1b2a6b;font-weight:700;text-decoration:none;padding:12px 26px;border-radius:999px;font-size:15px;display:inline-block;">Read it and acknowledge</a>
+      </p>
+      <p style="font-size:12.5px;color:#6b7280;">Acknowledging confirms you received this assessment. It does not mean you agree with every part of it — if something looks wrong, tell your supervisor.</p>`;
+  }
+  function esc(v) {
+    return String(v == null ? "" : v)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
   module.exports.__rubric = SECTIONS;
 
   return {
@@ -693,6 +1003,7 @@ module.exports = function initFidelity(ctx) {
     initTables, audit, canManageFidelity, canEvaluate,
     employeeSummary, summarise, trendOf, finalizedChecks,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure,
+    buildPdf, parseJson, finalizeCheck, STATUSES,
     DEFAULT_BANDS, DEFAULT_WEIGHTS, CATEGORIES, FIDELITY_METHODS,
     _internal: { round1, round2, num },
   };
