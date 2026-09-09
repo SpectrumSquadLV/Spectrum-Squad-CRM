@@ -22,6 +22,10 @@
 //     text layer and there is no OCR here. An expiry date is never guessed --
 //     a wrong one silently arms, or fails to arm, a compliance reminder.
 //
+//   * Nobody who has left is chased, and their portal link stops opening. The
+//     onboarding is work keyed to an employment; when the employment ends the
+//     work ends with it. See STILL EMPLOYED? below.
+//
 // Additive: new onboarding_* tables, routes under /api/onboarding/*, and a
 // public portal page. Reuses hr_employees, the email templates, staff tasks
 // and the certification records that already exist.
@@ -49,6 +53,53 @@ module.exports = function initOnboarding(ctx) {
 
   const ADMIN_ROLES = ["owner", "super_admin", "admin", "hr_admin"];
   const canManage = (u) => !!u && ADMIN_ROLES.includes(u.role);
+
+  // ======================= STILL EMPLOYED? ===================
+  // Onboarding is work keyed to an employment. When the employment ends the
+  // work has to end with it, and until now nothing in this file ever read the
+  // employment at all: the sweep joined hr_employees for a name and an email
+  // and never looked at `status`, and the four portal lookups found the record
+  // by its token without ever asking who it belonged to.
+  //
+  // So somebody who was terminated or withdrew mid-paperwork kept receiving
+  // "we're still waiting on a few of your onboarding documents" every day the
+  // deadline moved, kept generating staff tasks to chase them, and -- the part
+  // that matters most -- the link in that email still worked. A former employee
+  // could still upload their driver's licence and their certificates, and the
+  // CRM would file them, create certification records off them, and email
+  // leadership that their onboarding was complete.
+  //
+  // 'archived' sits alongside 'terminated' because people.js already treats
+  // the two the same when it decides who to stop emailing. 'onboarding' and
+  // 'leave' are NOT on this list: a new hire's status is literally 'onboarding'
+  // while they are doing this, and somebody on leave is still staff.
+  const GONE_STATUSES = ["terminated", "archived"];
+  const noLongerEmployed = (emp) =>
+    !emp || GONE_STATUSES.includes(clean(emp.status).toLowerCase());
+  // The sweep's copy of the same list, so the query and the guard cannot drift.
+  const GONE_PLACEHOLDERS = GONE_STATUSES.map(() => "?").join(", ");
+
+  // What the portal says when the link belongs to somebody who has left. It
+  // deliberately does not say why. Whoever is holding this link is not
+  // necessarily the person it was sent to, and an employment status is not
+  // something a public page announces -- so it points at a human instead.
+  const PORTAL_CLOSED =
+    "This link is no longer active. If you think that's a mistake, reply to your welcome email and we'll get it sorted.";
+  const PORTAL_UNKNOWN =
+    "This link isn't valid. Check the link in your welcome email, or reply to it and we'll send a new one.";
+
+  // Every public portal route starts here: find the record, find the person it
+  // belongs to, and refuse if that person is no longer one of ours. Returning
+  // the employee as well is what lets the routes below stop looking it up a
+  // second time -- and means the check cannot be skipped by a route that
+  // forgets to make it.
+  async function openPortal(token) {
+    const rec = await dbGet("SELECT * FROM onboarding_records WHERE portal_token = ?", [clean(token)]);
+    if (!rec) return { error: { code: 404, message: PORTAL_UNKNOWN } };
+    const emp = await dbGet("SELECT id, name, role_title, status FROM hr_employees WHERE id = ?", [rec.employee_id]);
+    if (noLongerEmployed(emp)) return { error: { code: 403, message: PORTAL_CLOSED } };
+    return { rec, emp };
+  }
 
   // ======================= DOCUMENT REQUIREMENTS =============
   // Exactly the lists in the two welcome emails. `stored: false` means the
@@ -303,8 +354,15 @@ module.exports = function initOnboarding(ctx) {
     const rows = await dbAll(
       `SELECT r.*, e.name, e.email FROM onboarding_records r
          JOIN hr_employees e ON e.id = r.employee_id
-        WHERE r.docs_complete_at IS NULL AND r.deadline_at IS NOT NULL`
-    ).catch(() => []);
+        WHERE r.docs_complete_at IS NULL AND r.deadline_at IS NOT NULL
+          AND LOWER(COALESCE(e.status, 'active')) NOT IN (${GONE_PLACEHOLDERS})`,
+      GONE_STATUSES
+    ).catch((e) => {
+      // Swallowing this silently would make a broken sweep indistinguishable
+      // from a quiet one -- nobody is nudged, and nothing says why.
+      console.error("onboarding sweep query failed:", e.message);
+      return [];
+    });
     const now = Date.now();
     for (const r of rows) {
       const due = new Date(r.deadline_at).getTime();
@@ -342,9 +400,9 @@ module.exports = function initOnboarding(ctx) {
     try {
       // ---------------- public portal ----------------
       if (pathname === "/api/onboarding/public/portal" && method === "GET") {
-        const rec = await dbGet("SELECT * FROM onboarding_records WHERE portal_token = ?", [clean(query.token)]);
-        if (!rec) { json(res, 404, { error: "This link isn't valid. Check the link in your welcome email, or reply to it and we'll send a new one." }); return true; }
-        const emp = await dbGet("SELECT id, name, role_title FROM hr_employees WHERE id = ?", [rec.employee_id]);
+        const opened = await openPortal(query.token);
+        if (opened.error) { json(res, opened.error.code, { error: opened.error.message }); return true; }
+        const { rec, emp } = opened;
         const docs = await docsFor(rec);
         const credLink = clean(await getAppSetting(`credentialing_link_${rec.role_kind}`, ""));
         json(res, 200, {
@@ -368,8 +426,9 @@ module.exports = function initOnboarding(ctx) {
       // Upload one document. Raw body, doc key and token on the query string,
       // which keeps the portal a single fetch with no multipart parser.
       if (pathname === "/api/onboarding/public/upload" && method === "POST") {
-        const rec = await dbGet("SELECT * FROM onboarding_records WHERE portal_token = ?", [clean(query.token)]);
-        if (!rec) { json(res, 404, { error: "This link isn't valid." }); return true; }
+        const opened = await openPortal(query.token);
+        if (opened.error) { json(res, opened.error.code, { error: opened.error.message }); return true; }
+        const { rec, emp } = opened;
         const key = clean(query.doc_key);
         const doc = await dbGet("SELECT * FROM onboarding_documents WHERE onboarding_id = ? AND doc_key = ?", [rec.id, key]);
         if (!doc) { json(res, 404, { error: "That isn't one of the documents we asked for." }); return true; }
@@ -413,7 +472,6 @@ module.exports = function initOnboarding(ctx) {
            issued, expires, source, nowISO(), doc.id]
         );
 
-        const emp = await dbGet("SELECT id, name, role_title FROM hr_employees WHERE id = ?", [rec.employee_id]);
         if (!needsDates && spec) {
           await recordCertification(emp, spec, { issued_date: issued, expiration_date: expires, dates_source: source }, "onboarding portal");
         }
@@ -432,8 +490,9 @@ module.exports = function initOnboarding(ctx) {
 
       // The hire types the dates the file didn't carry.
       if (pathname === "/api/onboarding/public/dates" && method === "POST") {
-        const rec = await dbGet("SELECT * FROM onboarding_records WHERE portal_token = ?", [clean(query.token)]);
-        if (!rec) { json(res, 404, { error: "This link isn't valid." }); return true; }
+        const opened = await openPortal(query.token);
+        if (opened.error) { json(res, opened.error.code, { error: opened.error.message }); return true; }
+        const { rec, emp } = opened;
         const b = await readBody(req);
         const doc = await dbGet("SELECT * FROM onboarding_documents WHERE onboarding_id = ? AND doc_key = ?", [rec.id, clean(b.doc_key)]);
         if (!doc) { json(res, 404, { error: "Unknown document." }); return true; }
@@ -443,7 +502,6 @@ module.exports = function initOnboarding(ctx) {
           "UPDATE onboarding_documents SET issued_date = ?, expiration_date = ?, dates_source = 'entered_by_hire', status = 'received' WHERE id = ?",
           [clean(b.issued_date) || null, exp, doc.id]
         );
-        const emp = await dbGet("SELECT id, name, role_title FROM hr_employees WHERE id = ?", [rec.employee_id]);
         await recordCertification(emp, docSpec(rec.role_kind, doc.doc_key),
           { issued_date: clean(b.issued_date) || null, expiration_date: exp, dates_source: "entered_by_hire" }, "onboarding portal");
         const completion = await checkCompletion(rec, emp);
@@ -453,13 +511,13 @@ module.exports = function initOnboarding(ctx) {
 
       // Ticking the credentialing form off.
       if (pathname === "/api/onboarding/public/attest" && method === "POST") {
-        const rec = await dbGet("SELECT * FROM onboarding_records WHERE portal_token = ?", [clean(query.token)]);
-        if (!rec) { json(res, 404, { error: "This link isn't valid." }); return true; }
+        const opened = await openPortal(query.token);
+        if (opened.error) { json(res, opened.error.code, { error: opened.error.message }); return true; }
+        const { rec, emp } = opened;
         const b = await readBody(req);
         const doc = await dbGet("SELECT * FROM onboarding_documents WHERE onboarding_id = ? AND doc_key = ?", [rec.id, clean(b.doc_key)]);
         if (!doc) { json(res, 404, { error: "Unknown item." }); return true; }
         await dbRun("UPDATE onboarding_documents SET status = 'received', received_at = ?, dates_source = 'not_applicable' WHERE id = ?", [nowISO(), doc.id]);
-        const emp = await dbGet("SELECT id, name, role_title FROM hr_employees WHERE id = ?", [rec.employee_id]);
         const completion = await checkCompletion(rec, emp);
         json(res, 200, { ok: true, complete: !!completion.complete });
         return true;
@@ -482,6 +540,18 @@ module.exports = function initOnboarding(ctx) {
       if (empMatch && method === "POST") {
         const emp = await dbGet("SELECT * FROM hr_employees WHERE id = ?", [Number(empMatch[1])]);
         if (!emp) { json(res, 404, { error: "Not found" }); return true; }
+        // Refused here rather than inside startOnboarding(), which also runs on
+        // the candidate's own click when an offer is accepted. A rehire's staff
+        // record can still be sitting at 'terminated' at that moment, and
+        // failing their onboarding silently would be the worse bug -- hr.js
+        // brings them back to 'onboarding' on acceptance instead. This route is
+        // somebody in the CRM pressing a button, so it can say what is wrong.
+        if (noLongerEmployed(emp)) {
+          json(res, 400, {
+            error: `${clean(emp.name) || "That person"} is marked ${clean(emp.status) || "not employed"}, so there are no onboarding documents to ask for. If they are coming back, set their employment status first.`,
+          });
+          return true;
+        }
         const rec = await startOnboarding(emp, user.email);
         json(res, 201, { onboarding: { ...rec, portal_url: portalUrl(rec.portal_token) } });
         return true;
