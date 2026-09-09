@@ -1043,6 +1043,14 @@ module.exports = function initFidelity(ctx) {
     if (String(emp.status || "active") === "terminated") {
       return `${emp.name || "That RBT"} is no longer employed here, so there is nobody to observe.`;
     }
+    // Same reason: the roster is RBTs, so a check on anybody else would sit in
+    // an evaluator's list and be chased while appearing on no dashboard. The
+    // rule is isRbt() — the module's own definition, not a second opinion —
+    // and the message says what to change, because a mis-set job title is the
+    // likely cause rather than somebody assessing the wrong person.
+    if (!isRbt(emp)) {
+      return `${emp.name || "That person"}'s job title does not read as an RBT, and Fidelity reads the job title on the staff record. Correct the title if it is wrong.`;
+    }
     return null;
   }
 
@@ -2221,7 +2229,7 @@ module.exports = function initFidelity(ctx) {
       const b = await readBody(req);
       const employeeId = Number(b.employee_id);
       if (!employeeId) return json(res, 400, { error: "Choose which RBT is to be observed." });
-      const emp = await dbGet("SELECT id, name, status FROM hr_employees WHERE id = ?", [employeeId]);
+      const emp = await dbGet("SELECT id, name, status, role_title FROM hr_employees WHERE id = ?", [employeeId]);
       if (!emp) return json(res, 404, { error: "That staff member is not on file." });
       const goneProblem = notObservableProblem(emp);
       if (goneProblem) return json(res, 400, { error: goneProblem });
@@ -2334,7 +2342,7 @@ module.exports = function initFidelity(ctx) {
       const b = await readBody(req);
       const employeeId = Number(b.employee_id);
       if (!employeeId) return json(res, 400, { error: "Choose which RBT is being observed." });
-      const emp = await dbGet("SELECT id, name, status FROM hr_employees WHERE id = ?", [employeeId]);
+      const emp = await dbGet("SELECT id, name, status, role_title FROM hr_employees WHERE id = ?", [employeeId]);
       if (!emp) return json(res, 404, { error: "That staff member is not on file." });
       const goneNow = notObservableProblem(emp);
       if (goneNow) return json(res, 400, { error: goneNow });

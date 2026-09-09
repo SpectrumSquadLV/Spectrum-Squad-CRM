@@ -637,12 +637,32 @@ function scoresTotalling(total, opts = {}) {
   // ================================================================
   section("When an RBT leaves, the work asked about them goes with them");
 
+  const anRbt = { name: "X", status: "active", role_title: "RBT" };
   check("the rule reads on its own",
-    fid.notObservableProblem({ name: "X", status: "active" }) === null &&
-    /no longer employed/.test(fid.notObservableProblem({ name: "X", status: "terminated" }) || ""),
-    fid.notObservableProblem({ name: "X", status: "terminated" }));
+    fid.notObservableProblem(anRbt) === null &&
+    /no longer employed/.test(fid.notObservableProblem({ ...anRbt, status: "terminated" }) || ""),
+    { active: fid.notObservableProblem(anRbt), gone: fid.notObservableProblem({ ...anRbt, status: "terminated" }) });
+  check("...and having left is reported before the job title, since it is the bigger fact",
+    /no longer employed/.test(fid.notObservableProblem({ name: "X", status: "terminated", role_title: "Office Manager" }) || ""),
+    fid.notObservableProblem({ name: "X", status: "terminated", role_title: "Office Manager" }));
   check("...and a missing record is refused too, not treated as fine",
     !!fid.notObservableProblem(null), fid.notObservableProblem(null));
+
+  // The same invisible-work hole, reached the other way: the roster is RBTs,
+  // so a check on anybody else sits in an evaluator's list and is chased while
+  // appearing on no dashboard.
+  const officeMgr = await mkEmp("Zulu", { role_title: "Office Manager" });
+  r = await owner("/api/fidelity/assign", {
+    method: "POST", body: { employee_id: officeMgr, evaluator_user_id: evaluator.id },
+  });
+  check("a Fidelity Check cannot be asked for on somebody who is not an RBT", r.status === 400, r.data);
+  check("...and the message says what to correct, since a mis-set title is the likely cause",
+    /job title on the staff record/i.test(r.data.error || ""), r.data.error);
+  r = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: officeMgr, assessment_date: today } });
+  check("...nor started directly", r.status === 400, r.data);
+  check("a trainee title still counts as an RBT, because the module says so",
+    fid.isRbt({ role_title: "RBT in training", status: "active" }) === true);
+  check("...and a behavior tech does too", fid.isRbt({ role_title: "Behavior Tech", status: "active" }) === true);
 
   const empLeaver = await mkEmp("Yankee");
   const leaverAssign = await owner("/api/fidelity/assign", {
