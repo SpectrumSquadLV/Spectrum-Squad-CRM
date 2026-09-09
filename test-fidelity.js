@@ -635,6 +635,69 @@ function scoresTotalling(total, opts = {}) {
   check("an evaluator cannot browse the RBT's history either", r.status === 403, r.status);
 
   // ================================================================
+  section("When an RBT leaves, the work asked about them goes with them");
+
+  check("the rule reads on its own",
+    fid.notObservableProblem({ name: "X", status: "active" }) === null &&
+    /no longer employed/.test(fid.notObservableProblem({ name: "X", status: "terminated" }) || ""),
+    fid.notObservableProblem({ name: "X", status: "terminated" }));
+  check("...and a missing record is refused too, not treated as fine",
+    !!fid.notObservableProblem(null), fid.notObservableProblem(null));
+
+  const empLeaver = await mkEmp("Yankee");
+  const leaverAssign = await owner("/api/fidelity/assign", {
+    method: "POST", body: { employee_id: empLeaver, evaluator_user_id: evaluator.id, due_date: daysAgo(2) },
+  });
+  check("an observation is asked for while they are still here", leaverAssign.status === 201, leaverAssign.data);
+
+  // They leave.
+  await owner(`/api/hr/employees/${empLeaver}`, { method: "PATCH", body: { status: "terminated", termination_date: today } });
+  const goneRow = await pool.query("SELECT status FROM hr_employees WHERE id = $1", [empLeaver]);
+  check("the staff record is marked terminated", goneRow.rows[0].status === "terminated", goneRow.rows[0]);
+
+  r = await owner("/api/fidelity/assign", {
+    method: "POST", body: { employee_id: empLeaver, evaluator_user_id: evaluator.id },
+  });
+  check("no new observation can be asked for", r.status === 400, r.data);
+  check("...saying there is nobody to observe", /nobody to observe/i.test(r.data.error || ""), r.data.error);
+  r = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: empLeaver, assessment_date: today } });
+  check("...and none can be started directly either", r.status === 400, r.data);
+
+  // The one already asked for is closed rather than chased forever.
+  const leaverMark = await lastMailIdEarly();
+  r = await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  check("the sweep closes the assignment that can no longer happen",
+    r.data.assignment_cancelled >= 1, r.data);
+
+  const leaverRow = await owner(`/api/fidelity/check/${leaverAssign.data.id}`);
+  check("...marked cancelled", leaverRow.data.check.status === "cancelled", leaverRow.data.check.status);
+  check("...with the reason on the record rather than the row just vanishing",
+    /no longer employed here/i.test(String(leaverRow.data.check.assignment_note || "")),
+    leaverRow.data.check.assignment_note);
+  check("...and in the audit trail",
+    (leaverRow.data.audit || []).some((a) => a.action === "cancelled"), (leaverRow.data.audit || []).map((a) => a.action));
+
+  const leaverMail = await pool.query(
+    "SELECT recipient, body FROM notifications_log WHERE id > $1 AND type = 'fidelity_assignment_orphaned'", [leaverMark]);
+  check("the evaluator is told it is off their list",
+    leaverMail.rows.length === 1 && leaverMail.rows[0].recipient.includes(evaluator.email), leaverMail.rows);
+  check("...and that nothing is needed from them",
+    leaverMail.rows.length === 1 && /Nothing is needed from you/i.test(leaverMail.rows[0].body),
+    (leaverMail.rows[0] || {}).body);
+
+  r = await evaluator.req("/api/fidelity/my-assignments");
+  check("it has left the evaluator's list",
+    !(r.data.assignments || []).some((a) => a.id === leaverAssign.data.id), r.data.assignments);
+
+  const leaverChase = await lastMailIdEarly();
+  await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  const stillNagged = await pool.query(
+    "SELECT body FROM notifications_log WHERE id > $1 AND type = 'fidelity_assignment_overdue'", [leaverChase]);
+  check("and it is never chased again",
+    !stillNagged.rows.map((x) => x.body).join(" ").includes(`Yankee ${stamp}`),
+    stillNagged.rows.map((x) => x.body.slice(0, 60)));
+
+  // ================================================================
   section("Nobody observes themselves");
 
   // The CRM links a login to a staff record BY EMAIL, and in a small clinic a

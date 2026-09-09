@@ -1034,6 +1034,18 @@ module.exports = function initFidelity(ctx) {
   // Refused rather than flagged. A self-assessment in a performance record is
   // not something leadership reviews and accepts; it is something somebody
   // else has to do.
+  // Somebody who has left cannot be observed. Without this an assignment could
+  // be raised for a departed RBT, sit in an evaluator's list, and be chased by
+  // the daily sweep — invisible on the roster, which excludes terminated
+  // staff, so the only person who knew about it was the one being nagged.
+  function notObservableProblem(emp) {
+    if (!emp) return "That staff member is not on file.";
+    if (String(emp.status || "active") === "terminated") {
+      return `${emp.name || "That RBT"} is no longer employed here, so there is nobody to observe.`;
+    }
+    return null;
+  }
+
   function sameHuman(aEmail, bEmail) {
     const a = String(aEmail || "").trim().toLowerCase();
     const b = String(bEmail || "").trim().toLowerCase();
@@ -1685,7 +1697,7 @@ module.exports = function initFidelity(ctx) {
   }
 
   async function sweep() {
-    const out = { check_due: 0, plan_overdue: 0, assignment_overdue: 0, unsigned_complete: 0,
+    const out = { check_due: 0, plan_overdue: 0, assignment_overdue: 0, assignment_cancelled: 0, unsigned_complete: 0,
                   ack_outstanding: 0, review_due: 0, skipped_no_recipient: 0 };
     const settings = await getSettings();
     const today = nowISO().slice(0, 10);
@@ -1816,6 +1828,46 @@ module.exports = function initFidelity(ctx) {
         await releaseNotice(id);
         await audit(c.id, "assignment_chase_failed", { actor: "system", new: e.message });
       }
+    }
+
+    // ---- 2b-ii. assignments for people who have left ----
+    // Closed rather than chased. An RBT leaves, and the observation somebody
+    // was asked to do can no longer happen — but the roster excludes
+    // terminated staff, so the only person who could still see it was the
+    // evaluator being nagged about it every 30 days. Cancelled with the reason
+    // stated, exactly as leadership withdrawing it would be, so the record
+    // says what happened rather than the row quietly disappearing.
+    const orphaned = await dbAll(
+      `SELECT c.*, e.name AS employee_name FROM fidelity_checks c
+         JOIN hr_employees e ON e.id = c.employee_id
+        WHERE c.finalized_at IS NULL AND COALESCE(c.voided, FALSE) = FALSE
+          AND c.status IN (${CHECK_LIVE.map(() => "?").join(",")})
+          AND COALESCE(e.status, 'active') = 'terminated'`,
+      CHECK_LIVE
+    ).catch(() => []);
+    for (const c of orphaned) {
+      const note = `Cancelled automatically: ${c.employee_name || "the RBT"} is no longer employed here.`;
+      await dbRun("UPDATE fidelity_checks SET status = 'cancelled', assignment_note = ?, updated_at = ? WHERE id = ?",
+        [(c.assignment_note ? c.assignment_note + " — " : "") + note, nowISO(), c.id]);
+      await audit(c.id, "cancelled", { actor: "system", old: c.status, new: note });
+      out.assignment_cancelled = (out.assignment_cancelled || 0) + 1;
+      const ev = c.evaluator_user_id
+        ? await dbGet("SELECT name, email FROM users WHERE id = ?", [c.evaluator_user_id]).catch(() => null)
+        : null;
+      if (!ev || !ev.email) continue;
+      const nid = await claimNotice(`assignment_orphaned:${c.id}`, "assignment_orphaned", c.employee_id, c.id, ev.email);
+      if (!nid) continue;
+      try {
+        await sendEmail({
+          to: ev.email,
+          subject: `Fidelity Check cancelled: ${c.employee_name || "an RBT"}`,
+          html: `<p>Hi ${esc(String(ev.name || "there").split(/\s+/)[0])},</p>
+            <p>The Fidelity Check you were asked to complete for <strong>${esc(c.employee_name || "an RBT")}</strong>
+            has been cancelled — they are no longer employed here.</p>
+            <p>It has been taken off your list. Nothing is needed from you.</p>`,
+          type: "fidelity_assignment_orphaned", refType: "fidelity_check", refId: c.id,
+        });
+      } catch (e) { await releaseNotice(nid); }
     }
 
     // ---- 2c. scored, and never signed ----
@@ -2169,8 +2221,10 @@ module.exports = function initFidelity(ctx) {
       const b = await readBody(req);
       const employeeId = Number(b.employee_id);
       if (!employeeId) return json(res, 400, { error: "Choose which RBT is to be observed." });
-      const emp = await dbGet("SELECT id, name FROM hr_employees WHERE id = ?", [employeeId]);
+      const emp = await dbGet("SELECT id, name, status FROM hr_employees WHERE id = ?", [employeeId]);
       if (!emp) return json(res, 404, { error: "That staff member is not on file." });
+      const goneProblem = notObservableProblem(emp);
+      if (goneProblem) return json(res, 400, { error: goneProblem });
 
       const evaluatorId = Number(b.evaluator_user_id);
       if (!evaluatorId) return json(res, 400, { error: "Choose who is being asked to do the observation." });
@@ -2280,8 +2334,10 @@ module.exports = function initFidelity(ctx) {
       const b = await readBody(req);
       const employeeId = Number(b.employee_id);
       if (!employeeId) return json(res, 400, { error: "Choose which RBT is being observed." });
-      const emp = await dbGet("SELECT id, name FROM hr_employees WHERE id = ?", [employeeId]);
+      const emp = await dbGet("SELECT id, name, status FROM hr_employees WHERE id = ?", [employeeId]);
       if (!emp) return json(res, 404, { error: "That staff member is not on file." });
+      const goneNow = notObservableProblem(emp);
+      if (goneNow) return json(res, 400, { error: goneNow });
       const initialsProblem = clientInitialsProblem(b.client_initials);
       if (initialsProblem) return json(res, 400, { error: initialsProblem });
       const selfProblem = await selfObservationProblem(
@@ -2790,6 +2846,13 @@ module.exports = function initFidelity(ctx) {
       emailed_at: r.emailed_at, email_status: r.email_status,
       employee_ack_name: r.employee_ack_name, employee_ack_at: r.employee_ack_at,
       voided: r.voided === true || r.voided === "t", void_reason: r.void_reason,
+      // The assignment side of a check. Stored since assignments were added and
+      // never returned, so a cancelled one could be read by nobody: the reason
+      // was on the row and not on any screen.
+      assigned_by: r.assigned_by || null,
+      assigned_at: r.assigned_at || null,
+      assignment_due_date: r.assignment_due_date || null,
+      assignment_note: r.assignment_note || null,
       amends_check_id: r.amends_check_id || null,
       amend_reason: r.amend_reason || null,
       superseded_by_check_id: r.superseded_by_check_id || null,
@@ -3008,7 +3071,7 @@ module.exports = function initFidelity(ctx) {
     employeeSummary, summarise, trendOf, finalizedChecks, allChecksFor,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
     buildPdf, refilePdf, statusBannerFor, assessmentDateProblem, clientInitialsProblem,
-    sameHuman, selfObservationProblem, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
+    sameHuman, selfObservationProblem, notObservableProblem, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
     insights,
     PLAN_STATUSES, PLAN_OPEN,
