@@ -199,6 +199,49 @@ function scoresTotalling(total, opts = {}) {
     fid.actionPlanRequired(partial) === false);
 
   // ================================================================
+  section("What the filed PDF says about itself");
+
+  // A PDF in a personnel file is read on its own, a year later, with no
+  // dashboard beside it. If an assessment was amended or voided, the paper has
+  // to say so — two PDFs of one observation with nothing to tell them apart is
+  // worse than no PDF at all.
+  //
+  // pdfkit subsets its fonts, so the text inside a generated PDF is glyph ids
+  // rather than words and cannot be asserted on. The wording and the branch
+  // therefore live outside the PDF writer, and this is where they are checked.
+  const plainCheck = { id: 1, assessment_date: "2026-06-01", total_score: 54, max_score: 60, percentage: 90 };
+  const replaced = { id: 2, assessment_date: "2026-05-01", total_score: 36, max_score: 60, percentage: 60, rating_label: "Needs Improvement" };
+
+  check("an ordinary signed assessment gets no banner",
+    fid.statusBannerFor(plainCheck, null) === null, fid.statusBannerFor(plainCheck, null));
+
+  const voidBanner = fid.statusBannerFor({ ...plainCheck, voided: true, void_reason: "Recorded against the wrong RBT." }, null);
+  check("a voided assessment says so", voidBanner && voidBanner.key === "voided", voidBanner);
+  check("...carrying the reason", voidBanner && /wrong RBT/.test(voidBanner.body), voidBanner);
+  check("...and saying it is kept but does not count",
+    voidBanner && /retained as part of the record and does not count/i.test(voidBanner.body), voidBanner);
+
+  const supBanner = fid.statusBannerFor({ ...plainCheck, superseded_by_check_id: 7 },
+    { id: 7, assessment_date: "2026-07-01", total_score: 54, max_score: 60, percentage: 90, rating_label: "Exceptional" });
+  check("a superseded assessment says it was amended", supBanner && supBanner.key === "superseded", supBanner);
+  check("...and points at the one that stands, with its date and score",
+    supBanner && /2026-07-01/.test(supBanner.body) && /54\/60/.test(supBanner.body), supBanner);
+  check("...and says it is kept exactly as signed",
+    supBanner && /retained exactly as it was signed/i.test(supBanner.body), supBanner);
+
+  const amendBanner = fid.statusBannerFor(
+    { ...plainCheck, amends_check_id: 2, amend_reason: "Section totals transposed." }, replaced);
+  check("an amendment says what it replaces", amendBanner && amendBanner.key === "amendment", amendBanner);
+  check("...naming the assessment it replaces", amendBanner && /2026-05-01/.test(amendBanner.body) && /36\/60/.test(amendBanner.body), amendBanner);
+  check("...and why the correction was made", amendBanner && /transposed/.test(amendBanner.body), amendBanner);
+
+  check("a voided amendment reads as voided first — that is the fact that matters",
+    fid.statusBannerFor({ ...plainCheck, voided: true, amends_check_id: 2 }, replaced).key === "voided");
+  check("a missing counterpart does not produce a broken sentence",
+    /another assessment/.test(fid.statusBannerFor({ ...plainCheck, amends_check_id: 999 }, null).body),
+    fid.statusBannerFor({ ...plainCheck, amends_check_id: 999 }, null));
+
+  // ================================================================
   section("Trend: a wobble is not a direction");
 
   check("+1.5 points exactly reads as Stable", fid.trendOf(91.5, 90).key === "stable", fid.trendOf(91.5, 90));
@@ -1086,6 +1129,9 @@ function scoresTotalling(total, opts = {}) {
   check("while the amendment is unsigned the original still counts",
     during.data.summary.checks === 2 && during.data.summary.average === 70, during.data.summary);
 
+  const origPdfBefore = (await owner(`/api/fidelity/check/${wrongId}`)).data.check.pdf_document_id;
+  check("the original had a PDF filed when it was signed", !!origPdfBefore, origPdfBefore);
+
   await owner(`/api/fidelity/check/${amendId}`, { method: "PATCH", body: { scores: scoresTotalling(54) } });
   r = await owner(`/api/fidelity/check/${amendId}/finalize`, { method: "POST", body: { bcba_signed_name: "Jane Doe, BCBA" } });
   check("the amendment signs", r.status === 200 && r.data.ok === true, r.data);
@@ -1113,6 +1159,16 @@ function scoresTotalling(total, opts = {}) {
     { status: orig.data.check.status, declared: rubricStatuses });
   check("...with the supersession in its audit trail",
     (orig.data.audit || []).some((a) => a.action === "superseded"), (orig.data.audit || []).map((a) => a.action));
+
+  // The personnel file has to be refreshed, not just the database row.
+  check("the original's filed PDF was replaced, so the paper says it was amended",
+    orig.data.check.pdf_document_id && orig.data.check.pdf_document_id !== origPdfBefore,
+    { before: origPdfBefore, after: orig.data.check.pdf_document_id });
+  check("...and the refiling is in the audit trail",
+    (orig.data.audit || []).some((a) => a.action === "pdf_refiled"), (orig.data.audit || []).map((a) => a.action));
+  const refiled = await owner(`/api/hr/employee-documents/${orig.data.check.pdf_document_id}`);
+  check("...and the replacement downloads as a PDF",
+    refiled.status === 200 && /pdf/i.test(refiled.ct || ""), { s: refiled.status, ct: refiled.ct });
 
   const histIds = (afterAmend.data.history || []).map((h) => h.id);
   check("the history still SHOWS the superseded check — nothing is hidden",

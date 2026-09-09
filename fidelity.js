@@ -807,6 +807,18 @@ module.exports = function initFidelity(ctx) {
 
     const scores = parseJson(check.scores_json, {});
     const calc = scoreOf(scores, { unsafe_practice: check.unsafe_practice === true || check.unsafe_practice === "t" });
+
+    // A PDF in a personnel file has to be readable on its own. Somebody opening
+    // it a year from now has the paper and nothing else -- no dashboard, no
+    // history -- so if this assessment was amended, superseded or voided, the
+    // page has to say so. Two PDFs for one observation with nothing to
+    // distinguish them is worse than no PDF at all.
+    const other = check.superseded_by_check_id || check.amends_check_id
+      ? await dbGet("SELECT id, assessment_date, total_score, max_score, percentage, rating_label FROM fidelity_checks WHERE id = ?",
+          [check.superseded_by_check_id || check.amends_check_id]).catch(() => null)
+      : null;
+    const statusBanner = statusBannerFor(check, other);
+
     const storedName = `${crypto.randomBytes(10).toString("hex")}.pdf`;
     const full = path.join(HR_DOCS_DIR, storedName);
     const NAVY = "#1b2a6b", MUTED = "#6b6a86", WARN = "#b45309", BAD = "#a3282e", GOOD = "#166534";
@@ -822,6 +834,14 @@ module.exports = function initFidelity(ctx) {
         doc.fillColor(NAVY).fontSize(19).text("Spectrum Squad", { continued: false });
         doc.fillColor("#201a4d").fontSize(15).text("Session Fidelity Checklist");
         doc.moveDown(0.5);
+
+        // ---- the status banner, before anything somebody might act on ----
+        if (statusBanner) {
+          const colour = statusBanner.key === "voided" ? BAD : statusBanner.key === "superseded" ? WARN : NAVY;
+          doc.fillColor(colour).fontSize(11).text(statusBanner.title);
+          doc.fillColor(MUTED).fontSize(9).text(statusBanner.body, { width: 500 });
+          doc.moveDown(0.6);
+        }
 
         const line = (label, value) => {
           doc.fillColor(MUTED).fontSize(9.5).text(label, { continued: true })
@@ -905,6 +925,54 @@ module.exports = function initFidelity(ctx) {
       [check.employee_id, filename, storedName, nowISO()]
     );
     return row && row.rows && row.rows[0] ? row.rows[0].id : null;
+  }
+
+  // What the paper has to say about itself, decided here rather than inside the
+  // PDF writer. pdfkit subsets its fonts, so the text in a generated PDF is
+  // glyph ids rather than words and cannot be asserted on; keeping the wording
+  // and the branch out here means the thing that matters -- WHICH banner a
+  // given check gets, and what it says -- is testable directly.
+  function statusBannerFor(check, other) {
+    const describe = (c) => c
+      ? `${c.assessment_date || "—"} (${c.total_score}/${c.max_score || MAX_SCORE}, ${c.percentage}%${c.rating_label ? ", " + c.rating_label : ""})`
+      : "another assessment";
+    if (check.voided === true || check.voided === "t") {
+      return { key: "voided", title: "THIS ASSESSMENT WAS VOIDED",
+        body: (check.void_reason ? "Reason: " + check.void_reason + " " : "")
+          + "It is retained as part of the record and does not count towards this employee's Fidelity history." };
+    }
+    if (check.superseded_by_check_id) {
+      return { key: "superseded", title: "THIS ASSESSMENT WAS AMENDED",
+        body: "It is retained exactly as it was signed and no longer counts towards this employee's Fidelity history. "
+          + `The assessment that stands for this observation is dated ${describe(other)}.` };
+    }
+    if (check.amends_check_id) {
+      return { key: "amendment", title: "THIS IS AN AMENDED ASSESSMENT",
+        body: `It replaces the assessment of ${describe(other)}, which is retained on the record and no longer counts.`
+          + (check.amend_reason ? ` Reason for the correction: ${check.amend_reason}` : "") };
+    }
+    return null;
+  }
+
+  // Re-file an employee's copy after its status changed. The signature and the
+  // scores are stored data and are never touched; the PDF is a rendering of
+  // them, which is why regenerating it on acknowledgment was already the
+  // behaviour. A stale PDF saying nothing about a void is a document that
+  // misleads whoever opens the folder.
+  async function refilePdf(checkId, why) {
+    try {
+      const fresh = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [checkId]);
+      if (!fresh) return null;
+      const emp = await dbGet("SELECT id, name, role_title FROM hr_employees WHERE id = ?", [fresh.employee_id]).catch(() => null);
+      const docId = await buildPdf(fresh, emp);
+      if (!docId) return null;
+      await dbRun("UPDATE fidelity_checks SET pdf_document_id = ?, pdf_generated_at = ? WHERE id = ?", [docId, nowISO(), checkId]);
+      await audit(checkId, "pdf_refiled", { actor: "system", new: why });
+      return docId;
+    } catch (e) {
+      await audit(checkId, "pdf_failed", { actor: "system", new: e.message });
+      return null;
+    }
   }
 
   function parseJson(v, fb) {
@@ -1032,6 +1100,10 @@ module.exports = function initFidelity(ctx) {
           old: `${orig.total_score}/${MAX_SCORE} (${orig.percentage}%)`,
           new: `amended by check ${checkId}: ${calc.total_score}/${MAX_SCORE} (${calc.percentage}%)` });
         await audit(checkId, "amends", { actor, new: `supersedes check ${orig.id}` });
+        // The original's filed copy now has to say it was amended, or the
+        // personnel file holds two assessments of one observation and nothing
+        // to tell them apart.
+        await refilePdf(orig.id, "superseded by an amendment");
         supersededId = orig.id;
       }
     }
@@ -1995,6 +2067,7 @@ module.exports = function initFidelity(ctx) {
       await dbRun("UPDATE fidelity_checks SET voided = TRUE, void_reason = ?, voided_by = ?, voided_at = ?, updated_at = ? WHERE id = ?",
         [reason, actor, nowISO(), nowISO(), id]);
       await audit(id, "voided", { actor, new: reason });
+      if (row.pdf_document_id) await refilePdf(id, "voided");
       return json(res, 200, { ok: true });
     }
 
@@ -2449,7 +2522,7 @@ module.exports = function initFidelity(ctx) {
     initTables, audit, canManageFidelity, canEvaluate,
     employeeSummary, summarise, trendOf, finalizedChecks, allChecksFor,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
-    buildPdf, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
+    buildPdf, refilePdf, statusBannerFor, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
     insights,
     PLAN_STATUSES, PLAN_OPEN,
