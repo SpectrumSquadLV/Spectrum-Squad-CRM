@@ -635,6 +635,71 @@ function scoresTotalling(total, opts = {}) {
   check("an evaluator cannot browse the RBT's history either", r.status === 403, r.status);
 
   // ================================================================
+  section("Nobody observes themselves");
+
+  // The CRM links a login to a staff record BY EMAIL, and in a small clinic a
+  // senior RBT can plausibly hold Fidelity Evaluator access. Nothing stopped
+  // them creating, scoring, signing and filing an assessment of themselves,
+  // which then counted towards their own history and fed their own raise.
+  check("the rule is checkable directly", fid.sameHuman("A@b.com", "a@B.com") === true);
+  check("...and does not match nothing to nothing", fid.sameHuman("", "") === false);
+  check("...or two different people", fid.sameHuman("a@b.com", "c@d.com") === false);
+
+  // A user and a staff record that are the same person.
+  const selfEmail = `fid.self.${stamp}@example.invalid`;
+  const selfEmp = await owner("/api/hr/employees", {
+    method: "POST",
+    body: { name: `Fidelity Self ${stamp}`, email: selfEmail, role_title: "RBT", status: "active", hire_date: daysAgo(300) },
+  });
+  const selfEmpId = selfEmp.data && (selfEmp.data.id || (selfEmp.data.employee && selfEmp.data.employee.id));
+  const selfUser = await owner("/api/admin/users", {
+    method: "POST", body: { name: `Fidelity Self ${stamp}`, email: selfEmail, password: PW, role: "clinical" },
+  });
+  await owner(`/api/admin/users/${selfUser.data.id}`, { method: "PATCH", body: { module_access: { "fidelity-evaluator": true } } });
+  const selfReq = await login(selfEmail, PW);
+  check("an RBT can hold a login with evaluator access — this is the realistic case",
+    selfUser.status === 201 && !!selfEmpId, { user: selfUser.status, emp: selfEmpId });
+
+  r = await selfReq("/api/fidelity/check", { method: "POST", body: { employee_id: selfEmpId, assessment_date: today } });
+  check("they cannot start a Fidelity Check on themselves", r.status === 400, r.data);
+  check("...and are told somebody else has to do it",
+    /needs somebody else to do it/i.test(r.data.error || ""), r.data.error);
+
+  r = await owner("/api/fidelity/assign", {
+    method: "POST", body: { employee_id: selfEmpId, evaluator_user_id: selfUser.data.id },
+  });
+  check("leadership cannot assign them to observe themselves either", r.status === 400, r.data);
+  check("...for the same stated reason", r.data.code_key === "self_observation", r.data);
+
+  // Checked again at signing: a login can be linked to a staff record at any
+  // time, so a check that was legitimate on Monday is a self-assessment by
+  // Friday.
+  const laterEmail = `fid.later.${stamp}@example.invalid`;
+  const laterUser = await owner("/api/admin/users", {
+    method: "POST", body: { name: `Fidelity Later ${stamp}`, email: laterEmail, password: PW, role: "clinical" },
+  });
+  await owner(`/api/admin/users/${laterUser.data.id}`, { method: "PATCH", body: { module_access: { "fidelity-evaluator": true } } });
+  const laterReq = await login(laterEmail, PW);
+  const laterEmp = await mkEmp("Whiskey");
+  const laterChk = await laterReq("/api/fidelity/check", { method: "POST", body: { employee_id: laterEmp, assessment_date: today } });
+  check("a check on somebody else starts normally", laterChk.status === 201, laterChk.data);
+  await laterReq(`/api/fidelity/check/${laterChk.data.id}`, { method: "PATCH", body: { scores: scoresTotalling(54) } });
+
+  // The staff record becomes theirs after the fact.
+  await pool.query("UPDATE hr_employees SET email = $1 WHERE id = $2", [laterEmail, laterEmp]);
+  r = await laterReq(`/api/fidelity/check/${laterChk.data.id}/finalize`, {
+    method: "POST", body: { bcba_signed_name: "Fidelity Later" },
+  });
+  check("a check that BECAME a self-assessment is refused at signing", r.status === 400, r.data);
+  check("...rather than being filed because it was fine when it started",
+    r.data.code_key === "self_observation", r.data);
+
+  // And an ordinary observation is untouched by any of this.
+  const otherEmp = await mkEmp("Xray");
+  r = await laterReq("/api/fidelity/check", { method: "POST", body: { employee_id: otherEmp, assessment_date: today } });
+  check("observing somebody else is unaffected", r.status === 201, r.data);
+
+  // ================================================================
   section("A child's name must not reach an employee's personnel file");
 
   // "Initials only, never a full name" has been the rule since the module was

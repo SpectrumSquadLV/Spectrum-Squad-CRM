@@ -1025,6 +1025,27 @@ module.exports = function initFidelity(ctx) {
     return null;
   }
 
+  // Nobody observes themselves. The CRM links a login to a staff record by
+  // email, and in a small clinic a senior RBT can plausibly hold Fidelity
+  // Evaluator access — at which point nothing stopped them creating, scoring,
+  // signing and filing an assessment of themselves that then counted towards
+  // their own history and fed their own raise recommendation.
+  //
+  // Refused rather than flagged. A self-assessment in a performance record is
+  // not something leadership reviews and accepts; it is something somebody
+  // else has to do.
+  function sameHuman(aEmail, bEmail) {
+    const a = String(aEmail || "").trim().toLowerCase();
+    const b = String(bEmail || "").trim().toLowerCase();
+    return !!a && a === b;
+  }
+  async function selfObservationProblem(evaluatorEmail, employeeId) {
+    if (!evaluatorEmail) return null;
+    const emp = await dbGet("SELECT name, email FROM hr_employees WHERE id = ?", [employeeId]).catch(() => null);
+    if (!emp || !sameHuman(evaluatorEmail, emp.email)) return null;
+    return `A Fidelity Check cannot be completed by the person being observed. ${emp.name || "This RBT"} needs somebody else to do it.`;
+  }
+
   function parseJson(v, fb) {
     if (v == null) return fb;
     if (typeof v === "object") return v;
@@ -1114,6 +1135,12 @@ module.exports = function initFidelity(ctx) {
     }
     const whenProblem = assessmentDateProblem(whenRaw, nowISO().slice(0, 10));
     if (whenProblem) return { ok: false, code: 400, code_key: "assessment_date_invalid", error: whenProblem };
+
+    // Checked again here, not only when the check was created: a login can be
+    // linked to a staff record at any time, so a check that was legitimate on
+    // Monday can be a self-assessment by Friday.
+    const selfAtSigning = await selfObservationProblem(user && user.email, check.employee_id);
+    if (selfAtSigning) return { ok: false, code: 400, code_key: "self_observation", error: selfAtSigning };
 
     if (unsafe && !String(body.unsafe_practice_detail || check.unsafe_practice_detail || "").trim()) {
       return { ok: false, code: 400, error: "Unsafe or unethical practice must be documented before finalizing." };
@@ -2154,6 +2181,8 @@ module.exports = function initFidelity(ctx) {
       if (!canEvaluate(ev)) {
         return json(res, 400, { error: `${ev.name || "That user"} does not have Fidelity access, so they could not open the check. Grant Fidelity Evaluator first.` });
       }
+      const assignSelf = await selfObservationProblem(ev.email, employeeId);
+      if (assignSelf) return json(res, 400, { error: assignSelf, code_key: "self_observation" });
 
       const due = String(b.due_date || "").trim() || null;
       const now = nowISO();
@@ -2255,6 +2284,12 @@ module.exports = function initFidelity(ctx) {
       if (!emp) return json(res, 404, { error: "That staff member is not on file." });
       const initialsProblem = clientInitialsProblem(b.client_initials);
       if (initialsProblem) return json(res, 400, { error: initialsProblem });
+      const selfProblem = await selfObservationProblem(
+        b.evaluator_user_id != null && Number(b.evaluator_user_id) !== Number(user.id)
+          ? ((await dbGet("SELECT email FROM users WHERE id = ?", [Number(b.evaluator_user_id)]).catch(() => null)) || {}).email
+          : user.email,
+        employeeId);
+      if (selfProblem) return json(res, 400, { error: selfProblem, code_key: "self_observation" });
       const now = nowISO();
       const row = await dbGet(
         `INSERT INTO fidelity_checks
@@ -2972,7 +3007,8 @@ module.exports = function initFidelity(ctx) {
     initTables, audit, canManageFidelity, canEvaluate,
     employeeSummary, summarise, trendOf, finalizedChecks, allChecksFor,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
-    buildPdf, refilePdf, statusBannerFor, assessmentDateProblem, clientInitialsProblem, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
+    buildPdf, refilePdf, statusBannerFor, assessmentDateProblem, clientInitialsProblem,
+    sameHuman, selfObservationProblem, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
     insights,
     PLAN_STATUSES, PLAN_OPEN,
