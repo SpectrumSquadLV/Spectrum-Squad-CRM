@@ -2027,6 +2027,16 @@ module.exports = function initFidelity(ctx) {
       // record must not be able to disagree about whether somebody is overdue.
       const settings = await getSettings();
       const todayStr = nowISO().slice(0, 10);
+      // The same fact the roster shows: somebody has already been asked. A
+      // personnel record saying "due now" for an RBT whose observation is
+      // booked is the same wrong answer in a different place.
+      const pendingRow = await dbGet(
+        `SELECT id, status, evaluator_name, assignment_due_date FROM fidelity_checks
+          WHERE employee_id = ? AND finalized_at IS NULL AND COALESCE(voided, FALSE) = FALSE
+            AND status IN (${CHECK_LIVE.map(() => "?").join(",")})
+          ORDER BY id DESC LIMIT 1`,
+        [id, ...CHECK_LIVE]
+      ).catch(() => null);
       const nextDue = sum.last_check_date
         ? new Date(new Date(sum.last_check_date + "T00:00:00Z").getTime() + settings.check_interval_days * 86400000).toISOString().slice(0, 10)
         : null;
@@ -2036,6 +2046,11 @@ module.exports = function initFidelity(ctx) {
         // by the same rule the dashboard uses rather than by the screen
         // guessing from a job title.
         is_rbt: isRbt(emp),
+        pending_check: pendingRow ? {
+          id: pendingRow.id, status: pendingRow.status, evaluator: pendingRow.evaluator_name || null,
+          due_date: pendingRow.assignment_due_date || null,
+          overdue: !!(pendingRow.assignment_due_date && pendingRow.assignment_due_date < todayStr),
+        } : null,
         next_due: nextDue,
         overdue_check: !nextDue || nextDue <= todayStr,
         check_interval_days: settings.check_interval_days,

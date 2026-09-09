@@ -957,6 +957,14 @@ function scoresTotalling(total, opts = {}) {
   check("...so a second person is not asked to do the same observation",
     rowPending && rowPending.pending_check.due_date === daysAgo(-7), rowPending && rowPending.pending_check);
 
+  const empViewPending = await owner(`/api/fidelity/employee/${empAssign}`);
+  check("the personnel record shows it too, not only the roster",
+    empViewPending.data.pending_check && empViewPending.data.pending_check.status === "assigned",
+    empViewPending.data.pending_check);
+  check("...with the same evaluator the roster names",
+    empViewPending.data.pending_check.evaluator === rowPending.pending_check.evaluator,
+    { record: empViewPending.data.pending_check, roster: rowPending.pending_check });
+
   r = await evaluator.req("/api/fidelity/my-assignments");
   check("the evaluator can see what they have been asked to do", r.status === 200, r.data);
   const mine = (r.data.assignments || []).find((a) => a.id === assignedId);

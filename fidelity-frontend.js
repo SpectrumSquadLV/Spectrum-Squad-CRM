@@ -1392,7 +1392,13 @@ This locks the assessment, files the PDF in their personnel record and emails it
     const s = d.summary;
     const plans = (d.action_plans || []).filter((p) => p.status !== "completed");
     const overdue = plans.filter((p) => p.overdue);
-    const due = d.overdue_check
+    // An observation already asked for outranks the due date here too.
+    const due = d.pending_check
+      ? (d.pending_check.status === "awaiting_signature"
+          ? '<span style="color:#92400e;font-weight:700;">Scored, awaiting signature</span>'
+          : `<span style="color:${d.pending_check.overdue ? "#991b1b" : "var(--brand-navy,#1b2a6b)"};font-weight:700;">With ${esc(d.pending_check.evaluator || "an evaluator")}</span>`
+            + (d.pending_check.due_date ? ` · due ${esc(dayLabel(d.pending_check.due_date))}${d.pending_check.overdue ? " (overdue)" : ""}` : ""))
+      : d.overdue_check
       ? '<span style="color:#991b1b;font-weight:700;">Due now</span>'
       : "Next due <strong>" + esc(dayLabel(d.next_due)) + "</strong>";
 
