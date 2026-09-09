@@ -458,14 +458,14 @@
         <textarea id="fid-strengths" rows="3">${esc(c.strengths || "")}</textarea></div>
       <div class="field full"><label>Areas for improvement</label>
         <textarea id="fid-areas" rows="3">${esc(c.areas_for_improvement || "")}</textarea></div>
-      <div class="field full"><label>Action plan${need ? " *" : ""}</label>
+      <div class="field full"><label>Action plan<span id="fid-plan-req">${need ? " *" : ""}</span></label>
         <textarea id="fid-plan" rows="3">${esc(c.action_plan_narrative || "")}</textarea></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
         ${cur.rubric.action_plan_options.map((o) => `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;background:var(--bg,#f7f8fb);border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:5px 10px;cursor:pointer;">
           <input type="checkbox" data-fid-plan value="${attr(o)}"${chosen.includes(o) ? " checked" : ""} /> ${esc(o)}</label>`).join("")}
       </div>
-      ${need ? `<div style="margin-top:9px;background:#fef3c7;color:#92400e;border-radius:8px;padding:8px 11px;font-size:12.5px;">
-        This result requires an Action Plan before it can be finalized.</div>` : ""}
+      <div id="fid-plan-required" style="margin-top:9px;background:#fef3c7;color:#92400e;border-radius:8px;padding:8px 11px;font-size:12.5px;${need ? "" : "display:none;"}">
+        This result requires an Action Plan before it can be finalized.</div>
       <div class="field full" style="margin-top:10px;">
         <label>Was any unsafe or unethical practice observed?</label>
         <select id="fid-unsafe">
@@ -477,8 +477,9 @@
       <div class="field full" id="fid-unsafe-detail-wrap" style="${c.unsafe_practice ? "" : "display:none;"}">
         <label>Describe what was observed *</label>
         <textarea id="fid-unsafe-detail" rows="2">${esc(c.unsafe_practice_detail || "")}</textarea></div>
-      ${calc.critical_fail ? `<div class="field full"><label>Describe the critical concern *</label>
-        <textarea id="fid-critical-detail" rows="2">${esc(c.critical_fail_detail || "")}</textarea></div>` : ""}
+      <div class="field full" id="fid-critical-detail-wrap" style="${calc.critical_fail ? "" : "display:none;"}">
+        <label>Describe the critical concern *</label>
+        <textarea id="fid-critical-detail" rows="2">${esc(c.critical_fail_detail || "")}</textarea></div>
     </div>`;
   }
 
@@ -562,6 +563,23 @@
         // score tap. Redrawing the narrative fields would throw away whatever
         // the evaluator is halfway through typing.
         back.querySelector("#fid-live").innerHTML = liveHTML();
+
+        // The fields whose RELEVANCE changes with the score are toggled rather
+        // than redrawn. Redrawing the feedback block would throw away whatever
+        // is half-typed in it; leaving it alone entirely was worse — scoring a
+        // 0 on a critical competency made the assessment un-signable while the
+        // box to explain the concern in was still hidden, so finalize refused
+        // and pointed at a field that was not on the screen.
+        const cal = cur.calc || {};
+        const critWrap = back.querySelector("#fid-critical-detail-wrap");
+        if (critWrap) critWrap.style.display = cal.critical_fail ? "" : "none";
+        const planNeeded = !!(cal.complete && (cal.critical_fail
+          || cal.rating_key === "needs_improvement" || cal.rating_key === "critical"));
+        const planReq = back.querySelector("#fid-plan-required");
+        if (planReq) planReq.style.display = planNeeded ? "" : "none";
+        const planStar = back.querySelector("#fid-plan-req");
+        if (planStar) planStar.textContent = planNeeded ? " *" : "";
+
         const sections = back.querySelectorAll("#fid-rubric .card");
         cur.rubric.sections.forEach((sec, i) => {
           const ss = (cur.calc.section_scores || {})[sec.key];

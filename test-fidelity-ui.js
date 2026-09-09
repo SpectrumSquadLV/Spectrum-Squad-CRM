@@ -534,6 +534,115 @@ const section = (t) => console.log("\n== " + t + " ==");
     check_interval_days: 90, max_raise_percent: 10, fidelity_method: "review_period_average",
   }});
 
+  // ================================================================
+  section("The scoring screen — where evaluators actually spend their time");
+
+  // The most-used screen in the module, and until now covered only by
+  // accident: other sections opened it and checked one number. What an
+  // evaluator does here is tap thirty scores and watch the total, so that is
+  // what this checks. Reached the way a real one reaches it — an assignment
+  // on their own page — rather than through a global invented for the test.
+  await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
+  const empScore = await mkEmp("Scoring", "RBT");
+  const scoreAssign = await api(page, "/api/fidelity/assign", {
+    method: "POST", body: { employee_id: empScore, evaluator_user_id: me.id },
+  });
+  check("a check to score is waiting on the page", scoreAssign.status === 201, scoreAssign.body);
+
+  await page.evaluate(() => { location.hash = "#/dashboard"; });
+  await page.waitForTimeout(700);
+  await page.evaluate(() => { location.hash = "#/fidelity"; });
+  await page.waitForTimeout(2600);
+  await page.locator(`#fid-body [data-fid-do="${scoreAssign.body.id}"]`).first().click();
+  await page.waitForTimeout(2600);
+  check("the scoring screen is open", await page.locator("#fid-scoring").count() === 1);
+
+  const rubricEl = page.locator("#fid-scoring #fid-rubric");
+  check("all thirty competencies are on the form",
+    await rubricEl.locator("[data-fid-score][data-v='2']").count() === 30,
+    await rubricEl.locator("[data-fid-score][data-v='2']").count());
+  check("each one offers 0, 1 and 2",
+    await rubricEl.locator("[data-fid-score]").count() === 90,
+    await rubricEl.locator("[data-fid-score]").count());
+
+  // The claim in the PR description: critical items are marked ON THE FORM, so
+  // an evaluator sees it before scoring rather than after.
+  const rubricText = (await rubricEl.innerText()).replace(/\n/g, " ");
+  check("the four critical competencies are marked before they are scored",
+    (rubricText.match(/CRITICAL ITEM/g) || []).length === 4,
+    (rubricText.match(/CRITICAL ITEM/g) || []).length);
+  check("...against the right competency",
+    /Does not reinforce maladaptive behavior\s*CRITICAL ITEM/i.test(rubricText),
+    rubricText.slice(0, 400));
+
+  const live = page.locator("#fid-scoring #fid-live");
+  check("nothing is scored yet", /0 of 30 scored/.test(await live.innerText()), await live.innerText());
+  check("...and no rating is shown, because the score is not knowable yet",
+    !/EXCEPTIONAL|MEETS STANDARD|NEEDS IMPROVEMENT/i.test(await live.innerText()),
+    await live.innerText());
+
+  await rubricEl.locator("[data-fid-score='prep_1'][data-v='2']").click();
+  await page.waitForTimeout(1000);
+  check("tapping a score updates the running total straight away",
+    /2 \/ 60/.test(await live.innerText()), await live.innerText());
+  check("...and counts it", /1 of 30 scored/.test(await live.innerText()), await live.innerText());
+  check("...and the section subtotal moves with it",
+    /2 \/ 10/.test(await rubricEl.innerText()), (await rubricEl.innerText()).slice(0, 200));
+
+  // A zero on a critical competency is called out while scoring, not at the end.
+  await rubricEl.locator("[data-fid-score='beh_5'][data-v='0']").click();
+  await page.waitForTimeout(1000);
+  check("a zero on a critical competency is flagged immediately",
+    /CRITICAL/i.test(await live.innerText()), await live.innerText());
+  check("...naming what it was", /maladaptive behavior/i.test(await live.innerText()), await live.innerText());
+
+  // Un-scoring the critical zero must take the box away again, or every clean
+  // assessment would carry a demand to describe a concern that is not there.
+  await rubricEl.locator("[data-fid-score='beh_5'][data-v='2']").click();
+  await page.waitForTimeout(1000);
+  check("clearing the critical zero hides the box again",
+    !(await page.locator("#fid-scoring #fid-critical-detail-wrap").isVisible()));
+  await rubricEl.locator("[data-fid-score='beh_5'][data-v='0']").click();
+  await page.waitForTimeout(1000);
+
+  const keys = await rubricEl.evaluate((el) =>
+    [...new Set([...el.querySelectorAll("[data-fid-score]")].map((b) => b.dataset.fidScore))]);
+  for (const k of keys) {
+    if (k === "prep_1" || k === "beh_5") continue;
+    await rubricEl.locator(`[data-fid-score='${k}'][data-v='2']`).click();
+  }
+  await page.waitForTimeout(1800);
+  const liveDone = await live.innerText();
+  check("with every item scored the rating appears", /EXCEPTIONAL/i.test(liveDone), liveDone);
+  check("...at 58 out of 60", /58 \/ 60/.test(liveDone), liveDone);
+  check("...and 96.7%", /96\.7%/.test(liveDone), liveDone);
+  check("...while STILL showing the critical concern a high score would otherwise bury",
+    /CRITICAL/i.test(liveDone), liveDone);
+
+  // The screen never calculates: the server holds the same answer.
+  const serverSide = (await api(page, `/api/fidelity/check/${scoreAssign.body.id}`)).body.check;
+  check("the server holds the same total the screen showed",
+    serverSide.calc.total_score === 58 && serverSide.calc.percentage === 96.7, serverSide.calc);
+  check("...and the same critical verdict", serverSide.calc.critical_fail === true, serverSide.calc);
+
+  // The field lives in the feedback block rather than the signature block —
+  // it is a fact about the observation, not about who signed it.
+  const scoringModal = page.locator("#fid-scoring");
+  // The bug this found: the box to describe a critical concern was rendered
+  // only when the modal opened, so discovering the concern BY SCORING left
+  // finalize refusing and pointing at a field that was not on the screen.
+  check("a critical result asks for it to be described before signing",
+    await scoringModal.locator("#fid-critical-detail").count() === 1);
+  check("...and the box is actually visible, having appeared as it was scored",
+    await scoringModal.locator("#fid-critical-detail-wrap").isVisible());
+  check("...and the Action Plan is marked required, for the same reason",
+    await scoringModal.locator("#fid-plan-required").isVisible());
+  check("...and unsafe practice is asked directly, since no score can carry it",
+    await scoringModal.locator("#fid-unsafe").count() === 1);
+  check("...and the sign button is live now every item is scored",
+    await scoringModal.locator("#fid-finalize").isEnabled());
+  await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
+
   check("no uncaught JavaScript errors", errors.length === 0, errors.join(" ;; "));
   console.log(`\n  ${pass} passed, ${fail} failed`);
   await browser.close();
