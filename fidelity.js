@@ -925,6 +925,20 @@ module.exports = function initFidelity(ctx) {
   // observation because an email failed would be the worst possible trade, and
   // each step records its own success or failure in the audit trail so a
   // half-finished automation is visible rather than assumed.
+  // What an Action Plan can be, and which of those mean it is still somebody's
+  // work. ONE definition, because there were three: the dashboard listed
+  // specific open statuses, while the notice sweep and the raise's
+  // Performance-Improvement-Plan check both used "anything that is not
+  // completed". Adding a status the two disagreed about -- cancelled -- would
+  // have meant a plan that the dashboard treated as closed while the sweep
+  // kept emailing about it and the raise calculator kept flagging the person.
+  const PLAN_STATUSES = ["not_started", "in_progress", "overdue", "completed", "cancelled"];
+  const PLAN_OPEN = ["not_started", "in_progress", "overdue"];
+  const PLAN_STATUS_LABEL = {
+    not_started: "Not started", in_progress: "In progress", overdue: "Overdue",
+    completed: "Completed", cancelled: "Cancelled",
+  };
+
   const STATUSES = ["draft", "assigned", "in_progress", "awaiting_signature", "finalized",
     "sent", "awaiting_ack", "acknowledged", "action_required", "closed",
     // A check that an amendment has replaced. It keeps its scores, its
@@ -1159,7 +1173,8 @@ module.exports = function initFidelity(ctx) {
     }
 
     const openPlans = await dbAll(
-      `SELECT * FROM fidelity_action_plans WHERE status IN ('not_started','in_progress','overdue')`
+      `SELECT * FROM fidelity_action_plans WHERE status IN (${PLAN_OPEN.map(() => "?").join(",")})`,
+      PLAN_OPEN
     ).catch(() => []);
     const plansByEmp = new Map();
     for (const pl of openPlans) {
@@ -1172,7 +1187,7 @@ module.exports = function initFidelity(ctx) {
     const rows = rbts.map((e) => {
       const sum = summarise(byEmp.get(e.id) || []);
       const plans = plansByEmp.get(e.id) || [];
-      const overdue = plans.filter((pl) => pl.due_date && pl.due_date < today && pl.status !== "completed");
+      const overdue = plans.filter((pl) => pl.due_date && pl.due_date < today && PLAN_OPEN.includes(pl.status));
       // Due = interval since the last check, or immediately if never checked.
       const dueDate = sum.last_check_date
         ? new Date(new Date(sum.last_check_date + "T00:00:00Z").getTime() + settings.check_interval_days * 86400000).toISOString().slice(0, 10)
@@ -1373,8 +1388,9 @@ module.exports = function initFidelity(ctx) {
     // sweep an overdue plan is somebody's unfinished work rather than a
     // reminder to look at something.
     const plans = await dbAll(
-      `SELECT * FROM fidelity_action_plans WHERE status <> 'completed' AND due_date IS NOT NULL AND due_date < ?`,
-      [today]
+      `SELECT * FROM fidelity_action_plans
+        WHERE status IN (${PLAN_OPEN.map(() => "?").join(",")}) AND due_date IS NOT NULL AND due_date < ?`,
+      [...PLAN_OPEN, today]
     ).catch(() => []);
     const lateplans = [];
     for (const pl of plans) {
@@ -1545,6 +1561,9 @@ module.exports = function initFidelity(ctx) {
         action_plan_options: ACTION_PLAN_OPTIONS,
         session_types: SESSION_TYPES, observation_lengths: OBSERVATION_LENGTHS,
         statuses: STATUSES,
+        plan_statuses: PLAN_STATUSES,
+        plan_open_statuses: PLAN_OPEN,
+        plan_status_labels: PLAN_STATUS_LABEL,
       });
     }
 
@@ -1870,7 +1889,8 @@ module.exports = function initFidelity(ctx) {
       const start = query.period_start ||
         new Date(new Date(end + "T00:00:00Z").getTime() - 365 * 86400000).toISOString().slice(0, 10);
       const openPlans = await dbAll(
-        "SELECT id, plan_types FROM fidelity_action_plans WHERE employee_id = ? AND status <> 'completed'", [id]
+        `SELECT id, plan_types FROM fidelity_action_plans
+          WHERE employee_id = ? AND status IN (${PLAN_OPEN.map(() => "?").join(",")})`, [id, ...PLAN_OPEN]
       ).catch(() => []);
       const openPip = openPlans.some((p) => (parseJson(p.plan_types, []) || []).includes("Performance Improvement Plan"));
 
@@ -1987,19 +2007,57 @@ module.exports = function initFidelity(ctx) {
       const row = await dbGet("SELECT * FROM fidelity_action_plans WHERE id = ?", [id]);
       if (!row) return json(res, 404, { error: "Not found" });
       const b = await readBody(req);
+
+      // A status the module does not recognise is refused rather than stored.
+      // "compelted" would leave the plan open forever while looking closed on
+      // the screen that typed it, and the sweep would email about it weekly.
+      if (b.status !== undefined && !PLAN_STATUSES.includes(String(b.status))) {
+        return json(res, 400, { error: `"${String(b.status).slice(0, 40)}" is not a status an Action Plan can have.`,
+                                statuses: PLAN_STATUSES });
+      }
+
+      const closing = b.status !== undefined && !PLAN_OPEN.includes(String(b.status));
+      const nowCompleted = String(b.status) === "completed";
+
+      // Closing a plan as COMPLETED has to say what was actually done. An
+      // Action Plan exists because somebody needed retraining, and a plan
+      // closed with no record of it is exactly the failure the plan was raised
+      // to prevent -- the date passing is not the retraining happening.
+      if (nowCompleted) {
+        const evidence = String(b.notes != null ? b.notes : (row.notes || "")).trim();
+        const retrained = String(b.retraining_date != null ? b.retraining_date : (row.retraining_date || "")).trim();
+        if (!evidence && !retrained) {
+          return json(res, 400, { code_key: "completion_evidence_required", error:
+            "Say what was done, or give the date the retraining happened, before marking this Action Plan complete." });
+        }
+      }
+      // Cancelling is allowed -- a plan can be raised in error -- but never
+      // silently, for the same reason voiding a check needs a reason.
+      if (String(b.status) === "cancelled" && !String(b.notes || row.notes || "").trim()) {
+        return json(res, 400, { error: "Say why this Action Plan is being cancelled — it stays on the record." });
+      }
+
       const fields = ["description", "responsible_supervisor", "due_date", "retraining_date",
         "followup_fidelity_date", "notes", "completed_date", "status"];
       const sets = [], vals = [];
       for (const f of fields) {
         if (b[f] === undefined) continue;
         sets.push(`${f} = ?`); vals.push(b[f]);
-        await audit(row.check_id, "action_plan_edited", { actor, field: f, old: row[f], new: b[f] });
+        if (String(row[f] == null ? "" : row[f]) !== String(b[f] == null ? "" : b[f])) {
+          await audit(row.check_id, "action_plan_edited", { actor, field: f, old: row[f], new: b[f] });
+        }
+      }
+      // A plan closed without a date is a plan nobody can tell you the date of.
+      if (closing && b.completed_date === undefined && !row.completed_date) {
+        sets.push("completed_date = ?"); vals.push(nowISO().slice(0, 10));
       }
       if (Array.isArray(b.plan_types)) { sets.push("plan_types = ?"); vals.push(JSON.stringify(b.plan_types)); }
       if (!sets.length) return json(res, 200, { ok: true, unchanged: true });
       sets.push("updated_at = ?"); vals.push(nowISO());
       await dbRun(`UPDATE fidelity_action_plans SET ${sets.join(", ")} WHERE id = ?`, [...vals, id]);
-      return json(res, 200, { ok: true });
+      if (closing) await audit(row.check_id, "action_plan_" + String(b.status), { actor, new: `plan ${id}` });
+      const fresh = await dbGet("SELECT * FROM fidelity_action_plans WHERE id = ?", [id]);
+      return json(res, 200, { ok: true, action_plan: shapePlan(fresh) });
     }
 
     return json(res, 404, { error: "Unknown Fidelity route." });
@@ -2010,9 +2068,11 @@ module.exports = function initFidelity(ctx) {
   // anything.
   function shapePlan(p) {
     const today = nowISO().slice(0, 10);
-    const overdue = p.status !== "completed" && p.due_date && String(p.due_date) < today;
+    const overdue = PLAN_OPEN.includes(p.status) && p.due_date && String(p.due_date) < today;
     return {
       id: p.id, check_id: p.check_id, employee_id: p.employee_id,
+      status_label: PLAN_STATUS_LABEL[p.status] || p.status,
+      open: PLAN_OPEN.includes(p.status),
       plan_types: parseJson(p.plan_types, []),
       description: p.description, responsible_supervisor: p.responsible_supervisor,
       date_assigned: p.date_assigned, due_date: p.due_date, retraining_date: p.retraining_date,
@@ -2236,6 +2296,7 @@ module.exports = function initFidelity(ctx) {
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
     buildPdf, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
+    PLAN_STATUSES, PLAN_OPEN,
     sweep, leadershipRecipients,
     DEFAULT_BANDS, DEFAULT_WEIGHTS, CATEGORIES, FIDELITY_METHODS,
     _internal: { round1, round2, num },

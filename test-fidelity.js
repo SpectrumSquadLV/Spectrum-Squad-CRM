@@ -820,6 +820,123 @@ function scoresTotalling(total, opts = {}) {
   await owner("/api/fidelity/settings", { method: "PUT", body: { check_interval_days: 90 } });
 
   // ================================================================
+  section("Closing an Action Plan — the loop that had no end");
+
+  // A plan could never be closed. The dashboard counted it forever, the daily
+  // sweep emailed about it forever, and an open Performance Improvement Plan
+  // flagged somebody's raise for the rest of their employment.
+  const empPlan = await mkEmp("Kilo");
+  const planChk = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: empPlan, assessment_date: today } });
+  await owner(`/api/fidelity/check/${planChk.data.id}`, { method: "PATCH", body: { scores: scoresTotalling(42) } });
+  const planFin = await owner(`/api/fidelity/check/${planChk.data.id}/finalize`, {
+    method: "POST",
+    body: { bcba_signed_name: "Jane Doe, BCBA", action_plan_narrative: "Retraining on prompt fading.",
+            action_plan_options: ["Performance Improvement Plan"], action_plan_due_date: daysAgo(2) },
+  });
+  const planId = planFin.data.action_plan_id;
+  check("a Needs Improvement result opened a plan", !!planId, planFin.data);
+
+  let empView = await owner(`/api/fidelity/employee/${empPlan}`);
+  let thePlan = (empView.data.action_plans || []).find((p) => p.id === planId);
+  check("the plan reports itself as open", thePlan && thePlan.open === true, thePlan);
+  check("...and overdue, because its date has passed", thePlan && thePlan.overdue === true, thePlan);
+  check("...with a status a human can read", thePlan && thePlan.status_label === "Not started", thePlan && thePlan.status_label);
+
+  // An open PIP flags the raise. This is the state somebody could never leave.
+  await owner(`/api/fidelity/employee/${empPlan}/pay`, { method: "PUT", body: { hourly_rate: 21 } });
+  let raiseWithPip = await owner(`/api/fidelity/raise/${empPlan}`);
+  check("an open Performance Improvement Plan flags the raise",
+    (raiseWithPip.data.flags || []).some((f) => /Performance Improvement Plan/i.test(f)), raiseWithPip.data.flags);
+
+  // ---- the refusals ----
+  r = await owner(`/api/fidelity/action-plan/${planId}`, { method: "PATCH", body: { status: "compelted" } });
+  check("a status the module does not recognise is refused, not stored",
+    r.status === 400 && /is not a status/i.test(r.data.error || ""), r.data);
+  check("...and it says which statuses exist",
+    Array.isArray(r.data.statuses) && r.data.statuses.includes("completed"), r.data.statuses);
+
+  r = await owner(`/api/fidelity/action-plan/${planId}`, { method: "PATCH", body: { status: "completed" } });
+  check("completing with no record of what was done is refused", r.status === 400, r.data);
+  check("...and says the date passing is not the retraining happening",
+    /Say what was done, or give the date the retraining happened/i.test(r.data.error || ""), r.data.error);
+
+  r = await owner(`/api/fidelity/action-plan/${planId}`, { method: "PATCH", body: { status: "cancelled" } });
+  check("cancelling without a reason is refused too", r.status === 400 && /Say why/i.test(r.data.error || ""), r.data);
+
+  // ---- and the ways through ----
+  r = await owner(`/api/fidelity/action-plan/${planId}`, {
+    method: "PATCH", body: { status: "in_progress", notes: "Modelling booked for Thursday." },
+  });
+  check("moving a plan along works", r.status === 200, r.data);
+  check("...and it stays open", r.data.action_plan.open === true, r.data.action_plan);
+
+  r = await owner(`/api/fidelity/action-plan/${planId}`, {
+    method: "PATCH", body: { status: "completed", retraining_date: daysAgo(1) },
+  });
+  check("a retraining date is enough to close it — the evidence is the point",
+    r.status === 200, r.data);
+  check("...it is no longer open", r.data.action_plan.open === false, r.data.action_plan);
+  check("...and a completion date was recorded without being asked for",
+    !!r.data.action_plan.completed_date, r.data.action_plan);
+
+  empView = await owner(`/api/fidelity/employee/${empPlan}`);
+  thePlan = (empView.data.action_plans || []).find((p) => p.id === planId);
+  check("the closed plan is KEPT on the record, not deleted", !!thePlan, (empView.data.action_plans || []).map((p) => p.id));
+  check("...marked closed", thePlan && thePlan.open === false && thePlan.status_label === "Completed", thePlan);
+  check("...and no longer counted as overdue", thePlan && thePlan.overdue === false, thePlan);
+
+  raiseWithPip = await owner(`/api/fidelity/raise/${empPlan}`);
+  check("closing the plan clears the raise flag it was causing",
+    !(raiseWithPip.data.flags || []).some((f) => /Performance Improvement Plan/i.test(f)), raiseWithPip.data.flags);
+
+  const dashAfterPlan = await owner("/api/fidelity/dashboard");
+  const rowPlan = (dashAfterPlan.data.employees || []).find((e) => e.employee_id === empPlan);
+  check("the dashboard stops counting it as an open plan",
+    rowPlan && rowPlan.open_action_plans === 0, rowPlan);
+  check("...and stops counting it as overdue", rowPlan && rowPlan.overdue_action_plans === 0, rowPlan);
+
+  // ---- cancelled behaves the same everywhere ----
+  // This is the case the three different definitions of "open" disagreed on.
+  const empCancel = await mkEmp("Lima");
+  const cChk = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: empCancel, assessment_date: today } });
+  await owner(`/api/fidelity/check/${cChk.data.id}`, { method: "PATCH", body: { scores: scoresTotalling(42) } });
+  const cFin = await owner(`/api/fidelity/check/${cChk.data.id}/finalize`, {
+    method: "POST",
+    body: { bcba_signed_name: "Jane Doe, BCBA", action_plan_narrative: "Retraining.",
+            action_plan_options: ["Performance Improvement Plan"], action_plan_due_date: daysAgo(5) },
+  });
+  await owner(`/api/fidelity/action-plan/${cFin.data.action_plan_id}`, {
+    method: "PATCH", body: { status: "cancelled", notes: "Raised against the wrong RBT." },
+  });
+  const dashCancel = await owner("/api/fidelity/dashboard");
+  const rowCancel = (dashCancel.data.employees || []).find((e) => e.employee_id === empCancel);
+  check("a cancelled plan is closed on the dashboard", rowCancel && rowCancel.open_action_plans === 0, rowCancel);
+  check("...and is not overdue", rowCancel && rowCancel.overdue_action_plans === 0, rowCancel);
+  await owner(`/api/fidelity/employee/${empCancel}/pay`, { method: "PUT", body: { hourly_rate: 20 } });
+  const cancelRaise = await owner(`/api/fidelity/raise/${empCancel}`);
+  check("...and does not flag the raise as an open PIP",
+    !(cancelRaise.data.flags || []).some((f) => /Performance Improvement Plan/i.test(f)), cancelRaise.data.flags);
+
+  // A recipient has to exist first, or the sweep sends nothing to anybody and
+  // "it did not email about this plan" would be true for the wrong reason.
+  await owner("/api/admin/settings", {
+    method: "PATCH", body: { clinical_director_email: `fid.director.${stamp}@example.invalid` },
+  });
+  const swMark = await pool.query("SELECT COALESCE(MAX(id),0) AS n FROM notifications_log");
+  const swRun = await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  // The precondition that makes the next assertion mean anything: the sweep
+  // had a recipient and actually sent something. Without this, "it did not
+  // email about this plan" would be true simply because it emailed nobody.
+  check("the sweep had somebody to write to, and did write",
+    swRun.data.skipped_no_recipient === 0 && (swRun.data.check_due + swRun.data.plan_overdue + swRun.data.review_due) >= 1,
+    swRun.data);
+  const swAfter = await pool.query(
+    "SELECT body FROM notifications_log WHERE id > $1 AND type = 'fidelity_plans_overdue'", [Number(swMark.rows[0].n)]);
+  const nagged = swAfter.rows.map((x) => x.body).join(" ");
+  check("...and the daily sweep stops emailing about it",
+    !nagged.includes(`Lima ${stamp}`), nagged.slice(0, 300));
+
+  // ================================================================
   section("Amending a signed check — the correction the CRM kept promising");
 
   // Two refusal messages tell somebody to "create an amendment". Until now
@@ -1045,6 +1162,11 @@ function scoresTotalling(total, opts = {}) {
             action_plan_options: ["Written Retraining"], action_plan_due_date: daysAgo(3) },
   });
 
+  // A never-checked RBT created here, so this section has its own unsent
+  // notice to look at: an earlier section already ran a sweep, and every
+  // notice it sent is claimed and will never be sent again.
+  const empFresh = await mkEmp("Mike");
+
   let mark = await lastMailId();
   r = await owner("/api/fidelity/sweep", { method: "POST", body: {} });
   check("the sweep runs", r.status === 200 && r.data.ok === true, r.data);
@@ -1058,6 +1180,9 @@ function scoresTotalling(total, opts = {}) {
     dueMail.length === 1 && dueMail[0].recipient.includes(`fid.director.${stamp}`), dueMail[0] && dueMail[0].recipient);
   check("...naming the RBTs and how long it has been",
     dueMail.length === 1 && /never observed/.test(dueMail[0].body), (dueMail[0] || {}).body ? dueMail[0].body.slice(0, 300) : null);
+  check("...including the one nobody has ever observed",
+    dueMail.length === 1 && dueMail[0].body.includes(`Mike ${stamp}`), (dueMail[0] || {}).body ? dueMail[0].body.slice(0, 400) : null);
+  void empFresh;
   check("...and saying which interval made them due",
     dueMail.length === 1 && /90-day interval/.test(dueMail[0].body), (dueMail[0] || {}).body ? dueMail[0].body.slice(0, 300) : null);
 

@@ -619,6 +619,7 @@ This locks the assessment, files the PDF in their personnel record and emails it
     back.querySelector(".close-btn").addEventListener("click", () => back.remove());
     back.querySelectorAll("[data-fid-open]").forEach((el) =>
       el.addEventListener("click", () => openReadOnly(el.dataset.fidOpen)));
+    wirePlans(back, employeeId, () => { back.remove(); openEmployee(mount, employeeId); });
     const raiseBtn = back.querySelector("#fid-raise-btn");
     if (raiseBtn) raiseBtn.addEventListener("click", () => loadRaise(back, employeeId));
   }
@@ -724,18 +725,94 @@ This locks the assessment, files the PDF in their personnel record and emails it
     </div>`;
   }
 
-  function plansHTML(d) {
-    const open = (d.action_plans || []).filter((p) => p.status !== "completed");
-    if (!open.length) return "";
-    return `<div class="card" style="margin-bottom:12px;">
-      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">Open action plans</div>
-      ${open.map((p) => `<div style="padding:7px 0;border-top:1px solid var(--border,#f1f1f4);font-size:12.5px;">
-        <div><strong>${esc((p.plan_types || []).join(", ") || "Action plan")}</strong>
-          ${p.overdue ? '<span style="font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:20px;background:#fee2e2;color:#991b1b;margin-left:6px;">OVERDUE</span>' : ""}</div>
-        <div style="color:var(--text-muted);">${esc(p.description || "—")}</div>
-        <div style="color:var(--text-muted);">Assigned ${esc(dayLabel(p.date_assigned))}${p.due_date ? " · due " + esc(dayLabel(p.due_date)) : ""}${p.responsible_supervisor ? " · " + esc(p.responsible_supervisor) : ""}</div>
-      </div>`).join("")}
+  // Action Plans, editable. They were read-only, which meant an overdue plan
+  // could never be closed: the dashboard counted it forever, the daily sweep
+  // emailed about it forever, and the raise calculator flagged an open
+  // Performance Improvement Plan against somebody for the rest of their
+  // employment. A plan you cannot close is a plan that punishes people for
+  // work they already did.
+  const PLAN_STATUS_OPTS = [
+    ["not_started", "Not started"], ["in_progress", "In progress"],
+    ["completed", "Completed"], ["cancelled", "Cancelled"],
+  ];
+
+  function planCardHTML(p) {
+    const dead = !p.open;
+    return `<div data-plan="${p.id}" style="padding:9px 0;border-top:1px solid var(--border,#f1f1f4);font-size:12.5px;${dead ? "opacity:.6;" : ""}">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap;">
+        <strong>${esc((p.plan_types || []).join(", ") || "Action plan")}</strong>
+        <span>
+          ${p.overdue ? '<span style="font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:20px;background:#fee2e2;color:#991b1b;">OVERDUE</span>' : ""}
+          <span style="font-size:11px;color:var(--text-muted);margin-left:6px;">${esc(p.status_label || p.status)}</span>
+        </span>
+      </div>
+      <div style="color:var(--text-muted);margin:3px 0;">${esc(p.description || "—")}</div>
+      <div style="color:var(--text-muted);">Assigned ${esc(dayLabel(p.date_assigned))}${p.responsible_supervisor ? " · " + esc(p.responsible_supervisor) : ""}${p.completed_date ? " · closed " + esc(dayLabel(p.completed_date)) : ""}</div>
+      ${dead
+        ? (p.notes ? `<div style="color:var(--text-muted);margin-top:4px;">${esc(p.notes)}</div>` : "")
+        : `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:7px;align-items:flex-end;">
+             <label style="font-size:11px;color:var(--text-muted);">Status<br>
+               <select data-p-status style="min-width:130px;">
+                 ${PLAN_STATUS_OPTS.map(([v, l]) => `<option value="${v}"${v === p.status ? " selected" : ""}>${esc(l)}</option>`).join("")}
+               </select></label>
+             <label style="font-size:11px;color:var(--text-muted);">Due<br>
+               <input data-p-due type="date" value="${attr((p.due_date || "").slice(0, 10))}" /></label>
+             <label style="font-size:11px;color:var(--text-muted);">Retraining done<br>
+               <input data-p-retrain type="date" value="${attr((p.retraining_date || "").slice(0, 10))}" /></label>
+             <label style="font-size:11px;color:var(--text-muted);">Follow-up check<br>
+               <input data-p-followup type="date" value="${attr((p.followup_fidelity_date || "").slice(0, 10))}" /></label>
+           </div>
+           <textarea data-p-notes rows="2" placeholder="What was done — modelling, role play, retraining delivered, and by whom"
+                     style="width:100%;margin-top:7px;font-size:12.5px;">${esc(p.notes || "")}</textarea>
+           <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+             <button class="btn small" data-p-save>Save</button>
+             <span data-p-status-msg style="font-size:11.5px;color:var(--text-muted);"></span>
+           </div>`}
     </div>`;
+  }
+
+  function plansHTML(d) {
+    const all = d.action_plans || [];
+    if (!all.length) return "";
+    const open = all.filter((p) => p.open);
+    const closed = all.filter((p) => !p.open);
+    return `<div class="card" style="margin-bottom:12px;" id="fid-plans">
+      <div style="font-size:13px;font-weight:700;margin-bottom:4px;">Action plans</div>
+      ${open.length
+        ? open.map(planCardHTML).join("")
+        : `<div style="font-size:12.5px;color:var(--text-muted);padding:6px 0;">Nothing open.</div>`}
+      ${closed.length ? `<div style="font-size:11.5px;color:var(--text-muted);margin-top:10px;padding-top:6px;border-top:1px solid var(--border,#f1f1f4);">
+        Closed (${closed.length}) — kept on the record</div>${closed.map(planCardHTML).join("")}` : ""}
+    </div>`;
+  }
+
+  // Saving is per-plan rather than one Save for the panel: two supervisors
+  // looking at two plans should not be able to overwrite each other's row by
+  // pressing the same button.
+  function wirePlans(root, employeeId, onSaved) {
+    root.querySelectorAll("[data-plan]").forEach((box) => {
+      const btn = box.querySelector("[data-p-save]");
+      if (!btn) return;
+      btn.addEventListener("click", async () => {
+        const msg = box.querySelector("[data-p-status-msg]");
+        const body = {
+          status: box.querySelector("[data-p-status]").value,
+          due_date: box.querySelector("[data-p-due]").value || null,
+          retraining_date: box.querySelector("[data-p-retrain]").value || null,
+          followup_fidelity_date: box.querySelector("[data-p-followup]").value || null,
+          notes: box.querySelector("[data-p-notes]").value.trim() || null,
+        };
+        btn.disabled = true; msg.textContent = "Saving…";
+        try {
+          await api(`/api/fidelity/action-plan/${box.dataset.plan}`, { method: "PATCH", body });
+          msg.textContent = "Saved.";
+          if (typeof onSaved === "function") onSaved();
+        } catch (e) {
+          btn.disabled = false; msg.textContent = "";
+          alert(e.message || "Couldn't save that Action Plan.");
+        }
+      });
+    });
   }
 
   async function loadRaise(back, employeeId) {
