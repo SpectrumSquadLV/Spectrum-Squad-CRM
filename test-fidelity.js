@@ -1406,6 +1406,26 @@ function scoresTotalling(total, opts = {}) {
   check("the page itself carries the correction notice",
     /corrected after it was sent to you/i.test(String(stalePage.data || "")), String(stalePage.data || "").slice(0, 200));
 
+  // ---- everywhere else a dead assessment could still be read ----
+  // Adding supersession means auditing every place a check is read, not only
+  // the ones that were obvious when it was built.
+  r = await owner(`/api/fidelity/check/${wrongId}/resend`, { method: "POST", body: {} });
+  check("a superseded assessment cannot be re-sent to the employee", r.status === 409, r.data);
+  check("...and it points at the corrected one instead",
+    r.data.amendment_id === amendId && /Send the corrected one/i.test(r.data.error || ""), r.data);
+
+  // The acknowledgment chaser must not send somebody to a page that will
+  // refuse them. Back-dated past the grace period to reach the case.
+  await pool.query("UPDATE fidelity_checks SET emailed_at = $1, employee_ack_at = NULL WHERE id = $2",
+    [new Date(Date.now() - 20 * 86400000).toISOString(), wrongId]);
+  const ackChaseMark = await lastMailIdEarly();
+  await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  const chasedBodies = (await pool.query(
+    "SELECT body FROM notifications_log WHERE id > $1 AND type = 'fidelity_ack_reminder'", [ackChaseMark]
+  )).rows.map((x) => x.body).join(" ");
+  check("nobody is chased to acknowledge an assessment that was corrected",
+    !chasedBodies.includes(`/fidelity-ack/${staleTok}`), chasedBodies.slice(0, 200));
+
   const histIds = (afterAmend.data.history || []).map((h) => h.id);
   check("the history still SHOWS the superseded check — nothing is hidden",
     histIds.includes(wrongId) && histIds.includes(amendId), histIds);

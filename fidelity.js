@@ -1795,7 +1795,11 @@ module.exports = function initFidelity(ctx) {
       `SELECT * FROM fidelity_checks
         WHERE finalized_at IS NOT NULL AND employee_ack_at IS NULL
           AND emailed_at IS NOT NULL AND emailed_at < ?
-          AND COALESCE(voided, FALSE) = FALSE`,
+          AND COALESCE(voided, FALSE) = FALSE
+          -- An assessment corrected before it was acknowledged does not need
+          -- acknowledging: the acknowledgment page refuses it, so chasing
+          -- somebody for it would send them to a dead end.
+          AND superseded_by_check_id IS NULL`,
       [graceCutoff]
     ).catch(() => []);
     for (const c of unacked) {
@@ -2415,6 +2419,15 @@ module.exports = function initFidelity(ctx) {
       const row = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
       if (!row) return json(res, 404, { error: "Not found" });
       if (!row.finalized_at) return json(res, 400, { error: "This Fidelity Check has not been signed yet." });
+      // Sending somebody an assessment that has been corrected or withdrawn
+      // presents a score that does not stand as though it were their result.
+      if (row.superseded_by_check_id) {
+        return json(res, 409, { error: "This Fidelity Check was amended. Send the corrected one instead.",
+                                amendment_id: row.superseded_by_check_id });
+      }
+      if (row.voided === true || row.voided === "t") {
+        return json(res, 400, { error: "This Fidelity Check was voided and does not stand. There is nothing to send." });
+      }
       const emp = await dbGet("SELECT id, name, email FROM hr_employees WHERE id = ?", [row.employee_id]).catch(() => null);
       if (!emp || !emp.email) return json(res, 400, { error: "There is no email address on that staff record." });
       const calc = scoreOf(parseJson(row.scores_json, {}),
