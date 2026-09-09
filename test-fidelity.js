@@ -537,6 +537,11 @@ function scoresTotalling(total, opts = {}) {
     return f;
   };
 
+  const lastMailIdEarly = async () => {
+    const q = await pool.query("SELECT COALESCE(MAX(id), 0) AS n FROM notifications_log");
+    return Number(q.rows[0].n);
+  };
+
   const empA = await mkEmp("Alpha");
   r = await evaluator.req("/api/fidelity/check", {
     method: "POST",
@@ -861,6 +866,118 @@ function scoresTotalling(total, opts = {}) {
   r = await evaluator.req("/api/fidelity/settings", { method: "PUT", body: { check_interval_days: 1 } });
   check("an evaluator cannot change the raise policy", r.status === 403, r.status);
   await owner("/api/fidelity/settings", { method: "PUT", body: { check_interval_days: 90 } });
+
+  // ================================================================
+  section("Asking somebody to do an observation");
+
+  // The random picker named who was due and then stopped: nothing could be
+  // handed to anybody, so "select a random RBT" ended in whoever pressed the
+  // button doing it themselves, or nobody doing it.
+  const empAssign = await mkEmp("Papa");
+
+  r = await evaluator.req("/api/fidelity/assign", { method: "POST", body: { employee_id: empAssign, evaluator_user_id: evaluator.id } });
+  check("an evaluator cannot hand work to themselves or anybody else", r.status === 403, r.status);
+
+  r = await owner("/api/fidelity/assign", { method: "POST", body: { evaluator_user_id: evaluator.id } });
+  check("an assignment with no RBT is refused", r.status === 400, r.data);
+  r = await owner("/api/fidelity/assign", { method: "POST", body: { employee_id: empAssign } });
+  check("an assignment with nobody to do it is refused", r.status === 400, r.data);
+
+  // The failure that would otherwise produce an email leading to a 403.
+  r = await owner("/api/fidelity/assign", {
+    method: "POST", body: { employee_id: empAssign, evaluator_user_id: plainAdmin.id },
+  });
+  check("assigning to somebody without Fidelity access is refused", r.status === 400, r.data);
+  check("...and says what to grant them first",
+    /Grant Fidelity Evaluator first/i.test(r.data.error || ""), r.data.error);
+
+  // The list the assignment form reads. Served here rather than from the admin
+  // users API, which a Clinical Director holding only a Fidelity grant cannot
+  // call — they would have seen an empty list saying nobody has access.
+  r = await manager.req("/api/fidelity/evaluators");
+  check("a Fidelity manager who is NOT an account admin can list evaluators",
+    r.status === 200 && Array.isArray(r.data.evaluators), { s: r.status, d: r.data });
+  const evalIds = (r.data.evaluators || []).map((e) => e.id);
+  check("...and the list holds the evaluator", evalIds.includes(evaluator.id), evalIds);
+  check("...and not the admin with no Fidelity access", !evalIds.includes(plainAdmin.id), evalIds);
+  check("...saying which of them manage Fidelity rather than only evaluate",
+    (r.data.evaluators || []).some((e) => e.manages === true) &&
+    (r.data.evaluators || []).some((e) => e.manages === false),
+    (r.data.evaluators || []).map((e) => `${e.id}:${e.manages}`));
+  r = await evaluator.req("/api/fidelity/evaluators");
+  check("an evaluator cannot list who else could be given work", r.status === 403, r.status);
+
+  const assignMark = await lastMailIdEarly();
+  r = await owner("/api/fidelity/assign", {
+    method: "POST",
+    body: { employee_id: empAssign, evaluator_user_id: evaluator.id, due_date: daysAgo(-7),
+            session_type: "In-Clinic", note: "Focus on prompt fading." },
+  });
+  check("leadership can assign an observation", r.status === 201 && r.data.id, r.data);
+  const assignedId = r.data.id;
+  check("...naming who it went to", r.data.assigned_to && /Fid eval/.test(r.data.assigned_to), r.data);
+
+  const assignMail = await pool.query(
+    "SELECT recipient, subject, body FROM notifications_log WHERE id > $1 AND type = 'fidelity_assigned'", [assignMark]);
+  check("the evaluator is told, rather than left to notice", assignMail.rows.length === 1, assignMail.rows.length);
+  check("...by name, with the RBT and the date",
+    assignMail.rows.length === 1 && assignMail.rows[0].subject.includes("Papa") && assignMail.rows[0].body.includes(daysAgo(-7)),
+    assignMail.rows[0] && assignMail.rows[0].subject);
+  check("...and the note comes with it",
+    assignMail.rows.length === 1 && /prompt fading/i.test(assignMail.rows[0].body), (assignMail.rows[0] || {}).body);
+
+  const tasksAssign = await owner("/api/staff-tasks");
+  const taskListAssign = Array.isArray(tasksAssign.data) ? tasksAssign.data : (tasksAssign.data.tasks || []);
+  check("...and it becomes a task too, because an email can be missed",
+    taskListAssign.some((t) => /Fidelity Check to complete/.test(String(t.title || ""))),
+    taskListAssign.slice(0, 4).map((t) => t.title));
+
+  // The evaluator's own view.
+  r = await evaluator.req("/api/fidelity/my-assignments");
+  check("the evaluator can see what they have been asked to do", r.status === 200, r.data);
+  const mine = (r.data.assignments || []).find((a) => a.id === assignedId);
+  check("...including this one", !!mine, r.data.assignments);
+  check("...naming the RBT", mine && /Papa/.test(String(mine.employee_name || "")), mine);
+  check("...with nothing scored yet", mine && mine.scored === 0 && mine.complete === false, mine);
+  check("...and who asked", mine && !!mine.assigned_by, mine);
+
+  r = await otherEval.req("/api/fidelity/my-assignments");
+  check("another evaluator does not see somebody else's assignment",
+    !(r.data.assignments || []).some((a) => a.id === assignedId), r.data.assignments);
+
+  // The status follows the work rather than waiting to be set.
+  const preScore = await owner(`/api/fidelity/check/${assignedId}`);
+  check("an assignment starts as assigned", preScore.data.check.status === "assigned", preScore.data.check.status);
+
+  r = await evaluator.req(`/api/fidelity/check/${assignedId}`, { method: "PATCH", body: { scores: { prep_1: 2 } } });
+  check("scoring it moves it to in progress", r.data.status === "in_progress", r.data);
+
+  r = await evaluator.req(`/api/fidelity/check/${assignedId}`, { method: "PATCH", body: { scores: scoresTotalling(54) } });
+  check("scoring every item moves it to awaiting signature — the state where an observation gets lost",
+    r.data.status === "awaiting_signature", r.data);
+
+  r = await evaluator.req(`/api/fidelity/check/${assignedId}`, { method: "PATCH", body: { scores: { prep_1: null } } });
+  check("...and un-scoring one puts it back to in progress", r.data.status === "in_progress", r.data);
+  await evaluator.req(`/api/fidelity/check/${assignedId}`, { method: "PATCH", body: { scores: scoresTotalling(54) } });
+
+  // An assignment has no date, because the observation had not happened.
+  r = await evaluator.req(`/api/fidelity/check/${assignedId}/finalize`, { method: "POST", body: { bcba_signed_name: "Fid eval" } });
+  check("signing an assessment with no date is refused", r.status === 400, r.data);
+  check("...and asks for the date the observation took place",
+    /date the observation took place/i.test(r.data.error || ""), r.data.error);
+
+  r = await evaluator.req(`/api/fidelity/check/${assignedId}/finalize`, {
+    method: "POST", body: { bcba_signed_name: "Fid eval", assessment_date: today },
+  });
+  check("with the date, it signs", r.status === 200 && r.data.ok === true, r.data);
+
+  const signedAssign = await owner(`/api/fidelity/check/${assignedId}`);
+  check("...and the date given at signing is the one recorded",
+    String(signedAssign.data.check.assessment_date).slice(0, 10) === today, signedAssign.data.check.assessment_date);
+
+  r = await evaluator.req("/api/fidelity/my-assignments");
+  check("a finished assignment drops off the evaluator's list",
+    !(r.data.assignments || []).some((a) => a.id === assignedId), r.data.assignments);
 
   // ================================================================
   section("Where the team is weak — training need, or one person");

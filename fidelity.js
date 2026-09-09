@@ -243,6 +243,10 @@ module.exports = function initFidelity(ctx) {
       amends_check_id INTEGER,
       amend_reason TEXT,
       superseded_by_check_id INTEGER,
+      assigned_by TEXT,
+      assigned_at TEXT,
+      assignment_due_date TEXT,
+      assignment_note TEXT,
       created_by TEXT,
       created_at TEXT,
       updated_at TEXT
@@ -338,6 +342,9 @@ module.exports = function initFidelity(ctx) {
     // CREATE TABLE IF NOT EXISTS adds nothing to a table that is already there.
     for (const [col, type] of [
       ["amends_check_id", "INTEGER"], ["amend_reason", "TEXT"], ["superseded_by_check_id", "INTEGER"],
+      // An observation somebody has been ASKED to do, before it happens.
+      ["assigned_by", "TEXT"], ["assigned_at", "TEXT"],
+      ["assignment_due_date", "TEXT"], ["assignment_note", "TEXT"],
     ]) {
       await dbRun(`ALTER TABLE fidelity_checks ADD COLUMN IF NOT EXISTS ${col} ${type}`)
         .catch((e) => console.error(`fidelity_checks.${col}:`, e.message));
@@ -1008,7 +1015,7 @@ module.exports = function initFidelity(ctx) {
   };
 
   const STATUSES = ["draft", "assigned", "in_progress", "awaiting_signature", "finalized",
-    "sent", "awaiting_ack", "acknowledged", "action_required", "closed",
+    "sent", "awaiting_ack", "acknowledged", "closed",
     // A check that an amendment has replaced. It keeps its scores, its
     // signature and its trail; it simply no longer counts. The screens read
     // this list to label a status, so a value the module writes and the list
@@ -1042,6 +1049,15 @@ module.exports = function initFidelity(ctx) {
     const signedName = String(body.bcba_signed_name || "").trim();
     if (!signedName) return { ok: false, code: 400, error: "An electronic signature is required to finalize." };
 
+    // An assessment with no date cannot be placed in a history, compared with
+    // the one before it, or counted in a review period. Assignments start
+    // without one on purpose -- the observation has not happened yet -- so this
+    // is where it has to be filled in.
+    if (!String(body.assessment_date || check.assessment_date || "").trim()) {
+      return { ok: false, code: 400, code_key: "assessment_date_required",
+        error: "Give the date the observation took place before signing." };
+    }
+
     if (unsafe && !String(body.unsafe_practice_detail || check.unsafe_practice_detail || "").trim()) {
       return { ok: false, code: 400, error: "Unsafe or unethical practice must be documented before finalizing." };
     }
@@ -1069,7 +1085,7 @@ module.exports = function initFidelity(ctx) {
          rating_key = ?, rating_label = ?, unsafe_practice = ?, unsafe_practice_detail = ?,
          critical_fail = ?, critical_fail_reasons = ?, critical_fail_detail = ?,
          strengths = ?, areas_for_improvement = ?, action_plan_narrative = ?, action_plan_options = ?,
-         bcba_signed_name = ?, bcba_signed_at = ?, evaluator_credentials = ?,
+         assessment_date = ?, bcba_signed_name = ?, bcba_signed_at = ?, evaluator_credentials = ?,
          finalized_at = ?, status = 'finalized', ack_token = ?, updated_at = ?
        WHERE id = ?`,
       [JSON.stringify(scores), JSON.stringify(calc.section_scores), calc.total_score, MAX_SCORE, calc.percentage,
@@ -1079,6 +1095,7 @@ module.exports = function initFidelity(ctx) {
        body.strengths != null ? body.strengths : check.strengths,
        body.areas_for_improvement != null ? body.areas_for_improvement : check.areas_for_improvement,
        planText || null, JSON.stringify(planTypes),
+       body.assessment_date || check.assessment_date,
        signedName, now, body.evaluator_credentials || check.evaluator_credentials || null,
        now, ackToken, now, checkId]
     );
@@ -1913,6 +1930,122 @@ module.exports = function initFidelity(ctx) {
       return json(res, 200, { check: shapeRow(row, true), employee: emp, audit: trail, prior });
     }
 
+    // ---- ask somebody to do an observation ----
+    // The random picker names who is due and then stopped: there was no way to
+    // hand that to anybody, so "select a random RBT" ended in whoever pressed
+    // the button doing it themselves or nobody doing it at all. An assignment
+    // is a check that exists before the observation, addressed to an evaluator
+    // and dated.
+    if (pathname === "/api/fidelity/assign" && method === "POST") {
+      if (!manage) return json(res, 403, { error: "Not permitted to assign Fidelity Checks." });
+      const b = await readBody(req);
+      const employeeId = Number(b.employee_id);
+      if (!employeeId) return json(res, 400, { error: "Choose which RBT is to be observed." });
+      const emp = await dbGet("SELECT id, name FROM hr_employees WHERE id = ?", [employeeId]);
+      if (!emp) return json(res, 404, { error: "That staff member is not on file." });
+
+      const evaluatorId = Number(b.evaluator_user_id);
+      if (!evaluatorId) return json(res, 400, { error: "Choose who is being asked to do the observation." });
+      const ev = await dbGet("SELECT id, name, email, role, module_access FROM users WHERE id = ?", [evaluatorId]);
+      if (!ev) return json(res, 404, { error: "That user does not exist." });
+      // Assigning to somebody who cannot open the check would produce an
+      // assignment nobody can act on and an email that leads to a 403.
+      if (!canEvaluate(ev)) {
+        return json(res, 400, { error: `${ev.name || "That user"} does not have Fidelity access, so they could not open the check. Grant Fidelity Evaluator first.` });
+      }
+
+      const due = String(b.due_date || "").trim() || null;
+      const now = nowISO();
+      const row = await dbGet(
+        `INSERT INTO fidelity_checks
+           (employee_id, evaluator_user_id, evaluator_name, assessment_date, session_type,
+            observation_minutes, scores_json, status, assigned_by, assigned_at,
+            assignment_due_date, assignment_note, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, '{}', 'assigned', ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [employeeId, evaluatorId, ev.name || ev.email || null,
+         // NO assessment date. The observation has not happened, and seeding
+         // it with the due date would let a future date become the signed date
+         // of an assessment nobody has done yet -- which is precisely what the
+         // guard at signing exists to prevent. The expected date lives in
+         // assignment_due_date, where it cannot be mistaken for a fact.
+         null, b.session_type || null,
+         b.observation_minutes != null ? Number(b.observation_minutes) : null,
+         actor, now, due, String(b.note || "").trim() || null, actor, now, now]
+      );
+      await audit(row.id, "assigned", { actor, new: `${emp.name} to ${ev.name || ev.email}${due ? ", due " + due : ""}` });
+
+      // Told, not left to be noticed. Both, because an email can be missed and
+      // a task list can be ignored, and an observation that never happens is
+      // the failure this whole module exists to prevent.
+      if (ev.email) {
+        try {
+          await sendEmail({
+            to: ev.email,
+            subject: `Fidelity Check to complete: ${emp.name}`,
+            html: `<p>Hi ${esc(String(ev.name || "there").split(/\s+/)[0])},</p>
+              <p>You have been asked to complete a Fidelity Check for <strong>${esc(emp.name)}</strong>${due ? ` by <strong>${esc(due)}</strong>` : ""}.</p>
+              ${b.note ? `<p>${esc(String(b.note))}</p>` : ""}
+              <p>Open RBT Fidelity in the CRM to score it. The form adds up as you go; you will not need to total anything.</p>`,
+            type: "fidelity_assigned", refType: "fidelity_check", refId: row.id,
+          });
+          await audit(row.id, "assignment_emailed", { actor: "system", new: ev.email });
+        } catch (e) { await audit(row.id, "assignment_email_failed", { actor: "system", new: e.message }); }
+      }
+      await createStaffTask({
+        title: `Fidelity Check to complete — ${emp.name}`,
+        notes: `Assigned by ${actor}${due ? `, due ${due}` : ""}.` + (b.note ? ` ${b.note}` : ""),
+        created_by: actor,
+      }).catch(() => {});
+
+      return json(res, 201, { ok: true, id: row.id, assigned_to: ev.name || ev.email, due_date: due });
+    }
+
+    // Who could actually be asked to do an observation. Served by this module
+    // rather than read from the admin users API, for two reasons: that API is
+    // restricted to account administrators, so a Clinical Director holding a
+    // Fidelity grant would have got an empty list and been told nobody has
+    // access -- and the rule for who can evaluate is canEvaluate(), which
+    // lives here. Asking the admin API meant a screen re-deciding a permission
+    // question it does not own.
+    if (pathname === "/api/fidelity/evaluators" && method === "GET") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      const rows = await dbAll("SELECT id, name, email, role, module_access FROM users ORDER BY name").catch(() => []);
+      return json(res, 200, {
+        evaluators: rows.filter(canEvaluate).map((u) => ({
+          id: u.id, name: u.name || u.email, email: u.email,
+          // Says which of the two grants they hold, so somebody choosing can
+          // see they are handing work to a manager rather than an evaluator.
+          manages: canManageFidelity(u),
+        })),
+      });
+    }
+
+    // What this evaluator has been asked to do. Available to anybody who can
+    // evaluate, because it is their own work and nobody else's.
+    if (pathname === "/api/fidelity/my-assignments" && method === "GET") {
+      const rows = await dbAll(
+        `SELECT * FROM fidelity_checks
+          WHERE evaluator_user_id = ? AND finalized_at IS NULL AND COALESCE(voided, FALSE) = FALSE
+            AND status IN ('assigned','in_progress','awaiting_signature')
+          ORDER BY COALESCE(assignment_due_date, '9999-12-31'), id`,
+        [user.id]
+      ).catch(() => []);
+      const today = nowISO().slice(0, 10);
+      const out = [];
+      for (const r of rows) {
+        const emp = await dbGet("SELECT id, name, role_title FROM hr_employees WHERE id = ?", [r.employee_id]).catch(() => null);
+        const calc = scoreOf(parseJson(r.scores_json, {}));
+        out.push({
+          id: r.id, employee_id: r.employee_id, employee_name: emp ? emp.name : null,
+          status: r.status, assigned_by: r.assigned_by, assigned_at: r.assigned_at,
+          due_date: r.assignment_due_date, note: r.assignment_note,
+          overdue: !!(r.assignment_due_date && r.assignment_due_date < today),
+          scored: calc.answered, items_total: calc.items_total, complete: calc.complete,
+        });
+      }
+      return json(res, 200, { assignments: out });
+    }
+
     if (pathname === "/api/fidelity/check" && method === "POST") {
       const b = await readBody(req);
       const employeeId = Number(b.employee_id);
@@ -1972,11 +2105,21 @@ module.exports = function initFidelity(ctx) {
       if (!sets.length) return json(res, 200, { ok: true, unchanged: true });
       sets.push("updated_at = ?"); vals.push(nowISO());
       await dbRun(`UPDATE fidelity_checks SET ${sets.join(", ")} WHERE id = ?`, [...vals, id]);
-      const fresh = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
+      let fresh = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
       const calc = scoreOf(parseJson(fresh.scores_json, {}),
         { unsafe_practice: fresh.unsafe_practice === true || fresh.unsafe_practice === "t" });
+
+      // The status follows the work rather than being a field somebody has to
+      // remember to change. A fully scored, unsigned check is the state worth
+      // seeing: the observation HAPPENED and is not yet on anybody's record,
+      // which is how a completed observation gets lost.
+      const want = calc.complete ? "awaiting_signature" : "in_progress";
+      if (fresh.status !== want && ["assigned", "in_progress", "awaiting_signature", "draft"].includes(fresh.status)) {
+        await dbRun("UPDATE fidelity_checks SET status = ? WHERE id = ?", [want, id]);
+        fresh = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
+      }
       // The live score comes back on every save, so the screen never adds up.
-      return json(res, 200, { ok: true, calc, action_plan_required: actionPlanRequired(calc) });
+      return json(res, 200, { ok: true, calc, status: fresh.status, action_plan_required: actionPlanRequired(calc) });
     }
 
     const finalMatch = pathname.match(/^\/api\/fidelity\/check\/(\d+)\/finalize$/);

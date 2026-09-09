@@ -324,6 +324,68 @@ const section = (t) => console.log("\n== " + t + " ==");
   await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
 
   // ================================================================
+  section("Asking somebody to observe, and seeing what was asked of you");
+
+  await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
+  await page.evaluate(() => { location.hash = "#/fidelity"; });
+  await page.waitForTimeout(2200);
+  check("the page offers a way to ask somebody else",
+    await page.locator("#fid-assign").isVisible());
+
+  await page.locator("#fid-assign").click();
+  await page.waitForTimeout(1600);
+  const asModal = page.locator(".modal-backdrop").last();
+  check("the assignment form opens", await asModal.locator("#fid-as-emp").isVisible());
+  check("...and says the observation date is recorded later, not now",
+    /observation date is recorded when they score it/i.test(await asModal.innerText()),
+    (await asModal.innerText()).slice(0, 600));
+
+  // Only people who could actually open the check are offered, and the server
+  // is what decides that — the screen must not re-derive a permission rule.
+  const evalList = (await api(page, "/api/fidelity/evaluators")).body.evaluators || [];
+  const offered = await asModal.locator("#fid-as-user option").count();
+  check("the module serves the list of people who can evaluate", evalList.length >= 1, evalList);
+  check("only those people are offered", offered === evalList.length + 1,
+    { offered: offered - 1, eligible: evalList.length });
+  check("...and the HR account with no Fidelity access is not among them",
+    !(await asModal.locator("#fid-as-user").innerText()).includes(`FidUI HR ${stamp}`),
+    await asModal.locator("#fid-as-user").innerText());
+
+  // Assign to the owner, who is the account this page is signed in as, so the
+  // result is visible on the same screen.
+  const me = evalList.find((u) => u.email === "admin@spectrumsquadlv.com");
+  check("the signed-in owner is one of them", !!me, evalList);
+  await asModal.locator("#fid-as-emp").selectOption(String(empNever));
+  await asModal.locator("#fid-as-user").selectOption(String(me.id));
+  await asModal.locator("#fid-as-note").fill("Focus on prompt fading.");
+  page.once("dialog", async (d) => { await d.accept(); });
+  await asModal.locator("#fid-as-go").click();
+  await page.waitForTimeout(2600);
+
+  const listed = (await api(page, "/api/fidelity/my-assignments")).body.assignments || [];
+  check("the assignment exists for the person it was given to", listed.length >= 1, listed);
+
+  await page.evaluate(() => { location.hash = "#/dashboard"; });
+  await page.waitForTimeout(900);
+  await page.evaluate(() => { location.hash = "#/fidelity"; });
+  await page.waitForTimeout(2600);
+  const fidText = await page.locator("#fid-body").innerText();
+  check("what was asked of you leads the page, above the roster",
+    /Asked of you/i.test(fidText), fidText.slice(0, 400));
+  check("...naming the RBT to observe", fidText.includes(`FidUI Never ${stamp}`), fidText.slice(0, 500));
+  check("...and the note that came with it", /prompt fading/i.test(fidText), fidText.slice(0, 600));
+  check("...with a way to start it", await page.locator("#fid-body [data-fid-do]").count() >= 1);
+
+  await page.locator("#fid-body [data-fid-do]").first().click();
+  await page.waitForTimeout(2500);
+  check("starting an assignment opens the scoring screen",
+    await page.locator("#fid-scoring").count() === 1);
+  check("...blank, because this observation has not been done",
+    /0 of 30 scored|0 \/ 60/.test(await page.locator("#fid-scoring #fid-live").innerText()),
+    await page.locator("#fid-scoring #fid-live").innerText());
+  await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
+
+  // ================================================================
   section("Training needs — the report the rubric was held as data for");
 
   // Three RBTs who each lose the SAME competency, so the report has a

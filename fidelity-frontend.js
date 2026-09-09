@@ -49,6 +49,7 @@
       <div><h1>RBT Fidelity</h1>
         <p>Current performance, trends and follow-up for every active RBT. Every figure here is calculated for you.</p></div>
       <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn secondary" id="fid-assign">Ask somebody to observe</button>
         <button class="btn secondary" id="fid-insights">Training needs</button>
         <button class="btn secondary" id="fid-settings">Raise settings</button>
         <button class="btn secondary" id="fid-random">Select random RBT</button>
@@ -59,6 +60,7 @@
     mount.querySelector("#fid-random").addEventListener("click", () => pickRandom(mount));
     mount.querySelector("#fid-settings").addEventListener("click", () => openSettings(mount));
     mount.querySelector("#fid-insights").addEventListener("click", () => openInsights());
+    mount.querySelector("#fid-assign").addEventListener("click", () => openAssign(mount));
     await fill(mount);
   }
 
@@ -72,7 +74,17 @@
       return;
     }
     state.data = d;
-    box.innerHTML = cardsHTML(d.cards) + filterBarHTML(d) + tableHTML(d);
+    // An evaluator's own work comes first. It is the only thing on this page
+    // that is addressed to them personally, and burying it under the roster
+    // would make an assignment something to go hunting for.
+    let mineHTML = "";
+    try {
+      const a = await api("/api/fidelity/my-assignments");
+      mineHTML = assignmentsHTML(a.assignments);
+    } catch (e) { /* leadership without an assignment is the normal case */ }
+    box.innerHTML = mineHTML + cardsHTML(d.cards) + filterBarHTML(d) + tableHTML(d);
+    box.querySelectorAll("[data-fid-do]").forEach((b) =>
+      b.addEventListener("click", () => openScoring(mount, b.dataset.fidDo)));
     wire(mount, box);
   }
 
@@ -230,9 +242,12 @@
         .map((x) => `  ${x.name} — ${x.days_since_last == null ? "never checked" : x.days_since_last + " days ago"}`)
         .join("\n");
       // The pick is a SUGGESTION and says so. Leadership can always ignore it.
-      if (confirm(`Selected: ${r.picked.name}\n\nDrawn at random from ${r.drawn_from} (${r.pool_size}).\n\nLongest waiting:\n${queue}\n\nStart a Fidelity Check for ${r.picked.name}?`)) {
-        openNewCheck(mount, r.picked.employee_id);
-      }
+      // "Assign it" exists because the picker used to end here: it named
+      // somebody and offered no way to hand the observation to anyone, so the
+      // only route on was doing it yourself.
+      const answer = confirm(`Selected: ${r.picked.name}\n\nDrawn at random from ${r.drawn_from} (${r.pool_size}).\n\nLongest waiting:\n${queue}\n\nOK to observe ${r.picked.name} yourself now, or Cancel to ask somebody else to do it.`);
+      if (answer) openNewCheck(mount, r.picked.employee_id);
+      else openAssign(mount, r.picked.employee_id, r.picked.name);
     } catch (e) {
       btn.disabled = false; btn.textContent = "Select random RBT";
       alert(e.message || "Couldn't choose an RBT.");
@@ -937,6 +952,106 @@ This locks the assessment, files the PDF in their personnel record and emails it
         alert(e.message || "Couldn't start an amendment.");
       }
     });
+  }
+
+  // ======================= ASSIGNING AN OBSERVATION =======================
+  async function openAssign(mount, presetEmployeeId, presetName) {
+    let staff, evaluators;
+    try {
+      [staff, evaluators] = await Promise.all([
+        api("/api/hr/employees").catch(() => []),
+        api("/api/fidelity/evaluators"),
+      ]);
+    } catch (e) { alert(e.message || "Couldn't open the assignment form."); return; }
+
+    const rbts = (Array.isArray(staff) ? staff : []).filter((e) =>
+      String(e.status || "active") !== "terminated" &&
+      /\bRBT\b|registered behavior technician|behavior tech|\bBT\b|student|in[- ]training|trainee/i.test(String(e.role_title || "")));
+
+    // Only people who could actually open the check. The server decides who
+    // that is -- re-deriving it from module_access here would be this screen
+    // answering a permission question it does not own, and getting it wrong
+    // silently the moment the rule changes.
+    const canDo = (evaluators && evaluators.evaluators) || [];
+
+    const back = document.createElement("div");
+    back.className = "modal-backdrop";
+    const inAWeek = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+    back.innerHTML = `<div class="modal" style="max-width:560px;">
+      <div class="modal-header"><h2>Ask somebody to do a Fidelity Check</h2><button class="close-btn">✕</button></div>
+      <div class="form-grid">
+        <div class="field full"><label>RBT to be observed *</label>
+          <select id="fid-as-emp">
+            <option value="">Choose…</option>
+            ${rbts.map((e) => `<option value="${e.id}"${String(e.id) === String(presetEmployeeId) ? " selected" : ""}>${esc(e.name)}</option>`).join("")}
+          </select></div>
+        <div class="field full"><label>Who is being asked *</label>
+          <select id="fid-as-user">
+            <option value="">Choose…</option>
+            ${canDo.map((u) => `<option value="${u.id}">${esc(u.name || u.email)}${u.manages ? " (manages Fidelity)" : ""}</option>`).join("")}
+          </select>
+          ${canDo.length ? "" : '<div style="font-size:12px;color:#b45309;margin-top:5px;">Nobody has Fidelity access yet. Grant RBT Fidelity Management or Fidelity Evaluator under Access first.</div>'}
+        </div>
+        <div class="field"><label>Due by</label><input id="fid-as-due" type="date" value="${inAWeek}" /></div>
+        <div class="field"><label>Session type</label>
+          <select id="fid-as-type"><option value="">—</option><option>In-Clinic</option><option>In-Home</option><option>School</option></select></div>
+        <div class="field full"><label>Anything to focus on (optional)</label>
+          <input id="fid-as-note" placeholder="e.g. prompt fading, since that is where the team is weakest" /></div>
+      </div>
+      <div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;">
+        They will be emailed and given a task. The check appears in their own list until it is signed. The observation date is
+        recorded when they score it — not now, because it has not happened yet.</div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+        <button class="btn secondary" data-x>Cancel</button>
+        <button class="btn" id="fid-as-go">Send the request</button>
+      </div>
+    </div>`;
+    document.body.appendChild(back);
+    const close = () => back.remove();
+    back.querySelector(".close-btn").addEventListener("click", close);
+    back.querySelector("[data-x]").addEventListener("click", close);
+    void presetName;
+
+    back.querySelector("#fid-as-go").addEventListener("click", async () => {
+      const empId = back.querySelector("#fid-as-emp").value;
+      const userId = back.querySelector("#fid-as-user").value;
+      if (!empId) { alert("Choose which RBT is to be observed."); return; }
+      if (!userId) { alert("Choose who is being asked to do the observation."); return; }
+      const btn = back.querySelector("#fid-as-go");
+      btn.disabled = true; btn.textContent = "Sending…";
+      try {
+        const r = await api("/api/fidelity/assign", { method: "POST", body: {
+          employee_id: Number(empId), evaluator_user_id: Number(userId),
+          due_date: back.querySelector("#fid-as-due").value || null,
+          session_type: back.querySelector("#fid-as-type").value || null,
+          note: back.querySelector("#fid-as-note").value.trim() || null,
+        }});
+        close();
+        alert(`Asked ${r.assigned_to} to complete it${r.due_date ? ` by ${r.due_date}` : ""}.`);
+        if (mount) fill(mount);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = "Send the request";
+        alert(e.message || "Couldn't send that request.");
+      }
+    });
+  }
+
+  // What this evaluator has been asked to do, shown at the top of the page so
+  // it is the first thing they see rather than something to go looking for.
+  function assignmentsHTML(list) {
+    if (!list || !list.length) return "";
+    return `<div class="card" style="margin-bottom:14px;border-left:4px solid var(--brand-navy,#1b2a6b);">
+      <div style="font-size:13px;font-weight:700;margin-bottom:6px;">Asked of you</div>
+      ${list.map((a) => `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:5px 0;font-size:12.5px;flex-wrap:wrap;">
+        <span>
+          <strong>${esc(a.employee_name || "RBT")}</strong>
+          ${a.due_date ? `<span style="color:${a.overdue ? "#991b1b" : "var(--text-muted)"};"> · due ${esc(dayLabel(a.due_date))}${a.overdue ? " (overdue)" : ""}</span>` : ""}
+          ${a.scored ? `<span style="color:var(--text-muted);"> · ${a.scored} of ${a.items_total} scored</span>` : ""}
+          ${a.complete ? '<span style="font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:20px;background:#fef3c7;color:#92400e;margin-left:6px;">READY TO SIGN</span>' : ""}
+        </span>
+        <button class="btn small" data-fid-do="${a.id}">${a.scored ? "Carry on" : "Start"}</button>
+      </div>${a.note ? `<div style="font-size:11.5px;color:var(--text-muted);padding-bottom:5px;">${esc(a.note)}</div>` : ""}`).join("")}
+    </div>`;
   }
 
   // ======================= WHERE THE TEAM IS WEAK =======================
