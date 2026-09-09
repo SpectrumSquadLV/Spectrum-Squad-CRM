@@ -635,6 +635,63 @@ function scoresTotalling(total, opts = {}) {
   check("an evaluator cannot browse the RBT's history either", r.status === 403, r.status);
 
   // ================================================================
+  section("Scores lock first — everything after is best effort");
+
+  // The order in finalizeCheck is the design, and it has been asserted in
+  // comments and in the pull request without being tested. The claim: losing a
+  // completed observation because something downstream failed would be the
+  // worst possible trade, so the scores are stored before the PDF, the email
+  // and the follow-up are attempted, and each records its own outcome.
+  //
+  // The realistic failure is an RBT with no email on file, which is an
+  // ordinary state for a new hire and not an error.
+  const empNoMail = await owner("/api/hr/employees", {
+    method: "POST",
+    body: { name: `Fidelity Nomail ${stamp}`, role_title: "RBT", status: "active", hire_date: daysAgo(200) },
+  });
+  const noMailId = empNoMail.data && (empNoMail.data.id || (empNoMail.data.employee && empNoMail.data.employee.id));
+  check("a staff record can exist with no email — this is a new hire, not an error", !!noMailId, empNoMail.data);
+  const onFile = await owner(`/api/fidelity/employee/${noMailId}`);
+  check("...and really has none", !onFile.data.employee.email, onFile.data.employee.email);
+
+  const nmChk = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: noMailId, assessment_date: today } });
+  await owner(`/api/fidelity/check/${nmChk.data.id}`, { method: "PATCH", body: { scores: scoresTotalling(54) } });
+  r = await owner(`/api/fidelity/check/${nmChk.data.id}/finalize`, { method: "POST", body: { bcba_signed_name: "Jane Doe, BCBA" } });
+
+  check("the assessment still signs", r.status === 200 && r.data.ok === true, r.data);
+  check("...and reports plainly that it was NOT emailed", r.data.emailed === false, r.data);
+  check("...while still filing the PDF, which did not depend on the email", !!r.data.pdf_document_id, r.data);
+
+  const nmRow = await owner(`/api/fidelity/check/${nmChk.data.id}`);
+  check("the scores are stored, which is the thing that must never be lost",
+    nmRow.data.check.total_score === 54 && nmRow.data.check.percentage === 90, nmRow.data.check);
+  check("...the signature is stored", nmRow.data.check.bcba_signed_name === "Jane Doe, BCBA", nmRow.data.check.bcba_signed_name);
+  check("...and it counts towards the RBT's history",
+    (await owner(`/api/fidelity/employee/${noMailId}`)).data.summary.checks === 1,
+    (await owner(`/api/fidelity/employee/${noMailId}`)).data.summary);
+
+  const nmActions = (nmRow.data.audit || []).map((a) => a.action);
+  check("the trail says the email was skipped rather than staying silent",
+    nmActions.includes("email_skipped"), nmActions);
+  check("...and why", (nmRow.data.audit || []).some((a) => a.action === "email_skipped" && /No email address/i.test(String(a.new_value || a.new || ""))),
+    (nmRow.data.audit || []).filter((a) => a.action === "email_skipped"));
+  check("...and the record carries the same fact where a screen would read it",
+    nmRow.data.check.email_status === "no_email_on_file", nmRow.data.check.email_status);
+  check("the PDF was still generated and filed", nmActions.includes("pdf_generated"), nmActions);
+
+  // Nobody is chased to acknowledge something that was never sent to them.
+  const nmMark = await lastMailIdEarly();
+  await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  const nmChased = await pool.query(
+    "SELECT ref_id FROM notifications_log WHERE id > $1 AND type = 'fidelity_ack_reminder'", [nmMark]);
+  check("and nobody is chased about an email that was never sent",
+    !nmChased.rows.some((x) => Number(x.ref_id) === Number(nmChk.data.id)), nmChased.rows);
+
+  r = await owner(`/api/fidelity/check/${nmChk.data.id}/resend`, { method: "POST", body: {} });
+  check("re-sending says there is no address rather than failing obscurely",
+    r.status === 400 && /no email address/i.test(r.data.error || ""), r.data);
+
+  // ================================================================
   section("The audit trail");
 
   const audited = await owner(`/api/fidelity/check/${checkA}`);
@@ -1703,8 +1760,14 @@ function scoresTotalling(total, opts = {}) {
   // ---- an acknowledgment that never came ----
   // Back-dated past the grace period, which is the only way to reach the case
   // without waiting a week.
+  // Emailed AND unacknowledged: the chaser only chases what was actually sent,
+  // so a check that was never emailed (no address on file) is not a candidate
+  // and picking one would test the wrong path.
   const ackless = await pool.query(
-    "SELECT id, employee_id FROM fidelity_checks WHERE employee_ack_at IS NULL AND finalized_at IS NOT NULL AND ack_token IS NOT NULL ORDER BY id LIMIT 1"
+    `SELECT id, employee_id FROM fidelity_checks
+      WHERE employee_ack_at IS NULL AND finalized_at IS NOT NULL AND ack_token IS NOT NULL
+        AND emailed_at IS NOT NULL AND superseded_by_check_id IS NULL AND COALESCE(voided, FALSE) = FALSE
+      ORDER BY id LIMIT 1`
   );
   check("there is a finalized check nobody acknowledged", ackless.rows.length === 1, ackless.rows);
   if (ackless.rows.length) {
