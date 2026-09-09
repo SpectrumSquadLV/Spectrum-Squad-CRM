@@ -85,6 +85,18 @@
     box.innerHTML = mineHTML + cardsHTML(d.cards) + filterBarHTML(d) + tableHTML(d);
     box.querySelectorAll("[data-fid-do]").forEach((b) =>
       b.addEventListener("click", () => openScoring(mount, b.dataset.fidDo)));
+    // The overdue-assignment email tells them to say so rather than leave it.
+    // This is where saying so happens.
+    box.querySelectorAll("[data-fid-release]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        const why = prompt("Why can't this observation be done?\n\nIt is kept on the record, and it is how the RBT gets rescheduled rather than quietly missed.");
+        if (why == null) return;
+        if (!String(why).trim()) { alert("A reason is needed — it is how the RBT gets rescheduled."); return; }
+        try {
+          await api(`/api/fidelity/check/${b.dataset.fidRelease}/release`, { method: "POST", body: { reason: String(why).trim() } });
+          await fill(mount);
+        } catch (e) { alert(e.message || "Couldn't release that assignment."); }
+      }));
     wire(mount, box);
   }
 
@@ -1052,7 +1064,10 @@ This locks the assessment, files the PDF in their personnel record and emails it
           ${a.scored ? `<span style="color:var(--text-muted);"> · ${a.scored} of ${a.items_total} scored</span>` : ""}
           ${a.complete ? '<span style="font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:20px;background:#fef3c7;color:#92400e;margin-left:6px;">READY TO SIGN</span>' : ""}
         </span>
-        <button class="btn small" data-fid-do="${a.id}">${a.scored ? "Carry on" : "Start"}</button>
+        <span style="white-space:nowrap;">
+          <button class="btn small" data-fid-do="${a.id}">${a.scored ? "Carry on" : "Start"}</button>
+          <button class="btn small secondary" data-fid-release="${a.id}" title="Say it will not be done">Can't do it</button>
+        </span>
       </div>${a.note ? `<div style="font-size:11.5px;color:var(--text-muted);padding-bottom:5px;">${esc(a.note)}</div>` : ""}`).join("")}
     </div>`;
   }

@@ -383,6 +383,9 @@ const section = (t) => console.log("\n== " + t + " ==");
   check("...and the page shows work in flight as a figure, not only as a row",
     /Assigned, not done|Assignments overdue/.test(fidText), fidText.slice(0, 700));
 
+  check("...and a way to say it cannot be done, which the chase email tells them to use",
+    await page.locator("#fid-body [data-fid-release]").count() >= 1);
+
   await page.locator("#fid-body [data-fid-do]").first().click();
   await page.waitForTimeout(2500);
   check("starting an assignment opens the scoring screen",
@@ -391,6 +394,19 @@ const section = (t) => console.log("\n== " + t + " ==");
     /0 of 30 scored|0 \/ 60/.test(await page.locator("#fid-scoring #fid-live").innerText()),
     await page.locator("#fid-scoring #fid-live").innerText());
   await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
+
+  // Saying it cannot be done, from the screen rather than only over the API.
+  const beforeRelease = ((await api(page, "/api/fidelity/my-assignments")).body.assignments || []).length;
+  page.once("dialog", async (d) => { await d.accept("Out on leave."); });
+  await page.locator("#fid-body [data-fid-release]").first().click();
+  await page.waitForTimeout(2600);
+  const afterRelease = ((await api(page, "/api/fidelity/my-assignments")).body.assignments || []).length;
+  check("declining from the screen takes it off the list",
+    afterRelease === beforeRelease - 1, { before: beforeRelease, after: afterRelease });
+  check("...and the RBT is still shown as needing an observation",
+    ((await api(page, "/api/fidelity/dashboard")).body.employees || [])
+      .some((e) => e.employee_id === empNever && e.overdue_check === true),
+    (await api(page, "/api/fidelity/dashboard")).body.cards);
 
   // ================================================================
   section("Training needs — the report the rubric was held as data for");

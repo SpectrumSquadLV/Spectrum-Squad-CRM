@@ -537,6 +537,15 @@ function scoresTotalling(total, opts = {}) {
     return f;
   };
 
+  // Configured once, here, because several sections below assert that somebody
+  // was told something. Without a recipient the module correctly sends nothing,
+  // and every one of those assertions would pass for that reason instead of
+  // the one it claims to test.
+  const cdAddress = `fid.director.${stamp}@example.invalid`;
+  const cdSet = await owner("/api/admin/settings", { method: "PATCH", body: { clinical_director_email: cdAddress } });
+  check("a Clinical Director address is configured, so 'somebody was told' can mean something",
+    cdSet.status === 200, cdSet.data);
+
   const lastMailIdEarly = async () => {
     const q = await pool.query("SELECT COALESCE(MAX(id), 0) AS n FROM notifications_log");
     return Number(q.rows[0].n);
@@ -980,6 +989,81 @@ function scoresTotalling(total, opts = {}) {
     !(r.data.assignments || []).some((a) => a.id === assignedId), r.data.assignments);
 
   // ================================================================
+  section("An assignment that will not be completed");
+
+  // The overdue-assignment email says "if it can no longer be done, say so
+  // rather than leaving it". That sentence needs somewhere to lead.
+  const empDecline = await mkEmp("Sierra2");
+  let asg = await owner("/api/fidelity/assign", {
+    method: "POST", body: { employee_id: empDecline, evaluator_user_id: evaluator.id, due_date: daysAgo(-3) },
+  });
+  const declineId = asg.data.id;
+
+  r = await otherEval.req(`/api/fidelity/check/${declineId}/release`, { method: "POST", body: { reason: "no" } });
+  check("somebody else's assignment cannot be released", r.status === 403, r.status);
+  r = await evaluator.req(`/api/fidelity/check/${declineId}/release`, { method: "POST", body: {} });
+  check("releasing without a reason is refused", r.status === 400, r.data);
+  check("...and says the reason is how the RBT gets rescheduled",
+    /how the RBT gets rescheduled/i.test(r.data.error || ""), r.data.error);
+
+  const declineMark = await lastMailIdEarly();
+  r = await evaluator.req(`/api/fidelity/check/${declineId}/release`, {
+    method: "POST", body: { reason: "On leave for three weeks." },
+  });
+  check("the assigned evaluator can decline", r.status === 200, r.data);
+  check("...and it is recorded as DECLINED, not cancelled", r.data.status === "declined", r.data);
+
+  const declineMail = await pool.query(
+    "SELECT recipient, subject, body FROM notifications_log WHERE id > $1 AND type = 'fidelity_declined'", [declineMark]);
+  check("leadership is told, or a decline is the same as nobody doing it",
+    declineMail.rows.length === 1, declineMail.rows.length);
+  check("...with the reason", declineMail.rows.length === 1 && /three weeks/i.test(declineMail.rows[0].body),
+    (declineMail.rows[0] || {}).body);
+  check("...and saying the RBT is still due an observation",
+    declineMail.rows.length === 1 && /still due an observation/i.test(declineMail.rows[0].body),
+    (declineMail.rows[0] || {}).body);
+
+  r = await evaluator.req("/api/fidelity/my-assignments");
+  check("a declined assignment leaves the evaluator's list",
+    !(r.data.assignments || []).some((a) => a.id === declineId), r.data.assignments);
+
+  const dashDecline = await owner("/api/fidelity/dashboard");
+  const rowDecline = (dashDecline.data.employees || []).find((e) => e.employee_id === empDecline);
+  check("the RBT is still counted as due a check — declining does not observe them",
+    rowDecline && rowDecline.overdue_check === true, rowDecline);
+
+  const chaseMark = await lastMailIdEarly();
+  await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  const stillChased = await pool.query(
+    "SELECT body FROM notifications_log WHERE id > $1 AND type = 'fidelity_assignment_overdue'", [chaseMark]);
+  check("...and the declined assignment is not chased any more",
+    !stillChased.rows.map((x) => x.body).join(" ").includes(`Sierra2 ${stamp}`),
+    stillChased.rows.map((x) => x.body.slice(0, 80)));
+
+  r = await evaluator.req(`/api/fidelity/check/${declineId}/release`, { method: "POST", body: { reason: "again" } });
+  check("a released assignment cannot be released twice", r.status === 409, r.data);
+
+  // Leadership withdrawing is a different fact and is recorded as one.
+  const empCancel2 = await mkEmp("Tango2");
+  asg = await owner("/api/fidelity/assign", {
+    method: "POST", body: { employee_id: empCancel2, evaluator_user_id: evaluator.id },
+  });
+  const cancelMark = await lastMailIdEarly();
+  r = await owner(`/api/fidelity/check/${asg.data.id}/release`, {
+    method: "POST", body: { reason: "The RBT has left." },
+  });
+  check("leadership can withdraw a request", r.status === 200, r.data);
+  check("...recorded as CANCELLED rather than declined", r.data.status === "cancelled", r.data);
+  const cancelMail = await pool.query(
+    "SELECT recipient FROM notifications_log WHERE id > $1 AND type = 'fidelity_cancelled'", [cancelMark]);
+  check("...and the evaluator is told it is off their list",
+    cancelMail.rows.length === 1 && cancelMail.rows[0].recipient.includes(evaluator.email), cancelMail.rows);
+
+  // A signed check is not an assignment and has its own remedy.
+  r = await owner(`/api/fidelity/check/${checkA}/release`, { method: "POST", body: { reason: "x" } });
+  check("a signed check is voided, not released", r.status === 400 && /Void it/i.test(r.data.error || ""), r.data);
+
+  // ================================================================
   section("Where the team is weak — training need, or one person");
 
   // The finding that matters is not "this competency scores badly" but whether
@@ -1421,10 +1505,8 @@ function scoresTotalling(total, opts = {}) {
   check("an evaluator cannot run the notice sweep", r.status === 403, r.status);
 
   // Somebody has to receive it. Configured the way every other module reads it.
-  const setCd = await owner("/api/admin/settings", {
-    method: "PATCH", body: { clinical_director_email: `fid.director.${stamp}@example.invalid` },
-  });
-  check("a Clinical Director address is configured, the way every module reads it", setCd.status === 200, setCd.data);
+  const setCd = await owner("/api/admin/settings", { method: "PATCH", body: { clinical_director_email: cdAddress } });
+  check("the Clinical Director address is still the one every module reads", setCd.status === 200, setCd.data);
 
   // An RBT nobody has ever observed, and an overdue Action Plan, both already
   // exist from the sections above (empNever-equivalent: empC has a plan, and

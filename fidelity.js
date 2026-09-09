@@ -1000,6 +1000,12 @@ module.exports = function initFidelity(ctx) {
   // observation because an email failed would be the worst possible trade, and
   // each step records its own success or failure in the audit trail so a
   // half-finished automation is visible rather than assumed.
+  // An assignment that is still somebody's work. Declared once: the Action
+  // Plan statuses taught this lesson the hard way, where three places each had
+  // their own idea of "open" and adding one value split them apart.
+  const CHECK_LIVE = ["assigned", "in_progress", "awaiting_signature"];
+  const CHECK_UNSTARTED = ["assigned", "in_progress"];
+
   // What an Action Plan can be, and which of those mean it is still somebody's
   // work. ONE definition, because there were three: the dashboard listed
   // specific open statuses, while the notice sweep and the raise's
@@ -1016,6 +1022,11 @@ module.exports = function initFidelity(ctx) {
 
   const STATUSES = ["draft", "assigned", "in_progress", "awaiting_signature", "finalized",
     "sent", "awaiting_ack", "acknowledged", "closed",
+    // An observation that will not happen. `declined` is the evaluator saying
+    // they cannot do it; `cancelled` is leadership withdrawing the request.
+    // The two are recorded separately because "I could not" and "we changed
+    // our minds" are different facts about why an RBT went unobserved.
+    "declined", "cancelled",
     // A check that an amendment has replaced. It keeps its scores, its
     // signature and its trail; it simply no longer counts. The screens read
     // this list to label a status, so a value the module writes and the list
@@ -1269,7 +1280,7 @@ module.exports = function initFidelity(ctx) {
       `SELECT id, employee_id, evaluator_name, status, assignment_due_date, updated_at
          FROM fidelity_checks
         WHERE finalized_at IS NULL AND COALESCE(voided, FALSE) = FALSE
-          AND status IN ('assigned','in_progress','awaiting_signature')`
+          AND status IN (${CHECK_LIVE.map(() => "?").join(",")})`, CHECK_LIVE
     ).catch(() => []);
 
     const openPlans = await dbAll(
@@ -1694,9 +1705,9 @@ module.exports = function initFidelity(ctx) {
     const lateAssignments = await dbAll(
       `SELECT * FROM fidelity_checks
         WHERE finalized_at IS NULL AND COALESCE(voided, FALSE) = FALSE
-          AND status IN ('assigned','in_progress')
+          AND status IN (${CHECK_UNSTARTED.map(() => "?").join(",")})
           AND assignment_due_date IS NOT NULL AND assignment_due_date < ?`,
-      [today]
+      [...CHECK_UNSTARTED, today]
     ).catch(() => []);
     for (const c of lateAssignments) {
       const ev = c.evaluator_user_id
@@ -2121,9 +2132,9 @@ module.exports = function initFidelity(ctx) {
       const rows = await dbAll(
         `SELECT * FROM fidelity_checks
           WHERE evaluator_user_id = ? AND finalized_at IS NULL AND COALESCE(voided, FALSE) = FALSE
-            AND status IN ('assigned','in_progress','awaiting_signature')
+            AND status IN (${CHECK_LIVE.map(() => "?").join(",")})
           ORDER BY COALESCE(assignment_due_date, '9999-12-31'), id`,
-        [user.id]
+        [user.id, ...CHECK_LIVE]
       ).catch(() => []);
       const today = nowISO().slice(0, 10);
       const out = [];
@@ -2209,7 +2220,7 @@ module.exports = function initFidelity(ctx) {
       // seeing: the observation HAPPENED and is not yet on anybody's record,
       // which is how a completed observation gets lost.
       const want = calc.complete ? "awaiting_signature" : "in_progress";
-      if (fresh.status !== want && ["assigned", "in_progress", "awaiting_signature", "draft"].includes(fresh.status)) {
+      if (fresh.status !== want && [...CHECK_LIVE, "draft"].includes(fresh.status)) {
         await dbRun("UPDATE fidelity_checks SET status = ? WHERE id = ?", [want, id]);
         fresh = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
       }
@@ -2290,6 +2301,64 @@ module.exports = function initFidelity(ctx) {
       await audit(id, "amendment_started", { actor, new: reason });
       await audit(created.id, "created_as_amendment", { actor, old: `copy of check ${id}`, new: reason });
       return json(res, 201, { ok: true, id: created.id, amends: id });
+    }
+
+    // ---- an assignment that will not be completed ----
+    // The overdue-assignment email says "if it can no longer be done, say so
+    // rather than leaving it". Until now there was no way to say so, which
+    // made that sentence the same empty instruction "create an amendment" used
+    // to be. An unobserved RBT is invisible; a declined assignment is a fact
+    // somebody can act on.
+    const releaseMatch = pathname.match(/^\/api\/fidelity\/check\/(\d+)\/release$/);
+    if (releaseMatch && method === "POST") {
+      const id = Number(releaseMatch[1]);
+      const row = await dbGet("SELECT * FROM fidelity_checks WHERE id = ?", [id]);
+      if (!row) return json(res, 404, { error: "Not found" });
+      const isAssignee = Number(row.evaluator_user_id) === Number(user.id);
+      if (!manage && !isAssignee) return json(res, 403, { error: "This Fidelity Check is not assigned to you." });
+      if (row.finalized_at) {
+        return json(res, 400, { error: "This Fidelity Check is signed. Void it if it should not stand." });
+      }
+      if (!CHECK_LIVE.includes(row.status)) {
+        return json(res, 409, { error: "This Fidelity Check is not an open assignment.", status: row.status });
+      }
+      const b = await readBody(req);
+      const reason = String(b.reason || "").trim();
+      if (!reason) return json(res, 400, { error: "Say why it will not be done — it is kept on the record and is how the RBT gets rescheduled." });
+
+      // WHO let it go decides what it is called. "I could not" and "we changed
+      // our minds" are different facts about why an RBT went unobserved, and
+      // flattening them would lose the one that says the team is short-handed.
+      const declined = isAssignee && !(manage && !isAssignee);
+      const status = declined ? "declined" : "cancelled";
+      const now = nowISO();
+      await dbRun("UPDATE fidelity_checks SET status = ?, assignment_note = ?, updated_at = ? WHERE id = ?",
+        [status, (row.assignment_note ? row.assignment_note + " — " : "") + `${declined ? "Declined" : "Cancelled"} by ${actor}: ${reason}`, now, id]);
+      await audit(id, status, { actor, old: row.status, new: reason });
+
+      const emp = await dbGet("SELECT name FROM hr_employees WHERE id = ?", [row.employee_id]).catch(() => null);
+      // Tell the other side. A declined assignment that leadership never hears
+      // about is the same as an assignment nobody did.
+      const tell = declined
+        ? await leadershipRecipients()
+        : (row.evaluator_user_id
+            ? [(await dbGet("SELECT email FROM users WHERE id = ?", [row.evaluator_user_id]).catch(() => null) || {}).email]
+            : []).filter(Boolean);
+      if (tell.length) {
+        try {
+          await sendEmail({
+            to: tell.join(", "),
+            subject: `Fidelity Check ${declined ? "declined" : "cancelled"}: ${emp ? emp.name : "an RBT"}`,
+            html: `<p>The Fidelity Check for <strong>${esc(emp ? emp.name : "an RBT")}</strong>`
+              + `${row.assignment_due_date ? `, due ${esc(row.assignment_due_date)},` : ""} will not be completed.</p>`
+              + `<p>${declined ? esc(row.evaluator_name || "The evaluator") + " said" : esc(actor) + " withdrew the request"}: ${esc(reason)}</p>`
+              + (declined ? `<p>${esc(emp ? emp.name : "This RBT")} is still due an observation — they are back on the list of RBTs who need one.</p>` : ""),
+            type: declined ? "fidelity_declined" : "fidelity_cancelled", refType: "fidelity_check", refId: id,
+          });
+          await audit(id, "release_notified", { actor: "system", new: tell.join(", ") });
+        } catch (e) { await audit(id, "release_notify_failed", { actor: "system", new: e.message }); }
+      }
+      return json(res, 200, { ok: true, status, employee_still_due: true });
     }
 
     const voidMatch = pathname.match(/^\/api\/fidelity\/check\/(\d+)\/void$/);
