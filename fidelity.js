@@ -1003,6 +1003,28 @@ module.exports = function initFidelity(ctx) {
     return null;
   }
 
+  // "Initials only, never a full name" has been the rule since the module was
+  // written, stated in a comment and enforced by maxlength="6" on one input.
+  // That is not enforcement: it is a suggestion any API client, paste or
+  // script ignores. The field is printed into a PDF that is FILED IN AN RBT'S
+  // PERSONNEL RECORD and shown on the employee's own page, so a client's full
+  // name here puts a child's identity into somebody's employment file.
+  //
+  // Separators are allowed because people write J.D. and J-D; what is counted
+  // is the letters underneath, and four is more than any set of initials needs.
+  function clientInitialsProblem(value) {
+    const raw = String(value == null ? "" : value).trim();
+    if (!raw) return null;                       // optional, and blank is fine
+    if (!/^[A-Za-z][A-Za-z.\-\s]*$/.test(raw)) {
+      return "Client initials should be letters only — no numbers or punctuation beyond . and -";
+    }
+    const letters = raw.replace(/[^A-Za-z]/g, "");
+    if (letters.length > 4) {
+      return "Initials only — a client's full name must never go on this document. It is filed in the RBT's personnel record.";
+    }
+    return null;
+  }
+
   function parseJson(v, fb) {
     if (v == null) return fb;
     if (typeof v === "object") return v;
@@ -2231,6 +2253,8 @@ module.exports = function initFidelity(ctx) {
       if (!employeeId) return json(res, 400, { error: "Choose which RBT is being observed." });
       const emp = await dbGet("SELECT id, name FROM hr_employees WHERE id = ?", [employeeId]);
       if (!emp) return json(res, 404, { error: "That staff member is not on file." });
+      const initialsProblem = clientInitialsProblem(b.client_initials);
+      if (initialsProblem) return json(res, 400, { error: initialsProblem });
       const now = nowISO();
       const row = await dbGet(
         `INSERT INTO fidelity_checks
@@ -2260,6 +2284,10 @@ module.exports = function initFidelity(ctx) {
       const b = await readBody(req);
       if (b.assessment_date !== undefined && b.assessment_date !== null && String(b.assessment_date).trim() !== "") {
         const p = assessmentDateProblem(b.assessment_date, nowISO().slice(0, 10));
+        if (p) return json(res, 400, { error: p });
+      }
+      if (b.client_initials !== undefined) {
+        const p = clientInitialsProblem(b.client_initials);
         if (p) return json(res, 400, { error: p });
       }
       const fields = ["assessment_date", "client_initials", "session_type", "observation_minutes",
@@ -2944,7 +2972,7 @@ module.exports = function initFidelity(ctx) {
     initTables, audit, canManageFidelity, canEvaluate,
     employeeSummary, summarise, trendOf, finalizedChecks, allChecksFor,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
-    buildPdf, refilePdf, statusBannerFor, assessmentDateProblem, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
+    buildPdf, refilePdf, statusBannerFor, assessmentDateProblem, clientInitialsProblem, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
     insights,
     PLAN_STATUSES, PLAN_OPEN,

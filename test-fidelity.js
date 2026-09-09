@@ -635,6 +635,44 @@ function scoresTotalling(total, opts = {}) {
   check("an evaluator cannot browse the RBT's history either", r.status === 403, r.status);
 
   // ================================================================
+  section("A child's name must not reach an employee's personnel file");
+
+  // "Initials only, never a full name" has been the rule since the module was
+  // written, stated in a comment and enforced by maxlength="6" on one input —
+  // which is not enforcement. The field is printed into a PDF FILED IN THE
+  // RBT'S PERSONNEL RECORD and shown on their own page, so a full name here
+  // puts a child's identity into somebody's employment file.
+  check("two initials are fine", fid.clientInitialsProblem("AB") === null, fid.clientInitialsProblem("AB"));
+  check("so are dotted initials", fid.clientInitialsProblem("J.D.") === null, fid.clientInitialsProblem("J.D."));
+  check("so are three", fid.clientInitialsProblem("A.B.C.") === null, fid.clientInitialsProblem("A.B.C."));
+  check("a hyphenated pair is fine", fid.clientInitialsProblem("J-D") === null, fid.clientInitialsProblem("J-D"));
+  check("blank is fine — the field is optional", fid.clientInitialsProblem("") === null);
+  check("a full name is refused",
+    /full name must never go on this document/.test(fid.clientInitialsProblem("Jordan Smith") || ""),
+    fid.clientInitialsProblem("Jordan Smith"));
+  check("...and says why, naming the personnel record",
+    /personnel record/i.test(fid.clientInitialsProblem("Jordan Smith") || ""), fid.clientInitialsProblem("Jordan Smith"));
+  check("a first name alone is refused too", !!fid.clientInitialsProblem("Jordan"), fid.clientInitialsProblem("Jordan"));
+  check("digits are refused", !!fid.clientInitialsProblem("AB12"), fid.clientInitialsProblem("AB12"));
+
+  // The rule has to hold at the API, because that is what maxlength does not.
+  const empPhi = await mkEmp("Victor");
+  r = await owner("/api/fidelity/check", {
+    method: "POST", body: { employee_id: empPhi, assessment_date: today, client_initials: "Jordan Smith" },
+  });
+  check("a full name is refused when starting a check, not only in the browser",
+    r.status === 400, r.data);
+
+  const okChk = await owner("/api/fidelity/check", {
+    method: "POST", body: { employee_id: empPhi, assessment_date: today, client_initials: "J.S." },
+  });
+  check("initials are accepted", okChk.status === 201, okChk.data);
+  r = await owner(`/api/fidelity/check/${okChk.data.id}`, { method: "PATCH", body: { client_initials: "Jordan Smith" } });
+  check("...and cannot be replaced with a full name afterwards", r.status === 400, r.data);
+  const phiRow = await owner(`/api/fidelity/check/${okChk.data.id}`);
+  check("...leaving the initials as they were", phiRow.data.check.client_initials === "J.S.", phiRow.data.check.client_initials);
+
+  // ================================================================
   section("An observation cannot have happened in the future");
 
   // Unguarded, a fat-fingered year is worse than it looks. History is ordered
