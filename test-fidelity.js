@@ -635,6 +635,53 @@ function scoresTotalling(total, opts = {}) {
   check("an evaluator cannot browse the RBT's history either", r.status === 403, r.status);
 
   // ================================================================
+  section("An observation cannot have happened in the future");
+
+  // Unguarded, a fat-fingered year is worse than it looks. History is ordered
+  // by assessment_date, so a check dated 2027 would become that RBT's CURRENT
+  // score until 2027 arrives, every trend would be measured against it, and it
+  // would simultaneously fall outside every review period and count towards no
+  // raise. All while looking perfectly normal on the form.
+  const nextYear = new Date(Date.now() + 400 * 86400000).toISOString().slice(0, 10);
+
+  check("the rule is stated where it can be checked directly",
+    fid.assessmentDateProblem("2026-09-01", "2026-09-09") === null, fid.assessmentDateProblem("2026-09-01", "2026-09-09"));
+  check("a future date is refused", /has not happened yet/.test(fid.assessmentDateProblem("2027-01-01", "2026-09-09") || ""),
+    fid.assessmentDateProblem("2027-01-01", "2026-09-09"));
+  check("today is allowed — an observation this morning is not the future",
+    fid.assessmentDateProblem("2026-09-09", "2026-09-09") === null);
+  check("a date that is not a date is refused",
+    !!fid.assessmentDateProblem("not-a-date", "2026-09-09"), fid.assessmentDateProblem("not-a-date", "2026-09-09"));
+  check("a date that does not exist is refused, and named",
+    /2026-02-30 is not a date that exists/.test(fid.assessmentDateProblem("2026-02-30", "2026-09-09") || ""),
+    fid.assessmentDateProblem("2026-02-30", "2026-09-09"));
+  check("back-entering an old paper form is still allowed",
+    fid.assessmentDateProblem("2024-03-15", "2026-09-09") === null);
+
+  const empFuture = await mkEmp("Uniform");
+  const fChk = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: empFuture, assessment_date: today } });
+  r = await owner(`/api/fidelity/check/${fChk.data.id}`, { method: "PATCH", body: { assessment_date: nextYear } });
+  check("a future date is refused on the way in, not only at signing", r.status === 400, r.data);
+  check("...saying it has not happened yet", /has not happened yet/i.test(r.data.error || ""), r.data.error);
+
+  const fRow = await owner(`/api/fidelity/check/${fChk.data.id}`);
+  check("...and the date on the record is untouched",
+    String(fRow.data.check.assessment_date).slice(0, 10) === today, fRow.data.check.assessment_date);
+
+  await owner(`/api/fidelity/check/${fChk.data.id}`, { method: "PATCH", body: { scores: scoresTotalling(54) } });
+  r = await owner(`/api/fidelity/check/${fChk.data.id}/finalize`, {
+    method: "POST", body: { bcba_signed_name: "Jane Doe, BCBA", assessment_date: nextYear },
+  });
+  check("and it cannot be slipped in at signing either", r.status === 400, r.data);
+  check("...so nothing was signed", (await owner(`/api/fidelity/check/${fChk.data.id}`)).data.check.status !== "finalized",
+    (await owner(`/api/fidelity/check/${fChk.data.id}`)).data.check.status);
+
+  r = await owner(`/api/fidelity/check/${fChk.data.id}/finalize`, {
+    method: "POST", body: { bcba_signed_name: "Jane Doe, BCBA", assessment_date: today },
+  });
+  check("with a real date it signs", r.status === 200, r.data);
+
+  // ================================================================
   section("Scores lock first — everything after is best effort");
 
   // The order in finalizeCheck is the design, and it has been asserted in

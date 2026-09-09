@@ -982,6 +982,27 @@ module.exports = function initFidelity(ctx) {
     }
   }
 
+  // An observation cannot have happened in the future, and a date that is not
+  // a date is not one either. Unguarded, a fat-fingered year is worse than it
+  // looks: history is ordered by assessment_date, so a check dated 2027
+  // becomes that RBT's CURRENT score until 2027 arrives, every trend is
+  // measured against it, and it simultaneously falls outside every review
+  // period so it counts towards no raise. All of that while looking fine.
+  function assessmentDateProblem(value, todayStr) {
+    const d = String(value == null ? "" : value).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      return "Give the date of the observation as a real date.";
+    }
+    const t = new Date(d + "T00:00:00Z");
+    if (isNaN(t.getTime()) || t.toISOString().slice(0, 10) !== d) {
+      return `${d} is not a date that exists.`;
+    }
+    if (d > todayStr) {
+      return `An observation cannot be dated in the future — ${d} has not happened yet.`;
+    }
+    return null;
+  }
+
   function parseJson(v, fb) {
     if (v == null) return fb;
     if (typeof v === "object") return v;
@@ -1064,10 +1085,13 @@ module.exports = function initFidelity(ctx) {
     // the one before it, or counted in a review period. Assignments start
     // without one on purpose -- the observation has not happened yet -- so this
     // is where it has to be filled in.
-    if (!String(body.assessment_date || check.assessment_date || "").trim()) {
+    const whenRaw = String(body.assessment_date || check.assessment_date || "").trim();
+    if (!whenRaw) {
       return { ok: false, code: 400, code_key: "assessment_date_required",
         error: "Give the date the observation took place before signing." };
     }
+    const whenProblem = assessmentDateProblem(whenRaw, nowISO().slice(0, 10));
+    if (whenProblem) return { ok: false, code: 400, code_key: "assessment_date_invalid", error: whenProblem };
 
     if (unsafe && !String(body.unsafe_practice_detail || check.unsafe_practice_detail || "").trim()) {
       return { ok: false, code: 400, error: "Unsafe or unethical practice must be documented before finalizing." };
@@ -2234,6 +2258,10 @@ module.exports = function initFidelity(ctx) {
         return json(res, 409, { error: "This Fidelity Check is signed and can no longer be edited. Create an amendment instead." });
       }
       const b = await readBody(req);
+      if (b.assessment_date !== undefined && b.assessment_date !== null && String(b.assessment_date).trim() !== "") {
+        const p = assessmentDateProblem(b.assessment_date, nowISO().slice(0, 10));
+        if (p) return json(res, 400, { error: p });
+      }
       const fields = ["assessment_date", "client_initials", "session_type", "observation_minutes",
         "strengths", "areas_for_improvement", "action_plan_narrative", "unsafe_practice",
         "unsafe_practice_detail", "critical_fail_detail", "evaluator_credentials"];
@@ -2916,7 +2944,7 @@ module.exports = function initFidelity(ctx) {
     initTables, audit, canManageFidelity, canEvaluate,
     employeeSummary, summarise, trendOf, finalizedChecks, allChecksFor,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
-    buildPdf, refilePdf, statusBannerFor, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
+    buildPdf, refilePdf, statusBannerFor, assessmentDateProblem, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
     insights,
     PLAN_STATUSES, PLAN_OPEN,
