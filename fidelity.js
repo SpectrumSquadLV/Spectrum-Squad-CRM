@@ -1303,8 +1303,17 @@ module.exports = function initFidelity(ctx) {
       const dueDate = sum.last_check_date
         ? new Date(new Date(sum.last_check_date + "T00:00:00Z").getTime() + settings.check_interval_days * 86400000).toISOString().slice(0, 10)
         : null;
+      // Somebody has already been asked. Without this the roster says "due
+      // now" for an RBT whose observation is booked, and a second person gets
+      // asked to do the same one.
+      const pending = inFlight.find((c) => Number(c.employee_id) === Number(e.id)) || null;
       return {
         employee_id: e.id, name: e.name, role_title: e.role_title || "", email: e.email || null,
+        pending_check: pending ? {
+          id: pending.id, status: pending.status, evaluator: pending.evaluator_name || null,
+          due_date: pending.assignment_due_date || null,
+          overdue: !!(pending.assignment_due_date && pending.assignment_due_date < today),
+        } : null,
         hire_date: e.hire_date || null,
         annual_review_date: e.annual_review_date || null,
         hourly_rate: e.hourly_rate == null ? null : Number(e.hourly_rate),
@@ -1864,13 +1873,34 @@ module.exports = function initFidelity(ctx) {
       const row = await dbGet("SELECT * FROM fidelity_checks WHERE ack_token = ?", [String(query.token || "")]).catch(() => null);
       if (!row || !String(query.token || "")) return json(res, 404, { error: "That link is not valid." });
       const emp = await dbGet("SELECT name FROM hr_employees WHERE id = ?", [row.employee_id]).catch(() => null);
-      return json(res, 200, shapePublic(row, emp));
+      const out = shapePublic(row, emp);
+      if (row.superseded_by_check_id) {
+        const nu = await dbGet(
+          "SELECT assessment_date, total_score, max_score, percentage, rating_label FROM fidelity_checks WHERE id = ?",
+          [row.superseded_by_check_id]).catch(() => null);
+        // The figures of the assessment that stands, but NOT its token: this
+        // link belongs to the old one, and the new one was emailed separately.
+        if (nu) out.replacement = { assessment_date: nu.assessment_date, total_score: nu.total_score,
+          max_score: nu.max_score, percentage: nu.percentage == null ? null : Number(nu.percentage),
+          rating_label: nu.rating_label };
+      }
+      return json(res, 200, out);
     }
     if (pathname === "/api/fidelity/public/acknowledge" && method === "POST") {
       const b = await readBody(req).catch(() => ({}));
       const row = await dbGet("SELECT * FROM fidelity_checks WHERE ack_token = ?", [String(b.token || "")]).catch(() => null);
       if (!row) return json(res, 404, { error: "That link is not valid." });
       if (row.employee_ack_at) return json(res, 200, { ok: true, already: true, acknowledged_at: row.employee_ack_at });
+      // Acknowledging a result that has been corrected or withdrawn would have
+      // somebody sign for a score that does not stand.
+      if (row.superseded_by_check_id) {
+        return json(res, 409, { code_key: "superseded", error:
+          "This assessment was corrected after it was sent to you. There is nothing to acknowledge here — a newer one was emailed to you, and that is the one that counts." });
+      }
+      if (row.voided === true || row.voided === "t") {
+        return json(res, 409, { code_key: "voided", error:
+          "This assessment was withdrawn and does not count. There is nothing to acknowledge." });
+      }
       const name = String(b.signed_name || "").trim();
       if (!name) return json(res, 400, { error: "Type your name to acknowledge." });
       const at = nowISO();
@@ -2688,6 +2718,14 @@ module.exports = function initFidelity(ctx) {
       bcba_signed_name: r.bcba_signed_name, bcba_signed_at: r.bcba_signed_at,
       acknowledged_at: r.employee_ack_at, acknowledged_name: r.employee_ack_name,
       finalized: !!r.finalized_at,
+      // Whether what they are looking at still stands. An RBT opening a link
+      // from an old email must not be shown a score that has since been
+      // corrected as though it were their result -- they are the person this
+      // record is about, and they are the last to find out.
+      superseded: !!r.superseded_by_check_id,
+      voided: r.voided === true || r.voided === "t",
+      void_reason: r.void_reason || null,
+      replacement: null,
     };
   }
 
@@ -2750,7 +2788,26 @@ module.exports = function initFidelity(ctx) {
       .map(function(x){return '<div class="card"><h2>'+esc(x[0])+'</h2><div style="white-space:pre-wrap">'+esc(x[1])+'</div></div>';})
       .join("");
     var already = !!d.acknowledged_at;
+    // If this assessment no longer stands, that is the first thing on the page.
+    // Being shown a corrected score as though it were your result, and asked to
+    // sign for it, is the sort of thing somebody only finds out at a review.
+    var stale = d.superseded || d.voided;
+    var staleBanner = !stale ? "" :
+      '<div class="card" style="background:#fef3c7;color:#92400e">'+
+        '<strong>' + (d.superseded
+          ? 'This assessment was corrected after it was sent to you.'
+          : 'This assessment was withdrawn.') + '</strong>'+
+        '<div style="font-size:14px;margin-top:6px">' + (d.superseded
+          ? ('What you see below is kept as it was signed, and no longer counts. The one that counts is dated '+
+             esc((d.replacement && d.replacement.assessment_date) || "—") +
+             (d.replacement ? ' — ' + d.replacement.total_score + ' / ' + d.replacement.max_score +
+               ', ' + d.replacement.percentage + '%' + (d.replacement.rating_label ? ', ' + esc(d.replacement.rating_label) : "") : "") +
+             '. It was emailed to you separately.')
+          : ('It does not count towards your record.' + (d.void_reason ? ' Reason: ' + esc(d.void_reason) : ""))) +
+        '</div>'+
+      '</div>';
     root.innerHTML =
+      staleBanner +
       '<div class="card">'+
         '<h1>Your Fidelity Check</h1>'+
         '<div class="muted">'+esc(d.assessment_date||"")+' · '+esc(d.session_type||"")+
@@ -2769,7 +2826,9 @@ module.exports = function initFidelity(ctx) {
         '<p class="muted">Acknowledging confirms you have received and read this assessment. '+
           'It does <strong>not</strong> mean you agree with every part of it. If something looks wrong, tell your supervisor — '+
           'this page cannot change any score.</p>'+
-        (already
+        (stale
+          ? '<div class="muted">There is nothing to acknowledge here — this assessment no longer stands.</div>'
+          : already
           ? '<div class="ok">Acknowledged by '+esc(d.acknowledged_name)+' on '+esc(String(d.acknowledged_at).slice(0,10))+'.</div>'
           : '<label class="muted" for="nm">Type your full name to sign</label>'+
             '<input id="nm" type="text" autocomplete="name" placeholder="Your full name" value="'+esc(d.employee_name||"")+'"/>'+

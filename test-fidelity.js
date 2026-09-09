@@ -728,6 +728,13 @@ function scoresTotalling(total, opts = {}) {
 
   hist2 = await owner(`/api/fidelity/employee/${empD}`);
   check("a voided check no longer counts towards the average", hist2.data.summary.checks === 0, hist2.data.summary);
+  const voidTok = (await pool.query("SELECT ack_token FROM fidelity_checks WHERE id = $1", [checkD])).rows[0].ack_token;
+  const pubVoid = await anon(`/api/fidelity/public/check?token=${voidTok}`);
+  check("a voided assessment tells its subject it was withdrawn",
+    pubVoid.status === 200 && pubVoid.data.voided === true, pubVoid.data.voided);
+  const voidAck = await anon("/api/fidelity/public/acknowledge", { method: "POST", body: { token: voidTok, signed_name: "Delta RBT" } });
+  check("...and does not ask them to acknowledge it", voidAck.status === 409, voidAck.data);
+
   const stillThere = await owner(`/api/fidelity/check/${checkD}`);
   check("...but the record still exists", stillThere.status === 200, stillThere.status);
   check("...marked, with the reason kept",
@@ -942,6 +949,14 @@ function scoresTotalling(total, opts = {}) {
     taskListAssign.slice(0, 4).map((t) => t.title));
 
   // The evaluator's own view.
+  const dashPending = await owner("/api/fidelity/dashboard");
+  const rowPending = (dashPending.data.employees || []).find((e) => e.employee_id === empAssign);
+  check("the roster shows that somebody has already been asked",
+    rowPending && rowPending.pending_check && rowPending.pending_check.status === "assigned", rowPending);
+  check("...naming who has it", rowPending && /Fid eval/.test(String(rowPending.pending_check.evaluator || "")), rowPending && rowPending.pending_check);
+  check("...so a second person is not asked to do the same observation",
+    rowPending && rowPending.pending_check.due_date === daysAgo(-7), rowPending && rowPending.pending_check);
+
   r = await evaluator.req("/api/fidelity/my-assignments");
   check("the evaluator can see what they have been asked to do", r.status === 200, r.data);
   const mine = (r.data.assignments || []).find((a) => a.id === assignedId);
@@ -1370,6 +1385,26 @@ function scoresTotalling(total, opts = {}) {
   const refiled = await owner(`/api/hr/employee-documents/${orig.data.check.pdf_document_id}`);
   check("...and the replacement downloads as a PDF",
     refiled.status === 200 && /pdf/i.test(refiled.ct || ""), { s: refiled.status, ct: refiled.ct });
+
+  // ---- what the RBT sees when their own link is out of date ----
+  // They are the person the record is about and the last to find out.
+  const staleTok = (await pool.query("SELECT ack_token FROM fidelity_checks WHERE id = $1", [wrongId])).rows[0].ack_token;
+  let pubStale = await anon(`/api/fidelity/public/check?token=${staleTok}`);
+  check("the employee's old link still opens", pubStale.status === 200, pubStale.status);
+  check("...and says the assessment was superseded", pubStale.data.superseded === true, pubStale.data.superseded);
+  check("...showing the figures of the one that now counts",
+    pubStale.data.replacement && pubStale.data.replacement.total_score === 54, pubStale.data.replacement);
+  check("...but NOT a token for it — this link is the old one's",
+    !JSON.stringify(pubStale.data).includes("ack_token"), Object.keys(pubStale.data));
+
+  r = await anon("/api/fidelity/public/acknowledge", { method: "POST", body: { token: staleTok, signed_name: "Amend RBT" } });
+  check("they are not asked to sign for a score that no longer stands", r.status === 409, r.data);
+  check("...and are told a newer one was emailed to them",
+    /a newer one was emailed to you/i.test(r.data.error || ""), r.data.error);
+
+  const stalePage = await anon(`/fidelity-ack/${staleTok}`);
+  check("the page itself carries the correction notice",
+    /corrected after it was sent to you/i.test(String(stalePage.data || "")), String(stalePage.data || "").slice(0, 200));
 
   const histIds = (afterAmend.data.history || []).map((h) => h.id);
   check("the history still SHOWS the superseded check — nothing is hidden",

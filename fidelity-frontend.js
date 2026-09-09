@@ -183,7 +183,14 @@
         : `<strong>${r.current_score}/${r.current_max}</strong> <span style="color:var(--text-muted);">${pct(r.current_percentage)}</span>`;
       const prev = r.previous_percentage == null ? "—"
         : `${r.previous_score}/${r.current_max} <span style="color:var(--text-muted);">${pct(r.previous_percentage)}</span>`;
-      const due = r.overdue_check
+      // An observation already asked for outranks the due date: "Due now" on
+      // somebody whose check is booked is how two people get asked to do one
+      // observation.
+      const due = r.pending_check
+        ? `<span style="color:${r.pending_check.overdue ? "#991b1b" : "var(--brand-navy,#1b2a6b)"};font-weight:600;">${
+            r.pending_check.status === "awaiting_signature" ? "Scored, not signed" : "With " + esc(r.pending_check.evaluator || "an evaluator")
+          }</span>${r.pending_check.due_date ? `<div style="font-size:11px;color:var(--text-muted);">due ${esc(dayLabel(r.pending_check.due_date))}${r.pending_check.overdue ? " · overdue" : ""}</div>` : ""}`
+        : r.overdue_check
         ? `<span style="color:#b45309;font-weight:600;">${never ? "Now" : "Due"}</span>`
         : dayLabel(r.next_due);
       return `<tr data-fid-emp="${r.employee_id}" style="cursor:pointer;">
