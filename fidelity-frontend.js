@@ -101,6 +101,9 @@
     // rather than being scattered among the neutral counts.
     return `<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
       ${card("Active RBTs", c.active_rbts)}
+      ${c.awaiting_signature ? card("Scored, not signed", c.awaiting_signature, "warn") : ""}
+      ${c.assignments_overdue ? card("Assignments overdue", c.assignments_overdue, "bad")
+        : c.assigned_open ? card("Assigned, not done", c.assigned_open) : ""}
       ${card("Average Fidelity score", c.average_score == null ? "—" : c.average_score + "%",
         c.average_score == null ? null : c.average_score >= 90 ? "good" : c.average_score < 80 ? "warn" : null)}
       ${card("Checks this month", c.checks_this_month)}

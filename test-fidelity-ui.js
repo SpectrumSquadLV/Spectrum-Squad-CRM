@@ -365,6 +365,11 @@ const section = (t) => console.log("\n== " + t + " ==");
   const listed = (await api(page, "/api/fidelity/my-assignments")).body.assignments || [];
   check("the assignment exists for the person it was given to", listed.length >= 1, listed);
 
+  // The dashboard has to show work in flight, or an assignment is only visible
+  // to the person who was given it and invisible to whoever asked.
+  const flight = (await api(page, "/api/fidelity/dashboard")).body.cards;
+  check("the dashboard counts it as asked for and not done", flight.assigned_open >= 1, flight);
+
   await page.evaluate(() => { location.hash = "#/dashboard"; });
   await page.waitForTimeout(900);
   await page.evaluate(() => { location.hash = "#/fidelity"; });
@@ -375,6 +380,8 @@ const section = (t) => console.log("\n== " + t + " ==");
   check("...naming the RBT to observe", fidText.includes(`FidUI Never ${stamp}`), fidText.slice(0, 500));
   check("...and the note that came with it", /prompt fading/i.test(fidText), fidText.slice(0, 600));
   check("...with a way to start it", await page.locator("#fid-body [data-fid-do]").count() >= 1);
+  check("...and the page shows work in flight as a figure, not only as a row",
+    /Assigned, not done|Assignments overdue/.test(fidText), fidText.slice(0, 700));
 
   await page.locator("#fid-body [data-fid-do]").first().click();
   await page.waitForTimeout(2500);

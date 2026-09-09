@@ -1261,6 +1261,17 @@ module.exports = function initFidelity(ctx) {
       byEmp.get(c.employee_id).push(c);
     }
 
+    // Work in flight: asked for and not done, and done but not signed. Neither
+    // is visible in the finalized figures by definition, which is exactly why
+    // they need counting -- an observation that was scored and never signed is
+    // an observation that happened and is on nobody's record.
+    const inFlight = await dbAll(
+      `SELECT id, employee_id, evaluator_name, status, assignment_due_date, updated_at
+         FROM fidelity_checks
+        WHERE finalized_at IS NULL AND COALESCE(voided, FALSE) = FALSE
+          AND status IN ('assigned','in_progress','awaiting_signature')`
+    ).catch(() => []);
+
     const openPlans = await dbAll(
       `SELECT * FROM fidelity_action_plans WHERE status IN (${PLAN_OPEN.map(() => "?").join(",")})`,
       PLAN_OPEN
@@ -1330,6 +1341,11 @@ module.exports = function initFidelity(ctx) {
         open_action_plans: rows.reduce((a, r) => a + r.open_action_plans, 0),
         overdue_action_plans: rows.reduce((a, r) => a + r.overdue_action_plans, 0),
         trending_down: rows.filter((r) => r.trend && r.trend.key === "declining").length,
+        assigned_open: inFlight.filter((c) => c.status === "assigned" || c.status === "in_progress").length,
+        assignments_overdue: inFlight.filter((c) => c.assignment_due_date && c.assignment_due_date < today
+          && (c.status === "assigned" || c.status === "in_progress")).length,
+        // Scored, unsigned. The most losable thing in the module.
+        awaiting_signature: inFlight.filter((c) => c.status === "awaiting_signature").length,
         upcoming_reviews: rows.filter((r) => r.annual_review_date && r.annual_review_date <= soon && r.annual_review_date >= today).length,
       },
       employees: rows,
@@ -1576,7 +1592,8 @@ module.exports = function initFidelity(ctx) {
   }
 
   async function sweep() {
-    const out = { check_due: 0, plan_overdue: 0, ack_outstanding: 0, review_due: 0, skipped_no_recipient: 0 };
+    const out = { check_due: 0, plan_overdue: 0, assignment_overdue: 0, unsigned_complete: 0,
+                  ack_outstanding: 0, review_due: 0, skipped_no_recipient: 0 };
     const settings = await getSettings();
     const today = nowISO().slice(0, 10);
     const to = await leadershipRecipients();
@@ -1667,6 +1684,84 @@ module.exports = function initFidelity(ctx) {
         }
       } catch (e) {
         for (const d of lateplans) await releaseNotice(d.claim);
+      }
+    }
+
+    // ---- 2b. observations that were asked for and have not happened ----
+    // Chased to the person who was ASKED, not to leadership: they are the one
+    // who can do something about it. Once per due date, so moving the date is
+    // what re-arms it rather than the passage of another day.
+    const lateAssignments = await dbAll(
+      `SELECT * FROM fidelity_checks
+        WHERE finalized_at IS NULL AND COALESCE(voided, FALSE) = FALSE
+          AND status IN ('assigned','in_progress')
+          AND assignment_due_date IS NOT NULL AND assignment_due_date < ?`,
+      [today]
+    ).catch(() => []);
+    for (const c of lateAssignments) {
+      const ev = c.evaluator_user_id
+        ? await dbGet("SELECT id, name, email FROM users WHERE id = ?", [c.evaluator_user_id]).catch(() => null)
+        : null;
+      if (!ev || !ev.email) continue;
+      const id = await claimNotice(`assignment_overdue:${c.id}:${c.assignment_due_date}`, "assignment_overdue", c.employee_id, c.id, ev.email);
+      if (!id) continue;
+      const emp = await dbGet("SELECT name FROM hr_employees WHERE id = ?", [c.employee_id]).catch(() => null);
+      try {
+        await sendEmail({
+          to: ev.email,
+          subject: `Fidelity Check overdue: ${emp ? emp.name : "an RBT"}`,
+          html: `<p>Hi ${esc(String(ev.name || "there").split(/\s+/)[0])},</p>
+            <p>The Fidelity Check for <strong>${esc(emp ? emp.name : "an RBT")}</strong> was due
+            <strong>${esc(c.assignment_due_date)}</strong> and has not been signed yet.</p>
+            ${c.status === "in_progress" ? "<p>It is part-scored — opening it will pick up where you left off.</p>" : ""}
+            <p>If it can no longer be done, say so rather than leaving it: an observation nobody does is invisible.</p>`,
+          type: "fidelity_assignment_overdue", refType: "fidelity_check", refId: c.id,
+        });
+        await audit(c.id, "assignment_chased", { actor: "system", new: ev.email });
+        out.assignment_overdue = (out.assignment_overdue || 0) + 1;
+      } catch (e) {
+        await releaseNotice(id);
+        await audit(c.id, "assignment_chase_failed", { actor: "system", new: e.message });
+      }
+    }
+
+    // ---- 2c. scored, and never signed ----
+    // The most losable thing in the module: the observation happened, the
+    // rubric is complete, and it is on nobody's record because one button was
+    // not pressed. Chased after a couple of days, to the evaluator.
+    const SIGN_GRACE_DAYS = 2;
+    const signCutoff = new Date(Date.now() - SIGN_GRACE_DAYS * 86400000).toISOString();
+    const unsigned = await dbAll(
+      `SELECT * FROM fidelity_checks
+        WHERE finalized_at IS NULL AND COALESCE(voided, FALSE) = FALSE
+          AND status = 'awaiting_signature' AND updated_at < ?`,
+      [signCutoff]
+    ).catch(() => []);
+    for (const c of unsigned) {
+      const ev = c.evaluator_user_id
+        ? await dbGet("SELECT id, name, email FROM users WHERE id = ?", [c.evaluator_user_id]).catch(() => null)
+        : null;
+      if (!ev || !ev.email) continue;
+      const id = await claimNotice(`unsigned_complete:${c.id}`, "unsigned_complete", c.employee_id, c.id, ev.email);
+      if (!id) continue;
+      const emp = await dbGet("SELECT name FROM hr_employees WHERE id = ?", [c.employee_id]).catch(() => null);
+      const calc = scoreOf(parseJson(c.scores_json, {}));
+      try {
+        await sendEmail({
+          to: ev.email,
+          subject: `Fidelity Check scored but not signed: ${emp ? emp.name : "an RBT"}`,
+          html: `<p>Hi ${esc(String(ev.name || "there").split(/\s+/)[0])},</p>
+            <p>You scored every item of the Fidelity Check for <strong>${esc(emp ? emp.name : "an RBT")}</strong>
+            (${calc.total_score}/${MAX_SCORE}, ${calc.percentage}%) and it has not been signed.</p>
+            <p>Until it is signed it counts towards nothing and the RBT has not been told. Nothing is lost — the scores are
+            saved exactly as you left them.</p>`,
+          type: "fidelity_unsigned", refType: "fidelity_check", refId: c.id,
+        });
+        await audit(c.id, "unsigned_chased", { actor: "system", new: ev.email });
+        out.unsigned_complete = (out.unsigned_complete || 0) + 1;
+      } catch (e) {
+        await releaseNotice(id);
+        await audit(c.id, "unsigned_chase_failed", { actor: "system", new: e.message });
       }
     }
 

@@ -1493,6 +1493,68 @@ function scoresTotalling(total, opts = {}) {
   check("...and an overdue plan does not grow a new task on every sweep",
     taskCount(taskList2) === tasksAfterFirst, { first: tasksAfterFirst, now: taskCount(taskList2) });
 
+  // ---- work asked for and not done, and done but not signed ----
+  // Both go to the EVALUATOR, not to leadership: they are the only person who
+  // can act, and a manager cannot sign an observation they did not make.
+  const empChase = await mkEmp("Quebec");
+  const chaseAssign = await owner("/api/fidelity/assign", {
+    method: "POST", body: { employee_id: empChase, evaluator_user_id: evaluator.id, due_date: daysAgo(4) },
+  });
+  check("an assignment can be given a date already past", chaseAssign.status === 201, chaseAssign.data);
+
+  const empUnsigned = await mkEmp("Romeo");
+  const unsignedAssign = await owner("/api/fidelity/assign", {
+    method: "POST", body: { employee_id: empUnsigned, evaluator_user_id: evaluator.id },
+  });
+  await evaluator.req(`/api/fidelity/check/${unsignedAssign.data.id}`, { method: "PATCH", body: { scores: scoresTotalling(54) } });
+  const readyRow = await owner(`/api/fidelity/check/${unsignedAssign.data.id}`);
+  check("a fully scored, unsigned check sits at awaiting signature",
+    readyRow.data.check.status === "awaiting_signature", readyRow.data.check.status);
+  // Back-dated past the grace period; otherwise it would be chased two days
+  // from now and this test would assert nothing.
+  await pool.query("UPDATE fidelity_checks SET updated_at = $1 WHERE id = $2",
+    [new Date(Date.now() - 5 * 86400000).toISOString(), unsignedAssign.data.id]);
+
+  mark = await lastMailId();
+  r = await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  check("the sweep chases the overdue assignment", r.data.assignment_overdue >= 1, r.data);
+  check("...and the scored-but-unsigned one", r.data.unsigned_complete >= 1, r.data);
+
+  const chaseMail = await mailSince(mark, "fidelity_assignment_overdue");
+  check("the overdue assignment is chased to the evaluator, not to leadership",
+    chaseMail.length === 1 && chaseMail[0].recipient.includes(evaluator.email),
+    chaseMail.map((m) => m.recipient));
+  check("...naming the RBT and the date it was due",
+    chaseMail.length === 1 && chaseMail[0].body.includes(daysAgo(4)) && /Quebec/.test(chaseMail[0].subject),
+    (chaseMail[0] || {}).subject);
+  check("...and saying to speak up rather than leave it",
+    chaseMail.length === 1 && /an observation nobody does is invisible/i.test(chaseMail[0].body),
+    (chaseMail[0] || {}).body ? chaseMail[0].body.slice(-260) : null);
+
+  const unsignedMail = await mailSince(mark, "fidelity_unsigned");
+  check("the unsigned check is chased to the evaluator too",
+    unsignedMail.length === 1 && unsignedMail[0].recipient.includes(evaluator.email),
+    unsignedMail.map((m) => m.recipient));
+  check("...telling them the score is safe, so the message is not alarming",
+    unsignedMail.length === 1 && /Nothing is lost/i.test(unsignedMail[0].body),
+    (unsignedMail[0] || {}).body ? unsignedMail[0].body.slice(-260) : null);
+  check("...and that until it is signed it counts towards nothing",
+    unsignedMail.length === 1 && /counts towards nothing/i.test(unsignedMail[0].body),
+    (unsignedMail[0] || {}).body ? unsignedMail[0].body.slice(0, 400) : null);
+
+  mark = await lastMailId();
+  await owner("/api/fidelity/sweep", { method: "POST", body: {} });
+  check("neither is chased twice",
+    (await mailSince(mark, "fidelity_assignment_overdue")).length === 0 &&
+    (await mailSince(mark, "fidelity_unsigned")).length === 0);
+
+  const flightDash = await owner("/api/fidelity/dashboard");
+  check("the dashboard counts what has been asked for and not done",
+    flightDash.data.cards.assigned_open >= 1, flightDash.data.cards);
+  check("...how many of those are overdue", flightDash.data.cards.assignments_overdue >= 1, flightDash.data.cards);
+  check("...and how many observations are scored but unsigned",
+    flightDash.data.cards.awaiting_signature >= 1, flightDash.data.cards);
+
   // ---- an acknowledgment that never came ----
   // Back-dated past the grace period, which is the only way to reach the case
   // without waiting a week.
