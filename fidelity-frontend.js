@@ -49,6 +49,7 @@
       <div><h1>RBT Fidelity</h1>
         <p>Current performance, trends and follow-up for every active RBT. Every figure here is calculated for you.</p></div>
       <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn secondary" id="fid-insights">Training needs</button>
         <button class="btn secondary" id="fid-settings">Raise settings</button>
         <button class="btn secondary" id="fid-random">Select random RBT</button>
         <button class="btn" id="fid-new">+ New Fidelity Check</button>
@@ -57,6 +58,7 @@
     mount.querySelector("#fid-new").addEventListener("click", () => openNewCheck(mount));
     mount.querySelector("#fid-random").addEventListener("click", () => pickRandom(mount));
     mount.querySelector("#fid-settings").addEventListener("click", () => openSettings(mount));
+    mount.querySelector("#fid-insights").addEventListener("click", () => openInsights());
     await fill(mount);
   }
 
@@ -935,6 +937,113 @@ This locks the assessment, files the PDF in their personnel record and emails it
         alert(e.message || "Couldn't start an amendment.");
       }
     });
+  }
+
+  // ======================= WHERE THE TEAM IS WEAK =======================
+  // The question this answers is not "who is worst" -- that is the dashboard --
+  // but "what should we train". So it leads with the competencies the team
+  // loses points on, and for each one says how many DIFFERENT people lose it,
+  // because that is the difference between booking a training session and
+  // having one conversation.
+  async function openInsights() {
+    const back = document.createElement("div");
+    back.className = "modal-backdrop";
+    back.innerHTML = `<div class="modal" style="max-width:900px;">
+      <div class="modal-header"><h2>Training needs</h2><button class="close-btn">✕</button></div>
+      <div id="fid-ins-body"><div class="empty-state">Reading every finalized check…</div></div>
+    </div>`;
+    document.body.appendChild(back);
+    back.querySelector(".close-btn").addEventListener("click", () => back.remove());
+
+    let d;
+    try { d = await api("/api/fidelity/insights"); }
+    catch (e) {
+      back.querySelector("#fid-ins-body").innerHTML = `<div class="empty-state">${esc(e.message || "Couldn't read the Fidelity data.")}</div>`;
+      return;
+    }
+    back.querySelector("#fid-ins-body").innerHTML = insightsHTML(d);
+  }
+
+  function insightsHTML(d) {
+    if (!d.checks) {
+      return `<div class="card"><div class="empty-state">
+        No finalized Fidelity Checks between ${esc(dayLabel(d.period.start))} and ${esc(dayLabel(d.period.end))}.
+        There is nothing to read yet — that is a gap in the record, not a clean result.
+      </div></div>`;
+    }
+    const bar = (p) => {
+      const col = p >= 90 ? "#166534" : p >= 80 ? "#3730a3" : p >= 60 ? "#b45309" : "#b91c1c";
+      return `<div style="background:#eef0f5;border-radius:6px;height:8px;width:110px;overflow:hidden;">
+        <div style="width:${Math.max(0, Math.min(100, p))}%;height:100%;background:${col};"></div></div>`;
+    };
+    const row = (i) => `<tr style="border-top:1px solid var(--border,#f1f1f4);">
+      <td style="padding:6px 8px;">${esc(i.label)}${i.critical ? ' <span style="font-size:10px;font-weight:700;color:#991b1b;">CRITICAL</span>' : ""}</td>
+      <td style="padding:6px 8px;">${i.percentage == null ? "—" : i.percentage + "%"}</td>
+      <td style="padding:6px 8px;">${bar(i.percentage || 0)}</td>
+      <td style="padding:6px 8px;">${i.zeros}</td>
+      <td style="padding:6px 8px;">
+        <strong>${i.people_scoring_zero}</strong> of ${i.people_observed}
+        ${i.people_scoring_zero >= 3
+          ? '<span style="font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:20px;background:#fef3c7;color:#92400e;margin-left:5px;">TRAIN THE TEAM</span>'
+          : i.people_scoring_zero === 1 && i.zeros >= 2
+            ? '<span style="font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:20px;background:#e0e7ff;color:#3730a3;margin-left:5px;">ONE PERSON</span>'
+            : ""}
+      </td>
+      <td style="padding:6px 8px;color:var(--text-muted);">${i.observations}${i.enough_evidence ? "" : " — too few to read"}</td>
+    </tr>`;
+
+    return `
+      ${d.caveat ? `<div class="card" style="margin-bottom:12px;background:#fef3c7;color:#92400e;">${esc(d.caveat)}</div>` : ""}
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-size:12.5px;color:var(--text-muted);">
+          ${d.checks} finalized check${d.checks === 1 ? "" : "s"} across ${d.rbts_observed} RBT${d.rbts_observed === 1 ? "" : "s"},
+          ${esc(dayLabel(d.period.start))} to ${esc(dayLabel(d.period.end))}.
+          A competency needs ${d.min_observations} observations before it is read as a pattern.
+        </div>
+      </div>
+
+      ${(d.weakest || []).length ? `<div class="card" style="margin-bottom:12px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;">Where the team loses most points</div>
+        ${d.weakest.map((i) => `<div style="font-size:12.5px;padding:4px 0;">
+          <strong>${esc(i.label)}</strong> — ${i.percentage}% of available points,
+          ${i.people_scoring_zero} of ${i.people_observed} RBTs scored 0
+          ${i.people_scoring_zero >= 3 ? "· <strong>a training session, not a set of Action Plans</strong>" : ""}
+        </div>`).join("")}
+      </div>` : ""}
+
+      ${(d.concentrated || []).length ? `<div class="card" style="margin-bottom:12px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;">One person, not the team</div>
+        ${d.concentrated.map((c) => `<div style="font-size:12.5px;padding:3px 0;">
+          <strong>${esc(c.label)}</strong> — every 0 on this came from ${esc(c.name || "one RBT")} (${c.zeros}). A conversation, not a training day.
+        </div>`).join("")}
+      </div>` : ""}
+
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;">By section</div>
+        ${(d.sections || []).map((sc) => `<div style="display:flex;gap:10px;align-items:center;font-size:12.5px;padding:3px 0;">
+          <span style="flex:1;">${esc(sc.label)}</span>${bar(sc.percentage || 0)}
+          <strong style="width:56px;text-align:right;">${sc.percentage == null ? "—" : sc.percentage + "%"}</strong>
+        </div>`).join("")}
+      </div>
+
+      ${d.critical && d.critical.by_reason.length ? `<div class="card" style="margin-bottom:12px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;">Critical fidelity concerns</div>
+        ${d.critical.by_reason.map((c) => `<div style="font-size:12.5px;padding:3px 0;">
+          ${esc(c.reason)} — <strong>${c.count}</strong></div>`).join("")}
+      </div>` : ""}
+
+      <div class="card">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;">Every competency</div>
+        <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:660px;">
+          <thead><tr style="text-align:left;color:var(--text-muted);font-size:11px;text-transform:uppercase;">
+            <th style="padding:6px 8px;">Competency</th><th style="padding:6px 8px;">Score</th><th style="padding:6px 8px;"></th>
+            <th style="padding:6px 8px;">0s</th><th style="padding:6px 8px;">RBTs scoring 0</th><th style="padding:6px 8px;">Observations</th>
+          </tr></thead><tbody>${(d.ranked || []).map(row).join("")}</tbody>
+        </table></div>
+        <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">
+          Weakest first. Anything with fewer than ${d.min_observations} observations is listed last and marked, because a
+          failure rate from two observations is not a pattern.</div>
+      </div>`;
   }
 
   // ======================= RAISE SETTINGS =======================

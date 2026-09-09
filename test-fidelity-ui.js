@@ -324,6 +324,60 @@ const section = (t) => console.log("\n== " + t + " ==");
   await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
 
   // ================================================================
+  section("Training needs — the report the rubric was held as data for");
+
+  // Three RBTs who each lose the SAME competency, so the report has a
+  // team-wide weakness to find. Without this the two assertions below would
+  // short-circuit to true and pass without testing anything.
+  for (const label of ["Team1", "Team2", "Team3"]) {
+    const id = await mkEmp(label, "RBT");
+    const c = await api(page, "/api/fidelity/check", { method: "POST", body: { employee_id: id, assessment_date: dayShift(-3) } });
+    const sc = scoresTotalling(60);
+    sc.dtt_3 = 0;
+    await api(page, `/api/fidelity/check/${c.body.id}`, { method: "PATCH", body: { scores: sc } });
+    await api(page, `/api/fidelity/check/${c.body.id}/finalize`, { method: "POST", body: { bcba_signed_name: "Signing BCBA" } });
+  }
+
+  await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
+  await page.evaluate(() => { location.hash = "#/fidelity"; });
+  await page.waitForTimeout(2200);
+  check("the Fidelity page offers the training-needs report",
+    await page.locator("#fid-insights").isVisible());
+
+  await page.locator("#fid-insights").click();
+  await page.waitForTimeout(2000);
+  const insModal = page.locator(".modal-backdrop").last();
+  const insText = await insModal.innerText();
+  const insData = (await api(page, "/api/fidelity/insights")).body;
+
+  check("it says how much it read, so nobody reads it as more than it is",
+    insText.includes(`${insData.checks} finalized check`), insText.slice(0, 300));
+  check("...and states the threshold for calling something a pattern",
+    insText.includes(`${insData.min_observations} observations`), insText.slice(0, 400));
+  check("every competency is listed, not only the failing ones",
+    await insModal.locator("table tbody tr").count() === 30,
+    await insModal.locator("table tbody tr").count());
+  check("the weakest are called out separately", /Where the team loses most points/i.test(insText), insText.slice(0, 500));
+  check("...and each section gets a figure", /By section/i.test(insText), insText.slice(0, 900));
+
+  // The distinction the report exists for.
+  const teamWide = (insData.ranked || []).find((i) => i.enough_evidence && i.people_scoring_zero >= 3);
+  const onePerson = (insData.concentrated || [])[0];
+  check("there is a team-wide weakness in this data to check against", !!teamWide, (insData.ranked || []).slice(0, 3));
+  check("a weakness several people share is marked as a training job",
+    /TRAIN THE TEAM/.test(insText), insText.slice(0, 1400));
+  check("...and named as a training session rather than a set of Action Plans",
+    /a training session, not a set of Action Plans/i.test(insText), insText.slice(0, 1400));
+  check("there is a single-person weakness in this data too", !!onePerson, insData.concentrated);
+  check("a weakness only one person has is separated out by name",
+    !!onePerson && insText.includes(String(onePerson.name)),
+    { concentrated: insData.concentrated, sample: insText.slice(0, 1400) });
+  check("...and described as a conversation rather than a training day",
+    /conversation, not a training day/i.test(insText), insText.slice(0, 1400));
+
+  await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
+
+  // ================================================================
   section("The raise settings — a configurable matrix nobody could configure");
 
   await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));

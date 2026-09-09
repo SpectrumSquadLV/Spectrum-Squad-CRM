@@ -1277,6 +1277,155 @@ module.exports = function initFidelity(ctx) {
     };
   }
 
+  // ======================= WHERE THE TEAM IS WEAK =======================
+  // The rubric is held as data partly so this could exist: which competencies
+  // the team actually loses points on, across every finalized check.
+  //
+  // The distinction that makes it worth reading is ONE PERSON vs THE TEAM.
+  // Six zeros on prompt fading from one RBT is a coaching conversation. Six
+  // zeros from six RBTs is a training session, and writing six Action Plans
+  // instead would be treating a training gap as six individual failures. So
+  // every row reports the number of DISTINCT PEOPLE as well as the number of
+  // occurrences, and nothing here decides which it is -- it shows both.
+  //
+  // Sample size is reported as loudly as the finding. "100% of RBTs fail this"
+  // from two observations is not a pattern, and a report that ranked it top
+  // would send somebody to run a training day on noise.
+  const INSIGHT_MIN_OBSERVATIONS = 5;
+
+  async function insights(query = {}) {
+    const settings = await getSettings();
+    const end = query.period_end || nowISO().slice(0, 10);
+    const start = query.period_start ||
+      new Date(new Date(end + "T00:00:00Z").getTime() - 365 * 86400000).toISOString().slice(0, 10);
+
+    const rows = await dbAll(
+      `SELECT id, employee_id, assessment_date, scores_json, critical_fail, critical_fail_reasons, percentage
+         FROM fidelity_checks
+        WHERE status IN ('finalized','sent','awaiting_ack','acknowledged','closed')
+          AND COALESCE(voided, FALSE) = FALSE
+          AND superseded_by_check_id IS NULL
+          AND assessment_date >= ? AND assessment_date <= ?
+        ORDER BY assessment_date`,
+      [start, end]
+    ).catch(() => []);
+
+    // Only RBTs who are still here. A competency the team was weak on two
+    // years ago, by people who have since left, is not a training need now.
+    const staff = await dbAll(
+      "SELECT id, name FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated'"
+    ).catch(() => []);
+    const nameOf = new Map(staff.map((e) => [Number(e.id), e.name]));
+
+    const perItem = new Map();
+    for (const item of ALL_ITEMS) {
+      perItem.set(item.key, {
+        key: item.key, label: item.label, section: item.section,
+        critical: item.critical || null,
+        scored: 0, zeros: 0, ones: 0, twos: 0, points: 0,
+        people_zero: new Set(), people_scored: new Set(),
+      });
+    }
+
+    for (const r of rows) {
+      const sc = parseJson(r.scores_json, {});
+      for (const item of ALL_ITEMS) {
+        const v = sc[item.key];
+        if (v !== 0 && v !== 1 && v !== 2) continue;
+        const cell = perItem.get(item.key);
+        cell.scored++; cell.points += v;
+        cell.people_scored.add(Number(r.employee_id));
+        if (v === 0) { cell.zeros++; cell.people_zero.add(Number(r.employee_id)); }
+        else if (v === 1) cell.ones++;
+        else cell.twos++;
+      }
+    }
+
+    const items = [...perItem.values()].map((c) => {
+      const mean = c.scored ? round2(c.points / c.scored) : null;
+      return {
+        key: c.key, label: c.label, section: c.section, critical: c.critical,
+        observations: c.scored,
+        zeros: c.zeros, ones: c.ones, twos: c.twos,
+        // Out of a possible 2 per observation, expressed the way every other
+        // figure in this module is: a percentage somebody can compare.
+        mean_score: mean,
+        percentage: c.scored ? round1((c.points / (c.scored * 2)) * 100) : null,
+        // The number that decides training vs coaching.
+        people_scoring_zero: c.people_zero.size,
+        people_observed: c.people_scored.size,
+        // Stated rather than implied. A row below the threshold is shown, and
+        // shown as thin evidence, instead of being hidden or ranked as fact.
+        enough_evidence: c.scored >= INSIGHT_MIN_OBSERVATIONS,
+      };
+    });
+
+    // Weakest first, but only among rows with enough behind them; the thin
+    // ones follow, so nothing disappears and nothing thin outranks the rest.
+    const ranked = [...items].sort((a, b) => {
+      if (a.enough_evidence !== b.enough_evidence) return a.enough_evidence ? -1 : 1;
+      if (a.percentage == null) return 1;
+      if (b.percentage == null) return -1;
+      return a.percentage - b.percentage;
+    });
+
+    const sections = SECTIONS.map((sec) => {
+      const mine = items.filter((i) => i.section === sec.key && i.observations);
+      const obs = mine.reduce((a, i) => a + i.observations, 0);
+      const pts = mine.reduce((a, i) => a + i.mean_score * i.observations, 0);
+      return {
+        key: sec.key, label: sec.label,
+        observations: obs,
+        percentage: obs ? round1((pts / (obs * 2)) * 100) : null,
+      };
+    });
+
+    // Critical fails by reason, which is a different question from a low score.
+    const criticalCounts = new Map();
+    let criticalChecks = 0;
+    for (const r of rows) {
+      if (!(r.critical_fail === true || r.critical_fail === "t")) continue;
+      criticalChecks++;
+      for (const reason of parseJson(r.critical_fail_reasons, [])) {
+        criticalCounts.set(reason, (criticalCounts.get(reason) || 0) + 1);
+      }
+    }
+
+    return {
+      period: { start, end },
+      checks: rows.length,
+      rbts_observed: new Set(rows.map((r) => Number(r.employee_id))).size,
+      min_observations: INSIGHT_MIN_OBSERVATIONS,
+      // Said in the payload, not left to each screen to remember.
+      caveat: rows.length < INSIGHT_MIN_OBSERVATIONS
+        ? `Only ${rows.length} Fidelity Check${rows.length === 1 ? "" : "s"} in this period. That is too few to read anything here as a pattern.`
+        : null,
+      items, ranked,
+      sections,
+      weakest: ranked.filter((i) => i.enough_evidence).slice(0, 5),
+      critical: {
+        checks_with_a_critical_fail: criticalChecks,
+        by_reason: [...criticalCounts.entries()]
+          .map(([reason, count]) => ({ reason, count }))
+          .sort((a, b) => b.count - a.count),
+      },
+      // Nothing above is per-person; this is the one place a name appears, and
+      // only for the rows where one person accounts for the whole finding.
+      concentrated: ranked
+        .filter((i) => i.enough_evidence && i.zeros >= 2 && i.people_scoring_zero === 1)
+        .map((i) => {
+          const owner = rows.find((r) => {
+            const sc = parseJson(r.scores_json, {});
+            return sc[i.key] === 0;
+          });
+          return { key: i.key, label: i.label, zeros: i.zeros,
+                   employee_id: owner ? Number(owner.employee_id) : null,
+                   name: owner ? (nameOf.get(Number(owner.employee_id)) || null) : null };
+        }),
+      check_interval_days: settings.check_interval_days,
+    };
+  }
+
   // ======================= NOTICES =======================
   // A Fidelity Check that is overdue, an Action Plan that has passed its date,
   // an assessment nobody acknowledged and a raise review coming up are all
@@ -1581,6 +1730,12 @@ module.exports = function initFidelity(ctx) {
       const result = await sweep();
       await audit(null, "sweep_run", { actor, new: JSON.stringify(result) });
       return json(res, 200, { ok: true, ...result });
+    }
+    // Where the team as a whole loses points. Leadership only: it is a view
+    // across everybody, which is exactly what an evaluator must not have.
+    if (pathname === "/api/fidelity/insights" && method === "GET") {
+      if (!manage) return json(res, 403, { error: "Not permitted." });
+      return json(res, 200, await insights(query));
     }
     if (pathname === "/api/fidelity/random" && method === "POST") {
       if (!manage) return json(res, 403, { error: "Not permitted." });
@@ -2296,6 +2451,7 @@ module.exports = function initFidelity(ctx) {
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
     buildPdf, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
+    insights,
     PLAN_STATUSES, PLAN_OPEN,
     sweep, leadershipRecipients,
     DEFAULT_BANDS, DEFAULT_WEIGHTS, CATEGORIES, FIDELITY_METHODS,

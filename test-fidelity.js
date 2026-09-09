@@ -820,6 +820,109 @@ function scoresTotalling(total, opts = {}) {
   await owner("/api/fidelity/settings", { method: "PUT", body: { check_interval_days: 90 } });
 
   // ================================================================
+  section("Where the team is weak — training need, or one person");
+
+  // The finding that matters is not "this competency scores badly" but whether
+  // it is ONE RBT or SEVERAL. Six zeros from one person is a coaching
+  // conversation; six zeros from six people is a training session, and writing
+  // six Action Plans instead would treat a training gap as six failures.
+  const insTeam = [];
+  for (const label of ["Nov1", "Nov2", "Nov3", "Nov4", "Nov5", "Nov6"]) {
+    insTeam.push(await mkEmp("Ins" + label));
+  }
+
+  // Everybody scores full marks except: dtt_3 (prompt fading), which every one
+  // of the six loses, and pro_4, which only the first one loses -- repeatedly.
+  // dtt_3 and prep_2 are both scored 2 by every other fixture in this suite,
+  // so a zero on either can only have come from this section. Choosing items
+  // the rest of the file cannot touch is what keeps these assertions about the
+  // report rather than about the order the tests happen to run in.
+  const insScores = (opts = {}) => {
+    const sc = {};
+    for (const it of Object.keys(scoresTotalling(60))) sc[it] = 2;
+    sc.dtt_3 = 0;
+    if (opts.alsoOne) sc.prep_2 = 0;
+    return sc;
+  };
+  for (let i = 0; i < insTeam.length; i++) {
+    for (let n = 0; n < (i === 0 ? 3 : 1); n++) {
+      const c = await owner("/api/fidelity/check", { method: "POST", body: { employee_id: insTeam[i], assessment_date: today } });
+      await owner(`/api/fidelity/check/${c.data.id}`, { method: "PATCH", body: { scores: insScores({ alsoOne: i === 0 }) } });
+      await owner(`/api/fidelity/check/${c.data.id}/finalize`, {
+        method: "POST", body: { bcba_signed_name: "Jane Doe, BCBA" },
+      });
+    }
+  }
+
+  r = await evaluator.req("/api/fidelity/insights");
+  check("an evaluator cannot see a view across everybody", r.status === 403, r.status);
+
+  r = await owner("/api/fidelity/insights");
+  check("the report loads", r.status === 200, r.data);
+  const byKey = Object.fromEntries((r.data.items || []).map((i) => [i.key, i]));
+
+  check("every competency on the rubric is reported, not only the failing ones",
+    (r.data.items || []).length === 30, (r.data.items || []).length);
+
+  const fading = byKey.dtt_3;
+  check("the competency the whole team loses is counted", fading && fading.zeros >= 8, fading);
+  check("...and reported as SIX different people, which is the training signal",
+    fading && fading.people_scoring_zero === 6, fading);
+  check("...and scores far below a competency nobody loses",
+    fading && byKey.prep_1 && fading.percentage < byKey.prep_1.percentage,
+    { weak: fading && fading.percentage, clean: byKey.prep_1 && byKey.prep_1.percentage });
+
+  const single = byKey.prep_2;
+  check("a competency only one person loses is counted too", single && single.zeros === 3, single);
+  check("...but reported as ONE person, which is a coaching conversation",
+    single && single.people_scoring_zero === 1, single);
+
+  check("the report names the ones concentrated in a single person",
+    (r.data.concentrated || []).some((c) => c.key === "prep_2"), r.data.concentrated);
+  check("...with who it is, since that is the whole point of separating them",
+    (r.data.concentrated || []).some((c) => c.key === "prep_2" && /InsNov1/.test(String(c.name || ""))),
+    r.data.concentrated);
+  check("...and does NOT name a person for the team-wide one",
+    !(r.data.concentrated || []).some((c) => c.key === "dtt_3"), r.data.concentrated);
+
+  check("the weakest competencies are ranked first",
+    (r.data.ranked || [])[0] && (r.data.ranked[0].key === "dtt_3" || r.data.ranked[0].key === "pro_4"),
+    (r.data.ranked || []).slice(0, 3).map((i) => `${i.key}:${i.percentage}%`));
+  check("a strong competency is not in the weakest list",
+    !(r.data.weakest || []).some((i) => i.key === "prep_1"), (r.data.weakest || []).map((i) => i.key));
+
+  check("each section gets a team percentage",
+    (r.data.sections || []).length === 5 && r.data.sections.every((sc) => sc.percentage != null), r.data.sections);
+  const dttSec = (r.data.sections || []).find((sc) => sc.key === "dtt");
+  check("...and the section carrying the weak competency scores below a clean one",
+    dttSec && dttSec.percentage < 100, r.data.sections);
+
+  check("how many checks and how many RBTs it read is stated",
+    r.data.checks >= 8 && r.data.rbts_observed >= 6, { checks: r.data.checks, rbts: r.data.rbts_observed });
+
+  // Sample size, said as loudly as the finding.
+  check("every row says whether there is enough behind it",
+    (r.data.items || []).every((i) => typeof i.enough_evidence === "boolean"));
+  check("the threshold is reported rather than hidden in the code",
+    r.data.min_observations === 5, r.data.min_observations);
+  check("a competency with enough observations is marked as such",
+    fading && fading.enough_evidence === true, fading);
+  check("nothing thin is ranked above something well evidenced",
+    (r.data.ranked || []).findIndex((i) => !i.enough_evidence) === -1 ||
+    (r.data.ranked || []).findIndex((i) => !i.enough_evidence) >
+      (r.data.ranked || []).map((i) => i.enough_evidence).lastIndexOf(true),
+    (r.data.ranked || []).map((i) => `${i.key}:${i.enough_evidence}`).slice(0, 6));
+
+  // A period with nothing in it says so instead of reporting zeros as findings.
+  const emptyPeriod = await owner("/api/fidelity/insights?period_start=2019-01-01&period_end=2019-01-31");
+  check("a period with no checks reports none", emptyPeriod.data.checks === 0, emptyPeriod.data.checks);
+  check("...and says plainly that it is too few to read as a pattern",
+    /too few to read anything here as a pattern/i.test(emptyPeriod.data.caveat || ""), emptyPeriod.data.caveat);
+  check("...with no competency claiming a 0% failure finding",
+    (emptyPeriod.data.items || []).every((i) => i.percentage === null), (emptyPeriod.data.items || []).slice(0, 2));
+  check("...and nothing in the weakest list", (emptyPeriod.data.weakest || []).length === 0, emptyPeriod.data.weakest);
+
+  // ================================================================
   section("Closing an Action Plan — the loop that had no end");
 
   // A plan could never be closed. The dashboard counted it forever, the daily
