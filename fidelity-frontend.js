@@ -49,12 +49,14 @@
       <div><h1>RBT Fidelity</h1>
         <p>Current performance, trends and follow-up for every active RBT. Every figure here is calculated for you.</p></div>
       <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn secondary" id="fid-settings">Raise settings</button>
         <button class="btn secondary" id="fid-random">Select random RBT</button>
         <button class="btn" id="fid-new">+ New Fidelity Check</button>
       </div></div>
       <div id="fid-body"><div class="empty-state">Loading…</div></div>`;
     mount.querySelector("#fid-new").addEventListener("click", () => openNewCheck(mount));
     mount.querySelector("#fid-random").addEventListener("click", () => pickRandom(mount));
+    mount.querySelector("#fid-settings").addEventListener("click", () => openSettings(mount));
     await fill(mount);
   }
 
@@ -854,6 +856,186 @@ This locks the assessment, files the PDF in their personnel record and emails it
       } catch (e) {
         amendBtn.disabled = false; amendBtn.textContent = "Amend this check";
         alert(e.message || "Couldn't start an amendment.");
+      }
+    });
+  }
+
+  // ======================= RAISE SETTINGS =======================
+  // Everything the raise calculation reads, in one screen, in the order
+  // somebody deciding a raise policy thinks about it: which figure counts,
+  // what a score is worth, what weighs how much, and what stops a raise.
+  //
+  // The server has always accepted these; there was nowhere to type them. A
+  // configurable matrix nobody can configure is a hard-coded matrix.
+  async function openSettings(mount) {
+    let cfg;
+    try { cfg = await api("/api/fidelity/settings"); }
+    catch (e) { alert(e.message || "Couldn't open the raise settings."); return; }
+
+    const back = document.createElement("div");
+    back.className = "modal-backdrop";
+    const bandRow = (b, i) => `<tr data-band="${i}">
+      <td style="padding:4px;"><input data-b-min type="number" step="0.01" value="${b.min}" style="width:78px;" /></td>
+      <td style="padding:4px;"><input data-b-max type="number" step="0.01" value="${b.max}" style="width:78px;" /></td>
+      <td style="padding:4px;"><input data-b-pct type="number" step="0.1" value="${b.percent == null ? "" : b.percent}" placeholder="review" style="width:78px;" /></td>
+      <td style="padding:4px;"><input data-b-label value="${attr(b.label || "")}" style="width:140px;" /></td>
+      <td style="padding:4px;"><button class="btn small secondary" data-b-del>Remove</button></td>
+    </tr>`;
+
+    back.innerHTML = `<div class="modal" style="max-width:860px;">
+      <div class="modal-header"><h2>Raise settings</h2><button class="close-btn">✕</button></div>
+
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;">Which Fidelity figure the review uses</div>
+        <select id="fid-method" style="min-width:340px;">
+          ${(cfg.methods || []).map((m) => `<option value="${m.key}"${m.key === cfg.fidelity_method ? " selected" : ""}>${esc(m.label)}</option>`).join("")}
+        </select>
+        <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">
+          92% means something different depending on whether it is one observation or a year of them, so the recommendation
+          always says which of these it used.</div>
+      </div>
+
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;">The raise matrix</div>
+        <div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:12.5px;">
+          <thead><tr style="text-align:left;color:var(--text-muted);font-size:11px;text-transform:uppercase;">
+            <th style="padding:4px;">From %</th><th style="padding:4px;">To %</th><th style="padding:4px;">Raise %</th>
+            <th style="padding:4px;">Label</th><th style="padding:4px;"></th></tr></thead>
+          <tbody id="fid-bands">${(cfg.bands || []).map(bandRow).join("")}</tbody>
+        </table></div>
+        <button class="btn small secondary" id="fid-band-add" style="margin-top:8px;">Add a band</button>
+        <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">
+          Leave the raise percentage blank to send that band to leadership review instead of recommending a figure.</div>
+      </div>
+
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;">What the performance score is made of</div>
+        <div id="fid-weights"></div>
+        <div style="font-size:13px;margin-top:8px;">Total: <strong id="fid-weight-total">—</strong> <span id="fid-weight-warn" style="color:#b45309;"></span></div>
+        <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">
+          Weights must total exactly 100%. A set that totals 90 would scale everybody down by a tenth and nothing on screen
+          would say so. A category that cannot produce a number yet cannot be weighted.</div>
+      </div>
+
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:8px;">Limits and stops</div>
+        <div class="form-grid">
+          <div class="field"><label>Days between checks</label><input id="fid-interval" type="number" min="1" value="${cfg.check_interval_days}" /></div>
+          <div class="field"><label>Maximum raise %</label><input id="fid-max" type="number" step="0.1" min="0" value="${cfg.max_raise_percent}" /></div>
+          <div class="field"><label>Minimum performance % for any raise</label><input id="fid-minperf" type="number" step="0.1" min="0" value="${cfg.min_performance_percent}" /></div>
+          <div class="field"><label>Fidelity Checks required</label><input id="fid-minchecks" type="number" min="0" value="${cfg.min_checks_required}" /></div>
+          <div class="field"><label>Assumed hours a week</label><input id="fid-hours" type="number" min="1" value="${cfg.assumed_weekly_hours}" /></div>
+          <div class="field"><label>A Critical Fail in 12 months</label>
+            <select id="fid-cfpolicy">
+              ${[["flag_for_review", "Flags for leadership review"], ["ineligible", "Makes the person ineligible"], ["ignore", "Is not considered"]]
+                .map(([v, l]) => `<option value="${v}"${v === cfg.critical_fail_policy ? " selected" : ""}>${esc(l)}</option>`).join("")}
+            </select></div>
+          <div class="field"><label>An open Performance Improvement Plan</label>
+            <select id="fid-pippolicy">
+              ${[["flag_for_review", "Flags for leadership review"], ["ineligible", "Makes the person ineligible"], ["ignore", "Is not considered"]]
+                .map(([v, l]) => `<option value="${v}"${v === cfg.pip_policy ? " selected" : ""}>${esc(l)}</option>`).join("")}
+            </select></div>
+        </div>
+        <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">
+          The assumed week turns an hourly increase into the weekly and yearly figures the recommendation quotes. It does not
+          change anybody's pay or hours.</div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <span id="fid-set-status" style="font-size:12.5px;color:var(--text-muted);align-self:center;"></span>
+        <button class="btn secondary" data-x>Cancel</button>
+        <button class="btn" id="fid-set-save">Save</button>
+      </div>
+    </div>`;
+    document.body.appendChild(back);
+    const close = () => back.remove();
+    back.querySelector(".close-btn").addEventListener("click", close);
+    back.querySelector("[data-x]").addEventListener("click", close);
+
+    // ---- weights ----
+    const cats = cfg.categories || [];
+    const wBox = back.querySelector("#fid-weights");
+    wBox.innerHTML = cats.map((c) => {
+      const val = Number((cfg.weights || {})[c.key] || 0);
+      return `<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-top:1px solid var(--border,#f1f1f4);">
+        <div style="flex:1;min-width:200px;">
+          <div style="font-size:13px;font-weight:${c.live ? 600 : 400};color:${c.live ? "inherit" : "var(--text-muted)"};">
+            ${esc(c.label)}${c.live ? "" : " — not available yet"}</div>
+          <div style="font-size:11.5px;color:var(--text-muted);">${esc(c.source || "")}</div>
+        </div>
+        <input data-w="${c.key}" type="number" min="0" max="100" step="1" value="${val}"
+               ${c.live ? "" : "disabled"} style="width:80px;" /> <span style="font-size:12.5px;">%</span>
+      </div>`;
+    }).join("");
+
+    const totalEl = back.querySelector("#fid-weight-total");
+    const warnEl = back.querySelector("#fid-weight-warn");
+    const recomputeWeights = () => {
+      let t = 0;
+      back.querySelectorAll("[data-w]").forEach((el) => { t += Number(el.value) || 0; });
+      t = Math.round(t * 100) / 100;
+      totalEl.textContent = t + "%";
+      // The arithmetic is done here so nobody adds the column up themselves --
+      // the server refuses anything but 100 anyway, and finding that out on
+      // save is a worse way to learn it.
+      warnEl.textContent = t === 100 ? "" : ` — must be 100%, currently ${t > 100 ? t - 100 + " over" : 100 - t + " short"}`;
+      totalEl.style.color = t === 100 ? "#166534" : "#b45309";
+    };
+    back.querySelectorAll("[data-w]").forEach((el) => el.addEventListener("input", recomputeWeights));
+    recomputeWeights();
+
+    // ---- bands ----
+    const bandsBox = back.querySelector("#fid-bands");
+    const wireBandRow = (tr) => {
+      const del = tr.querySelector("[data-b-del]");
+      if (del) del.addEventListener("click", () => tr.remove());
+    };
+    bandsBox.querySelectorAll("tr").forEach(wireBandRow);
+    back.querySelector("#fid-band-add").addEventListener("click", () => {
+      const tmp = document.createElement("tbody");
+      tmp.innerHTML = bandRow({ min: 0, max: 0, percent: null, label: "" }, bandsBox.children.length);
+      const tr = tmp.firstElementChild;
+      bandsBox.appendChild(tr);
+      wireBandRow(tr);
+    });
+
+    // ---- save ----
+    back.querySelector("#fid-set-save").addEventListener("click", async () => {
+      const weights = {};
+      back.querySelectorAll("[data-w]").forEach((el) => {
+        const v = Number(el.value) || 0;
+        if (v > 0) weights[el.dataset.w] = v;
+      });
+      const bands = [...bandsBox.querySelectorAll("tr")].map((tr) => {
+        const pctRaw = tr.querySelector("[data-b-pct]").value;
+        return {
+          min: Number(tr.querySelector("[data-b-min]").value) || 0,
+          max: Number(tr.querySelector("[data-b-max]").value) || 0,
+          percent: String(pctRaw).trim() === "" ? null : Number(pctRaw),
+          label: tr.querySelector("[data-b-label]").value.trim(),
+          review: String(pctRaw).trim() === "",
+        };
+      });
+      const statusEl = back.querySelector("#fid-set-status");
+      const btn = back.querySelector("#fid-set-save");
+      btn.disabled = true; statusEl.textContent = "Saving…";
+      try {
+        await api("/api/fidelity/settings", { method: "PUT", body: {
+          weights, bands,
+          fidelity_method: back.querySelector("#fid-method").value,
+          critical_fail_policy: back.querySelector("#fid-cfpolicy").value,
+          pip_policy: back.querySelector("#fid-pippolicy").value,
+          check_interval_days: Number(back.querySelector("#fid-interval").value),
+          max_raise_percent: Number(back.querySelector("#fid-max").value),
+          min_performance_percent: Number(back.querySelector("#fid-minperf").value),
+          min_checks_required: Number(back.querySelector("#fid-minchecks").value),
+          assumed_weekly_hours: Number(back.querySelector("#fid-hours").value),
+        }});
+        close();
+        if (mount) fill(mount);
+      } catch (e) {
+        btn.disabled = false; statusEl.textContent = "";
+        alert(e.message || "Couldn't save the raise settings.");
       }
     });
   }

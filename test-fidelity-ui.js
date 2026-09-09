@@ -323,6 +323,78 @@ const section = (t) => console.log("\n== " + t + " ==");
     await supModal.locator("[data-fid-amend]").count() === 0);
   await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
 
+  // ================================================================
+  section("The raise settings — a configurable matrix nobody could configure");
+
+  await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
+  await page.evaluate(() => { location.hash = "#/fidelity"; });
+  await page.waitForTimeout(2200);
+  check("the Fidelity page has a way in to the raise settings",
+    await page.locator("#fid-settings").isVisible());
+
+  await page.locator("#fid-settings").click();
+  await page.waitForTimeout(1600);
+  const setModal = page.locator(".modal-backdrop").last();
+  const setText = await setModal.innerText();
+
+  const cfg = (await api(page, "/api/fidelity/settings")).body;
+  check("the matrix is shown as rows that can be edited",
+    await setModal.locator("#fid-bands tr").count() === (cfg.bands || []).length,
+    { rows: await setModal.locator("#fid-bands tr").count(), bands: (cfg.bands || []).length });
+  check("every performance category is listed",
+    await setModal.locator("[data-w]").count() === (cfg.categories || []).length,
+    { inputs: await setModal.locator("[data-w]").count(), cats: (cfg.categories || []).length });
+  check("a category with no source of data cannot be given a weight",
+    await setModal.locator('[data-w="attendance"]').isDisabled());
+  check("...and says why on the screen, not only in the API",
+    /not available yet/i.test(setText) && /bands rather than a score/i.test(setText), setText.slice(0, 900));
+  check("a category that CAN produce a number is editable",
+    !(await setModal.locator('[data-w="supervision_compliance"]').isDisabled()));
+
+  check("the weights are totalled for the reader", /Total:/.test(setText), setText.slice(0, 600));
+  const totalNow = await setModal.locator("#fid-weight-total").innerText();
+  check("...and the total starts correct at 100%", totalNow.trim() === "100%", totalNow);
+
+  // Break the total and confirm the screen says so BEFORE a save is attempted.
+  await setModal.locator('[data-w="fidelity"]').fill("80");
+  await page.waitForTimeout(400);
+  const warn = await setModal.locator("#fid-weight-warn").innerText();
+  check("changing a weight to leave the total short is called out immediately",
+    /short/.test(warn), { warn, total: await setModal.locator("#fid-weight-total").innerText() });
+  check("...saying how far off it is, so nobody adds the column up",
+    /20 short/.test(warn), warn);
+
+  // And the server refuses it too — the screen is a courtesy, not the rule.
+  const badSave = await api(page, "/api/fidelity/settings", { method: "PUT", body: { weights: { fidelity: 80 } } });
+  check("the server refuses a total that is not 100 regardless of the screen",
+    badSave.status === 400, badSave.body);
+
+  await setModal.locator('[data-w="fidelity"]').fill("100");
+  await page.waitForTimeout(300);
+  check("putting it back to 100 clears the warning",
+    (await setModal.locator("#fid-weight-warn").innerText()).trim() === "");
+
+  // A real edit, saved and read back.
+  await setModal.locator("#fid-interval").fill("45");
+  await setModal.locator("#fid-max").fill("6");
+  await setModal.locator("#fid-method").selectOption("last3_average");
+  await setModal.locator("#fid-set-save").click();
+  await page.waitForTimeout(2200);
+  check("the settings modal closes on save", await page.locator("#fid-bands").count() === 0);
+
+  const saved = (await api(page, "/api/fidelity/settings")).body;
+  check("the interval was saved", Number(saved.check_interval_days) === 45, saved.check_interval_days);
+  check("the maximum raise was saved", Number(saved.max_raise_percent) === 6, saved.max_raise_percent);
+  check("the Fidelity method was saved", saved.fidelity_method === "last3_average", saved.fidelity_method);
+  check("the matrix survived the round trip intact",
+    (saved.bands || []).length === (cfg.bands || []).length &&
+    Number(saved.bands[0].min) === Number(cfg.bands[0].min), saved.bands);
+
+  // Put it back so later runs and other suites read a default install.
+  await api(page, "/api/fidelity/settings", { method: "PUT", body: {
+    check_interval_days: 90, max_raise_percent: 10, fidelity_method: "review_period_average",
+  }});
+
   check("no uncaught JavaScript errors", errors.length === 0, errors.join(" ;; "));
   console.log(`\n  ${pass} passed, ${fail} failed`);
   await browser.close();
