@@ -1,7 +1,17 @@
-// billable-frontend.js -- monthly billable requirements for clinical staff.
+// billable-frontend.js -- weekly billable requirements for clinical staff.
 //
-// Two jobs on one screen: set each person's monthly requirement, and see how
-// the last finished month went against it.
+// Two jobs on one screen: set each person's weekly requirement, and see how
+// the last finished month went against it, week by week.
+//
+// THE REQUIREMENT IS WEEKLY AND THE ROW SHAPE SAYS SO. This screen was written
+// against the monthly version of /api/billable/summary and was not re-read when
+// that became weekly, so it was reading three fields the API had stopped
+// sending: `target_hours` (now `weekly_target_hours`), `variance` (gone --
+// a weekly requirement has no single monthly variance) and `appointments` (now
+// per week). The visible symptom was the one that matters most: the box you
+// type a requirement into rendered EMPTY every time, because the value came
+// back under a different name. The figure had saved; the screen could not
+// show it, so it looked like it had not.
 //
 // The screen leads with what CANNOT be sent and why, rather than burying it.
 // A row whose hours are provisional, or whose month never synced, is the case
@@ -37,14 +47,22 @@
   }
 
   function hoursText(n) { return n == null ? "—" : String(n) + " h"; }
+  function weekWord(n) { return n === 1 ? "week" : "weeks"; }
 
   function rowHtml(r) {
     var cannot = r.has_requirement && !r.trustworthy;
+    // Every week that overlaps the month is scored against the full weekly
+    // figure, so the result is a count of weeks rather than one month-long
+    // variance. "3 of 4" is also the only honest summary when one week of the
+    // month never synced: that week is not scored, and not counted as a miss.
+    var scored = r.weeks_scored || 0;
+    var met = r.weeks_met || 0;
+    var appointments = (r.weeks || []).reduce(function (a, w) { return a + (w.appointments || 0); }, 0);
     var chip;
     if (!r.has_requirement) chip = '<span style="color:#6b7280;font-size:12.5px;">No requirement set</span>';
     else if (cannot) chip = '<span style="background:#fef3c7;color:#92400e;font-weight:700;font-size:11.5px;padding:2px 9px;border-radius:999px;">Cannot send yet</span>';
-    else if (r.met) chip = '<span style="background:#dcfce7;color:#166534;font-weight:700;font-size:11.5px;padding:2px 9px;border-radius:999px;">Met (+' + r.variance + ' h)</span>';
-    else chip = '<span style="background:#fee2e2;color:#991b1b;font-weight:700;font-size:11.5px;padding:2px 9px;border-radius:999px;">' + Math.abs(r.variance) + ' h under</span>';
+    else if (r.met) chip = '<span style="background:#dcfce7;color:#166534;font-weight:700;font-size:11.5px;padding:2px 9px;border-radius:999px;">Met all ' + scored + ' ' + weekWord(scored) + '</span>';
+    else chip = '<span style="background:#fee2e2;color:#991b1b;font-weight:700;font-size:11.5px;padding:2px 9px;border-radius:999px;">Met ' + met + ' of ' + scored + ' ' + weekWord(scored) + '</span>';
 
     return '<tr style="border-top:1px solid var(--border,#eef0f4);">'
       + '<td style="padding:9px 12px;"><strong>' + esc(r.name) + '</strong>'
@@ -52,9 +70,20 @@
         + (!r.email ? '<div style="font-size:12px;color:#b45309;">No email address on file</div>' : "")
       + '</td>'
       + '<td style="padding:9px 12px;"><input type="number" min="0" step="0.5" style="width:88px;" '
-        + 'data-target-for="' + r.employee_id + '" value="' + (r.target_hours == null ? "" : r.target_hours) + '" placeholder="—" /></td>'
+        + 'data-target-for="' + r.employee_id + '" value="' + (r.weekly_target_hours == null ? "" : r.weekly_target_hours) + '" placeholder="—" />'
+        + '<div style="font-size:12px;color:#6b7280;">hours a week</div>'
+        // Somebody whose record still carries only the retired monthly figure
+        // reads as "No requirement set", which is true but looks like an
+        // oversight rather than the reason. The API carries the old number for
+        // exactly this, so it is shown rather than left to be guessed at.
+        + (r.weekly_target_hours == null && r.legacy_monthly_target != null
+            ? '<div style="font-size:12px;color:#92400e;margin-top:3px;max-width:220px;">Had a monthly requirement of '
+              + r.legacy_monthly_target + ' h. Requirements are weekly now — put the weekly figure in.</div>'
+            : "")
+      + '</td>'
       + '<td style="padding:9px 12px;">' + hoursText(r.actual_hours)
-        + (r.appointments != null ? '<div style="font-size:12px;color:#6b7280;">' + r.appointments + ' appt' + (r.appointments === 1 ? "" : "s") + '</div>' : "")
+        + (scored ? '<div style="font-size:12px;color:#6b7280;">across ' + scored + ' ' + weekWord(scored) + '</div>' : "")
+        + (appointments ? '<div style="font-size:12px;color:#6b7280;">' + appointments + ' appt' + (appointments === 1 ? "" : "s") + '</div>' : "")
       + '</td>'
       + '<td style="padding:9px 12px;">' + chip
         + (cannot ? '<div style="font-size:12px;color:#92400e;margin-top:3px;max-width:340px;">' + esc(r.note || "") + '</div>' : "")
@@ -82,7 +111,8 @@
     MOUNT.innerHTML =
       '<h1 style="margin:0 0 4px;">Billable Requirements</h1>'
       + '<p style="color:var(--text-muted);font-size:13px;margin:0 0 16px;max-width:760px;">'
-      + 'Each person\'s monthly requirement, and what they actually delivered in <strong>' + esc(data.period_label) + '</strong>. '
+      + 'Each person\'s requirement is <strong>hours a week</strong>. Every week that overlaps <strong>' + esc(data.period_label) + '</strong> '
+      + 'is measured against the full weekly figure — a week is not reduced because the month started or ended partway through it. '
       + 'Hours are verified session hours from Rethink — appointments recorded as delivered and verified. '
       + 'They are not a payroll or claims figure.</p>'
 
@@ -109,15 +139,15 @@
       + '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
       + '<thead><tr style="background:#f8fafc;">'
         + '<th style="text-align:left;padding:9px 12px;">Staff</th>'
-        + '<th style="text-align:left;padding:9px 12px;">Requirement</th>'
-        + '<th style="text-align:left;padding:9px 12px;">Delivered</th>'
+        + '<th style="text-align:left;padding:9px 12px;">Weekly requirement</th>'
+        + '<th style="text-align:left;padding:9px 12px;">Delivered in the month</th>'
         + '<th style="text-align:left;padding:9px 12px;">Result</th>'
       + '</tr></thead><tbody>'
       + (rows.length
           ? rows.map(rowHtml).join("")
           : '<tr><td colspan="4" style="padding:16px;color:#6b7280;">'
             + (all.length
-              ? 'Nobody has a monthly billable requirement yet. Tick &ldquo;Show the ' + withoutReq + ' with no requirement&rdquo; above and put the hours in the box on their row.'
+              ? 'Nobody has a weekly billable requirement yet. Tick &ldquo;Show the ' + withoutReq + ' with no requirement&rdquo; above and put the hours a week in the box on their row.'
               : 'No staff on file.')
             + '</td></tr>')
       + '</tbody></table></div>';
