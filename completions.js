@@ -46,6 +46,7 @@ module.exports = function initCompletions(ctx) {
     staff_task_completed:      { label: "Staff to-do completed",                  group: "Work" },
     supply_request_fulfilled:  { label: "Supply request fulfilled",               group: "Work" },
     offer_accepted:            { label: "Job offer accepted",                     group: "Hiring" },
+    hire_packet_completed:     { label: "Application packet completed",           group: "Hiring" },
     newhire_packet_signed:     { label: "New hire packet signed",                 group: "Hiring" },
     onboarding_docs_complete:  { label: "New hire sent every document",           group: "Hiring" },
     onboarding_doc_received:   { label: "New hire document received",             group: "Hiring" },
