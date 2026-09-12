@@ -6653,6 +6653,13 @@ if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
         // Transportation travels with the card so schedulers see at a glance
         // that a ride must be coordinated, without opening the client.
         transportation_services: c.transportation_services === true || c.transportation_services === "t",
+        // Paused intake chasing, for the same reason as the waitlist flag above.
+        // A family whose reminders are on hold is not being chased ON PURPOSE;
+        // without a marker their card is indistinguishable from one that has
+        // stalled. The old board carried this badge, so the board that replaced
+        // it has to as well -- otherwise finding who is on hold means opening
+        // every client in turn, which means nobody does it.
+        intake_chasing_paused_at: c.intake_chasing_paused_at || null,
         ...pipelineV2.computeMilestoneView(c),
       }));
       return json(res, 200, shaped);

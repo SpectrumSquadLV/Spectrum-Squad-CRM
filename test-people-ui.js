@@ -130,7 +130,10 @@ const { openCardSection } = require("./card-test-helpers");
   await waitNoDrawer();
   await page.evaluate(() => { location.hash = "#/pipeline"; });
   await page.waitForTimeout(2500);
-  const card = page.locator("[data-client-id], .kanban-card, .client-card").first();
+  // The old kanban board is retired; #/pipeline lands on the Clients board,
+  // whose cards carry data-pv2-open. The old selectors stay in the list so this
+  // reads as "a client card, however the board of the day spells it".
+  const card = page.locator("[data-pv2-open], [data-client-id], .kanban-card, .client-card").first();
   if (await card.count()) {
     await card.click();
     await page.waitForTimeout(2500);

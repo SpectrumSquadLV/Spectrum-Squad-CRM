@@ -7,6 +7,16 @@
 // the app's own router/state (which are module-scoped, not global).
 (function () {
   const HASH = "#/pipeline-v2";
+  // #/pipeline/<id> is the deep link to ONE client -- the link in every
+  // screener email, document request and task notice. It used to open the old
+  // kanban board and lay the client modal on top of it. That board is gone, so
+  // this board paints behind the modal instead: without this, arriving from an
+  // email would put the modal over an empty page, and closing it would leave
+  // the reader looking at nothing.
+  const CLIENT_HASH_RE = /^#\/pipeline\/\d+(?:[?/].*)?$/;
+  function isBoardHash(h) {
+    return h === HASH || CLIENT_HASH_RE.test(h || "");
+  }
 
   const MILESTONES = [
     { key: 2, label: "Intake & Eligibility", color: "#3f56b5" },
@@ -232,6 +242,9 @@
           (c.waitlisted
             ? ' <span title="' + esc(waitlistTitle(c)) + '" style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#fef3c7;color:#92400e;vertical-align:middle;white-space:nowrap;">WAITLIST</span>'
             : "") +
+          (c.intake_chasing_paused_at
+            ? ' <span title="Automatic intake reminders are on hold for this family." style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#e5e7eb;color:#374151;vertical-align:middle;white-space:nowrap;">ON HOLD</span>'
+            : "") +
           (c.transportation_services
             ? ' <span role="img" title="Spectrum Squad provides transportation for this client" aria-label="Transportation provided" style="padding:2px 6px;border-radius:20px;background:#e6f4f1;color:#2f6f68;vertical-align:middle;display:inline-flex;align-items:center;"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true" focusable="false" style="vertical-align:-2px;"><path d="M18.92 6.51A1.5 1.5 0 0 0 17.5 5.5h-11a1.5 1.5 0 0 0-1.42 1.01L3.2 12v6.5a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1h11.6v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1V12zM6.85 15.2a1.35 1.35 0 1 1 0-2.7 1.35 1.35 0 0 1 0 2.7zm10.3 0a1.35 1.35 0 1 1 0-2.7 1.35 1.35 0 0 1 0 2.7zM5.1 11l1.4-4.03a.5.5 0 0 1 .47-.34h10.06a.5.5 0 0 1 .47.34L18.9 11z"/></svg></span>'
             : "") +
@@ -432,13 +445,27 @@
 
     mount.innerHTML =
       '<div style="padding:24px 28px 60px;">' +
-        '<h1 style="font-size:24px;margin:0 0 4px;font-weight:700;color:#1b2a6b;">Client pipeline</h1>' +
-        '<p style="margin:0 0 18px;color:#767488;font-size:14px;">Milestone view with progress, blockers, and next actions. Check off an item to mark it done, or click a card to open the full client record.</p>' +
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;">' +
+          '<div style="min-width:0;">' +
+            '<h1 style="font-size:24px;margin:0 0 4px;font-weight:700;color:#1b2a6b;">Client pipeline</h1>' +
+            '<p style="margin:0 0 18px;color:#767488;font-size:14px;">Milestone view with progress, blockers, and next actions. Check off an item to mark it done, or click a card to open the full client record.</p>' +
+          "</div>" +
+          // Adding an enrolment used to live on the old kanban board as well as
+          // the dashboard. That board is gone, so the button moves here -- the
+          // Clients screen is where somebody goes to add a client, and making
+          // them detour via the dashboard for it would be a step backwards.
+          // Same id and same handler the dashboard uses.
+          '<button class="btn" id="new-client-btn" style="flex:none;">+ New Enrollment</button>' +
+        "</div>" +
         searchBarHTML() +
         (q ? "" : filterBarHTML()) +
         body +
       "</div>";
     mount.dataset.pv2 = "1";
+    const addBtn = mount.querySelector("#new-client-btn");
+    if (addBtn && typeof window.openNewClientModal === "function") {
+      addBtn.addEventListener("click", () => window.openNewClientModal());
+    }
 
     wireSearch(mount);
     if (!q) wireFilters(mount);
@@ -468,7 +495,7 @@
     if (!mount) return;
     if (mountObserver) mountObserver.disconnect();
     mountObserver = new MutationObserver(() => {
-      if (location.hash !== HASH) return;
+      if (!isBoardHash(location.hash)) return;
       if (!loaded) return;
       const m = document.getElementById("view-mount");
       if (m && m.dataset.pv2 !== "1") render();
@@ -477,7 +504,7 @@
   }
 
   function reassertIfNeeded() {
-    if (location.hash !== HASH) return;
+    if (!isBoardHash(location.hash)) return;
     setActiveNav(true);
     if (!loaded) return;
     const mount = document.getElementById("view-mount");
@@ -485,7 +512,7 @@
   }
 
   function onHashChange() {
-    const isActive = location.hash === HASH;
+    const isActive = isBoardHash(location.hash);
     setActiveNav(isActive);
     if (!isActive) {
       if (mountObserver) { mountObserver.disconnect(); mountObserver = null; }
@@ -498,7 +525,7 @@
 
   function boot() {
     window.addEventListener("hashchange", onHashChange);
-    if (location.hash === HASH) onHashChange();
+    if (isBoardHash(location.hash)) onHashChange();
   }
 
   boot();

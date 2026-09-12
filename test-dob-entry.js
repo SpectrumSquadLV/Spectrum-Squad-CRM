@@ -57,8 +57,12 @@ const BASE = process.env.BASE || "http://localhost:3009";
   check("the echo spells the month out", await P(`usDateInWords("2019-03-04")`) === "March 4, 2019");
 
   // ---------------- the enrolment form ----------------
+  // #/pipeline is the old kanban board's address. It now redirects to the
+  // Clients board, which carries the same "+ New Enrollment" button -- so this
+  // also proves an old bookmark still gets somebody to the enrolment form.
   await page.evaluate(() => { location.hash = "#/pipeline"; });
-  await page.waitForTimeout(1200);
+  await page.waitForTimeout(2000);
+  await page.waitForSelector("#new-client-btn", { timeout: 20000 });
   await page.click("#new-client-btn");
   await page.waitForTimeout(600);
 

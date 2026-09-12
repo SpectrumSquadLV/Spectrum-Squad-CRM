@@ -175,64 +175,10 @@ const WIDE = { width: 1600, height: 1000 };
   check("and the column is back to its normal width", narrowBusy.width <= 330, narrowBusy);
   await page.setViewportSize(WIDE);
 
-  // ------------------------------------------------------------- the other --
-  // #/pipeline is the drag-and-drop board, still reachable and still what a
-  // card click deep-links into. It had the identical problem and got the
-  // identical rule; a fix applied to one of two boards is half a fix.
-  console.log("\n== The drag-and-drop board got the same treatment ==");
-  await page.evaluate(() => { location.hash = "#/pipeline"; });
-  await page.waitForFunction(() => !!document.querySelector(".kanban-col"), null, { timeout: 20000 }).catch(() => {});
-  await page.waitForTimeout(1400);
-  const kan = await page.evaluate(() => [...document.querySelectorAll(".kanban-col")].map((col) => {
-    const cards = [...col.querySelectorAll(".client-card")].map((el) => Math.round(el.getBoundingClientRect().left));
-    return {
-      phase: col.dataset.phase,
-      lanes: Number(col.dataset.lanes || 1),
-      count: cards.length,
-      distinctLefts: [...new Set(cards)].length,
-      height: Math.round(col.getBoundingClientRect().height),
-      hasWrapper: !!col.querySelector(".kanban-cards"),
-    };
-  }));
-  kan.forEach((c) => console.log(`  ${String(c.count).padStart(3)} cards  ${c.lanes} lane(s)  ${c.phase}`));
-  const kBusy = kan.slice().sort((a, b) => b.count - a.count)[0];
-  const kQuiet = kan.filter((c) => c.count > 0 && c.count <= 6)[0];
-  check("its busy column has lanes too", kBusy.lanes > 1, kBusy);
-  check("and its cards are side by side as well", kBusy.distinctLefts === kBusy.lanes, kBusy);
-  check("the cards live in a wrapper the grid can lay out", kBusy.hasWrapper, kBusy);
-  if (kQuiet) check("its quiet columns are unchanged", kQuiet.lanes === 1 && kQuiet.distinctLefts === 1, kQuiet);
-
-  console.log("\n== And dragging still works ==");
-  // The drop target is the column; the cards are now one level deeper inside
-  // it. Drop events bubble, so this should hold -- and it is cheap to prove
-  // rather than assume, because a board you cannot drag on is not this board.
-  const dragged = await page.evaluate(async () => {
-    const card = document.querySelector(".kanban-cards .client-card[data-client]");
-    if (!card) return { ok: false, why: "no card" };
-    const id = card.dataset.client;
-    // Read the stage from the LIST. There is no single-client GET on this API;
-    // asking for one returns something without a stage on it, and the first
-    // version of this check compared undefined to undefined and reported a
-    // failure while the drag had in fact worked.
-    const stageOf = async (cid) => {
-      const list = await (await fetch("/api/clients", { credentials: "include" })).json();
-      const row = (Array.isArray(list) ? list : []).find((c) => String(c.id) === String(cid));
-      return row ? row.stage : null;
-    };
-    const before = await stageOf(id);
-    const target = [...document.querySelectorAll(".kanban-col")]
-      .find((c) => c.dataset.phase && !c.contains(card));
-    if (!target) return { ok: false, why: "no other column" };
-    const dt = new DataTransfer();
-    card.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: dt }));
-    target.dispatchEvent(new DragEvent("dragover", { bubbles: true, dataTransfer: dt }));
-    target.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer: dt }));
-    await new Promise((r) => setTimeout(r, 1800));
-    const after = await stageOf(id);
-    return { ok: true, id, before, after, to: target.dataset.phase };
-  });
-  check("A CARD CAN STILL BE DRAGGED TO ANOTHER PHASE from inside the new wrapper",
-    dragged.ok && dragged.before !== dragged.after, dragged);
+  // The drag-and-drop board that used to be tested here is GONE. It was the
+  // old #/pipeline kanban, replaced by the milestone board above, and its lane
+  // rules went with it. Nothing is left to assert -- and a board that no longer
+  // exists must not leave a passing test behind claiming it works.
 
   check("no page errors", errors.length === 0, errors.slice(0, 3).join(" | "));
   if (failures.length) { console.log("\n--- failures ---"); failures.forEach((f) => console.log(f)); }
