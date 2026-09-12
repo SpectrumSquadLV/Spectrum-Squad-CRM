@@ -1741,6 +1741,23 @@ const EMAIL_TEMPLATE_DEFS = [
     description: "Sent to the parent once a day while the clinical screener is still outstanding, and used for a deliberate resend. Must contain {{screener_link}}.",
     fields: ["parent_name", "child_name", "screener_link"],
   },
+  // The application packet emails. Registered here for the same reason the
+  // screener's are: wording that only exists inside a module is wording nobody
+  // can change without a deploy.
+  {
+    key: "hire_packet_invite",
+    label: "Application Packet — Invitation",
+    category: "HR / Onboarding Emails",
+    description: "Sent to an applicant when the application and policy packet goes out — automatically once they reach Credentials & References, or by hand from the applicant record. Must contain {{packet_link}}: it is their private link to the packet, and the CRM will append it if you remove it.",
+    fields: ["applicant_name", "first_name", "position", "packet_link"],
+  },
+  {
+    key: "hire_packet_reminder",
+    label: "Application Packet — Reminder",
+    category: "HR / Onboarding Emails",
+    description: "Sent to the applicant once a day while the packet is still outstanding, and used for a deliberate resend. Must contain {{packet_link}}.",
+    fields: ["applicant_name", "first_name", "position", "packet_link"],
+  },
   {
     key: "assessment_reminder",
     label: "Assessment Scheduling Reminder",
@@ -2075,6 +2092,26 @@ const EMAIL_TEMPLATE_DEFAULTS = {
       "<p>Just a gentle reminder — we're still waiting on {{child_name}}'s clinical screener. It takes about 10 minutes and works great on your phone. Whenever you have a moment! 💜</p>" +
       '<p style="text-align:center;margin:26px 0;"><a href="{{screener_link}}" style="background:#e0a430;color:#3a2c05;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:12px;display:inline-block;">Start the Screener →</a></p>' +
       '<p style="font-size:12px;color:#7a7796;">Or paste this link into your browser:<br/>{{screener_link}}</p>',
+  },
+  // Deliberately the same words hire-packet.js falls back to, so registering
+  // these changes nothing about what applicants receive until somebody edits
+  // them.
+  hire_packet_invite: {
+    subject: "Your Spectrum Squad application packet 🌈",
+    body:
+      "<p>Hi {{first_name}},</p>" +
+      "<p>Great news — we'd like to move forward with you for <strong>{{position}}</strong>.</p>" +
+      "<p>Here is the paperwork. Most of it you can do right on your phone; two of the forms are government forms you'll download, print and sign by hand. It takes about 20 minutes and it remembers where you left off.</p>" +
+      '<p style="text-align:center;margin:26px 0;"><a href="{{packet_link}}" style="background:#e0a430;color:#3a2c05;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:12px;display:inline-block;">Open my packet →</a></p>' +
+      '<p style="font-size:12px;color:#7a7796;">Or paste this link into your browser:<br/>{{packet_link}}</p>',
+  },
+  hire_packet_reminder: {
+    subject: "Reminder: your Spectrum Squad paperwork",
+    body:
+      "<p>Hi {{first_name}},</p>" +
+      "<p>Just a friendly nudge — we still need your application packet. It saves as you go, so you can do it in a couple of sittings.</p>" +
+      '<p style="text-align:center;margin:26px 0;"><a href="{{packet_link}}" style="background:#e0a430;color:#3a2c05;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:12px;display:inline-block;">Open my packet →</a></p>' +
+      '<p style="font-size:12px;color:#7a7796;">Or paste this link into your browser:<br/>{{packet_link}}</p>',
   },
   hr_rethink_creds: {
     subject: "Your Rethink login",
@@ -5021,6 +5058,13 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/onboarding/")) {
     const handled = await onboarding.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  // The hire packet enforces its own public/authenticated split internally
+  // (the applicant is not signed in), the same way the HR module does.
+  if (pathname.startsWith("/api/hire-packet/")) {
+    const handled = await hirePacket.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -8611,6 +8655,25 @@ const onboarding = require("./onboarding")({
   },
 });
 
+// ===== HIRE PACKET add-on: the employment application and policy packet the
+// applicant fills in before an offer. Owns /api/hire-packet/* and the public
+// page at /hire-packet. The two government forms it hands over -- IRS Form
+// 8850 and the Nevada Civil Name Check waiver -- are served from forms/ as the
+// published PDFs and are never regenerated. =====
+const hirePacket = require("./hire-packet")({
+  dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, sendFile,
+  sendEmail, APP_BASE_URL, getAppSetting, moduleGranted,
+  onCompletion: (...a) => completions.record(...a),
+  createStaffTask,
+  // Same shape onboarding.js uses: pull the row, substitute {{merge}} fields.
+  renderTemplate: async (key, fields) => {
+    const row = await dbGet("SELECT subject_template, body_template FROM email_templates WHERE template_key = ?", [key]);
+    if (!row) return null;
+    const sub = (str) => String(str || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (m, k) => (fields[k] == null ? "" : String(fields[k])));
+    return { subject: sub(row.subject_template), html: sub(row.body_template) };
+  },
+});
+
 const scheduling = require("./scheduling")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, canAccessClients, moduleGranted,
 });
@@ -8667,6 +8730,12 @@ const server = http.createServer(async (req, res) => {
   if (pathname === "/screener" || pathname.startsWith("/screener/")) {
     if (await screener.servePage(req, res, pathname)) return;
 }
+
+  // HIRE PACKET: the applicant's own application + policy packet. The token
+  // travels in the query string, not the path.
+  if (pathname === "/hire-packet" || pathname === "/hire-packet/") {
+    if (await hirePacket.servePage(req, res, pathname)) return;
+  }
 
   // HR: serve the public careers + interview scheduling pages
   if (
@@ -8768,6 +8837,7 @@ async function start() {
   await grants.initTables().catch((e) => console.error("Grants initTables failed:", e));
   await scheduling.initTables().catch((e) => console.error("Scheduling initTables failed:", e));
   await onboarding.initTables().catch((e) => console.error("Onboarding initTables failed:", e));
+  await hirePacket.initTables().catch((e) => console.error("Hire packet initTables failed:", e));
   await completions.initTables().catch((e) => console.error("Completions initTables failed:", e));
   await signnowImport.initTables().catch((e) => console.error("SignNow import initTables failed:", e));
   // Seed the credentialing links rather than defaulting them at read time.
@@ -8948,8 +9018,10 @@ async function start() {
 
   // Onboarding deadlines: nudge a day out, flag when the time is up. The CRM
   // never rescinds an offer -- it tells a person the clock ran out.
+  hirePacket.sweep().catch((e) => console.error("Hire packet sweep failed:", e));
   onboarding.deadlineSweep().catch((e) => console.error("Onboarding sweep failed:", e));
   setInterval(() => {
+    hirePacket.sweep().catch((e) => console.error("Hire packet sweep failed:", e));
     onboarding.deadlineSweep().catch((e) => console.error("Onboarding sweep failed:", e));
   }, 60 * 60 * 1000);
 

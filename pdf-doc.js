@@ -9,8 +9,14 @@
 // share plumbing with a report writer is a poor trade.
 //
 // Only what is needed: US Letter, Helvetica, headings, key/value rows,
-// wrapping, and page breaks with a footer. No images, no tables, no unicode
-// beyond WinAnsi -- see asciiSafe().
+// wrapping, page breaks with a footer, and one image type -- a baseline JPEG,
+// placed straight into the stream as DCTDecode, which is how a drawn signature
+// gets onto a page without an image library. No tables, no unicode beyond
+// WinAnsi -- see asciiSafe().
+//
+// The signature is why the image block exists. hr-attendance.js already does
+// this for its single-page acknowledgment and is still left alone; what it
+// cannot do is run to several pages, and an employment application does.
 "use strict";
 
 const PAGE_W = 612;   // US Letter, points
@@ -55,16 +61,23 @@ function wrapText(str, widthPts, size) {
   return lines.length ? lines : [""];
 }
 
-// blocks: [{ type: "title"|"heading"|"row"|"text"|"space"|"rule", ... }]
+// blocks: [{ type: "title"|"heading"|"row"|"text"|"space"|"rule"|"image", ... }]
+// An image block is { type: "image", jpeg: Buffer, w, h, width } -- w/h are the
+// JPEG's own pixel dimensions (used only for the aspect ratio) and width is how
+// wide to draw it in points.
 function buildPdf({ title = "", subtitle = "", footer = "", blocks = [] } = {}) {
   const pages = [];
+  const pageImages = [];      // per page: the image ids drawn on it
+  const images = [];          // every image, in the order they were added
   let content = [];
+  let imgIds = [];
   let y = PAGE_H - MARGIN;
   const usable = PAGE_W - MARGIN * 2;
 
   const newPage = () => {
-    if (content.length) pages.push(content.join("\n"));
+    if (content.length) { pages.push(content.join("\n")); pageImages.push(imgIds); }
     content = [];
+    imgIds = [];
     y = PAGE_H - MARGIN;
   };
   const need = (h) => { if (y - h < MARGIN + 24) newPage(); };
@@ -110,6 +123,21 @@ function buildPdf({ title = "", subtitle = "", footer = "", blocks = [] } = {}) 
       continue;
     }
 
+    if (b.type === "image") {
+      if (!b.jpeg || !b.jpeg.length) continue;
+      const drawW = Math.min(b.width || 220, usable);
+      const ratio = (b.w && b.h) ? (b.h / b.w) : 0.35;
+      const drawH = Math.max(24, Math.round(drawW * ratio));
+      // A signature split across a page break is not a signature.
+      need(drawH + 6);
+      const id = images.length + 1;
+      images.push({ jpeg: b.jpeg, w: b.w || 500, h: b.h || 160 });
+      imgIds.push(id);
+      content.push(`q ${drawW} 0 0 ${drawH} ${MARGIN} ${y - drawH} cm /Im${id} Do Q`);
+      y -= drawH + 6;
+      continue;
+    }
+
     if (b.type === "row") {
       // The question, then the answer indented under it. Two columns would be
       // tidier until a question runs long, and screener questions do.
@@ -125,8 +153,8 @@ function buildPdf({ title = "", subtitle = "", footer = "", blocks = [] } = {}) 
     }
   }
 
-  if (content.length) pages.push(content.join("\n"));
-  if (!pages.length) pages.push("");
+  if (content.length) { pages.push(content.join("\n")); pageImages.push(imgIds); }
+  if (!pages.length) { pages.push(""); pageImages.push([]); }
 
   // ---- assemble ----
   const enc = (s) => Buffer.from(s, "latin1");
@@ -147,6 +175,7 @@ function buildPdf({ title = "", subtitle = "", footer = "", blocks = [] } = {}) 
   const firstContent = firstPage + pageCount;
   const fontR = firstContent + pageCount;
   const fontB = fontR + 1;
+  const firstImage = fontB + 1;
 
   push(enc("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"));
   obj(1, enc("<< /Type /Catalog /Pages 2 0 R >>"));
@@ -154,9 +183,13 @@ function buildPdf({ title = "", subtitle = "", footer = "", blocks = [] } = {}) 
   obj(2, enc(`<< /Type /Pages /Kids [${kids}] /Count ${pageCount} >>`));
 
   pages.forEach((_, i) => {
+    const ids = pageImages[i] || [];
+    const xobj = ids.length
+      ? ` /XObject << ${ids.map((id) => `/Im${id} ${firstImage + id - 1} 0 R`).join(" ")} >>`
+      : "";
     obj(firstPage + i, enc(
       `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_W} ${PAGE_H}] `
-      + `/Resources << /Font << /F ${fontR} 0 R /FB ${fontB} 0 R >> >> `
+      + `/Resources << /Font << /F ${fontR} 0 R /FB ${fontB} 0 R >>${xobj} >> `
       + `/Contents ${firstContent + i} 0 R >>`));
   });
 
@@ -176,8 +209,17 @@ function buildPdf({ title = "", subtitle = "", footer = "", blocks = [] } = {}) 
   obj(fontR, enc("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"));
   obj(fontB, enc("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"));
 
+  images.forEach((img, idx) => {
+    const n = firstImage + idx;
+    xref[n] = offset;
+    push(enc(`${n} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${img.w} /Height ${img.h} `
+      + `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${img.jpeg.length} >>\nstream\n`));
+    push(img.jpeg);
+    push(enc("\nendstream\nendobj\n"));
+  });
+
   const xrefStart = offset;
-  const total = fontB + 1;
+  const total = firstImage + images.length;
   let table = `xref\n0 ${total}\n0000000000 65535 f \n`;
   for (let i = 1; i < total; i++) {
     table += String(xref[i] || 0).padStart(10, "0") + " 00000 n \n";

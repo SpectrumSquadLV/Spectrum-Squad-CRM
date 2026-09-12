@@ -1,0 +1,1371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1b2a6b" />
+<meta name="referrer" content="no-referrer" />
+<title>Spectrum Squad — Application &amp; Onboarding Packet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* Deliberately the same design tokens as clinical-screener.html. A family and
+   an applicant meet the same company, and the two forms are maintained by the
+   same people. */
+:root{
+  --navy:#1b2a6b; --navy-dark:#101c4d; --navy-light:#edecf8;
+  --gold:#e0a430; --gold-dark:#c98a1b; --teal:#5fa8a0; --teal-dark:#3f8f89;
+  --coral:#ef6f6c; --purple:#8b5cf6;
+  --bg:#f4f2fb; --surface:#ffffff; --border:#e7e5f2;
+  --text:#241d52; --muted:#7a7796; --success:#22c55e;
+  --radius:18px; --shadow:0 8px 30px rgba(41,34,92,.10); --shadow-sm:0 2px 10px rgba(41,34,92,.07);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{margin:0;padding:0;}
+body{
+  font-family:"Outfit",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  color:var(--text);
+  background:
+    radial-gradient(1200px 600px at 100% -10%, #efe7ff 0%, transparent 55%),
+    radial-gradient(900px 500px at -10% 110%, #e5f6f3 0%, transparent 55%),
+    var(--bg);
+  min-height:100vh; -webkit-font-smoothing:antialiased;
+}
+
+.topbar{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.86);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--border);padding:10px 16px 12px;}
+.topbar .row{display:flex;align-items:center;gap:12px;max-width:680px;margin:0 auto;}
+.topbar img{height:34px;width:auto;}
+.progress-wrap{flex:1;}
+.progress-label{font-size:12px;font-weight:600;color:var(--muted);margin:0 0 5px;}
+.progress-track{height:9px;border-radius:999px;background:#e7e3f5;overflow:hidden;}
+.progress-fill{height:100%;width:0;border-radius:999px;
+  background:linear-gradient(90deg,var(--purple),var(--teal),var(--gold));
+  transition:width .45s cubic-bezier(.4,0,.2,1);}
+.saved{font-size:11.5px;font-weight:600;color:var(--teal-dark);opacity:0;transition:opacity .3s;}
+.saved.show{opacity:1;}
+
+.stage{max-width:680px;margin:0 auto;padding:22px 18px 140px;}
+.step{display:none;animation:slideIn .45s cubic-bezier(.2,.7,.2,1);}
+.step.active{display:block;}
+@keyframes slideIn{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:translateY(0);}}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:24px 20px;}
+.card + .card{margin-top:14px;}
+.eyebrow{display:inline-flex;align-items:center;gap:7px;background:var(--navy-light);color:var(--navy);
+  font-weight:700;font-size:12.5px;padding:6px 13px;border-radius:999px;margin-bottom:14px;letter-spacing:.01em;}
+h1.q-title{font-size:23px;font-weight:800;margin:0 0 6px;letter-spacing:-.01em;line-height:1.2;}
+p.q-sub{font-size:14.5px;color:var(--muted);margin:0 0 20px;line-height:1.5;}
+.field{margin-bottom:18px;}
+.field:last-child{margin-bottom:0;}
+label.lbl{display:block;font-weight:600;font-size:15px;margin-bottom:8px;}
+label.lbl .opt-tag{font-weight:500;color:var(--muted);font-size:13px;}
+
+input[type=text],input[type=tel],input[type=number],input[type=date],input[type=email],input[type=time],textarea,select{
+  width:100%;font-family:inherit;font-size:16px;color:var(--text);
+  padding:13px 15px;border:2px solid var(--border);border-radius:14px;background:#fbfaff;transition:.15s;}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--purple);background:#fff;
+  box-shadow:0 0 0 4px rgba(139,92,246,.13);}
+textarea{min-height:84px;resize:vertical;line-height:1.5;}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+@media (max-width:520px){.two{grid-template-columns:1fr;}}
+
+.opts{display:grid;gap:10px;}
+.opts.row2{grid-template-columns:1fr 1fr;}
+.opt{position:relative;display:flex;align-items:center;gap:11px;cursor:pointer;
+  border:2px solid var(--border);background:#fbfaff;border-radius:14px;padding:13px 15px;
+  font-size:15px;font-weight:500;transition:.15s;user-select:none;}
+.opt input{position:absolute;opacity:0;pointer-events:none;}
+.opt .tick{margin-left:auto;width:22px;height:22px;border-radius:999px;border:2px solid var(--border);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;flex-shrink:0;transition:.15s;}
+.opt:has(input:checked){border-color:var(--purple);background:#f3efff;box-shadow:0 2px 12px rgba(139,92,246,.16);}
+.opt:has(input:checked) .tick{background:var(--purple);border-color:var(--purple);}
+.opt:active{transform:scale(.985);}
+
+/* a yes/no pair that sits on one line next to its question */
+.yesno{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between;
+  border:1px solid var(--border);border-radius:14px;padding:12px 14px;background:#fbfaff;margin-bottom:10px;}
+.yesno .qtext{font-size:14.5px;font-weight:600;flex:1;min-width:220px;line-height:1.4;}
+.yesno .pair{display:flex;gap:8px;}
+.yesno .pair label{cursor:pointer;font-size:14px;font-weight:700;padding:8px 18px;border-radius:999px;
+  border:2px solid var(--border);background:#fff;transition:.15s;}
+.yesno .pair label input{position:absolute;opacity:0;}
+.yesno .pair label:has(input:checked){border-color:var(--teal);background:#e7f6f3;color:var(--teal-dark);}
+
+/* repeating blocks (employers, references) */
+.block{border:1px solid var(--border);border-radius:16px;padding:16px 14px;background:#fbfaff;margin-bottom:12px;}
+.block h4{margin:0 0 12px;font-size:14px;font-weight:800;color:var(--navy);letter-spacing:.02em;text-transform:uppercase;}
+.addmore{display:block;width:100%;border:2px dashed var(--border);background:transparent;color:var(--navy);
+  font-family:inherit;font-weight:700;font-size:14.5px;padding:13px;border-radius:14px;cursor:pointer;transition:.15s;}
+.addmore:hover{border-color:var(--purple);color:var(--purple);background:#faf7ff;}
+
+/* education grid */
+.edu{overflow-x:auto;}
+.edu table{width:100%;border-collapse:separate;border-spacing:0 8px;min-width:520px;}
+.edu th{font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);text-align:left;padding:0 6px 2px;font-weight:700;}
+.edu td{padding:0 4px;}
+.edu td.rowlabel{font-weight:700;font-size:13.5px;white-space:nowrap;padding-right:8px;}
+.edu input{font-size:14px;padding:9px 11px;}
+
+/* initial-each-clause */
+.clause{display:flex;gap:13px;border:2px solid var(--border);background:#fbfaff;border-radius:16px;
+  padding:15px 15px 15px 13px;margin-bottom:11px;transition:.15s;cursor:pointer;}
+.clause:hover{border-color:#d9d3f2;}
+.clause.done{border-color:var(--teal);background:#eefaf7;cursor:default;}
+.clause .box{width:56px;height:44px;flex-shrink:0;border:2px dashed #cfc9e8;border-radius:11px;
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px;color:var(--muted);
+  background:#fff;transition:.15s;letter-spacing:.04em;}
+.clause.done .box{border:2px solid var(--teal);border-style:solid;color:var(--teal-dark);background:#fff;
+  font-family:"Outfit",cursive;transform:rotate(-4deg);}
+.clause .ctext{font-size:14px;line-height:1.55;}
+.clause .hint{display:block;margin-top:6px;font-size:12.5px;font-weight:700;color:var(--purple);}
+.clause.done .hint{display:none;}
+
+/* policy reading panes */
+.policy{border:1px solid var(--border);border-radius:16px;background:#fbfaff;padding:4px 16px;
+  max-height:420px;overflow-y:auto;font-size:14px;line-height:1.6;}
+.policy h3{font-size:15px;color:var(--navy);margin:18px 0 6px;}
+.policy h4{font-size:13.5px;margin:14px 0 4px;}
+.policy ul{margin:6px 0 10px;padding-left:20px;}
+.policy li{margin-bottom:5px;}
+.policy p{margin:6px 0;}
+.readmark{font-size:12.5px;font-weight:700;color:var(--muted);text-align:center;padding:10px 0 4px;}
+.readmark.done{color:var(--teal-dark);}
+
+/* signature pad */
+canvas.pad{width:100%;height:150px;border:2px solid var(--border);border-radius:14px;background:#fff;touch-action:none;display:block;}
+.padrow{display:flex;justify-content:space-between;align-items:center;margin-top:8px;}
+.linkbtn{background:none;border:none;font-family:inherit;font-size:13.5px;font-weight:700;color:var(--purple);cursor:pointer;padding:4px 0;}
+.hint{font-size:12.5px;color:var(--muted);}
+
+/* download / upload steps */
+.docbtn{display:flex;align-items:center;gap:12px;width:100%;text-decoration:none;border:2px solid var(--navy);
+  background:var(--navy);color:#fff;border-radius:15px;padding:15px 18px;font-weight:700;font-size:15.5px;
+  font-family:inherit;cursor:pointer;transition:.15s;}
+.docbtn:hover{background:var(--navy-dark);border-color:var(--navy-dark);}
+.docbtn .ic{font-size:21px;}
+.docbtn.ghost{background:#fbfaff;color:var(--navy);border-color:var(--border);}
+.docbtn.ghost:hover{background:#f3efff;border-color:var(--purple);color:var(--purple);}
+.steps-list{counter-reset:s;list-style:none;padding:0;margin:18px 0 0;}
+.steps-list li{counter-increment:s;position:relative;padding-left:38px;margin-bottom:13px;font-size:14.5px;line-height:1.5;}
+.steps-list li::before{content:counter(s);position:absolute;left:0;top:-1px;width:26px;height:26px;border-radius:999px;
+  background:var(--navy-light);color:var(--navy);font-weight:800;font-size:13px;display:flex;align-items:center;justify-content:center;}
+.uploaded{display:flex;align-items:center;gap:10px;border:2px solid var(--teal);background:#eefaf7;
+  border-radius:14px;padding:13px 15px;font-size:14.5px;font-weight:600;color:var(--teal-dark);}
+
+.pill-note{background:#fff7e8;border:1px solid #f6e2b8;color:#8a6516;border-radius:12px;padding:12px 14px;
+  font-size:13.2px;line-height:1.55;margin-top:14px;}
+.pill-note strong{color:#7a5410;}
+.pill-stop{background:#fdecea;border-color:#f6c9c4;color:#8c2f26;}
+.pill-stop strong{color:#7a271f;}
+.err{background:#fdecea;border:1px solid #f6c9c4;color:#8c2f26;border-radius:12px;padding:11px 14px;
+  font-size:13.5px;margin-top:12px;display:none;}
+.err.show{display:block;}
+
+.navbar{position:fixed;left:0;right:0;bottom:0;z-index:20;background:rgba(255,255,255,.93);
+  backdrop-filter:blur(10px);border-top:1px solid var(--border);padding:14px 16px calc(14px + env(safe-area-inset-bottom));}
+.navbar .row{max-width:680px;margin:0 auto;display:flex;gap:12px;align-items:center;}
+.btn{font-family:inherit;font-weight:700;font-size:16px;border:none;border-radius:14px;padding:15px 22px;cursor:pointer;transition:.15s;}
+.btn-next{flex:1;background:var(--navy);color:#fff;box-shadow:0 6px 18px rgba(41,34,92,.28);}
+.btn-next:hover{background:var(--navy-dark);}
+.btn-next:disabled{opacity:.55;cursor:default;box-shadow:none;}
+.btn-back{background:transparent;color:var(--muted);padding:15px 8px;}
+
+.hero{text-align:center;padding:16px 8px 6px;}
+.hero img{width:min(210px,58%);height:auto;margin:6px auto 18px;display:block;}
+.hero h1{font-size:27px;font-weight:800;margin:0 0 10px;letter-spacing:-.01em;}
+.hero p{font-size:15.5px;color:var(--muted);line-height:1.6;margin:0 auto 8px;max-width:460px;}
+.chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:18px 0 4px;}
+.chip{background:#fff;border:1px solid var(--border);border-radius:999px;padding:8px 14px;font-size:13px;font-weight:600;color:var(--navy);box-shadow:var(--shadow-sm);}
+.done-emoji{font-size:64px;line-height:1;margin-bottom:8px;}
+.checklist{text-align:left;max-width:400px;margin:20px auto 0;}
+.checklist div{display:flex;gap:10px;align-items:flex-start;font-size:14.5px;margin-bottom:9px;}
+canvas#confetti{position:fixed;inset:0;pointer-events:none;z-index:50;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="row">
+    <img src="/logo.png" alt="Spectrum Squad" />
+    <div class="progress-wrap">
+      <p class="progress-label" id="progressLabel">Let's begin</p>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    </div>
+    <span class="saved" id="savedTag">Saved ✓</span>
+  </div>
+</div>
+
+<canvas id="confetti"></canvas>
+
+<form id="packet" autocomplete="on">
+<div class="stage">
+
+  <!-- ============================ WELCOME ============================ -->
+  <section class="step active" data-name="welcome" data-section="intro">
+    <div class="card hero">
+      <img src="/logo.png" alt="Spectrum Squad" />
+      <h1 id="welcomeTitle">Let's make it official!</h1>
+      <p>This is the Spectrum Squad application and onboarding packet. It's the same paperwork you'd get on a clipboard — just friendlier, and it remembers where you left off.</p>
+      <p>Two of the forms are government forms that have to stay exactly as they are, so you'll download, print and sign those by hand. Everything else you can do right here.</p>
+      <div class="chips">
+        <span class="chip">~20 minutes</span>
+        <span class="chip">Phone-friendly</span>
+        <span class="chip">Saves as you go</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 1. ABOUT YOU ======================= -->
+  <section class="step" data-name="about" data-section="application">
+    <div class="card">
+      <span class="eyebrow">Employment application</span>
+      <h1 class="q-title">First, who are you?</h1>
+      <p class="q-sub">Please use your full legal name — it has to match your ID.</p>
+
+      <div class="two">
+        <div class="field"><label class="lbl">Last name</label><input type="text" name="name_last" /></div>
+        <div class="field"><label class="lbl">First name</label><input type="text" name="name_first" /></div>
+      </div>
+      <div class="field"><label class="lbl">Middle name <span class="opt-tag">(if you have one)</span></label><input type="text" name="name_middle" /></div>
+      <div class="two">
+        <div class="field"><label class="lbl">Business / mobile telephone</label><input type="tel" name="phone_mobile" placeholder="(702) 000-0000" /></div>
+        <div class="field"><label class="lbl">Home telephone <span class="opt-tag">(optional)</span></label><input type="tel" name="phone_home" placeholder="(702) 000-0000" /></div>
+      </div>
+      <div class="field"><label class="lbl">Email address</label><input type="email" name="email" placeholder="you@email.com" /></div>
+      <div class="field"><label class="lbl">Present address</label><input type="text" name="present_address" placeholder="Number, street, city, state, ZIP" /></div>
+      <div class="field">
+        <label class="lbl">Permanent address <span class="opt-tag">(only if it's different)</span></label>
+        <input type="text" name="permanent_address" placeholder="Leave blank if it's the same as above" />
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 2. THE ROLE ======================== -->
+  <section class="step" data-name="desired" data-section="application">
+    <div class="card">
+      <span class="eyebrow">Employment desired</span>
+      <h1 class="q-title">What are you looking for?</h1>
+      <p class="q-sub">Tell us the role and the hours that would actually work for your life.</p>
+
+      <div class="field"><label class="lbl">Position applying for</label><input type="text" name="position_applying_for" placeholder="e.g. Registered Behavior Technician" /></div>
+      <div class="field"><label class="lbl">Referral source <span class="opt-tag">how did you hear about us?</span></label><input type="text" name="referral_source" placeholder="e.g. Indeed, a friend, our website" /></div>
+
+      <div class="field">
+        <label class="lbl">Are you applying for…</label>
+        <div class="yesno"><span class="qtext">Regular full-time work?</span><div class="pair">
+          <label><input type="radio" name="want_full_time" value="Yes">Yes</label>
+          <label><input type="radio" name="want_full_time" value="No">No</label></div></div>
+        <div class="yesno"><span class="qtext">Regular part-time work?</span><div class="pair">
+          <label><input type="radio" name="want_part_time" value="Yes">Yes</label>
+          <label><input type="radio" name="want_part_time" value="No">No</label></div></div>
+        <div class="yesno"><span class="qtext">Temporary work, e.g. summer or holiday work?</span><div class="pair">
+          <label><input type="radio" name="want_temporary" value="Yes">Yes</label>
+          <label><input type="radio" name="want_temporary" value="No">No</label></div></div>
+      </div>
+
+      <div class="field"><label class="lbl">What days and hours are you available for work?</label><textarea name="days_hours_available" placeholder="e.g. Mon–Fri after 3pm, all day Saturday"></textarea></div>
+
+      <div class="field">
+        <label class="lbl">If applying for temporary work, during what period will you be available? <span class="opt-tag">(skip if not)</span></label>
+        <div class="two">
+          <input type="text" name="temp_available_from" placeholder="From" />
+          <input type="text" name="temp_available_to" placeholder="To" />
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="yesno"><span class="qtext">Are you available for work on nights and weekends?</span><div class="pair">
+          <label><input type="radio" name="available_nights_weekends" value="Yes">Yes</label>
+          <label><input type="radio" name="available_nights_weekends" value="No">No</label></div></div>
+        <div class="yesno"><span class="qtext">Would you be available to work overtime, if necessary?</span><div class="pair">
+          <label><input type="radio" name="available_overtime" value="Yes">Yes</label>
+          <label><input type="radio" name="available_overtime" value="No">No</label></div></div>
+      </div>
+
+      <div class="two">
+        <div class="field"><label class="lbl">If hired, when can you start?</label><input type="text" name="start_date" placeholder="e.g. Immediately, or in 2 weeks" /></div>
+        <div class="field"><label class="lbl">Salary desired</label><input type="text" name="salary_desired" placeholder="e.g. $25/hr or negotiable" /></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 3. PERSONAL ======================== -->
+  <section class="step" data-name="personal" data-section="application">
+    <div class="card">
+      <span class="eyebrow">Personal information</span>
+      <h1 class="q-title">A few quick ones</h1>
+      <p class="q-sub">Nothing tricky here.</p>
+
+      <div class="field">
+        <div class="yesno"><span class="qtext">Have you ever applied to work for Spectrum Squad?</span><div class="pair">
+          <label><input type="radio" name="applied_before" value="Yes">Yes</label>
+          <label><input type="radio" name="applied_before" value="No">No</label></div></div>
+      </div>
+      <div class="field"><label class="lbl">If yes, when? <span class="opt-tag">(roughly is fine)</span></label><input type="text" name="applied_before_when" placeholder="e.g. Spring 2024" /></div>
+
+      <div class="field">
+        <div class="yesno"><span class="qtext">Are you currently employed?</span><div class="pair">
+          <label><input type="radio" name="currently_employed" value="Yes">Yes</label>
+          <label><input type="radio" name="currently_employed" value="No">No</label></div></div>
+        <div class="yesno"><span class="qtext">If so, may we contact your current employer?</span><div class="pair">
+          <label><input type="radio" name="may_contact_current_employer" value="Yes">Yes</label>
+          <label><input type="radio" name="may_contact_current_employer" value="No">No</label></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 4. EDUCATION ======================= -->
+  <section class="step" data-name="education" data-section="application">
+    <div class="card">
+      <span class="eyebrow">Education</span>
+      <h1 class="q-title">Where did you study?</h1>
+      <p class="q-sub">Fill in what applies — leave the rest blank.</p>
+
+      <div class="edu">
+        <table>
+          <thead><tr><th>School</th><th>Name and address</th><th>Years</th><th>Graduated?</th><th>Degree / diploma</th></tr></thead>
+          <tbody>
+            <tr><td class="rowlabel">Junior high</td>
+              <td><input type="text" name="edu_junior_high_name" aria-label="Junior high - name and address" /></td>
+              <td><input type="text" name="edu_junior_high_years" aria-label="Junior high - years completed" /></td>
+              <td><input type="text" name="edu_junior_high_graduated" aria-label="Junior high - did you graduate?" placeholder="Yes / No" /></td>
+              <td><input type="text" name="edu_junior_high_degree" aria-label="Junior high - degree or diploma" /></td></tr>
+            <tr><td class="rowlabel">High school</td>
+              <td><input type="text" name="edu_high_school_name" aria-label="High school - name and address" /></td>
+              <td><input type="text" name="edu_high_school_years" aria-label="High school - years completed" /></td>
+              <td><input type="text" name="edu_high_school_graduated" aria-label="High school - did you graduate?" placeholder="Yes / No" /></td>
+              <td><input type="text" name="edu_high_school_degree" aria-label="High school - degree or diploma" /></td></tr>
+            <tr><td class="rowlabel">College / university</td>
+              <td><input type="text" name="edu_college_name" aria-label="College / university - name and address" /></td>
+              <td><input type="text" name="edu_college_years" aria-label="College / university - years completed" /></td>
+              <td><input type="text" name="edu_college_graduated" aria-label="College / university - did you graduate?" placeholder="Yes / No" /></td>
+              <td><input type="text" name="edu_college_degree" aria-label="College / university - degree or diploma" /></td></tr>
+            <tr><td class="rowlabel">Vocational / business</td>
+              <td><input type="text" name="edu_vocational_name" aria-label="Vocational / business - name and address" /></td>
+              <td><input type="text" name="edu_vocational_years" aria-label="Vocational / business - years completed" /></td>
+              <td><input type="text" name="edu_vocational_graduated" aria-label="Vocational / business - did you graduate?" placeholder="Yes / No" /></td>
+              <td><input type="text" name="edu_vocational_degree" aria-label="Vocational / business - degree or diploma" /></td></tr>
+            <tr><td class="rowlabel">Other</td>
+              <td><input type="text" name="edu_other_name" aria-label="Other - name and address" /></td>
+              <td><input type="text" name="edu_other_years" aria-label="Other - years completed" /></td>
+              <td><input type="text" name="edu_other_graduated" aria-label="Other - did you graduate?" placeholder="Yes / No" /></td>
+              <td><input type="text" name="edu_other_degree" aria-label="Other - degree or diploma" /></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="field">
+        <div class="yesno"><span class="qtext">Some of the families we serve do not speak English. Do you speak, write or understand any other languages?</span><div class="pair">
+          <label><input type="radio" name="other_languages" value="Yes">Yes</label>
+          <label><input type="radio" name="other_languages" value="No">No</label></div></div>
+      </div>
+      <div class="field"><label class="lbl">If yes, which language(s)?</label><input type="text" name="languages_spoken" placeholder="e.g. Spanish, Tagalog" /></div>
+      <div class="field"><label class="lbl">Any other experience, training, qualifications or skills that make you especially suited to work for Spectrum Squad?</label><textarea name="other_qualifications" placeholder="Tell us what you're proud of"></textarea></div>
+    </div>
+  </section>
+
+  <!-- ============================ 5. WORK HISTORY ==================== -->
+  <section class="step" data-name="history" data-section="application">
+    <div class="card">
+      <span class="eyebrow">Employment history</span>
+      <h1 class="q-title">Where have you worked?</h1>
+      <p class="q-sub">Start with your most recent employer. The last ten years is plenty. Please fill this in even if you're sending a resume — it's the part we're required to keep.</p>
+
+      <div class="block" id="employer1">
+        <h4>Most recent employer</h4>
+        <div class="field"><label class="lbl">Name of employer</label><input type="text" name="employer1_name" /></div>
+        <div class="field"><label class="lbl">Address</label><input type="text" name="employer1_address" /></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Type of business</label><input type="text" name="employer1_business_type" /></div>
+          <div class="field"><label class="lbl">Telephone</label><input type="tel" name="employer1_phone" /></div>
+        </div>
+        <div class="field"><label class="lbl">Your supervisor's name</label><input type="text" name="employer1_supervisor" /></div>
+        <div class="field"><label class="lbl">Your position and duties</label><textarea name="employer1_position_duties"></textarea></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Dates of employment — from</label><input type="text" name="employer1_from" placeholder="e.g. Mar 2023" /></div>
+          <div class="field"><label class="lbl">Dates of employment — to</label><input type="text" name="employer1_to" placeholder="e.g. Present" /></div>
+        </div>
+        <div class="two">
+          <div class="field"><label class="lbl">Starting pay</label><input type="text" name="employer1_starting_pay" /></div>
+          <div class="field"><label class="lbl">Ending pay</label><input type="text" name="employer1_ending_pay" /></div>
+        </div>
+        <div class="yesno"><span class="qtext">May we contact this employer?</span><div class="pair">
+          <label><input type="radio" name="employer1_may_contact" value="Yes">Yes</label>
+          <label><input type="radio" name="employer1_may_contact" value="No">No</label></div></div>
+        <div class="field"><label class="lbl">Reason for leaving</label><input type="text" name="employer1_reason_leaving" /></div>
+      </div>
+      <div class="block" id="employer2" hidden>
+        <h4>Employer 2</h4>
+        <div class="field"><label class="lbl">Name of employer</label><input type="text" name="employer2_name" /></div>
+        <div class="field"><label class="lbl">Address</label><input type="text" name="employer2_address" /></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Type of business</label><input type="text" name="employer2_business_type" /></div>
+          <div class="field"><label class="lbl">Telephone</label><input type="tel" name="employer2_phone" /></div>
+        </div>
+        <div class="field"><label class="lbl">Your supervisor's name</label><input type="text" name="employer2_supervisor" /></div>
+        <div class="field"><label class="lbl">Your position and duties</label><textarea name="employer2_position_duties"></textarea></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Dates of employment — from</label><input type="text" name="employer2_from" placeholder="e.g. Mar 2023" /></div>
+          <div class="field"><label class="lbl">Dates of employment — to</label><input type="text" name="employer2_to" placeholder="e.g. Present" /></div>
+        </div>
+        <div class="two">
+          <div class="field"><label class="lbl">Starting pay</label><input type="text" name="employer2_starting_pay" /></div>
+          <div class="field"><label class="lbl">Ending pay</label><input type="text" name="employer2_ending_pay" /></div>
+        </div>
+        <div class="yesno"><span class="qtext">May we contact this employer?</span><div class="pair">
+          <label><input type="radio" name="employer2_may_contact" value="Yes">Yes</label>
+          <label><input type="radio" name="employer2_may_contact" value="No">No</label></div></div>
+        <div class="field"><label class="lbl">Reason for leaving</label><input type="text" name="employer2_reason_leaving" /></div>
+      </div>
+      <div class="block" id="employer3" hidden>
+        <h4>Employer 3</h4>
+        <div class="field"><label class="lbl">Name of employer</label><input type="text" name="employer3_name" /></div>
+        <div class="field"><label class="lbl">Address</label><input type="text" name="employer3_address" /></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Type of business</label><input type="text" name="employer3_business_type" /></div>
+          <div class="field"><label class="lbl">Telephone</label><input type="tel" name="employer3_phone" /></div>
+        </div>
+        <div class="field"><label class="lbl">Your supervisor's name</label><input type="text" name="employer3_supervisor" /></div>
+        <div class="field"><label class="lbl">Your position and duties</label><textarea name="employer3_position_duties"></textarea></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Dates of employment — from</label><input type="text" name="employer3_from" placeholder="e.g. Mar 2023" /></div>
+          <div class="field"><label class="lbl">Dates of employment — to</label><input type="text" name="employer3_to" placeholder="e.g. Present" /></div>
+        </div>
+        <div class="two">
+          <div class="field"><label class="lbl">Starting pay</label><input type="text" name="employer3_starting_pay" /></div>
+          <div class="field"><label class="lbl">Ending pay</label><input type="text" name="employer3_ending_pay" /></div>
+        </div>
+        <div class="yesno"><span class="qtext">May we contact this employer?</span><div class="pair">
+          <label><input type="radio" name="employer3_may_contact" value="Yes">Yes</label>
+          <label><input type="radio" name="employer3_may_contact" value="No">No</label></div></div>
+        <div class="field"><label class="lbl">Reason for leaving</label><input type="text" name="employer3_reason_leaving" /></div>
+      </div>
+      <div class="block" id="employer4" hidden>
+        <h4>Employer 4</h4>
+        <div class="field"><label class="lbl">Name of employer</label><input type="text" name="employer4_name" /></div>
+        <div class="field"><label class="lbl">Address</label><input type="text" name="employer4_address" /></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Type of business</label><input type="text" name="employer4_business_type" /></div>
+          <div class="field"><label class="lbl">Telephone</label><input type="tel" name="employer4_phone" /></div>
+        </div>
+        <div class="field"><label class="lbl">Your supervisor's name</label><input type="text" name="employer4_supervisor" /></div>
+        <div class="field"><label class="lbl">Your position and duties</label><textarea name="employer4_position_duties"></textarea></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Dates of employment — from</label><input type="text" name="employer4_from" placeholder="e.g. Mar 2023" /></div>
+          <div class="field"><label class="lbl">Dates of employment — to</label><input type="text" name="employer4_to" placeholder="e.g. Present" /></div>
+        </div>
+        <div class="two">
+          <div class="field"><label class="lbl">Starting pay</label><input type="text" name="employer4_starting_pay" /></div>
+          <div class="field"><label class="lbl">Ending pay</label><input type="text" name="employer4_ending_pay" /></div>
+        </div>
+        <div class="yesno"><span class="qtext">May we contact this employer?</span><div class="pair">
+          <label><input type="radio" name="employer4_may_contact" value="Yes">Yes</label>
+          <label><input type="radio" name="employer4_may_contact" value="No">No</label></div></div>
+        <div class="field"><label class="lbl">Reason for leaving</label><input type="text" name="employer4_reason_leaving" /></div>
+      </div>
+      <button type="button" class="addmore" id="addEmployer">+ Add another employer</button>
+    </div>
+
+    <div class="card">
+      <div class="field">
+        <div class="yesno"><span class="qtext">Have you ever been terminated or asked to resign a job?</span><div class="pair">
+          <label><input type="radio" name="ever_terminated" value="Yes">Yes</label>
+          <label><input type="radio" name="ever_terminated" value="No">No</label></div></div>
+      </div>
+      <div class="field"><label class="lbl">If yes, please explain</label><textarea name="ever_terminated_explain"></textarea></div>
+    </div>
+
+    <div class="card">
+      <span class="eyebrow">Gaps</span>
+      <h1 class="q-title">Any periods of unemployment?</h1>
+      <p class="q-sub">Please identify and explain all periods of unemployment over the past ten years. Life happens — this is just for the record.</p>
+      <div class="block" id="gap1">
+        <h4>Period 1</h4>
+        <div class="two">
+          <div class="field"><label class="lbl">From</label><input type="text" name="gap1_from" placeholder="e.g. Jun 2021" /></div>
+          <div class="field"><label class="lbl">To</label><input type="text" name="gap1_to" placeholder="e.g. Sep 2021" /></div>
+        </div>
+        <div class="field"><label class="lbl">Reason</label><input type="text" name="gap1_reason" /></div>
+      </div>
+      <div class="block" id="gap2">
+        <h4>Period 2</h4>
+        <div class="two">
+          <div class="field"><label class="lbl">From</label><input type="text" name="gap2_from" placeholder="e.g. Jun 2021" /></div>
+          <div class="field"><label class="lbl">To</label><input type="text" name="gap2_to" placeholder="e.g. Sep 2021" /></div>
+        </div>
+        <div class="field"><label class="lbl">Reason</label><input type="text" name="gap2_reason" /></div>
+      </div>
+      <div class="block" id="gap3" hidden>
+        <h4>Period 3</h4>
+        <div class="two">
+          <div class="field"><label class="lbl">From</label><input type="text" name="gap3_from" placeholder="e.g. Jun 2021" /></div>
+          <div class="field"><label class="lbl">To</label><input type="text" name="gap3_to" placeholder="e.g. Sep 2021" /></div>
+        </div>
+        <div class="field"><label class="lbl">Reason</label><input type="text" name="gap3_reason" /></div>
+      </div>
+      <div class="block" id="gap4" hidden>
+        <h4>Period 4</h4>
+        <div class="two">
+          <div class="field"><label class="lbl">From</label><input type="text" name="gap4_from" placeholder="e.g. Jun 2021" /></div>
+          <div class="field"><label class="lbl">To</label><input type="text" name="gap4_to" placeholder="e.g. Sep 2021" /></div>
+        </div>
+        <div class="field"><label class="lbl">Reason</label><input type="text" name="gap4_reason" /></div>
+      </div>
+      <button type="button" class="addmore" id="addGap">+ Add another period</button>
+    </div>
+  </section>
+
+  <!-- ============================ 6. MILITARY + REFS ================= -->
+  <section class="step" data-name="references" data-section="application">
+    <div class="card">
+      <span class="eyebrow">Military service</span>
+      <h1 class="q-title">Did you serve?</h1>
+      <div class="field">
+        <div class="yesno"><span class="qtext">Have you obtained any special skills or abilities as the result of service in the military?</span><div class="pair">
+          <label><input type="radio" name="military_skills" value="Yes">Yes</label>
+          <label><input type="radio" name="military_skills" value="No">No</label></div></div>
+      </div>
+      <div class="field"><label class="lbl">If so, please describe</label><textarea name="military_skills_describe"></textarea></div>
+    </div>
+
+    <div class="card">
+      <span class="eyebrow">References</span>
+      <h1 class="q-title">Three people who know your work</h1>
+      <p class="q-sub">Not related to you, and people who have known your work in the last three years.</p>
+      <div class="block">
+        <h4>Reference 1</h4>
+        <div class="two">
+          <div class="field"><label class="lbl">Name</label><input type="text" name="ref1_name" /></div>
+          <div class="field"><label class="lbl">Occupation</label><input type="text" name="ref1_occupation" /></div>
+        </div>
+        <div class="field"><label class="lbl">Address</label><input type="text" name="ref1_address" /></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Telephone</label><input type="tel" name="ref1_phone" /></div>
+          <div class="field"><label class="lbl">Number of years acquainted</label><input type="text" name="ref1_years_acquainted" /></div>
+        </div>
+      </div>
+      <div class="block">
+        <h4>Reference 2</h4>
+        <div class="two">
+          <div class="field"><label class="lbl">Name</label><input type="text" name="ref2_name" /></div>
+          <div class="field"><label class="lbl">Occupation</label><input type="text" name="ref2_occupation" /></div>
+        </div>
+        <div class="field"><label class="lbl">Address</label><input type="text" name="ref2_address" /></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Telephone</label><input type="tel" name="ref2_phone" /></div>
+          <div class="field"><label class="lbl">Number of years acquainted</label><input type="text" name="ref2_years_acquainted" /></div>
+        </div>
+      </div>
+      <div class="block">
+        <h4>Reference 3</h4>
+        <div class="two">
+          <div class="field"><label class="lbl">Name</label><input type="text" name="ref3_name" /></div>
+          <div class="field"><label class="lbl">Occupation</label><input type="text" name="ref3_occupation" /></div>
+        </div>
+        <div class="field"><label class="lbl">Address</label><input type="text" name="ref3_address" /></div>
+        <div class="two">
+          <div class="field"><label class="lbl">Telephone</label><input type="tel" name="ref3_phone" /></div>
+          <div class="field"><label class="lbl">Number of years acquainted</label><input type="text" name="ref3_years_acquainted" /></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 7. ACKNOWLEDGEMENT ================= -->
+  <!-- The eight clauses below are the updated acknowledgement page's own words.
+       The packet also carries the older Rev. 08/07 acknowledgement page it
+       supersedes; the only clause on that page which is not on this one is the
+       pre-employment drug test, and leadership has decided not to carry it
+       forward, so it is not here.
+       Obvious typographical slips in the source ("futher", "falsif ication")
+       are spelled correctly here; no wording is otherwise changed. -->
+  <section class="step" data-name="acknowledgement" data-section="acknowledgement">
+    <div class="card">
+      <span class="eyebrow">Acknowledgement</span>
+      <h1 class="q-title">Read each one, then tap to initial</h1>
+      <p class="q-sub">Same as initialling a paper form — tap the box and we'll put your initials in it. Please actually read them; they matter.</p>
+
+      <div class="field">
+        <label class="lbl">Your full legal name</label>
+        <input type="text" name="ack_full_name" id="ackName" placeholder="As it appears on your ID" />
+      </div>
+
+      <div id="clauses">
+        <div class="clause" data-clause="true_and_correct">
+          <div class="box">—</div>
+          <div class="ctext">I hereby certify that the information contained in this application is true and correct to the best of my knowledge.<span class="hint">Tap to initial</span></div>
+        </div>
+        <div class="clause" data-clause="personally_completed">
+          <div class="box">—</div>
+          <div class="ctext">I further certify that I, the undersigned applicant, have personally completed this application. I understand that any misrepresentation, falsification or omission of information on this application or any document used to secure employment shall be grounds for rejection of this application or immediate discharge if I am employed, regardless of the time elapsed before discovery.<span class="hint">Tap to initial</span></div>
+        </div>
+        <div class="clause" data-clause="authorize_investigation">
+          <div class="box">—</div>
+          <div class="ctext">I hereby authorize the Company to thoroughly investigate the information on my application, my references, work record, education and other matters related to my suitability for employment and, further, authorize the references I have listed to disclose to the Company all letters, reports, and other information related to my work records, without giving me prior notice of such disclosure. In addition, I hereby release the Company, my former employers and all other persons or entities from any and all claims, demands or liabilities arising out of or in any way related to such investigation or disclosures.<span class="hint">Tap to initial</span></div>
+        </div>
+        <div class="clause" data-clause="at_will_company">
+          <div class="box">—</div>
+          <div class="ctext">The Company adheres to a policy of AT-WILL employment which means that each employee and the Company each retain the right to terminate the employment relationship and that the Company retains the right to modify an employee's position or compensation at any time, with or without cause or notice. No one other than the President has the authority to make any binding promise or enter into any agreement inconsistent with Company's at-will policy and any such agreement must be in writing and signed by both the employee and the President of the Company to be effective.<span class="hint">Tap to initial</span></div>
+        </div>
+        <div class="clause" data-clause="variable_hours">
+          <div class="box">—</div>
+          <div class="ctext">I understand and acknowledge that this position offers variable hours based on client needs and is not guaranteed to provide full-time or consistent weekly hours. I am applying for a role that is client-dependent, and as such, hours may fluctuate or be reassigned with or without notice.<span class="hint">Tap to initial</span></div>
+        </div>
+        <div class="clause" data-clause="as_needed_basis">
+          <div class="box">—</div>
+          <div class="ctext">I understand that I may be hired on an as-needed basis, and that my continued employment is subject to the availability of clients, funding sources, and my adherence to Spectrum Squad's performance expectations.<span class="hint">Tap to initial</span></div>
+        </div>
+        <div class="clause" data-clause="at_will_employee">
+          <div class="box">—</div>
+          <div class="ctext">I understand that employment with Spectrum Squad LLC is at-will, meaning that either I or the company may terminate the employment relationship at any time, with or without cause or advance notice.<span class="hint">Tap to initial</span></div>
+        </div>
+        <div class="clause" data-clause="no_promises">
+          <div class="box">—</div>
+          <div class="ctext">I acknowledge that no promises have been made to me regarding a set number of hours, long-term employment, or job security. I understand this application and any discussions do not create an employment contract.<span class="hint">Tap to initial</span></div>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:20px;">
+        <label class="lbl">Applicant's signature</label>
+        <canvas class="pad" data-pad="acknowledgement"></canvas>
+        <div class="padrow"><button type="button" class="linkbtn" data-clear="acknowledgement">Clear</button><span class="hint">Sign with your finger or your mouse.</span></div>
+      </div>
+      <p class="hint" id="ackDate"></p>
+      <div class="err" data-err="acknowledgement"></div>
+    </div>
+  </section>
+
+  <!-- ============================ 8. MANDATORY REPORTING ============= -->
+  <section class="step" data-name="reporting" data-section="mandatory_reporting">
+    <div class="card">
+      <span class="eyebrow">Mandatory Reporting Acknowledgment</span>
+      <h1 class="q-title">You are a mandatory reporter</h1>
+      <p class="q-sub">This one is law, not policy. Please read it all the way to the bottom — the button unlocks when you do.</p>
+
+      <div class="policy" data-read="reporting">
+        <h3>Purpose</h3>
+        <p>The purpose of this form is to ensure all staff understand their legal and ethical obligations as mandatory reporters when working with children and families within Spectrum Squad ABA. Protecting the safety and well-being of our clients is a core responsibility of every employee.</p>
+
+        <h3>1. Mandatory Reporting Requirements</h3>
+        <p>As an employee of Spectrum Squad ABA, I understand that:</p>
+        <ul>
+          <li>I am considered a Mandatory Reporter under Nevada law (NRS 432B).</li>
+          <li>I am legally required to report any suspected abuse, neglect, exploitation, or imminent risk of harm involving any child receiving services with Spectrum Squad.</li>
+          <li>A report must be made as soon as practically possible, but no later than 24 hours from when suspicion arises.</li>
+          <li>Reports must be made to the appropriate agency: Child Protective Services (CPS), or local law enforcement if immediate danger is suspected.</li>
+        </ul>
+
+        <h3>2. What Must Be Reported</h3>
+        <p>I understand that I must report suspected:</p>
+        <ul>
+          <li>Physical abuse</li>
+          <li>Sexual abuse or sexual exploitation</li>
+          <li>Emotional or verbal abuse</li>
+          <li>Neglect (including lack of supervision, medical neglect, unsafe home conditions, etc.)</li>
+          <li>Exposure to domestic violence</li>
+          <li>Human trafficking indicators</li>
+          <li>Any observable signs that place a child at risk of serious harm</li>
+        </ul>
+
+        <h3>3. How to Make a Report</h3>
+        <p>I understand that:</p>
+        <ul>
+          <li>I must immediately notify the Clinical Director or Program Director (Lexie or Quiana) once a concern has been identified.</li>
+          <li>I must complete a written incident report within the same day.</li>
+          <li>I may be required to call CPS directly and provide factual, objective information.</li>
+          <li>Internal discussions do not replace the legal requirement to report.</li>
+          <li>Failure to report may result in legal consequences, including misdemeanor charges, fines, and potential loss of professional certification.</li>
+        </ul>
+
+        <h3>4. Confidentiality</h3>
+        <p>I understand that:</p>
+        <ul>
+          <li>Reports are confidential, and I am not to discuss allegations with anyone outside the reporting chain.</li>
+          <li>I am protected from retaliation when reporting in good faith.</li>
+          <li>I may not share details of reports with other staff, parents, or clients.</li>
+        </ul>
+
+        <h3>5. Spectrum Squad Policy</h3>
+        <p>I acknowledge that Spectrum Squad ABA:</p>
+        <ul>
+          <li>Requires all staff to uphold mandatory reporting laws.</li>
+          <li>Will provide support and guidance when a report is required.</li>
+          <li>Will document all concerns, reports, and follow-up actions.</li>
+          <li>May take disciplinary action for failure to report, including termination.</li>
+        </ul>
+
+        <h3>6. Staff Acknowledgment</h3>
+        <p>By signing below, I acknowledge that:</p>
+        <ul>
+          <li>I have read and understand the Mandatory Reporting requirements.</li>
+          <li>I agree to comply with Nevada law and Spectrum Squad policies.</li>
+          <li>I understand the legal consequences of failing to report.</li>
+          <li>I had the opportunity to ask questions about reporting procedures.</li>
+          <li>I understand that this acknowledgment will be placed in my employee file.</li>
+        </ul>
+      </div>
+      <p class="readmark" data-readmark="reporting">Keep scrolling to the end ↓</p>
+
+      <div class="field" style="margin-top:16px;">
+        <label class="lbl">Staff name</label>
+        <input type="text" name="reporting_full_name" placeholder="Your full name" />
+      </div>
+      <div class="field">
+        <label class="lbl">Your signature</label>
+        <canvas class="pad" data-pad="mandatory_reporting"></canvas>
+        <div class="padrow"><button type="button" class="linkbtn" data-clear="mandatory_reporting">Clear</button><span class="hint">Date of signature is recorded automatically.</span></div>
+      </div>
+      <div class="err" data-err="mandatory_reporting"></div>
+    </div>
+  </section>
+
+  <!-- ============================ 9. RBT CE POLICY =================== -->
+  <section class="step" data-name="ce" data-section="rbt_ce_policy">
+    <div class="card">
+      <span class="eyebrow">RBT Continuing Education Policy</span>
+      <h1 class="q-title">Twelve PDUs a year</h1>
+      <p class="q-sub">Effective 01.01.2026. Applies to all Registered Behavior Technicians employed by Spectrum Squad.</p>
+
+      <div class="policy" data-read="ce">
+        <h3>Purpose</h3>
+        <p>Spectrum Squad is committed to providing high-quality, ethical, and evidence-based services to the individuals and families we serve. Ongoing professional development ensures that Registered Behavior Technicians maintain clinical competency and remain in compliance with the Behavior Analyst Certification Board (BACB) requirements.</p>
+        <p>This policy outlines the continuing education expectations necessary for maintaining active RBT certification.</p>
+
+        <h3>Annual Professional Development Requirement</h3>
+        <p>All RBTs are required to complete a minimum of twelve (12) Professional Development Units (PDUs) per certification cycle (annually), in accordance with BACB certification maintenance requirements. If your renewal occurs right when the new requirement begins, the 12 PDUs will apply to your next renewal cycle, not the one already in progress.</p>
+        <p>PDUs must:</p>
+        <ul>
+          <li>Be behavior-analytic in nature</li>
+          <li>Be relevant to the RBT Task List, Ethics Code, or direct service delivery</li>
+          <li>Be obtained through BACB-compliant training sources</li>
+        </ul>
+
+        <h3>Responsibility for Certification Maintenance</h3>
+        <p>RBTs are individually responsible for:</p>
+        <ul>
+          <li>Maintaining an active RBT credential at all times</li>
+          <li>Tracking their certification renewal date</li>
+          <li>Completing all required PDUs prior to their renewal deadline</li>
+          <li>Submitting documentation to Spectrum Squad by the required internal deadline</li>
+        </ul>
+        <p>RBTs may not provide services if their certification has expired.</p>
+
+        <h3>Documentation Requirements</h3>
+        <p>Proof of completed PDUs must be submitted to the Program Director no later than thirty (30) days prior to the RBT's certification renewal date.</p>
+        <p>Documentation must include:</p>
+        <ul>
+          <li>RBT name</li>
+          <li>Title of training</li>
+          <li>Number of PDUs earned</li>
+          <li>Date of completion</li>
+          <li>Name of training provider</li>
+        </ul>
+        <p>Spectrum Squad reserves the right to verify the validity of all submitted continuing education.</p>
+
+        <h3>Approved Professional Development Activities</h3>
+        <p>Acceptable PDUs include, but are not limited to:</p>
+        <ul>
+          <li>Spectrum Squad in-service and clinical trainings</li>
+          <li>BACB-compliant online or in-person trainings</li>
+          <li>Workshops and conferences</li>
+          <li>Assigned competency-based training modules</li>
+          <li>Supervision-related training activities</li>
+        </ul>
+        <p>All activities must meet BACB standards.</p>
+
+        <h3>Company-Sponsored Training</h3>
+        <p>Spectrum Squad may provide:</p>
+        <ul>
+          <li>Ongoing in-house training opportunities</li>
+          <li>Group continuing education events</li>
+          <li>Access to no-cost or low-cost professional development resources</li>
+        </ul>
+        <p>Participation in required company trainings may count toward the annual PDU requirement.</p>
+
+        <h3>Failure to Meet Requirements</h3>
+        <p>Failure to maintain an active RBT certification due to incomplete PDUs will result in:</p>
+        <ul>
+          <li>Immediate removal from the clinical schedule</li>
+          <li>Inability to provide direct services</li>
+          <li>Unpaid administrative leave until certification is reinstated</li>
+        </ul>
+        <p>Continued non-compliance may result in disciplinary action, up to and including termination of employment.</p>
+
+        <h3>Commitment to Professional Growth</h3>
+        <p>Spectrum Squad is dedicated to developing highly skilled clinicians and will support staff through structured training, mentorship, and professional advancement opportunities. Professional development is considered an essential component of clinical excellence and quality client care.</p>
+      </div>
+      <p class="readmark" data-readmark="ce">Keep scrolling to the end ↓</p>
+
+      <div class="field" style="margin-top:16px;">
+        <label class="lbl">Employee full name</label>
+        <input type="text" name="ce_full_name" placeholder="Your full name" />
+      </div>
+      <div class="field">
+        <label class="lbl">Employee signature</label>
+        <canvas class="pad" data-pad="rbt_ce_policy"></canvas>
+        <div class="padrow"><button type="button" class="linkbtn" data-clear="rbt_ce_policy">Clear</button><span class="hint">"Received on" is recorded automatically.</span></div>
+      </div>
+      <div class="err" data-err="rbt_ce_policy"></div>
+    </div>
+  </section>
+
+  <!-- ============================ 10. FORM 8850 ====================== -->
+  <!-- Downloaded, signed and sent back as-is. The CRM never pre-fills or
+       re-typesets a government form; what you hand in is what the IRS
+       published. -->
+  <section class="step" data-name="form8850" data-section="form_8850">
+    <div class="card">
+      <span class="eyebrow">IRS Form 8850</span>
+      <h1 class="q-title">One form we can't redraw</h1>
+      <p class="q-sub">This is the federal Work Opportunity Credit pre-screening form. It has to stay exactly as the IRS published it, so this step is download, fill in, sign, photograph, send back.</p>
+
+      <button type="button" class="docbtn" data-download="form_8850"><span class="ic">⬇️</span><span>Download Form 8850 (2 pages)</span></button>
+
+      <ol class="steps-list">
+        <li>Open the PDF and complete <strong>page 1 only</strong> — your name, social security number, address, and the boxes that apply to you.</li>
+        <li>Page 2 is ours. Leave it alone; we fill that in.</li>
+        <li>Sign and date the bottom of page 1.</li>
+        <li>Photograph or scan the signed page and send it back below.</li>
+      </ol>
+
+      <div class="pill-note">
+        <strong>Completing this form is voluntary</strong> — that's the IRS's own wording. It may help Spectrum Squad claim a hiring tax credit, and it does not affect whether you are hired. The form has to reach us <strong>on or before the day you're offered a job</strong>, which is why we're asking now.
+      </div>
+
+      <div class="field" style="margin-top:18px;">
+        <button type="button" class="docbtn ghost" data-upload="form_8850"><span class="ic">📤</span><span>Send back my signed Form 8850</span></button>
+        <div class="uploaded" data-done="form_8850" hidden></div>
+        <input type="file" data-file="form_8850" accept="image/*,.pdf" hidden />
+      </div>
+      <div class="err" data-err="form_8850"></div>
+    </div>
+  </section>
+
+  <!-- ============================ 11. BACKGROUND WAIVER ============== -->
+  <section class="step" data-name="waiver" data-section="background_waiver">
+    <div class="card">
+      <span class="eyebrow">Nevada background waiver</span>
+      <h1 class="q-title">This one needs a real pen</h1>
+      <p class="q-sub">The Civil Name Check waiver is what lets the state run your background check. Nevada will not accept a typed or drawn signature on it, so this one gets printed and signed by hand.</p>
+
+      <button type="button" class="docbtn" data-download="background_waiver"><span class="ic">⬇️</span><span>Download the waiver + instructions</span></button>
+
+      <div class="pill-note pill-stop">
+        <strong>Pen to paper, please.</strong> The State of Nevada accepts no other kind of signature on this form. A photo of a hand-signed page is fine — a digital signature is not, and the form will come back rejected.
+      </div>
+
+      <ol class="steps-list">
+        <li>Print both pages. Page 1 is the instruction sheet; page 2 is the form you fill in.</li>
+        <li>Print legibly in <strong>black or blue ink</strong>.</li>
+        <li>Complete every field marked with an asterisk, and date and initial paragraph 2.</li>
+        <li>Under "Any Other Name Used", give <strong>every</strong> last/first/middle combination you have used, hyphens included. If you've never used another name, leave it blank. If you need more room, print another copy of page 2.</li>
+        <li>Sign it by hand. Leave the "For Official Use Only" box empty — that one is not yours to fill in.</li>
+        <li>Photograph or scan the signed page and send it back below.</li>
+      </ol>
+
+      <div class="field" style="margin-top:18px;">
+        <button type="button" class="docbtn ghost" data-upload="background_waiver"><span class="ic">📤</span><span>Send back my signed waiver</span></button>
+        <div class="uploaded" data-done="background_waiver" hidden></div>
+        <input type="file" data-file="background_waiver" accept="image/*,.pdf" hidden />
+      </div>
+      <div class="err" data-err="background_waiver"></div>
+    </div>
+  </section>
+
+  <!-- ============================ DONE ============================== -->
+  <section class="step" data-name="done" data-section="done">
+    <div class="card hero">
+      <div class="done-emoji">🎉</div>
+      <h1>That's the whole packet.</h1>
+      <p>Thank you — genuinely. That is the least fun part of joining a team and you got through it.</p>
+      <div class="checklist" id="finalChecklist"></div>
+      <p style="margin-top:18px;">Our team has it now. If anything needs a second look we'll email you; otherwise you'll hear from us about next steps.</p>
+    </div>
+  </section>
+
+</div>
+</form>
+
+<div class="navbar">
+  <div class="row">
+    <button type="button" class="btn btn-back" id="backBtn">← Back</button>
+    <button type="button" class="btn btn-next" id="nextBtn">Let's go →</button>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   CONFIG — the CRM rewrites these two lines when it serves the
+   page. Left empty, the packet renders and can be walked through
+   but nothing is sent anywhere, which is what you want locally.
+============================================================ */
+var API_BASE = "";       /* CRM rewrites this to "/api/hire-packet" */
+var PACKET_TOKEN = "";   /* CRM rewrites this to the applicant's token */
+
+var SIGNABLE = ["acknowledgement", "mandatory_reporting", "rbt_ce_policy"];
+var UPLOADABLE = ["form_8850", "background_waiver"];
+var SECTION_LABEL = {
+  application: "Employment application",
+  acknowledgement: "Acknowledgement",
+  mandatory_reporting: "Mandatory Reporting Acknowledgment",
+  rbt_ce_policy: "RBT Continuing Education Policy",
+  form_8850: "IRS Form 8850",
+  background_waiver: "Nevada background waiver"
+};
+
+var form = document.getElementById("packet");
+var backBtn = document.getElementById("backBtn");
+var nextBtn = document.getElementById("nextBtn");
+var fill = document.getElementById("progressFill");
+var plabel = document.getElementById("progressLabel");
+var savedTag = document.getElementById("savedTag");
+var steps = [], i = 0, contentSteps = 0;
+var done = {};          /* section key -> true once the server has it */
+var pads = {};          /* section key -> { canvas, ctx, hasInk } */
+var initials = {};      /* clause key -> the initials that were stamped */
+
+function api(path, opts) {
+  opts = opts || {};
+  if (!API_BASE || !PACKET_TOKEN) return Promise.resolve({ offline: true });
+  var url = API_BASE + path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(PACKET_TOKEN);
+  return fetch(url, {
+    method: opts.method || "GET",
+    headers: opts.body ? { "Content-Type": "application/json" } : undefined,
+    body: opts.body ? JSON.stringify(opts.body) : undefined
+  }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (j) {
+      if (!r.ok) throw new Error(j.error || "Something went wrong. Please try again.");
+      return j;
+    });
+  });
+}
+function showErr(section, msg) {
+  var el = document.querySelector('[data-err="' + section + '"]');
+  if (!el) { alert(msg); return; }
+  el.textContent = msg; el.className = "err show";
+}
+function clearErr(section) {
+  var el = document.querySelector('[data-err="' + section + '"]');
+  if (el) el.className = "err";
+}
+
+/* ---- answers ------------------------------------------------------- */
+function collect() {
+  var out = {};
+  var fd = new FormData(form);
+  fd.forEach(function (v, k) {
+    if (out[k] !== undefined) { if (!Array.isArray(out[k])) out[k] = [out[k]]; out[k].push(v); }
+    else out[k] = v;
+  });
+  return out;
+}
+function prefill(answers) {
+  Object.keys(answers || {}).forEach(function (k) {
+    var els = form.querySelectorAll('[name="' + k + '"]');
+    for (var n = 0; n < els.length; n++) {
+      var el = els[n];
+      if (el.type === "radio" || el.type === "checkbox") { if (el.value === answers[k]) el.checked = true; }
+      else el.value = answers[k];
+    }
+  });
+  /* An employer or gap block with something already in it has to be on
+     screen, or the applicant sees an empty form and types it all again.
+     A radio carries value="Yes" whether or not it is chosen, so "has a value"
+     is not the same question as "was answered". */
+  ["employer2", "employer3", "employer4", "gap3", "gap4"].forEach(function (id) {
+    var box = document.getElementById(id);
+    if (!box) return;
+    var used = false;
+    box.querySelectorAll("input,textarea").forEach(function (el) {
+      if (el.type === "radio" || el.type === "checkbox") { if (el.checked) used = true; }
+      else if (el.value) used = true;
+    });
+    if (used) box.hidden = false;
+  });
+}
+
+var saveTimer = null, lastSaved = "";
+function queueSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 900);
+}
+function saveNow() {
+  var data = collect();
+  var json = JSON.stringify(data);
+  if (json === lastSaved) return Promise.resolve();
+  lastSaved = json;
+  return api("/public/save", { method: "POST", body: { answers: data } })
+    .then(function () {
+      savedTag.className = "saved show";
+      setTimeout(function () { savedTag.className = "saved"; }, 1600);
+    })
+    .catch(function () { /* a failed autosave is not worth interrupting typing for */ });
+}
+form.addEventListener("input", queueSave);
+form.addEventListener("change", queueSave);
+
+/* ---- initials ------------------------------------------------------ */
+function initialsFrom(name) {
+  var parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+function wireClauses() {
+  var nameEl = document.getElementById("ackName");
+  document.querySelectorAll(".clause").forEach(function (row) {
+    row.addEventListener("click", function () {
+      if (row.classList.contains("done")) return;
+      var ini = initialsFrom(nameEl.value);
+      if (!ini) { showErr("acknowledgement", "Please type your full legal name first — that's where the initials come from."); nameEl.focus(); return; }
+      clearErr("acknowledgement");
+      row.querySelector(".box").textContent = ini;
+      row.classList.add("done");
+      initials[row.getAttribute("data-clause")] = ini;
+    });
+  });
+}
+
+/* ---- read-to-the-bottom gate --------------------------------------- */
+/* Not a trick: the acknowledgment says "I have read and understand", and a
+   button that unlocks at the bottom is the closest a screen gets to turning
+   the page over. Short screens where nothing scrolls count as read. */
+function wireReading() {
+  document.querySelectorAll("[data-read]").forEach(function (pane) {
+    pane.addEventListener("scroll", function () { checkRead(pane); });
+  });
+}
+/* A pane on a hidden step measures zero by zero, and zero fits inside zero --
+   so checking at load time would mark every policy read before it had been
+   shown. It is checked when its step comes up, and again as it is scrolled. */
+function checkRead(pane) {
+  if (!pane) return;
+  if (!pane.clientHeight) return;                    /* not on screen yet */
+  var atEnd = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24;
+  if (pane.scrollHeight <= pane.clientHeight + 4) atEnd = true;   /* nothing to scroll */
+  if (!atEnd) return;
+  var key = pane.getAttribute("data-read");
+  var mark = document.querySelector('[data-readmark="' + key + '"]');
+  pane.setAttribute("data-readdone", "yes");
+  if (mark) { mark.textContent = "Read to the end ✓"; mark.className = "readmark done"; }
+  syncNav();
+}
+
+/* ---- signature pads ------------------------------------------------ */
+// A canvas on a hidden step measures 0 x 0, and a 0 x 0 canvas takes no ink
+// and exports a blank image -- so the pad is sized when its step is shown, not
+// when the page loads. sizePad() is idempotent and never wipes a signature
+// that is already on the pad.
+function sizePad(state) {
+  if (!state) return;
+  var canvas = state.canvas;
+  var rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  var ratio = window.devicePixelRatio || 1;
+  var w = Math.round(rect.width * ratio), h = Math.round(rect.height * ratio);
+  if (state.hasInk) return;
+  if (canvas.width === w && canvas.height === h) return;
+  canvas.width = w; canvas.height = h;
+  var ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
+  ctx.scale(ratio, ratio);
+  ctx.strokeStyle = "#1b1440"; ctx.lineWidth = 2.2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  state.ctx = ctx;
+}
+function sizeActivePad() {
+  var canvas = document.querySelector(".step.active canvas.pad");
+  if (canvas) sizePad(pads[canvas.getAttribute("data-pad")]);
+}
+function setupPads() {
+  document.querySelectorAll("canvas.pad").forEach(function (canvas) {
+    var key = canvas.getAttribute("data-pad");
+    var ctx = canvas.getContext("2d");
+    var state = { canvas: canvas, ctx: ctx, hasInk: false, drawing: false };
+    pads[key] = state;
+    sizePad(state);
+    function pos(e) { var r = canvas.getBoundingClientRect(); var t = e.touches ? e.touches[0] : e; return { x: t.clientX - r.left, y: t.clientY - r.top }; }
+    function start(e) { state.drawing = true; var p = pos(e); state.ctx.beginPath(); state.ctx.moveTo(p.x, p.y); e.preventDefault(); }
+    function move(e) { if (!state.drawing) return; var p = pos(e); state.ctx.lineTo(p.x, p.y); state.ctx.stroke(); state.hasInk = true; e.preventDefault(); }
+    function end() { state.drawing = false; syncNav(); }
+    canvas.addEventListener("mousedown", start);
+    canvas.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", end);
+    canvas.addEventListener("touchstart", start, { passive: false });
+    canvas.addEventListener("touchmove", move, { passive: false });
+    canvas.addEventListener("touchend", end);
+  });
+  document.querySelectorAll("[data-clear]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var s = pads[btn.getAttribute("data-clear")];
+      if (!s) return;
+      s.ctx.save(); s.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      s.ctx.fillStyle = "#fff"; s.ctx.fillRect(0, 0, s.canvas.width, s.canvas.height);
+      s.ctx.restore();
+      s.hasInk = false;
+      sizePad(s);          // in case it was first drawn at the wrong size
+      syncNav();
+    });
+  });
+}
+
+/* ---- downloads + uploads ------------------------------------------- */
+function wireDocs() {
+  document.querySelectorAll("[data-download]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var key = btn.getAttribute("data-download");
+      if (!API_BASE || !PACKET_TOKEN) { alert("The download only works from the link we emailed you."); return; }
+      window.location.href = API_BASE + "/public/form?key=" + encodeURIComponent(key) + "&token=" + encodeURIComponent(PACKET_TOKEN);
+    });
+  });
+  document.querySelectorAll("[data-upload]").forEach(function (btn) {
+    var key = btn.getAttribute("data-upload");
+    var input = document.querySelector('[data-file="' + key + '"]');
+    btn.addEventListener("click", function () { input.click(); });
+    input.addEventListener("change", function () {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      clearErr(key);
+      btn.disabled = true;
+      var original = btn.querySelector("span:last-child").textContent;
+      btn.querySelector("span:last-child").textContent = "Sending…";
+      var url = API_BASE + "/public/upload?key=" + encodeURIComponent(key)
+        + "&token=" + encodeURIComponent(PACKET_TOKEN)
+        + "&filename=" + encodeURIComponent(file.name)
+        + "&mime=" + encodeURIComponent(file.type || "application/octet-stream");
+      fetch(url, { method: "POST", body: file })
+        .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.error || "That didn't send."); return j; }); })
+        .then(function () {
+          markUploaded(key, file.name);
+          done[key] = true;
+          syncNav();
+        })
+        .catch(function (e) { showErr(key, e.message); })
+        .then(function () {
+          btn.disabled = false;
+          btn.querySelector("span:last-child").textContent = original;
+          input.value = "";
+        });
+    });
+  });
+}
+function markUploaded(key, filename) {
+  var box = document.querySelector('[data-done="' + key + '"]');
+  if (!box) return;
+  box.hidden = false;
+  box.textContent = "✓ Received" + (filename ? " — " + filename : "");
+}
+
+/* ---- signing a section --------------------------------------------- */
+function signSection(section) {
+  var pad = pads[section];
+  var nameField = { acknowledgement: "ack_full_name", mandatory_reporting: "reporting_full_name", rbt_ce_policy: "ce_full_name" }[section];
+  var typed = (form.elements[nameField] && form.elements[nameField].value || "").trim();
+  // Checked in the order the page asks for them, so the message names the
+  // thing that is actually in the way rather than the next thing down.
+  if (!typed) { showErr(section, "Please type your full name."); return Promise.reject(); }
+  if (section === "acknowledgement") {
+    var missing = document.querySelectorAll(".clause:not(.done)").length;
+    if (missing) { showErr(section, "Please initial every paragraph — " + missing + " still to go."); return Promise.reject(); }
+  }
+  if (!pad || !pad.hasInk) { showErr(section, "Please sign in the box above."); return Promise.reject(); }
+  clearErr(section);
+  var body = {
+    section: section,
+    typed_name: typed,
+    signature: pad.canvas.toDataURL("image/jpeg", 0.85),
+    sig_w: pad.canvas.width,
+    sig_h: pad.canvas.height
+  };
+  if (section === "acknowledgement") body.initials = initials;
+  return saveNow().then(function () { return api("/public/sign", { method: "POST", body: body }); })
+    .then(function () { done[section] = true; })
+    .catch(function (e) { showErr(section, (e && e.message) || "That didn't send. Please try again."); throw e; });
+}
+
+/* ---- wizard --------------------------------------------------------- */
+function sectionOf(n) { return steps[n].getAttribute("data-section"); }
+
+function syncNav() {
+  var section = sectionOf(i);
+  var isDone = i === steps.length - 1;
+  backBtn.style.visibility = (i === 0 || isDone) ? "hidden" : "visible";
+  if (isDone) { nextBtn.style.display = "none"; return; }
+  nextBtn.style.display = "";
+  nextBtn.disabled = false;
+  if (i === 0) { nextBtn.textContent = "Let's go →"; return; }
+
+  if (SIGNABLE.indexOf(section) >= 0) {
+    /* Whether this step has something to read is a property of the step, not
+       of its name. Asking the step itself is the only version of this that
+       cannot point at the wrong pane. */
+    var pane = steps[i].querySelector("[data-read]");
+    if (pane && pane.getAttribute("data-readdone") !== "yes") {
+      nextBtn.textContent = "Read to the end first";
+      nextBtn.disabled = true;
+      return;
+    }
+    nextBtn.textContent = done[section] ? "Next →" : "Sign & continue →";
+    return;
+  }
+  if (UPLOADABLE.indexOf(section) >= 0) {
+    if (!done[section]) { nextBtn.textContent = "Send it back first"; nextBtn.disabled = true; return; }
+    nextBtn.textContent = isLastContent() ? "Finish 🎉" : "Next →";
+    return;
+  }
+  nextBtn.textContent = isLastContent() ? "Finish 🎉" : "Next →";
+}
+function isLastContent() { return i === steps.length - 2; }
+
+function show(n) {
+  steps[i].classList.remove("active");
+  i = Math.max(0, Math.min(steps.length - 1, n));
+  steps[i].classList.add("active");
+  sizeActivePad();
+  checkRead(steps[i].querySelector("[data-read]"));
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  var isDone = i === steps.length - 1;
+  var pct = i === 0 ? 4 : Math.round((Math.min(contentSteps, i) / contentSteps) * 100);
+  fill.style.width = (isDone ? 100 : pct) + "%";
+  if (i === 0) plabel.textContent = "Let's begin";
+  else if (isDone) plabel.textContent = "All done!";
+  else plabel.textContent = "Step " + i + " of " + contentSteps;
+  syncNav();
+}
+
+function advance() {
+  var section = sectionOf(i);
+  var last = isLastContent();
+  var go = function () { if (last) finish(); else show(i + 1); };
+
+  if (SIGNABLE.indexOf(section) >= 0 && !done[section]) {
+    nextBtn.disabled = true; nextBtn.textContent = "Signing…";
+    signSection(section).then(go).catch(function () {}).then(syncNav);
+    return;
+  }
+  if (i > 0) saveNow();
+  go();
+}
+
+function finish() {
+  nextBtn.disabled = true; nextBtn.textContent = "Finishing…";
+  api("/public/complete", { method: "POST", body: {} })
+    .then(function () { show(steps.length - 1); renderChecklist(); burst(); })
+    .catch(function (e) { nextBtn.disabled = false; syncNav(); alert((e && e.message) || "That didn't go through. Please try again."); });
+}
+
+function renderChecklist() {
+  var host = document.getElementById("finalChecklist");
+  var html = "";
+  Object.keys(SECTION_LABEL).forEach(function (key) {
+    if (!steps.some(function (s) { return s.getAttribute("data-section") === key; })) return;
+    html += '<div><span>✅</span><span>' + SECTION_LABEL[key] + '</span></div>';
+  });
+  host.innerHTML = html;
+}
+
+backBtn.addEventListener("click", function () { show(i - 1); });
+nextBtn.addEventListener("click", advance);
+
+document.getElementById("addEmployer").addEventListener("click", function () {
+  for (var n = 2; n <= 4; n++) {
+    var box = document.getElementById("employer" + n);
+    if (box && box.hidden) { box.hidden = false; box.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+  }
+  this.textContent = "That's as many as this form holds — add the rest on your resume";
+  this.disabled = true;
+});
+document.getElementById("addGap").addEventListener("click", function () {
+  for (var n = 3; n <= 4; n++) {
+    var box = document.getElementById("gap" + n);
+    if (box && box.hidden) { box.hidden = false; box.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+  }
+  this.textContent = "That's as many as this form holds";
+  this.disabled = true;
+});
+
+/* ---- boot ----------------------------------------------------------- */
+function boot(state) {
+  state = state || {};
+  var needed = state.sections || null;
+  /* A section this applicant does not have to do is removed rather than
+     hidden, so the step count and the progress bar tell the truth. */
+  if (needed) {
+    document.querySelectorAll(".step").forEach(function (s) {
+      var key = s.getAttribute("data-section");
+      if (key === "intro" || key === "done" || key === "application") return;
+      if (needed.indexOf(key) < 0) s.remove();
+    });
+  }
+  steps = [].slice.call(document.querySelectorAll(".step"));
+  contentSteps = steps.length - 2;
+
+  setupPads();
+  wireClauses();
+  wireReading();
+  wireDocs();
+
+  if (state.answers) prefill(state.answers);
+  (state.completed || []).forEach(function (key) { done[key] = true; });
+  (state.uploads || []).forEach(function (u) { markUploaded(u.key, u.filename); });
+
+  var nameEl = document.getElementById("ackName");
+  if (nameEl && !nameEl.value) {
+    var first = (form.elements.name_first && form.elements.name_first.value) || "";
+    var last = (form.elements.name_last && form.elements.name_last.value) || "";
+    if (first || last) nameEl.value = (first + " " + last).trim();
+  }
+  /* Set as text, never as markup: the name comes from a record somebody else
+     typed. */
+  var who = (state.applicant && state.applicant.name) || "";
+  if (who) {
+    document.getElementById("welcomeTitle").textContent =
+      "Let's make it official, " + who.trim().split(/\s+/)[0] + "!";
+  }
+  var dateEl = document.getElementById("ackDate");
+  if (dateEl) dateEl.textContent = "Signed " + new Date().toLocaleDateString();
+
+  lastSaved = JSON.stringify(collect());
+  show(0);
+}
+
+if (API_BASE && PACKET_TOKEN) {
+  api("/public/state").then(boot).catch(function () { boot({}); });
+} else {
+  boot({});
+}
+
+/* ---- confetti ------------------------------------------------------- */
+var cvs = document.getElementById("confetti"), cctx = cvs.getContext("2d"), parts = [], raf = null;
+function size() { cvs.width = innerWidth; cvs.height = innerHeight; }
+size(); addEventListener("resize", size);
+var COLORS = ["#8b5cf6", "#5fa8a0", "#e0a430", "#ef6f6c", "#1b2a6b", "#22c55e"];
+function burst() {
+  parts = [];
+  for (var k = 0; k < 140; k++) {
+    parts.push({ x: innerWidth / 2, y: innerHeight * 0.32,
+      vx: (Math.random() - 0.5) * 11, vy: Math.random() * -13 - 4,
+      s: Math.random() * 8 + 5, c: COLORS[k % COLORS.length],
+      r: Math.random() * Math.PI, vr: (Math.random() - 0.5) * 0.35, life: 0 });
+  }
+  if (!raf) tick();
+}
+function tick() {
+  cctx.clearRect(0, 0, cvs.width, cvs.height);
+  var alive = false;
+  parts.forEach(function (p) {
+    p.vy += 0.32; p.x += p.vx; p.y += p.vy; p.r += p.vr; p.life++;
+    if (p.y < cvs.height + 40) alive = true;
+    cctx.save(); cctx.translate(p.x, p.y); cctx.rotate(p.r);
+    cctx.fillStyle = p.c; cctx.globalAlpha = Math.max(0, 1 - p.life / 160);
+    cctx.fillRect(-p.s / 2, -p.s / 2, p.s, p.s * 0.6); cctx.restore();
+  });
+  if (alive) { raf = requestAnimationFrame(tick); } else { raf = null; cctx.clearRect(0, 0, cvs.width, cvs.height); }
+}
+</script>
+</body>
+</html>
