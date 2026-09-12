@@ -214,6 +214,55 @@ module.exports = function initSupervision(ctx) {
     return eom > today ? today : eom;
   }
 
+  // ------------------------------------------------------------- COMPLIANCE
+  // What share of an employee's supervision months met the BACB minimum.
+  //
+  // This exists because the raise calculator can weight "Supervision
+  // Compliance" and had nothing to read. It must NOT be the monthly
+  // percentage: that figure is supervision hours as a share of hours worked,
+  // where 5% is compliant and 6% is good. Feeding 6 into a weighted
+  // performance score would read as 6% performance and quietly destroy
+  // somebody's raise. The compliant/not-compliant judgement is the part that
+  // means anything on a 0-100 scale, so that is what this returns.
+  //
+  // A month with no worked hours on file is EXCLUDED, not failed. Without a
+  // denominator the month can neither pass nor fail, and counting it as a
+  // failure would dock somebody's pay for an upload nobody did.
+  async function complianceFor(employeeId, startMonth, endMonth) {
+    const empId = Number(employeeId);
+    const from = String(startMonth || "").slice(0, 7);
+    const to = String(endMonth || "").slice(0, 7);
+    const rows = await dbAll(
+      `SELECT month, entries, hours_worked FROM hr_supervision_logs
+        WHERE employee_id = ? AND month >= ? AND month <= ? ORDER BY month`,
+      [empId, from, to]
+    ).catch(() => []);
+    const verified = await verifiedHoursForMonths(empId, rows.map((r) => r.month));
+
+    const months = [];
+    for (const r of rows) {
+      let en = []; try { en = JSON.parse(r.entries || "[]"); } catch (x) { en = []; }
+      const sup = supHours(en);
+      const w = resolveWorked(empId, r, { [empId]: verified[r.month] });
+      const p = pct(sup, w.hours);
+      months.push({ month: r.month, sup_hours: sup, hours_worked: w.hours, hours_source: w.source, pct: p,
+                    counted: p != null, meets: p != null && p >= BACB_MIN_PCT });
+    }
+    const counted = months.filter((m) => m.counted);
+    const meeting = counted.filter((m) => m.meets);
+    return {
+      min_pct: BACB_MIN_PCT,
+      months_on_file: months.length,
+      months_counted: counted.length,
+      months_meeting: meeting.length,
+      months_without_hours: months.length - counted.length,
+      // Null, not zero, when there is nothing to judge. A person with no
+      // supervision months on file has not failed anything.
+      percentage: counted.length ? Math.round((meeting.length / counted.length) * 1000) / 10 : null,
+      months,
+    };
+  }
+
   async function logActivity(employeeId, text) {
     const emp = await dbGet("SELECT hr_activity FROM hr_employees WHERE id = ?", [employeeId]).catch(() => null);
     if (!emp) return;
@@ -801,7 +850,7 @@ module.exports = function initSupervision(ctx) {
   // deliberately kept on and an explicit per-person override winning over both
   // -- and a second copy of it somewhere else would drift.
   return {
-    initTables, handleApi, widget, isTracked,
+    initTables, handleApi, widget, isTracked, complianceFor,
     _internal: { parseRethinkHours, monthSummary, buildPdf, supervisionDefault },
   };
 };
