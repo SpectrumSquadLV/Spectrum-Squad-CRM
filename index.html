@@ -6358,6 +6358,16 @@ async function renderAdmin(mount) {
       </div>
       <div class="task-row">
         <div class="info">
+          <strong>Completed application packet recipient</strong>
+          <div class="due">When an applicant finishes their application and policy packet, a summary is emailed here, along with a note that the signed Form 8850 and Nevada background waiver still need sending on. Separate multiple addresses with commas. This one cannot be left empty — a finished packet that tells nobody is the thing it exists to prevent.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="packet-email" type="text" placeholder="hr@spectrumsquadlv.com" style="width:260px;" />
+          <button class="btn small secondary" id="save-packet-email">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
           <strong>Schedule request recipients</strong>
           <div class="due">When a parent submits their preferred schedule, notify these staff members. The request is always saved on the client's profile for tracking regardless. Comma-separate for more than one; leave blank for no staff email.</div>
         </div>
@@ -6546,6 +6556,8 @@ async function renderAdmin(mount) {
     if (eligInput) eligInput.value = settings.eligibility_check_email || "";
     const screenerInput = mount.querySelector("#screener-email");
     if (screenerInput) screenerInput.value = settings.screener_completed_recipient || "";
+    const packetInput = mount.querySelector("#packet-email");
+    if (packetInput) packetInput.value = settings.hire_packet_recipient || "";
     const ownerInput = mount.querySelector("#owner-email");
     if (ownerInput) ownerInput.value = settings.owner_notification_email || "";
     const cdInput = mount.querySelector("#cd-email");
@@ -6597,6 +6609,7 @@ async function renderAdmin(mount) {
   };
   wireSetting("save-elig-email", "elig-email", "eligibility_check_email");
   wireSetting("save-screener-email", "screener-email", "screener_completed_recipient");
+  wireSetting("save-packet-email", "packet-email", "hire_packet_recipient");
   wireSetting("save-owner-email", "owner-email", "owner_notification_email");
   wireSetting("save-cd-email", "cd-email", "clinical_director_email");
   wireSetting("save-digest-to", "digest-to", "completion_digest_recipients");

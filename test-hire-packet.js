@@ -85,8 +85,30 @@ const SIG = "data:image/jpeg;base64," + Buffer.concat([
 ]).toString("base64");
 
 const stamp = Date.now();
+// The completion email is deliberately fire-and-forget -- the applicant's
+// "Finish" must not wait on an SMTP round trip, the same way finalizing a
+// fidelity check locks the scores first and emails afterwards. So the test
+// waits for it to land rather than reading the count the instant the response
+// comes back, and fails on the timeout rather than on the race.
+async function waitForMail(addr, was, ms = 6000) {
+  const until = Date.now() + ms;
+  for (;;) {
+    const n = await packetMailTo(addr);
+    if (n > was) return n;
+    if (Date.now() > until) return n;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+}
 const mailTo = (addr) => pool.query(
   "SELECT COUNT(*)::int AS n FROM notifications_log WHERE recipient = $1", [addr]
+).then((r) => r.rows[0].n).catch(() => 0);
+// The completion notice specifically. Counting every email to an address is
+// enough for an invite, whose recipient is an applicant nothing else writes
+// to -- but the packet recipient is a Spectrum Squad address that other
+// automations also mail, so "did somebody get told" has to name the notice it
+// is asking about or it passes on somebody else's email.
+const packetMailTo = (addr) => pool.query(
+  "SELECT COUNT(*)::int AS n FROM notifications_log WHERE recipient = $1 AND type = 'hire_packet_completed'", [addr]
 ).then((r) => r.rows[0].n).catch(() => 0);
 
 (async () => {
@@ -502,6 +524,68 @@ const mailTo = (addr) => pool.query(
   check("a template edited to drop the link still goes out with one",
     reminder.rows[0].subject === "No link here" && reminder.rows[0].body.includes(linkToken),
     reminder.rows[0] && reminder.rows[0].body.slice(0, 200));
+
+  // =========================================================================
+  section("Somebody is told when a packet is finished");
+  // The one failure this whole notification exists to prevent is silence: an
+  // applicant spends twenty minutes on their paperwork, the CRM files it, and
+  // nobody finds out. So the recipient is tested three ways -- the seeded
+  // default, a configured address, and a list -- rather than assumed.
+  async function completePacketFor(name, email) {
+    const id = await applicant(name, email, "offer_sent", bcbaPos);   // BCBA: no CE policy step
+    await owner("/api/hire-packet/sweep", { method: "POST" });
+    const token = await tokenFor(id);
+    const who = applicantClient(token);
+    await who("/api/hire-packet/public/save", { method: "POST", body: { answers: { name_first: "Zz", name_last: "Finisher" } } });
+    for (const key of ["acknowledgement", "mandatory_reporting"]) {
+      const body = { section: key, typed_name: "Zz Finisher", signature: SIG, sig_w: 500, sig_h: 160 };
+      if (key === "acknowledgement") body.initials = initials;
+      await who("/api/hire-packet/public/sign", { method: "POST", body });
+    }
+    await upload(token, "form_8850", signedScan, "8850.pdf", "application/pdf");
+    await upload(token, "background_waiver", signedScan, "waiver.jpg", "image/jpeg");
+    const done = await who("/api/hire-packet/public/complete", { method: "POST", body: {} });
+    return { id, status: done.status, error: done.data && done.data.error };
+  }
+
+  const settings = await owner("/api/admin/settings");
+  const seeded = settings.data.hire_packet_recipient;
+  check("the settings screen offers a packet recipient", typeof seeded === "string" && seeded.length > 0, settings.data.hire_packet_recipient);
+  check("...and it is seeded rather than blank, so nothing completes silently", /@/.test(seeded || ""), seeded);
+  const seedRow = await pool.query("SELECT value FROM app_settings WHERE key = 'hire_packet_recipient'");
+  check("...as a real stored setting, not a default that only exists on the settings screen",
+    seedRow.rows.length === 1 && seedRow.rows[0].value === seeded, seedRow.rows[0]);
+
+  const beforeSeeded = await packetMailTo(seeded);
+  const first = await completePacketFor(`ZzPacket Notify1 ${stamp}`, `zznotify1${stamp}@example.com`);
+  check("a packet finishes with no recipient configured", first.status === 200, first.error);
+  check("...and the seeded recipient is told", (await waitForMail(seeded, beforeSeeded)) > beforeSeeded, seeded);
+
+  const configured = `zzhrbox${stamp}@example.com`;
+  const setTo = await owner("/api/admin/settings", { method: "PATCH", body: { hire_packet_recipient: configured } });
+  check("the recipient can be changed from Admin Settings", setTo.status === 200 && setTo.data.hire_packet_recipient === configured, setTo.data);
+
+  const seededBeforeSecond = await packetMailTo(seeded);
+  const second = await completePacketFor(`ZzPacket Notify2 ${stamp}`, `zznotify2${stamp}@example.com`);
+  check("the next packet finishes too", second.status === 200, second.error);
+  check("...and goes to the configured address", (await waitForMail(configured, 0)) > 0, configured);
+  // Read only once the configured address has actually been written to, or
+  // this passes for the wrong reason: nothing had been sent to anybody yet.
+  check("...and not to the seeded one any more", (await packetMailTo(seeded)) === seededBeforeSecond, seeded);
+
+  const badAddress = await owner("/api/admin/settings", { method: "PATCH", body: { hire_packet_recipient: "not-an-email" } });
+  check("a bad address is refused", badAddress.status === 400, badAddress.data);
+  const emptied = await owner("/api/admin/settings", { method: "PATCH", body: { hire_packet_recipient: "  " } });
+  check("and it cannot be emptied back to nobody", emptied.status === 400 && /reach somebody/i.test(emptied.data.error), emptied.data);
+  const stillSet = await owner("/api/admin/settings");
+  check("...and the good one neither would have replaced is untouched",
+    stillSet.data.hire_packet_recipient === configured, stillSet.data.hire_packet_recipient);
+
+  const alsoTold = `zzhrbox2${stamp}@example.com`;
+  await owner("/api/admin/settings", { method: "PATCH", body: { hire_packet_recipient: `${configured}, ${alsoTold}` } });
+  const third = await completePacketFor(`ZzPacket Notify3 ${stamp}`, `zznotify3${stamp}@example.com`);
+  check("a third packet finishes", third.status === 200, third.error);
+  check("everyone on the list is told, not just the first", (await waitForMail(alsoTold, 0)) > 0, alsoTold);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   await pool.end();

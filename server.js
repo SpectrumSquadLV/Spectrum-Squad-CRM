@@ -3600,6 +3600,11 @@ const DEFAULT_SETTINGS = {
   // templates by this name in the account; this is the one she gave, and the
   // more recently updated of the pair.
   signnow_newhire_template_id: "9b5e62f356aa42b297d72e71b965dfa4266ed957",
+  // Where a completed application packet is announced. Seeded, not hard-coded:
+  // the stored value from Admin Settings wins, and this is only what the CRM
+  // uses until somebody sets one. Without any value the packet completes
+  // silently, which is the one outcome nobody wants.
+  hire_packet_recipient: "qblake@spectrumsquadlv.com",
   credentialing_link_bcba: "https://sparkz.clickup.com/forms/3501350/f/3av96-450954/AMW0KVAC3YL07DEEMM",
   credentialing_link_rbt: "https://sparkz.clickup.com/forms/3501350/f/3av96-450934/OFTQKDCKHXT758222Z",
   class_dojo_link: "https://teach.classdojo.com/#/singleLinkSignup/TT6SYWAH3",
@@ -7601,6 +7606,7 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       return json(res, 200, {
         eligibility_check_email: await getAppSetting("eligibility_check_email", ""),
         screener_completed_recipient: await getAppSetting("screener_completed_recipient", ""),
+        hire_packet_recipient: await getAppSetting("hire_packet_recipient", DEFAULT_SETTINGS.hire_packet_recipient),
         owner_notification_email: await getAppSetting("owner_notification_email", ""),
         clinical_director_email: await getAppSetting("clinical_director_email", ""),
         completion_digest_recipients: await getAppSetting("completion_digest_recipients", ""),
@@ -7734,9 +7740,25 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         if (parts.some((p) => !validEmail(p))) return json(res, 400, { error: "One of the screener recipient addresses is invalid." });
         await setAppSetting("screener_completed_recipient", parts.join(", "));
       }
+      if ("hire_packet_recipient" in body) {
+        // Same shape as the screener recipient: a comma or semicolon separated
+        // list. Unlike the screener's, this one cannot be emptied. A finished
+        // application packet that announces itself to nobody is the exact
+        // failure this setting exists to prevent, and the row is seeded at
+        // boot precisely so that state never exists -- so clearing it is
+        // refused rather than quietly reintroducing the silence.
+        const raw = (body.hire_packet_recipient || "").trim();
+        const parts = raw.split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+        if (!parts.length) {
+          return json(res, 400, { error: "A completed application packet has to reach somebody. Put at least one address here." });
+        }
+        if (parts.some((p) => !validEmail(p))) return json(res, 400, { error: "One of the application packet recipient addresses is invalid." });
+        await setAppSetting("hire_packet_recipient", parts.join(", "));
+      }
       return json(res, 200, {
         eligibility_check_email: await getAppSetting("eligibility_check_email", ""),
         screener_completed_recipient: await getAppSetting("screener_completed_recipient", ""),
+        hire_packet_recipient: await getAppSetting("hire_packet_recipient", DEFAULT_SETTINGS.hire_packet_recipient),
         owner_notification_email: await getAppSetting("owner_notification_email", ""),
       });
     }
