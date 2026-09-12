@@ -511,7 +511,7 @@ module.exports = function initOt(ctx) {
       // a document-upload or scheduling link that opens as the family it was
       // sent to; the stored body keeps the real one so their own copy still
       // works. See redactSecretLinks in server.js.
-      const redact = ctx.redactSecretLinks || ((x) => x);
+      const redact = ctx.redactStoredBody || ctx.redactSecretLinks || ((x) => x);
       return (json(res, 200, rows.map((r) => ({ ...r, body: redact(r.body) }))), true);
     }
 

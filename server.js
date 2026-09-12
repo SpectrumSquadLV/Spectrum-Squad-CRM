@@ -1403,7 +1403,11 @@ async function saveClientDocument(opts) {
 //     works and resendFailedEmail still re-sends a working email;
 //   * the route is left visible, so a reader can still see WHAT was sent
 //     rather than being shown a blank where a link used to be.
-const TOKEN_PATH_ROUTES = ["verify-timecard", "offer", "screener", "schedule", "apply", "new-hire"];
+// fidelity-ack was missed when this list was written, because RBT Fidelity
+// came later. Its token opens the whole assessment -- every item and every
+// score -- with no CRM session at all, and acknowledges it as that RBT. It
+// belongs here as much as any of the others.
+const TOKEN_PATH_ROUTES = ["verify-timecard", "offer", "screener", "schedule", "apply", "new-hire", "fidelity-ack"];
 const TOKEN_PATH_RE = new RegExp("(/(?:" + TOKEN_PATH_ROUTES.join("|") + ")/)[A-Za-z0-9._~+-]{6,}", "g");
 function redactSecretLinks(html) {
   if (html == null) return html;
@@ -1414,12 +1418,45 @@ function redactSecretLinks(html) {
     .replace(TOKEN_PATH_RE, "$1[link removed]");
 }
 
+// WHAT SOMEBODY SCORED IS NOT MESSAGE-LOG DATA. The Fidelity Check email tells
+// an RBT their own result, and notifications_log keeps every body verbatim --
+// which the Message Outbox renders to owner / super_admin / admin.
+//
+// RBT Fidelity is deliberately NOT granted by CRM role: an admin without the
+// grant cannot open a single Fidelity screen, and must not be able to read
+// somebody's score out of the message log instead. That is the same hole the
+// magic links went through, and it closes the same way.
+//
+// REDACTED AT DISPLAY, NOT AT STORAGE, exactly like the links: the stored body
+// keeps the real figures, so the RBT's own copy is intact and
+// resendFailedEmail still re-sends a correct message -- it reads the row
+// server-side and never sees this.
+//
+// Only the three VALUE cells go. The reader still sees what was sent -- a
+// Fidelity Check result, on a date, with an acknowledgement link -- rather
+// than a blank where a message used to be. Matched on the labels because the
+// bodies at risk are the ones ALREADY STORED, which carry no marker to key on.
+const FIDELITY_SCORE_ROW_RE =
+  /(<td[^>]*>\s*(?:Score|Percentage|Rating)\s*<\/td>\s*<td[^>]*>)([^<]*)(<\/td>)/gi;
+function redactFidelityScores(html) {
+  if (html == null) return html;
+  return String(html).replace(FIDELITY_SCORE_ROW_RE, "$1[withheld]$3");
+}
+
 // One notification row as it may be SHOWN. Drops ack_token outright -- it is a
 // one-click acknowledgement credential and no screen needs it.
+// EVERY screen that renders a stored email body goes through this one -- the
+// Message Outbox, the OT message log and the timecard "Sent email" view. Two
+// copies would drift, and the drift would be silent: one screen showing what
+// another hides.
+function redactStoredBody(html) {
+  return redactFidelityScores(redactSecretLinks(html));
+}
+
 function shapeNotificationForDisplay(row) {
   if (!row) return row;
   const { ack_token, ...safe } = row;
-  if (safe.body !== undefined) safe.body = redactSecretLinks(safe.body);
+  if (safe.body !== undefined) safe.body = redactStoredBody(safe.body);
   return safe;
 }
 
@@ -8400,7 +8437,7 @@ const screener = require("./screener")({
 // ===== HR & RECRUITING add-on: job requisitions, applicant tracking, careers page =====
 const hr = require("./hr")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, PUBLIC_DIR, moduleGranted,
-  redactSecretLinks,
+  redactSecretLinks, redactStoredBody,
   onCompletion: (...a) => completions.record(...a),
   // New-hire employment packet (SignNow). Passed in rather than reimplemented so
   // there is one SignNow client, one token cache, and one place that knows how
@@ -8473,7 +8510,7 @@ const clientForms = require("./client-forms")({
 const ot = require("./ot")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
   // One redaction rule for every screen that renders a stored email body.
-  redactSecretLinks,
+  redactSecretLinks, redactStoredBody,
 });
 // ===== EMPLOYEE ATTENDANCE MANAGEMENT add-on: points engine, discipline,
 // bonus cycles, policy editor, attendance emails, historical import. Reuses the

@@ -3294,7 +3294,7 @@ module.exports = function initHr(ctx) {
         // The shared rule, so this screen and the Message Outbox strip exactly
         // the same things. A local copy would drift, and the drift would be
         // silent -- one screen leaking a link the other hides.
-        const redact = ctx.redactSecretLinks || ((html) => String(html == null ? "" : html)
+        const redact = ctx.redactStoredBody || ctx.redactSecretLinks || ((html) => String(html == null ? "" : html)
           .replace(/(\/verify-timecard\/)[A-Za-z0-9._~+\/-]+/g, "$1[link removed]"));
 
         return json(res, 200, {
