@@ -97,6 +97,16 @@ const CHILDREN = ["admin", "rethink-clients", "signnow-import", "email-templates
   const adminText = await page.locator("#view-mount").innerText().catch(() => "");
   check("Admin Settings still lists its settings", adminText.length > 200, adminText.length);
 
+  // The two clean-up tools for the CRM's free-text name fields live here now.
+  // Both exist for the same reason: a name typed by hand collects spellings,
+  // and only a person can say which ones are the same thing.
+  await page.waitForTimeout(1500);
+  check("the insurer merge is on Admin Settings",
+    /Insurers filed under more than one name/i.test(adminText), adminText.slice(0, 400));
+  check("...and it drew rather than sitting on Loading",
+    !/Loading/.test(await page.locator("#insurers-mount").innerText().catch(() => "Loading")),
+    await page.locator("#insurers-mount").innerText().catch(() => "(missing)"));
+
   // ------------------------------------------------------------ permissions
   section("Nobody gains access from the regrouping");
   await login("clinical@spectrumsquadlv.com", "TestStaff123!");
