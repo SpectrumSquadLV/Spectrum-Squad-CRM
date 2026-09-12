@@ -8438,6 +8438,16 @@ const fidelity = require("./fidelity")({
   // owns supervision rather than read out of its tables from here. What counts
   // as a compliant month is supervision's rule, in one place.
   supervisionCompliance: (empId, start, end) => supervision.complianceFor(empId, start, end),
+  // The share of months in the review period that came in at a band the
+  // attendance policy calls acceptable. Passed in rather than reimplemented so
+  // the raise reads the same matrix the roster and the monthly review do.
+  // Late-bound and guarded: hr-attendance is constructed after this module and
+  // falls back to a stub if its file is missing, so a weighted category asks
+  // the real thing when it exists and reports itself missing when it does not.
+  attendanceCompliance: (empId, start, end) =>
+    (attendance && typeof attendance.attendanceCompliance === "function"
+      ? attendance.attendanceCompliance(empId, start, end)
+      : null),
 });
 
 const billable = require("./billable")({

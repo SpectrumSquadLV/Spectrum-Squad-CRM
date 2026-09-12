@@ -58,12 +58,16 @@ module.exports = function initHrAttendance(ctx) {
   ];
 
   // 30-Day Monthly Attendance Review Matrix.
+  // `meets` marks the bands that count as a good month. It lives here, on the
+  // policy's own matrix, because the raise calculation reads it: the threshold
+  // between an acceptable month and one that needs a conversation is a policy
+  // decision, not an arithmetic one, and it must not exist twice.
   const MONTHLY_REVIEW = [
-    { min: 4.5, level: "Leadership Review", action: "Review caseload / disciplinary action", bonus: "Not bonus eligible" },
-    { min: 2.5, level: "Attendance Improvement Plan", action: "Create improvement plan", bonus: "Not bonus eligible for active cycle" },
-    { min: 1.5, level: "Coaching Conversation", action: "Discuss patterns / support", bonus: "Not guaranteed" },
-    { min: 0.5, level: "Meets Expectations", action: "Monitor and document", bonus: "May remain eligible only if 90-day points return to 0" },
-    { min: 0, level: "Exceeds Expectations", action: "Recognize reliability", bonus: "Can remain eligible if 90-day points are 0" },
+    { min: 4.5, level: "Leadership Review", action: "Review caseload / disciplinary action", bonus: "Not bonus eligible", meets: false },
+    { min: 2.5, level: "Attendance Improvement Plan", action: "Create improvement plan", bonus: "Not bonus eligible for active cycle", meets: false },
+    { min: 1.5, level: "Coaching Conversation", action: "Discuss patterns / support", bonus: "Not guaranteed", meets: false },
+    { min: 0.5, level: "Meets Expectations", action: "Monitor and document", bonus: "May remain eligible only if 90-day points return to 0", meets: true },
+    { min: 0, level: "Exceeds Expectations", action: "Recognize reliability", bonus: "Can remain eligible if 90-day points are 0", meets: true },
   ];
 
   const BONUS_AMOUNT = 50;      // $50
@@ -248,6 +252,86 @@ module.exports = function initHrAttendance(ctx) {
         })
         .reduce((sum, f) => sum + num(f.points), 0)
     );
+  }
+
+  // ------------------------------------------------------------------------
+  // ATTENDANCE AS A SHARE OF GOOD MONTHS.
+  //
+  // The raise engine needs a percentage. Attendance points run the other way --
+  // fewer is better -- and the policy describes outcomes as named bands rather
+  // than scores, so a points-to-percentage curve would mean inventing a number
+  // that changes what somebody is paid. This does not invent one. It counts the
+  // months in the review period that came in at a band the policy already
+  // calls acceptable, exactly as Supervision Compliance counts the months that
+  // met the BACB minimum.
+  //
+  // A month with no infractions is a GOOD month, not a missing one -- zero
+  // points is Exceeds Expectations, which is a fact about their attendance
+  // rather than an absence of data. What is genuinely missing is a month the
+  // person was not employed for, and those are left out: months before their
+  // hire date, and months after they left.
+  //
+  // No months to judge returns null, never zero. "We have no attendance data"
+  // and "their attendance is 0%" are different statements and only one of them
+  // would be true.
+  function monthsBetween(fromDay, toDay) {
+    const out = [];
+    if (!fromDay || !toDay || String(toDay) < String(fromDay)) return out;
+    let [y, m] = String(fromDay).slice(0, 7).split("-").map(Number);
+    const end = String(toDay).slice(0, 7);
+    for (let guard = 0; guard < 600; guard++) {
+      const period = `${y}-${String(m).padStart(2, "0")}`;
+      if (period > end) break;
+      out.push(period);
+      m += 1;
+      if (m > 12) { m = 1; y += 1; }
+    }
+    return out;
+  }
+
+  async function attendanceCompliance(employeeId, periodStart, periodEnd) {
+    const empId = Number(employeeId);
+    const from = String(periodStart || "").slice(0, 10);
+    const to = String(periodEnd || "").slice(0, 10);
+    if (!empId || !from || !to) return null;
+
+    const emp = await dbGet(
+      `SELECT id, ${HIRE_DATE_SQL}, termination_date FROM hr_employees WHERE id = ?`, [empId]
+    ).catch(() => null);
+    const rows = await dbAll(
+      "SELECT * FROM hr_attendance_flags WHERE employee_id = ?", [empId]
+    ).catch(() => []);
+
+    const hired = emp && emp.hire_date ? String(emp.hire_date).slice(0, 10) : null;
+    const left = emp && emp.termination_date ? String(emp.termination_date).slice(0, 10) : null;
+    const months = [];
+    let excludedBefore = 0, excludedAfter = 0;
+
+    for (const period of monthsBetween(from, to)) {
+      const first = `${period}-01`;
+      const last = lastDayOf(period);
+      // Clamped to the review period as well as to the month, so a period that
+      // starts mid-month judges that month on the part that belongs to it.
+      const windowFrom = first < from ? from : first;
+      const windowTo = last > to ? to : last;
+      if (hired && last < hired) { excludedBefore++; continue; }
+      if (left && first > left) { excludedAfter++; continue; }
+      const points = pointsBetween(rows, windowFrom, windowTo);
+      const band = monthlyReviewFor(points);
+      months.push({ month: period, points, level: band.level, meets: band.meets === true });
+    }
+
+    const meeting = months.filter((m) => m.meets);
+    const meetsBands = MONTHLY_REVIEW.filter((b) => b.meets).map((b) => b.level);
+    return {
+      months_counted: months.length,
+      months_meeting: meeting.length,
+      months_before_hire: excludedBefore,
+      months_after_leaving: excludedAfter,
+      meets_bands: meetsBands,
+      percentage: months.length ? Math.round((meeting.length / months.length) * 1000) / 10 : null,
+      months,
+    };
   }
 
   function disciplineFor(points90) {
@@ -1588,11 +1672,11 @@ module.exports = function initHrAttendance(ctx) {
     // there: two copies of a points matrix would drift the first time the
     // policy is revised, and the policy is dated and has already been revised
     // once.
-    matrixTypes, typeByKey, logEmpActivity,
+    matrixTypes, typeByKey, logEmpActivity, attendanceCompliance,
     _internal: {
       buildAckPdf, REASONS, ATTENDANCE_MATRIX, DISCIPLINE_STEPS, MONTHLY_REVIEW,
       scoreEmployee, disciplineFor, monthlyReviewFor, bonusCycle, bonusExclusion, noticeHours,
-      pointsBetween, daysBefore, addDays, lastDayOf, monthLabel,
+      pointsBetween, daysBefore, addDays, lastDayOf, monthLabel, monthsBetween,
     },
   };
 };
