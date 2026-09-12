@@ -112,6 +112,14 @@ module.exports = function initAuthorizations(ctx) {
     // same authorization line repeated -- Sol McAtee's appears four times --
     // and a key without it silently collapsed those into one row on import,
     // quietly discarding data. They are kept, numbered, and flagged instead.
+    // "Total Sched Goal" -- the goal expressed as a period total, beside
+    // total_auth_hours which is the authorization's period total. It was parsed
+    // and then thrown away on commit, which meant the CRM could not check the
+    // one thing the whole funnel rests on: whether the scheduling goal and the
+    // authorization are the same quantity. They are at Spectrum Squad -- the
+    // authorization is granted to the clinical recommendation -- and a row
+    // where they disagree is worth seeing rather than assuming away.
+    await dbRun(`ALTER TABLE client_authorizations ADD COLUMN IF NOT EXISTS goal_total REAL`).catch(() => {});
     await dbRun(`ALTER TABLE client_authorizations ADD COLUMN IF NOT EXISTS occurrence INTEGER DEFAULT 1`).catch(() => {});
     await dbRun(`ALTER TABLE client_authorizations ADD COLUMN IF NOT EXISTS duplicate_of_count INTEGER DEFAULT 1`).catch(() => {});
     await dbRun(`DROP INDEX IF EXISTS client_auth_key_idx`).catch(() => {});
@@ -600,7 +608,7 @@ module.exports = function initAuthorizations(ctx) {
             r.units_value, clean(r.units_frequency) || null,
             clean(r.effective_date) || null, clean(r.expiration_date) || null,
             clean(r.service_name) || null, clean(r.billing_code) || null,
-            r.goal_hours, clean(r.goal_frequency) || null,
+            r.goal_hours, clean(r.goal_frequency) || null, r.goal_total,
             r.total_auth_hours, r.scheduled_hours, r.unscheduled_hours, r.verified_hours,
             r.sched_auth_pct, r.sched_goal_pct, r.days_until_expiration,
             clean(r.status) || null, clean(r.rendering_provider) || null, clean(r.referring_provider) || null,
@@ -614,7 +622,7 @@ module.exports = function initAuthorizations(ctx) {
               `UPDATE client_authorizations SET
                  client_id = COALESCE(?, client_id), client_name_raw = ?, payer = ?, service_line = ?, auth_number = ?,
                  units_value = ?, units_frequency = ?, effective_date = ?, expiration_date = ?,
-                 service_name = ?, billing_code = ?, goal_hours = ?, goal_frequency = ?,
+                 service_name = ?, billing_code = ?, goal_hours = ?, goal_frequency = ?, goal_total = ?,
                  total_auth_hours = ?, scheduled_hours = ?, unscheduled_hours = ?, verified_hours = ?,
                  sched_auth_pct = ?, sched_goal_pct = ?, days_until_expiration = ?,
                  status = ?, rendering_provider = ?, referring_provider = ?,
@@ -629,11 +637,11 @@ module.exports = function initAuthorizations(ctx) {
               `INSERT INTO client_authorizations
                  (client_id, client_name_raw, payer, service_line, auth_number, units_value, units_frequency,
                   effective_date, expiration_date, service_name, billing_code, goal_hours, goal_frequency,
-                  total_auth_hours, scheduled_hours, unscheduled_hours, verified_hours,
+                  goal_total, total_auth_hours, scheduled_hours, unscheduled_hours, verified_hours,
                   sched_auth_pct, sched_goal_pct, days_until_expiration, status,
                   rendering_provider, referring_provider, row_warnings, import_id, source_row,
                   occurrence, duplicate_of_count, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
               [...vals, nowISO(), nowISO()]
             );
             authId = row.id;
