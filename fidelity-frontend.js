@@ -44,49 +44,57 @@
 
   let state = { data: null, filters: {}, search: "" };
 
+  // WHO IS LOOKING, asked of the server rather than worked out in the browser.
+  // Every button in this header opens a leadership-only route -- the raise
+  // settings, the rankings, the training-needs report, the assignment screen.
+  // An evaluator is refused all of them by the server, and always was; what
+  // they were still being shown was the BUTTONS. A control somebody can only
+  // be refused is a statement about what they may do, and it was the wrong
+  // statement -- above all for "Raise settings", which is about pay.
+  //
+  // my-assignments is the one Fidelity route an evaluator can reach, so it is
+  // where the answer comes from. If the question cannot be asked at all,
+  // nothing leadership-only is drawn: a header that fails closed shows one
+  // button too few, and a header that fails open shows a screen that is not
+  // theirs.
+  async function whoAmI() {
+    try {
+      const a = await api("/api/fidelity/my-assignments");
+      return { manage: a.can_manage === true, assignments: a.assignments || [] };
+    } catch (e) { return { manage: false, assignments: [] }; }
+  }
+
   async function renderFidelity(mount) {
+    const me = await whoAmI();
     mount.innerHTML = `<div class="page-header">
       <div><h1>RBT Fidelity</h1>
-        <p>Current performance, trends and follow-up for every active RBT. Every figure here is calculated for you.</p></div>
+        <p>${me.manage
+          ? "Current performance, trends and follow-up for every active RBT. Every figure here is calculated for you."
+          : "The observations you have been asked to complete."}</p></div>
       <div style="display:flex; gap:8px; align-items:center;">
+        ${me.manage ? `
         <button class="btn secondary" id="fid-assign">Ask somebody to observe</button>
         <button class="btn secondary" id="fid-insights">Training needs</button>
         <button class="btn secondary" id="fid-settings">Raise settings</button>
         <button class="btn secondary" id="fid-random">Select random RBT</button>
-        <button class="btn" id="fid-new">+ New Fidelity Check</button>
+        <button class="btn" id="fid-new">+ New Fidelity Check</button>` : ""}
       </div></div>
       <div id="fid-body"><div class="empty-state">Loading…</div></div>`;
-    mount.querySelector("#fid-new").addEventListener("click", () => openNewCheck(mount));
-    mount.querySelector("#fid-random").addEventListener("click", () => pickRandom(mount));
-    mount.querySelector("#fid-settings").addEventListener("click", () => openSettings(mount));
-    mount.querySelector("#fid-insights").addEventListener("click", () => openInsights());
-    mount.querySelector("#fid-assign").addEventListener("click", () => openAssign(mount));
-    await fill(mount);
+    if (me.manage) {
+      mount.querySelector("#fid-new").addEventListener("click", () => openNewCheck(mount));
+      mount.querySelector("#fid-random").addEventListener("click", () => pickRandom(mount));
+      mount.querySelector("#fid-settings").addEventListener("click", () => openSettings(mount));
+      mount.querySelector("#fid-insights").addEventListener("click", () => openInsights());
+      mount.querySelector("#fid-assign").addEventListener("click", () => openAssign(mount));
+    }
+    await fill(mount, me);
   }
 
-  async function fill(mount) {
-    const box = mount.querySelector("#fid-body");
-    if (!box) return;
-    let d;
-    try { d = await api("/api/fidelity/dashboard"); }
-    catch (e) {
-      box.innerHTML = `<div class="empty-state">${esc(e.message || "Couldn't load RBT Fidelity.")}</div>`;
-      return;
-    }
-    state.data = d;
-    // An evaluator's own work comes first. It is the only thing on this page
-    // that is addressed to them personally, and burying it under the roster
-    // would make an assignment something to go hunting for.
-    let mineHTML = "";
-    try {
-      const a = await api("/api/fidelity/my-assignments");
-      mineHTML = assignmentsHTML(a.assignments);
-    } catch (e) { /* leadership without an assignment is the normal case */ }
-    box.innerHTML = mineHTML + cardsHTML(d.cards) + filterBarHTML(d) + tableHTML(d);
-    box.querySelectorAll("[data-fid-do]").forEach((b) =>
-      b.addEventListener("click", () => openScoring(mount, b.dataset.fidDo)));
-    // The overdue-assignment email tells them to say so rather than leave it.
-    // This is where saying so happens.
+  // The overdue-assignment email tells them to say so rather than leave it.
+  // This is where saying so happens -- and it is wired for BOTH views, because
+  // the person who most needs it is the evaluator who cannot do the
+  // observation, and their page no longer renders the roster.
+  function wireRelease(mount, box) {
     box.querySelectorAll("[data-fid-release]").forEach((b) =>
       b.addEventListener("click", async () => {
         const why = prompt("Why can't this observation be done?\n\nIt is kept on the record, and it is how the RBT gets rescheduled rather than quietly missed.");
@@ -97,6 +105,47 @@
           await fill(mount);
         } catch (e) { alert(e.message || "Couldn't release that assignment."); }
       }));
+  }
+
+  async function fill(mount, me) {
+    const box = mount.querySelector("#fid-body");
+    if (!box) return;
+    if (!me) me = await whoAmI();
+
+    // An evaluator's own work comes first. It is the only thing on this page
+    // that is addressed to them personally, and burying it under the roster
+    // would make an assignment something to go hunting for.
+    let mineHTML = "";
+    try {
+      const a = await api("/api/fidelity/my-assignments");
+      mineHTML = assignmentsHTML(a.assignments);
+    } catch (e) { /* leadership without an assignment is the normal case */ }
+
+    // AN EVALUATOR'S PAGE ENDS HERE. The roster, the rankings and the raise
+    // information are leadership's, and the dashboard route refuses them --
+    // so asking for it would replace their own assignments with "Not
+    // permitted to view the Fidelity dashboard", which reads as the screen
+    // being broken rather than as it not being theirs.
+    if (!me.manage) {
+      box.innerHTML = mineHTML
+        || `<div class="empty-state">No observations are waiting for you right now.</div>`;
+      box.querySelectorAll("[data-fid-do]").forEach((b) =>
+        b.addEventListener("click", () => openScoring(mount, b.dataset.fidDo)));
+      wireRelease(mount, box);
+      return;
+    }
+
+    let d;
+    try { d = await api("/api/fidelity/dashboard"); }
+    catch (e) {
+      box.innerHTML = `<div class="empty-state">${esc(e.message || "Couldn't load RBT Fidelity.")}</div>`;
+      return;
+    }
+    state.data = d;
+    box.innerHTML = mineHTML + cardsHTML(d.cards) + filterBarHTML(d) + tableHTML(d);
+    box.querySelectorAll("[data-fid-do]").forEach((b) =>
+      b.addEventListener("click", () => openScoring(mount, b.dataset.fidDo)));
+    wireRelease(mount, box);
     wire(mount, box);
   }
 
