@@ -925,9 +925,15 @@
   // ends up as "Marissa" on some clients and "Marissa Gaut" on others -- and
   // the caseload picker, which groups by that string, shows her twice with her
   // clients split between the halves.
-  async function renderDuplicates() {
-    const box = document.getElementById("mig-dupes");
+  // The mount is passed in when there is one: this panel was only ever on the
+  // migration screen, which is where nobody looks. It is now ALSO a card on
+  // Admin Settings, beside the insurer merge, because it answers the same
+  // question -- one person, two spellings, caseload split in half.
+  let dupeBox = null;
+  async function renderDuplicates(mount) {
+    const box = mount || dupeBox || document.getElementById("mig-dupes");
     if (!box) return;
+    dupeBox = box;
     let d;
     try { d = await api("/api/caseload/name-duplicates"); }
     catch (e) { box.innerHTML = ""; return; }
@@ -1083,6 +1089,14 @@ This rewrites the name on those client records. It cannot be undone from here.`)
         <div class="bd-body">${reviewTable(r.review || [])}</div>
       </div>`);
   }
+
+  // Admin Settings draws the merge panel on its own, without the migration
+  // screen around it.
+  window.__renderStaffNameMerge = async function (mount) {
+    if (!mount) return;
+    if (window.__bdInjectStyles) window.__bdInjectStyles();
+    await renderDuplicates(mount);
+  };
 
   window.__renderBcbaMigration = async function (mount) {
     mountEl = mount;

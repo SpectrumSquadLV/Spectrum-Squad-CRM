@@ -6016,6 +6016,84 @@ async function handle(req, res, pathname, method, query = {}) {
       return json(res, 200, { created });
     }
 
+// ---- Care team: who is actually on this child's case ----------------------
+    //
+    // The Assigned BCBA has had a way in for a long time (the Authorization
+    // section). The Student Analyst and the Squad Leader did not: the ONLY
+    // thing in the whole CRM that ever wrote those two columns was the one-time
+    // assignment migration, and the Care team card said so out loud -- it told
+    // the reader to go and run a migration. So on any client enrolled since,
+    // those fields simply could not be filled in, and the BCBA dashboard's
+    // Student Analyst panel had nothing to show.
+    //
+    // Same people who could set them before -- owner, super admin, admin. This
+    // is a better tool for them, not a wider door.
+    const careTeamMatch = pathname.match(/^\/api\/clients\/(\d+)\/care-team$/);
+    if (careTeamMatch && method === "PATCH") {
+      if (!["owner", "super_admin", "admin"].includes(user.role)) {
+        return json(res, 403, { error: "Not permitted to change the care team." });
+      }
+      const id = Number(careTeamMatch[1]);
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+
+      const CARE_TEAM_FIELDS = [
+        "assigned_student_analyst_name", "assigned_student_analyst_email",
+        "squad_leader_name", "squad_leader_email",
+      ];
+      const body = await readBody(req);
+      const fields = Object.keys(body).filter((k) => CARE_TEAM_FIELDS.includes(k));
+      if (!fields.length) return json(res, 400, { error: "No care-team field was provided." });
+
+      // Blank clears, rather than being rejected: taking somebody off a case is
+      // as real an action as putting them on one.
+      const vals = fields.map((f) => {
+        const v = String(body[f] == null ? "" : body[f]).trim();
+        return v === "" ? null : v;
+      });
+      await dbRun(
+        `UPDATE clients SET ${fields.map((f) => `${f} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
+        [...vals, nowISO(), id]);
+
+      // Who changed a care-team assignment, and what it was before. A wrong
+      // BCBA or analyst is invisible on screen -- everything still looks
+      // assigned -- so the trail is the only way to find out when it changed.
+      const changed = fields
+        .map((f, i) => `${f}: "${client[f] == null ? "" : client[f]}" -> "${vals[i] == null ? "" : vals[i]}"`)
+        .join("; ");
+      await dbRun(
+        `INSERT INTO hr_audit_log (actor, action, entity_type, entity_id, detail, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [(user && (user.email || user.name)) || "unknown", "care_team_changed", "client", id,
+         changed, nowISO()]
+      ).catch((e) => console.error("care team audit failed:", e.message));
+
+      const after = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      return json(res, 200, {
+        ok: true,
+        assigned_student_analyst_name: after.assigned_student_analyst_name || null,
+        assigned_student_analyst_email: after.assigned_student_analyst_email || null,
+        squad_leader_name: after.squad_leader_name || null,
+        squad_leader_email: after.squad_leader_email || null,
+      });
+    }
+
+    // Names already in use across the client records, so assigning somebody
+    // offers the spelling that is already on file instead of inviting a fourth
+    // one. The merge tool in Admin Settings exists because this did not.
+    if (pathname === "/api/clients/care-team-names" && method === "GET") {
+      if (!canAccessClients(user)) return json(res, 403, { error: "Not permitted." });
+      const col = (c) => dbAll(
+        `SELECT DISTINCT TRIM(${c}) AS name FROM clients
+          WHERE ${c} IS NOT NULL AND TRIM(${c}) <> '' ORDER BY TRIM(${c})`
+      ).then((rows) => rows.map((r) => r.name)).catch(() => []);
+      return json(res, 200, {
+        bcba: await col("assigned_bcba_name"),
+        student_analyst: await col("assigned_student_analyst_name"),
+        squad_leader: await col("squad_leader_name"),
+      });
+    }
+
     const authorizationMatch = pathname.match(/^\/api\/clients\/(\d+)\/authorization$/);
     if (authorizationMatch && method === "PATCH") {
       const id = authorizationMatch[1];

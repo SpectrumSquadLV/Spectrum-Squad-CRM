@@ -103,6 +103,11 @@ const CHILDREN = ["admin", "rethink-clients", "signnow-import", "email-templates
   await page.waitForTimeout(1500);
   check("the insurer merge is on Admin Settings",
     /Insurers filed under more than one name/i.test(adminText), adminText.slice(0, 400));
+  check("the staff-name merge is on Admin Settings too, not only on a hidden screen",
+    /Staff filed under two names/i.test(adminText), adminText.slice(0, 500));
+  check("...and it drew, so a duplicate BCBA can actually be merged from here",
+    !/^Loading/.test((await page.locator("#staff-names-mount").innerText().catch(() => "Loading")).trim()),
+    await page.locator("#staff-names-mount").innerText().catch(() => "(missing)"));
   check("...and it drew rather than sitting on Loading",
     !/Loading/.test(await page.locator("#insurers-mount").innerText().catch(() => "Loading")),
     await page.locator("#insurers-mount").innerText().catch(() => "(missing)"));

@@ -170,7 +170,15 @@ function api() {
     if (!heads.length) return null;
     const card = heads[0].parentElement;
     const r = card.getBoundingClientRect();
-    return { text: card.innerText.replace(/\s+/g, " ").trim(), visible: r.width > 0 && r.height > 0, top: Math.round(r.top) };
+    // The Student Analyst and Squad Leader are EDITABLE for an owner/admin now,
+    // so their names live in input values rather than in text. Reading both is
+    // what keeps this assertion about "is the name on the card" rather than
+    // about which element it happens to be in today.
+    const inputs = [...card.querySelectorAll("input")].map((i) => i.value).join(" ");
+    return {
+      text: (card.innerText + " " + inputs).replace(/\s+/g, " ").trim(),
+      visible: r.width > 0 && r.height > 0, top: Math.round(r.top),
+    };
   });
 
   console.log("\n== On the client's own record, without expanding anything ==");
