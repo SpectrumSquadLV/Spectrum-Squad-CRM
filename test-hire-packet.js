@@ -152,9 +152,12 @@ const mailTo = (addr) => pool.query(
   check("every field on the form resolves to the question it was asked as", unresolved.length === 0, unresolved);
   check("there are questions to resolve at all", named.size > 60, named.size);
   const emptyClauses = Object.keys(clauses).filter((k) => !clauses[k] || clauses[k].length < 40);
-  check("every clause the applicant initials has its wording", Object.keys(clauses).length >= 9 && emptyClauses.length === 0, emptyClauses);
-  check("the acknowledgement still carries the drug-test consent",
-    /pre-employment drug test/i.test(clauses.drug_test || ""), clauses.drug_test);
+  check("every clause the applicant initials has its wording", Object.keys(clauses).length >= 8 && emptyClauses.length === 0, emptyClauses);
+  // Leadership decided not to carry the old acknowledgement page's drug-test
+  // consent forward. Asserted rather than assumed: a clause nobody meant to ask
+  // for is as much a defect on an employment record as a missing one.
+  check("the retired drug-test consent is not asked for",
+    !Object.keys(clauses).some((k) => /drug/i.test(clauses[k])), Object.keys(clauses));
 
   const onScreen = content.packetSections().filter((s) => s !== "intro" && s !== "done");
   const onServer = require("./hire-packet")({
@@ -246,7 +249,7 @@ const mailTo = (addr) => pool.query(
   r = await me("/api/hire-packet/public/sign", { method: "POST", body: { section: "acknowledgement", typed_name: "ZzPacket Live", initials } });
   check("signing with an empty signature box is refused", r.status === 400 && /sign in the box/i.test(r.data.error), r.data);
 
-  const short = Object.assign({}, initials); delete short.drug_test;
+  const short = Object.assign({}, initials); delete short[Object.keys(clauses)[0]];
   r = await me("/api/hire-packet/public/sign", { method: "POST", body: { section: "acknowledgement", typed_name: "ZzPacket Live", signature: SIG, initials: short } });
   check("a half-initialled acknowledgement is refused", r.status === 400 && /initial every paragraph/i.test(r.data.error), r.data);
 

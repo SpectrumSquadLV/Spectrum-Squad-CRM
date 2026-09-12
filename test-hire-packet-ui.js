@@ -14,6 +14,9 @@
 //   BASE=http://127.0.0.1:3011 node test-hire-packet-ui.js
 const { chromium } = require("playwright");
 const { Pool } = require("pg");
+// The number of clauses is read from the form rather than typed here, so
+// adding or retiring one is a change in exactly one place.
+const CLAUSE_COUNT = Object.keys(require("./hire-packet-content").packetClauses()).length;
 const BASE = process.env.BASE || "http://localhost:3011";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false });
 
@@ -151,7 +154,9 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
   // ======================================================================
   section("Initialling the acknowledgement");
   await walkTo("acknowledgement");
-  check("the clauses are all there", (await page.locator(".clause").count()) === 9, await page.locator(".clause").count());
+  check("every clause on the form is on the screen",
+    (await page.locator(".clause").count()) === CLAUSE_COUNT,
+    (await page.locator(".clause").count()) + " of " + CLAUSE_COUNT);
   // The name is already there -- it carries over from the first step, which is
   // the point of carrying it over. Cleared here to check the other path.
   check("the name carries over from the application", (await page.inputValue("#ackName")) === "ZzUi Rbt",
@@ -177,7 +182,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
     document.querySelectorAll(".clause:not(.done)").forEach((el) => el.click());
   });
   await page.waitForTimeout(200);
-  check("every clause can be initialled", (await page.locator(".clause.done").count()) === 9);
+  check("every clause can be initialled", (await page.locator(".clause.done").count()) === CLAUSE_COUNT);
 
   await clickNext();
   check("...and it still will not move on without a signature",
@@ -196,7 +201,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
       WHERE p.applicant_id = $1 AND s.section_key = 'acknowledgement'`, [rbt.id]);
   check("the signature reaches the record", ackRow.rows.length === 1 && ackRow.rows[0].status === "signed", ackRow.rows[0]);
   check("...along with the initials that were stamped",
-    JSON.parse(ackRow.rows[0].initials || "{}").drug_test === "ZR", ackRow.rows[0].initials);
+    JSON.parse(ackRow.rows[0].initials || "{}").no_promises === "ZR", ackRow.rows[0].initials);
   check("...and the signature is recorded at the size it was drawn at",
     Number(ackRow.rows[0].sig_w) === pad.canvasW, `${ackRow.rows[0].sig_w} vs ${pad.canvasW}`);
 
