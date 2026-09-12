@@ -81,6 +81,12 @@
     formFilter: "all",
     formQuery: "",
     showArchived: false,
+    // Clinical Resources is the same library machinery pointed at the
+    // practice's own material. It keeps its own search and filter, because
+    // carrying a payer search across into a training shelf would look broken.
+    resourceCategories: [],
+    resourceFilter: "all",
+    resourceQuery: "",
     payerSearch: "",
   };
 
@@ -796,23 +802,29 @@
     "</div>";
   }
 
-  function formsHtml() {
-    const q = state.formQuery.trim().toLowerCase();
-    const visible = state.forms.filter((f) => {
+  // One renderer, two shelves. The only things that differ are the wording,
+  // which category list applies, and whether payer columns mean anything --
+  // everything else about a file in a library is the same job.
+  function formsHtml(shelfKey) {
+    const shelf = SHELF[shelfKey] || SHELF.forms;
+    const onShelf = state.forms.filter((f) => shelfOfRow(f) === shelf.key);
+    const q = queryFor(shelf.key).trim().toLowerCase();
+    const active = filterFor(shelf.key);
+    const visible = onShelf.filter((f) => {
       if (!state.showArchived && f.archived) return false;
-      if (state.formFilter !== "all" && f.category !== state.formFilter) return false;
+      if (active !== "all" && f.category !== active) return false;
       if (!q) return true;
       return [f.name, f.description, f.form_code, f.payer_name, f.category_label]
         .filter(Boolean).some((v) => String(v).toLowerCase().includes(q));
     });
-    const chips = [{ key: "all", label: "All" }].concat(state.categories)
-      .map((c) => '<button class="bh-chip' + (state.formFilter === c.key ? " on" : "") + '" data-cat="' + attr(c.key) + '">' + esc(c.label) + "</button>").join("");
+    const chips = [{ key: "all", label: "All" }].concat(catsFor(shelf.key))
+      .map((c) => '<button class="bh-chip' + (active === c.key ? " on" : "") + '" data-cat="' + attr(c.key) + '">' + esc(c.label) + "</button>").join("");
     return '<div class="bh-formbar">' +
         '<div class="bh-search">' + icon("search", 16) +
-          '<input id="bh-form-q" type="text" placeholder="Search forms" value="' + attr(state.formQuery) + '" />' +
+          '<input id="bh-form-q" type="text" placeholder="' + attr(shelf.searchLabel) + '" value="' + attr(queryFor(shelf.key)) + '" />' +
         "</div>" +
         (state.canAddForms
-          ? '<button class="bh-btn pri" id="bh-add-form">' + icon("plus", 15) + "Add Form</button>"
+          ? '<button class="bh-btn pri" id="bh-add-form">' + icon("plus", 15) + esc(shelf.addLabel) + "</button>"
           : "") +
         (state.canManageForms
           ? '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted,#6b6a86);">' +
@@ -823,9 +835,9 @@
       (visible.length
         ? '<div class="bh-forms">' + visible.map(formCardHtml).join("") + "</div>"
         : '<div class="bh-card"><div class="bh-empty">' +
-          (state.forms.length
-            ? "No forms match that search."
-            : "The Form Library is empty." + (state.canAddForms ? " Use Add Form to upload the first one." : "")) +
+          (onShelf.length
+            ? "No " + esc(shelf.noun) + "s match that search."
+            : esc(shelf.empty) + (state.canAddForms ? esc(shelf.emptyHint) : "")) +
           "</div></div>");
   }
 
@@ -903,30 +915,35 @@
     });
   }
 
-  function formDialog(existing) {
+  function formDialog(existing, shelfKey) {
     const f = existing || {};
-    const cats = state.categories.map((c) =>
+    const shelf = SHELF[shelfKey || shelfOfRow(existing) || "forms"] || SHELF.forms;
+    const cats = catsFor(shelf.key).map((c) =>
       '<option value="' + attr(c.key) + '"' + (f.category === c.key ? " selected" : "") + ">" + esc(c.label) + "</option>").join("");
     const payers = '<option value="">Not payer-specific</option>' + state.payers.map((p) =>
       '<option value="' + attr(p.key) + '"' + (f.payer_key === p.key ? " selected" : "") + ">" + esc(p.name) + "</option>").join("");
     const wrap = document.createElement("div");
     wrap.className = "bh-modal";
     wrap.innerHTML = '<div class="box">' +
-      "<h3>" + (existing ? "Edit form" : "Add a form") + "</h3>" +
+      "<h3>" + (existing ? "Edit " + esc(shelf.noun) : "Add a " + esc(shelf.noun)) + "</h3>" +
       '<div class="bh-err" id="bh-fd-err" style="display:none;"></div>' +
-      '<div class="bh-fld"><label>Form name</label><input type="text" id="bh-fd-name" value="' + attr(f.name || "") + '" /></div>' +
+      '<div class="bh-fld"><label>' + (shelf.payerFields ? "Form name" : "Name") + '</label><input type="text" id="bh-fd-name" value="' + attr(f.name || "") + '" /></div>' +
       '<div class="bh-fld"><label>Short description</label><textarea id="bh-fd-desc" rows="2">' + esc(f.description || "") + "</textarea></div>" +
       '<div class="bh-fld"><label>Category</label><select id="bh-fd-cat">' + cats + "</select></div>" +
-      '<div class="bh-fld"><label>Associated payer</label><select id="bh-fd-payer">' + payers + "</select></div>" +
+      (shelf.payerFields
+        ? '<div class="bh-fld"><label>Associated payer</label><select id="bh-fd-payer">' + payers + "</select></div>"
+        : "") +
       // A FORM CODE IS WHAT WIRES THIS FILE INTO THE CHEAT SHEET -- naming
       // FA-11F here makes this the file every BCBA is handed for that
       // requirement. The server refuses it from a contributor, so the box is
       // not shown to one either: a field that silently does nothing is worse
       // than no field.
-      (state.canManageForms
-        ? '<div class="bh-fld"><label>Form code</label><input type="text" id="bh-fd-code" value="' + attr(f.form_code || "") + '" />' +
-          '<div class="hint">A Nevada form code such as FA-11F. When the cheat sheet names this code, the requirement links straight to this file.</div></div>'
-        : '<div class="bh-fld"><div class="hint">An admin can link this to a cheat sheet form code after it is added.</div></div>') +
+      (!shelf.payerFields
+        ? ""
+        : state.canManageForms
+          ? '<div class="bh-fld"><label>Form code</label><input type="text" id="bh-fd-code" value="' + attr(f.form_code || "") + '" />' +
+            '<div class="hint">A Nevada form code such as FA-11F. When the cheat sheet names this code, the requirement links straight to this file.</div></div>'
+          : '<div class="bh-fld"><div class="hint">An admin can link this to a cheat sheet form code after it is added.</div></div>') +
       '<div class="bh-fld"><label style="display:inline-flex;align-items:center;gap:7px;font-weight:600;">' +
         '<input type="checkbox" id="bh-fd-edit"' + (f.editable ? " checked" : "") + " /> This file can be edited and filled in</label>" +
         '<div class="hint">Shows as "Download Editable" rather than "Download".</div></div>' +
@@ -934,7 +951,7 @@
         (existing && f.filename ? '<div class="hint">Currently: ' + esc(f.filename) + "</div>" : "") + "</div>" +
       '<div class="bh-actions" style="justify-content:flex-end;margin-top:16px;">' +
         '<button class="bh-btn" id="bh-fd-cancel">Cancel</button>' +
-        '<button class="bh-btn pri" id="bh-fd-save">' + (existing ? "Save changes" : "Add form") + "</button>" +
+        '<button class="bh-btn pri" id="bh-fd-save">' + (existing ? "Save changes" : "Add " + esc(shelf.noun)) + "</button>" +
       "</div></div>";
     document.body.appendChild(wrap);
 
@@ -946,16 +963,17 @@
       const err = wrap.querySelector("#bh-fd-err");
       const show = (m) => { err.textContent = m; err.style.display = "block"; };
       const name = wrap.querySelector("#bh-fd-name").value.trim();
-      if (!name) return show("A form needs a name.");
+      if (!name) return show("A " + shelf.noun + " needs a name.");
       const file = wrap.querySelector("#bh-fd-file").files[0] || null;
       if (!existing && !file) return show("Choose a file to upload.");
       const meta = {
         name: name,
         description: wrap.querySelector("#bh-fd-desc").value.trim(),
         category: wrap.querySelector("#bh-fd-cat").value,
-        payer_key: wrap.querySelector("#bh-fd-payer").value,
+        payer_key: (wrap.querySelector("#bh-fd-payer") || { value: "" }).value,
         form_code: (wrap.querySelector("#bh-fd-code") || { value: "" }).value.trim(),
         editable: wrap.querySelector("#bh-fd-edit").checked,
+        shelf: shelf.key,
       };
       const btn = wrap.querySelector("#bh-fd-save");
       btn.disabled = true;
@@ -999,11 +1017,44 @@
     return d;
   }
 
+  // Which shelf the screen is currently looking at, and the per-shelf bits of
+  // state that go with it. One set of render functions serves both, because
+  // two copies of an upload dialog is two sets of bugs.
+  const SHELF = {
+    forms: {
+      key: "forms",
+      title: "Form Library",
+      addLabel: "Add Form",
+      searchLabel: "Search forms",
+      noun: "form",
+      empty: "The Form Library is empty.",
+      emptyHint: " Use Add Form to upload the first one.",
+      payerFields: true,
+    },
+    resources: {
+      key: "resources",
+      title: "Clinical Resources",
+      addLabel: "Add Resource",
+      searchLabel: "Search resources",
+      noun: "resource",
+      empty: "Clinical Resources is empty.",
+      emptyHint: " Use Add Resource to upload the first one \u2014 training material, protocols, anything the team should be able to find.",
+      payerFields: false,
+    },
+  };
+  const shelfNow = () => (state.tab === "resources" ? "resources" : "forms");
+  const shelfOfRow = (f) => (f && f.shelf === "resources" ? "resources" : "forms");
+  const catsFor = (shelf) => (shelf === "resources" ? state.resourceCategories : state.categories);
+  const queryFor = (shelf) => (shelf === "resources" ? state.resourceQuery : state.formQuery);
+  const setQuery = (shelf, v) => { if (shelf === "resources") state.resourceQuery = v; else state.formQuery = v; };
+  const filterFor = (shelf) => (shelf === "resources" ? state.resourceFilter : state.formFilter);
+  const setFilter = (shelf, v) => { if (shelf === "resources") state.resourceFilter = v; else state.formFilter = v; };
+
   // ================= shell ================================================
   const TABS = [
     { key: "cheatsheet", label: "Treatment Plan Cheat Sheet", icon: "clipboard" },
     { key: "forms", label: "Form Library", icon: "folder" },
-    { key: "resources", label: "Clinical Resources", icon: "book", soon: true },
+    { key: "resources", label: "Clinical Resources", icon: "book" },
     { key: "student", label: "Student Analyst", icon: "people", soon: true },
   ];
 
@@ -1030,7 +1081,9 @@
         (p ? cheatsheetLayoutHtml(p)
            : '<div class="bh-card"><div class="bh-empty">Pick a payer above to see what they require.</div></div>');
     } else if (state.tab === "forms") {
-      body = formsHtml();
+      body = formsHtml("forms");
+    } else if (state.tab === "resources") {
+      body = formsHtml("resources");
     } else {
       body = comingSoonHtml((TABS.find((t) => t.key === state.tab) || {}).label || "This area");
     }
@@ -1173,12 +1226,12 @@
 
     // ---- forms
     mountEl.querySelectorAll("[data-cat]").forEach((b) => b.addEventListener("click", () => {
-      state.formFilter = b.dataset.cat;
+      setFilter(shelfNow(), b.dataset.cat);
       render();
     }));
     const search = q("#bh-form-q");
     if (search) search.addEventListener("input", () => {
-      state.formQuery = search.value;
+      setQuery(shelfNow(), search.value);
       const at = search.selectionStart;
       render();
       const again = mountEl.querySelector("#bh-form-q");
@@ -1191,9 +1244,11 @@
       render();
     });
     const add = q("#bh-add-form");
-    if (add) add.addEventListener("click", () => formDialog(null));
-    mountEl.querySelectorAll("[data-edit-form]").forEach((b) => b.addEventListener("click", () =>
-      formDialog(state.forms.find((f) => f.id === Number(b.dataset.editForm)))));
+    if (add) add.addEventListener("click", () => formDialog(null, shelfNow()));
+    mountEl.querySelectorAll("[data-edit-form]").forEach((b) => b.addEventListener("click", () => {
+      const row = state.forms.find((f) => f.id === Number(b.dataset.editForm));
+      formDialog(row, shelfOfRow(row));
+    }));
     mountEl.querySelectorAll("[data-withdraw-form]").forEach((b) => b.addEventListener("click", async () => {
       const f = state.forms.find((x) => x.id === Number(b.dataset.withdrawForm)) || {};
       if (!confirm('Withdraw "' + (f.name || "this form") + '"?\n\nIt is removed from the library for everyone. It is not deleted -- an admin can put it back.')) return;
@@ -1228,6 +1283,7 @@
   async function loadForms() {
     const d = await api("/api/bcba/forms" + (state.showArchived ? "?archived=1" : ""));
     state.forms = d.forms || [];
+    state.resourceCategories = d.resource_categories || [];
     state.categories = d.categories || state.categories;
     state.canManageForms = !!d.can_manage;
     state.canAddForms = !!d.can_add;
@@ -1237,6 +1293,7 @@
     const d = await api("/api/bcba/cheatsheet");
     state.payers = d.payers || [];
     state.categories = d.categories || state.categories;
+    state.resourceCategories = d.resource_categories || state.resourceCategories;
     state.canManageForms = !!d.can_manage_forms;
     state.canAddForms = !!d.can_add_forms;
     state.canEditRequirements = !!d.can_edit_requirements;
