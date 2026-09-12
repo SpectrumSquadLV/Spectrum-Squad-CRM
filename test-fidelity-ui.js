@@ -652,6 +652,68 @@ const section = (t) => console.log("\n== " + t + " ==");
     await scoringModal.locator("#fid-finalize").isEnabled());
   await page.evaluate(() => document.querySelectorAll(".modal-backdrop").forEach((m) => m.remove()));
 
+  // ================================================================
+  section("What a Fidelity Evaluator is offered on the RBT Fidelity page");
+
+  // An evaluator scores an RBT. They are refused the roster, the rankings and
+  // the raise settings by the server -- and were still being shown the buttons
+  // for all of them. "Raise settings" is about pay, so a control offering it
+  // to somebody who may not see it is the one worth asserting hardest.
+  const evalPw = "FidelityTest123!";
+  const evalEmail = `fidui.eval.${stamp}@example.invalid`;
+  const evalUser = await api(page, "/api/admin/users", {
+    method: "POST",
+    body: { name: `FidUI Eval ${stamp}`, email: evalEmail, password: evalPw, role: "clinical" },
+  });
+  check("an evaluator account exists to test with", evalUser.status === 201, evalUser.body);
+  await api(page, `/api/admin/users/${evalUser.body.id}`, {
+    method: "PATCH", body: { module_access: { "fidelity-evaluator": true } },
+  });
+
+  // The owner's own view first, as the positive control: every assertion below
+  // is about something being ABSENT, and an absent button is also what a page
+  // that failed to render looks like.
+  await page.goto(BASE + "/#/fidelity", { waitUntil: "networkidle" });
+  await page.waitForTimeout(2000);
+  check("the owner is offered Raise settings", await page.locator("#fid-settings").count() === 1);
+  check("...and the roster loaded for them", await page.locator("#fid-body").innerText() !== "");
+
+  const evalPage = await browser.newPage({ viewport: { width: 1400, height: 1100 } });
+  const evalErrors = [];
+  evalPage.on("pageerror", (e) => evalErrors.push("pageerror: " + e.message));
+  await signIn(evalPage, evalEmail, evalPw);
+  await evalPage.goto(BASE + "/#/fidelity", { waitUntil: "networkidle" });
+  await evalPage.waitForTimeout(2000);
+
+  check("the evaluator's page rendered at all",
+    /RBT Fidelity/.test(await evalPage.locator(".page-header").innerText()),
+    await evalPage.locator(".page-header").innerText().catch(() => "(no header)"));
+  check("the evaluator is NOT offered Raise settings",
+    await evalPage.locator("#fid-settings").count() === 0);
+  for (const [id, label] of [
+    ["fid-insights", "Training needs"], ["fid-assign", "Ask somebody to observe"],
+    ["fid-random", "Select random RBT"], ["fid-new", "+ New Fidelity Check"],
+  ]) {
+    check(`...nor ${label}, which the server refuses them too`,
+      await evalPage.locator("#" + id).count() === 0);
+  }
+  const evalBody = await evalPage.locator("#fid-body").innerText();
+  check("...and their page is not a refusal message where the screen should be",
+    !/not permitted/i.test(evalBody), evalBody.slice(0, 200));
+
+  // The gate hides the SCREEN. The data was never reachable and still is not.
+  const evalSettings = await api(evalPage, "/api/fidelity/settings");
+  check("the raise settings are still refused to an evaluator by the server",
+    evalSettings.status === 403, evalSettings);
+  const evalDash = await api(evalPage, "/api/fidelity/dashboard");
+  check("...as is the roster", evalDash.status === 403, evalDash.status);
+  const evalMine = await api(evalPage, "/api/fidelity/my-assignments");
+  check("...while the server tells their screen plainly that they do not manage",
+    evalMine.status === 200 && evalMine.body.can_manage === false, evalMine.body);
+  check("no uncaught JavaScript errors on the evaluator's page",
+    evalErrors.length === 0, evalErrors.join(" ;; "));
+  await evalPage.close();
+
   check("no uncaught JavaScript errors", errors.length === 0, errors.join(" ;; "));
   console.log(`\n  ${pass} passed, ${fail} failed`);
   await browser.close();

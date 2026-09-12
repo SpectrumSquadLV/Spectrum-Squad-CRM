@@ -584,6 +584,19 @@ function scoresTotalling(total, opts = {}) {
     check(`an evaluator is refused ${label}`, res.status === 403, { s: res.status, d: res.data });
   }
 
+  // The screen has to know which of the two it is drawing for, and the answer
+  // comes from the server rather than from a copy of the grants in the browser.
+  // my-assignments is the one Fidelity route both tiers can reach.
+  r = await evaluator.req("/api/fidelity/my-assignments");
+  check("an evaluator reaches their own assignments", r.status === 200, r.status);
+  check("...and is told plainly that they do not manage", r.data.can_manage === false, r.data);
+  r = await manager.req("/api/fidelity/my-assignments");
+  check("the Fidelity Management grant answers the same question the other way",
+    r.status === 200 && r.data.can_manage === true, r.data);
+  r = await owner("/api/fidelity/my-assignments");
+  check("...and so does the owner, without any grant",
+    r.status === 200 && r.data.can_manage === true, r.data);
+
   // ================================================================
   section("An observation, scored and signed");
 

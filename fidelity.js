@@ -2399,7 +2399,15 @@ module.exports = function initFidelity(ctx) {
           scored: calc.answered, items_total: calc.items_total, complete: calc.complete,
         });
       }
-      return json(res, 200, { assignments: out });
+      // WHAT THIS VIEWER MAY DO, answered by the server rather than worked out
+      // in the browser from a copy of their grants. This is the one Fidelity
+      // route every signed-in user can reach, so it is where the screen asks.
+      //
+      // It gates the SCREEN, not the data: every leadership route already
+      // refuses an evaluator on its own, and still does. Offering somebody a
+      // "Raise settings" button that can only answer 403 is its own kind of
+      // wrong -- a control on screen is a statement about what you may do.
+      return json(res, 200, { assignments: out, can_manage: manage, can_evaluate: evaluate });
     }
 
     if (pathname === "/api/fidelity/check" && method === "POST") {
