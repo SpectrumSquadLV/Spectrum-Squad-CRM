@@ -7,6 +7,13 @@
 //      DATA, shipped in bcba-cheatsheet-data.js, read-only over the API.
 //   2. The Form Library. Blank forms the practice uploads and maintains
 //      itself, so a form changing does not mean changing the CRM.
+//   3. Clinical Resources. The same shelf mechanism pointed at the practice's
+//      own material -- training decks, protocols, internal guides -- rather
+//      than at payer forms. It shares the upload, download, withdraw and
+//      archive machinery, because a second copy of all of that would be a
+//      second set of bugs; what it does NOT share is the cheat sheet's form
+//      code linkage. A training deck must never become the file a payer
+//      requirement points at.
 //
 // NO CLIENT INFORMATION PASSES THROUGH THIS MODULE. The checklist a BCBA ticks
 // while reviewing a plan is a review aid, not a record: it is never sent here
@@ -95,6 +102,12 @@ module.exports = function initBcbaHub(ctx) {
     }
   }
 
+  // The two shelves. 'forms' is the payer Form Library and is the default, so
+  // every row that existed before this column did keeps behaving exactly as it
+  // did. 'resources' is Clinical Resources.
+  const SHELVES = ["forms", "resources"];
+  const shelfOf = (v) => (SHELVES.includes(clean(v)) ? clean(v) : "forms");
+
   const CATEGORIES = [
     { key: "assessments", label: "Assessments" },
     { key: "clinical", label: "Clinical" },
@@ -104,6 +117,20 @@ module.exports = function initBcbaHub(ctx) {
     { key: "other", label: "Other" },
   ];
   const CATEGORY_KEYS = CATEGORIES.map((c) => c.key);
+
+  // Clinical Resources has its own categories. The Form Library's are shaped
+  // by who the form is FOR -- a payer, a school, a caregiver -- which is the
+  // wrong question to ask about a training deck.
+  const RESOURCE_CATEGORIES = [
+    { key: "training", label: "Training" },
+    { key: "protocols", label: "Protocols & Procedures" },
+    { key: "tools", label: "Assessment Tools" },
+    { key: "parent", label: "Parent/Caregiver" },
+    { key: "policy", label: "Policies" },
+    { key: "other", label: "Other" },
+  ];
+  const categoriesFor = (shelf) => (shelf === "resources" ? RESOURCE_CATEGORIES : CATEGORIES);
+  const categoryKeysFor = (shelf) => categoriesFor(shelf).map((c) => c.key);
 
   const clean = (v) => String(v == null ? "" : v).trim();
   const MAX_UPLOAD = 20 * 1024 * 1024;
@@ -254,7 +281,11 @@ module.exports = function initBcbaHub(ctx) {
       created_at TEXT,
       updated_at TEXT
     )`);
+    // Additive: every row that predates this column is a Form Library row, and
+    // the default says so.
+    await dbRun("ALTER TABLE bcba_forms ADD COLUMN IF NOT EXISTS shelf TEXT NOT NULL DEFAULT 'forms'").catch(() => {});
     await dbRun("CREATE INDEX IF NOT EXISTS bcba_forms_code_idx ON bcba_forms (form_code)").catch(() => {});
+    await dbRun("CREATE INDEX IF NOT EXISTS bcba_forms_shelf_idx ON bcba_forms (shelf)").catch(() => {});
   }
 
   // ---- form codes -------------------------------------------------------
@@ -315,8 +346,9 @@ module.exports = function initBcbaHub(ctx) {
       id: r.id,
       name: r.name,
       description: r.description || "",
+      shelf: shelfOf(r.shelf),
       category: r.category || "other",
-      category_label: (CATEGORIES.find((c) => c.key === r.category) || {}).label || "Other",
+      category_label: (categoriesFor(shelfOf(r.shelf)).find((c) => c.key === r.category) || {}).label || "Other",
       payer_key: r.payer_key || null,
       payer_name: r.payer_key ? (CHEATSHEET.payers.find((p) => p.key === r.payer_key) || {}).name || null : null,
       form_code: r.form_code || null,
@@ -336,8 +368,11 @@ module.exports = function initBcbaHub(ctx) {
   }
 
   async function formsByCodeMap() {
+    // Form Library only. A payer requirement saying "FA-11F" must resolve to
+    // the payer's form, never to somebody's training deck that happens to
+    // mention the code.
     const rows = await dbAll(
-      "SELECT * FROM bcba_forms WHERE archived_at IS NULL AND form_code IS NOT NULL AND form_code <> ''"
+      "SELECT * FROM bcba_forms WHERE shelf = 'forms' AND archived_at IS NULL AND form_code IS NOT NULL AND form_code <> ''"
     ).catch(() => []);
     const map = new Map();
     for (const r of rows) if (!map.has(normCode(r.form_code))) map.set(normCode(r.form_code), r);
@@ -401,6 +436,7 @@ module.exports = function initBcbaHub(ctx) {
           };
         }),
         categories: CATEGORIES,
+        resource_categories: RESOURCE_CATEGORIES,
         can_manage_forms: canManage(user),
         can_add_forms: canAddForms(user),
         // Editing a payer requirement changes what every BCBA is told to
@@ -439,16 +475,23 @@ module.exports = function initBcbaHub(ctx) {
     // ---- the form library ------------------------------------------------
     if (pathname === "/api/bcba/forms" && method === "GET") {
       const showArchived = clean(query.archived) === "1" && canManage(user);
+      // Both shelves come back in one call and each row says which it is on.
+      // One request, one list to keep in step; the screen decides which tab
+      // shows what. A `shelf` filter is honoured when asked for.
+      const only = SHELVES.includes(clean(query.shelf)) ? clean(query.shelf) : null;
       const rows = await dbAll(
         showArchived
           ? "SELECT * FROM bcba_forms ORDER BY archived_at IS NULL DESC, name"
           : "SELECT * FROM bcba_forms WHERE archived_at IS NULL ORDER BY name"
       ).catch(() => []);
+      const kept = only ? rows.filter((r) => shelfOf(r.shelf) === only) : rows;
       json(res, 200, {
         // (r) => rather than a bare reference: map passes the INDEX as the
         // second argument, which would arrive here as the viewer.
-        forms: rows.map((r) => shapeForm(r, user)),
+        forms: kept.map((r) => shapeForm(r, user)),
         categories: CATEGORIES,
+        resource_categories: RESOURCE_CATEGORIES,
+        shelves: SHELVES,
         can_manage: canManage(user),
         can_add: canAddForms(user),
       });
@@ -482,25 +525,30 @@ module.exports = function initBcbaHub(ctx) {
       if (!canAddForms(user)) { json(res, 403, { error: "Not permitted" }); return true; }
       const name = clean(query.name);
       if (!name) { json(res, 400, { error: "A form needs a name." }); return true; }
-      const category = CATEGORY_KEYS.includes(clean(query.category)) ? clean(query.category) : "other";
-      const payerKey = CHEATSHEET.payers.some((p) => p.key === clean(query.payer_key)) ? clean(query.payer_key) : null;
+      const shelf = shelfOf(query.shelf);
+      const category = categoryKeysFor(shelf).includes(clean(query.category)) ? clean(query.category) : "other";
+      // A payer and a form code are claims about the payer Form Library. On the
+      // Clinical Resources shelf they mean nothing, so they are dropped rather
+      // than stored where nothing will ever read them.
+      const payerKey = shelf === "forms" && CHEATSHEET.payers.some((p) => p.key === clean(query.payer_key))
+        ? clean(query.payer_key) : null;
       // A FORM CODE IS A CLAIM ABOUT THE CHEAT SHEET, not a label: it is what
       // attaches this file to "Form FA-11E" wherever the document names it, on
       // every BCBA's screen. Setting one silently answers a requirement with a
       // file of your choosing, so a contributor may not, and the field is
       // dropped rather than refused -- the upload is still wanted, and an admin
       // can point it at a code afterwards.
-      const formCode = canManage(user) ? normCode(query.form_code) || null : null;
+      const formCode = shelf === "forms" && canManage(user) ? normCode(query.form_code) || null : null;
       const { tooBig, buffer } = await readRaw(req);
       if (tooBig) { json(res, 413, { error: "That file is larger than 20 MB." }); return true; }
       if (!buffer.length) { json(res, 400, { error: "That upload came through empty." }); return true; }
 
       const row = await dbGet(
-        `INSERT INTO bcba_forms (name, description, category, payer_key, form_code, editable,
+        `INSERT INTO bcba_forms (name, description, category, payer_key, form_code, editable, shelf,
                                  filename, mime_type, size_bytes, uploaded_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
         [name.slice(0, 200), clean(query.description).slice(0, 500), category, payerKey,
-         formCode, clean(query.editable) === "1",
+         formCode, clean(query.editable) === "1", shelf,
          clean(query.filename).slice(0, 200) || "form", clean(query.mime) || "application/octet-stream",
          buffer.length, uploaderTag(user), nowISO(), nowISO()]
       );
@@ -739,11 +787,22 @@ module.exports = function initBcbaHub(ctx) {
         put("name", clean(b.name).slice(0, 200));
       }
       if (b.description !== undefined) put("description", clean(b.description).slice(0, 500));
-      if (b.category !== undefined) put("category", CATEGORY_KEYS.includes(clean(b.category)) ? clean(b.category) : "other");
-      if (b.payer_key !== undefined) {
-        put("payer_key", CHEATSHEET.payers.some((p) => p.key === clean(b.payer_key)) ? clean(b.payer_key) : null);
+      // Validated against the shelf the row is actually on, so a Clinical
+      // Resource cannot be edited into a Form Library category and then
+      // disappear from both filter lists.
+      if (b.category !== undefined) {
+        const keys = categoryKeysFor(shelfOf(existing.shelf));
+        put("category", keys.includes(clean(b.category)) ? clean(b.category) : "other");
       }
-      if (b.form_code !== undefined) put("form_code", normCode(b.form_code) || null);
+      // A payer and a form code only mean something on the Form Library shelf,
+      // the same as when the row was created.
+      if (b.payer_key !== undefined) {
+        put("payer_key", shelfOf(existing.shelf) === "forms"
+          && CHEATSHEET.payers.some((p) => p.key === clean(b.payer_key)) ? clean(b.payer_key) : null);
+      }
+      if (b.form_code !== undefined) {
+        put("form_code", shelfOf(existing.shelf) === "forms" ? normCode(b.form_code) || null : null);
+      }
       if (b.editable !== undefined) put("editable", !!b.editable);
       // Archiving is reversible and keeps the row. A form that was required
       // last year is part of why a plan was written the way it was, so the
@@ -800,5 +859,8 @@ module.exports = function initBcbaHub(ctx) {
     return false;
   }
 
-  return { initTables, handleApi, _lib: { CATEGORIES, codesIn, normCode, isPrintable, CHEATSHEET } };
+  return {
+    initTables, handleApi,
+    _lib: { CATEGORIES, RESOURCE_CATEGORIES, SHELVES, shelfOf, categoriesFor, codesIn, normCode, isPrintable, CHEATSHEET },
+  };
 };

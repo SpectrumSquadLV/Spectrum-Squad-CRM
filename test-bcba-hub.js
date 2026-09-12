@@ -23,7 +23,9 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { Pool } = require("pg");
 const BASE = process.env.BASE || "http://localhost:3009";
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false });
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -294,6 +296,84 @@ async function login(email, password) {
     badPayer.data.form.payer_key === null, badPayer.data.form);
 
   // ================= no client data =====================================
+  // ---- Clinical Resources -------------------------------------------------
+  section("Clinical Resources is the same library, pointed somewhere else");
+  const resBytes = crypto.randomBytes(900);
+  // A BCBA puts a training deck up. Same permission as adding a payer form:
+  // the person holding the file is the person who should be able to file it.
+  const resUp = await up(clinical,
+    "name=" + encodeURIComponent("Zz Prompt Fading Refresher") +
+    "&description=" + encodeURIComponent("Team training deck.") +
+    "&shelf=resources&category=training&filename=prompting.pdf&mime=application/pdf",
+    resBytes);
+  check("a BCBA can add a clinical resource", resUp.status === 201, resUp.data);
+  const resId = resUp.data && resUp.data.form && resUp.data.form.id;
+  check("it lands on the resources shelf", resUp.data.form.shelf === "resources", resUp.data.form.shelf);
+  check("...under a resource category, not a payer-form one",
+    resUp.data.form.category === "training" && resUp.data.form.category_label === "Training", resUp.data.form);
+  check("...and the file comes back byte for byte like any other",
+    Buffer.compare((await clinical.req("/api/bcba/forms/" + resId + "/file", { binary: true })).buffer, resBytes) === 0);
+
+  const both = await owner.req("/api/bcba/forms");
+  const shelvesSeen = new Set((both.data.forms || []).map((f) => f.shelf));
+  check("one call returns both shelves and every row says which it is on",
+    shelvesSeen.has("forms") && shelvesSeen.has("resources"), [...shelvesSeen]);
+  check("every pre-existing form is still a Form Library form",
+    (both.data.forms || []).filter((f) => f.id !== resId).every((f) => f.shelf === "forms"),
+    (both.data.forms || []).map((f) => [f.name, f.shelf]));
+  const onlyRes = await owner.req("/api/bcba/forms?shelf=resources");
+  check("and a shelf can be asked for on its own",
+    (onlyRes.data.forms || []).length >= 1 && (onlyRes.data.forms || []).every((f) => f.shelf === "resources"),
+    (onlyRes.data.forms || []).map((f) => f.shelf));
+  check("the resource categories are offered alongside the form ones",
+    (both.data.resource_categories || []).some((c) => c.key === "training")
+      && (both.data.categories || []).some((c) => c.key === "payer"),
+    { res: both.data.resource_categories, forms: both.data.categories });
+
+  // THE ONE THING THE TWO SHELVES MUST NOT SHARE. A payer requirement saying
+  // "FA-11E" must resolve to the payer's form. If a resource could claim a
+  // form code, a training deck would become the file every BCBA is handed for
+  // a Medicaid requirement.
+  const sneaky = await up(owner,
+    "name=" + encodeURIComponent("Zz Resource Claiming A Code") +
+    "&shelf=resources&form_code=FA-11E&payer_key=nv-medicaid&category=training&filename=x.pdf&mime=application/pdf",
+    resBytes);
+  check("a resource cannot claim a form code, even from an owner",
+    sneaky.status === 201 && sneaky.data.form.form_code === null, sneaky.data.form);
+  check("...nor a payer", sneaky.data.form.payer_key === null, sneaky.data.form);
+  const afterSneaky = await owner.req("/api/bcba/cheatsheet");
+  const nvAgain = afterSneaky.data.payers.find((p) => p.name === "NV Medicaid");
+  const fa11eAgain = nvAgain.required_documents.find((d) => /FA-11E/.test(d.text));
+  check("so the cheat sheet requirement it aimed at still links to nothing",
+    fa11eAgain && fa11eAgain.form === null, fa11eAgain);
+  const patched = await owner.req("/api/bcba/forms/" + sneaky.data.form.id, {
+    method: "PATCH", body: { form_code: "FA-11E", payer_key: "nv-medicaid", category: "payer" },
+  });
+  check("and editing one afterwards cannot give it a code either",
+    patched.status === 200 && patched.data.form.form_code === null && patched.data.form.payer_key === null,
+    patched.data.form);
+  check("...nor a category from the other shelf's list",
+    patched.data.form.category === "other", patched.data.form.category);
+
+  // Belt and braces, tested separately. The upload guard above is what stops a
+  // resource carrying a code in the first place; this is the guard behind it,
+  // and the only way to reach it is to put a row in as though the first guard
+  // had failed. Without this the second guard could be deleted and every test
+  // here would still pass.
+  await pool.query(
+    `UPDATE bcba_forms SET form_code = 'FA-11E', payer_key = 'nv-medicaid' WHERE id = $1`,
+    [sneaky.data.form.id]
+  );
+  const forced = await owner.req("/api/bcba/cheatsheet");
+  const nvForced = forced.data.payers.find((p) => p.name === "NV Medicaid");
+  const fa11eForced = nvForced.required_documents.find((d) => /FA-11E/.test(d.text));
+  check("even a resource that somehow carries a form code is not what a requirement links to",
+    fa11eForced && fa11eForced.form === null, fa11eForced);
+
+  await owner.req("/api/bcba/forms/" + sneaky.data.form.id, { method: "PATCH", body: { archived: true } });
+  await owner.req("/api/bcba/forms/" + sneaky.data.form.id, { method: "DELETE" });
+  await clinical.req("/api/bcba/forms/" + resId + "/withdraw", { method: "POST" });
+
   section("Nothing about a client goes through here");
   const src = read("bcba-hub.js");
   check("the module never reads the clients table", !/FROM clients|clients\b.*SELECT/i.test(src));
@@ -304,5 +384,6 @@ async function login(email, password) {
     !/api\/bcba\/(checklist|progress)/.test(read("bcba-hub-frontend.js")));
 
   console.log(`\n${pass} passed, ${fail} failed`);
+  await pool.end().catch(() => {});
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

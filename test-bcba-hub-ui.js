@@ -64,14 +64,70 @@ const { chromium } = require("playwright");
   check("and it routes to #/bcba-hub",
     (await page.locator('[data-nav="bcba-hub"]').first().getAttribute("data-nav-hash")) === "#/bcba-hub");
 
+  // One file on each shelf, put there before the hub is opened: the hub loads
+  // its library once and nothing refetches on a tab switch, so seeding first
+  // is what makes the per-tab assertions further down mean anything.
+  const SH = Date.now().toString().slice(-6);
+  const seeded = await page.evaluate(async (sh) => {
+    const put = async (qs) => (await fetch("/api/bcba/forms?" + qs, {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: new Blob([new Uint8Array([37, 80, 68, 70])]),
+    })).status;
+    return {
+      res: await put(`name=ZzShelf+Resource+${sh}&shelf=resources&category=training&filename=r.pdf&mime=application/pdf`),
+      form: await put(`name=ZzShelf+Form+${sh}&category=payer&filename=f.pdf&mime=application/pdf`),
+    };
+  }, SH);
+  check("one file can be put on each shelf", seeded.res === 201 && seeded.form === 201, seeded);
+
   await openHub();
   const shell = await panelText();
   check("the hub renders its heading", /BCBA Hub/.test(shell));
-  check("the two working areas are tabs", /Treatment Plan Cheat Sheet/.test(shell) && /Form Library/.test(shell));
-  check("the two future areas are shown as placeholders",
-    /Clinical Resources/.test(shell) && /Student Analyst/.test(shell) && /Coming soon/i.test(shell));
+  check("the working areas are tabs",
+    /Treatment Plan Cheat Sheet/.test(shell) && /Form Library/.test(shell) && /Clinical Resources/.test(shell));
+  check("the one area still to come is shown as a placeholder",
+    /Student Analyst/.test(shell) && /Coming soon/i.test(shell));
   const disabled = await page.locator(".bh-tab[disabled]").count();
-  check("and the placeholders are not clickable", disabled === 2, disabled);
+  check("and the placeholder is not clickable", disabled === 1, disabled);
+
+  // Clinical Resources is the Form Library machinery pointed at the practice's
+  // own material. It is a real shelf now, so the test opens it rather than
+  // asserting it is switched off.
+  // Asserted before the click, so switching the tab back off fails as a
+  // readable check rather than as a click that waits thirty seconds.
+  check("Clinical Resources is no longer a placeholder",
+    (await page.locator('.bh-tab[data-tab="resources"][disabled]').count()) === 0);
+  await page.click('.bh-tab[data-tab="resources"]');
+  await page.waitForTimeout(900);
+  const res = await panelText();
+  check("Clinical Resources opens", /Add Resource|Search resources/i.test(res), res.slice(0, 200));
+  check("...and offers an upload to somebody who can add to the library",
+    (await page.locator("#bh-add-form").count()) === 1);
+  check("...with its own categories rather than the payer form ones",
+    /Training/.test(res) && /Protocols/.test(res) && !/Insurance\/Payer/.test(res), res.slice(0, 300));
+  await page.click('.bh-tab[data-tab="forms"]');
+  await page.waitForTimeout(900);
+  const back = await panelText();
+  check("and the Form Library still has its own", /Insurance\/Payer/.test(back), back.slice(0, 300));
+
+  // The separation that matters on screen: one file per shelf, each visible
+  // only on its own tab. Without this the two shelves could render as one
+  // undivided list and every other check here would still pass.
+  await page.click('.bh-tab[data-tab="resources"]');
+  await page.waitForTimeout(1200);
+  const resList = await panelText();
+  check("a resource shows under Clinical Resources", resList.includes(`ZzShelf Resource ${SH}`), resList.slice(0, 300));
+  check("...and a Form Library form does not", !resList.includes(`ZzShelf Form ${SH}`), resList.slice(0, 300));
+  await page.click('.bh-tab[data-tab="forms"]');
+  await page.waitForTimeout(1200);
+  const formList = await panelText();
+  check("a form shows under the Form Library", formList.includes(`ZzShelf Form ${SH}`), formList.slice(0, 300));
+  check("...and a resource does not", !formList.includes(`ZzShelf Resource ${SH}`), formList.slice(0, 300));
+
+  // Back where the rest of this suite expects to be.
+  await page.click('.bh-tab[data-tab="cheatsheet"]');
+  await page.waitForTimeout(900);
 
   console.log("\n== One payer at a time ==");
   const payerCount = await page.locator("[data-payer]").count();
