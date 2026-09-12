@@ -1360,6 +1360,25 @@ module.exports = function initHr(ctx) {
          WHERE id = ?`,
         [applicant.id, nowISO().slice(0, 10), startDate, (offer && offer.job_title) || null, applicant.email || null, emp.id]
       );
+      // A rehire. The row that matched is somebody who worked here before, and
+      // it is still marked terminated -- accepting an offer did not touch the
+      // employment status, so they stayed invisible to every list in the CRM
+      // that excludes former staff (the Staff directory, scheduling, billable,
+      // supervision, fidelity) until somebody noticed and changed it by hand.
+      // Their onboarding portal link is refused for the same reason.
+      //
+      // So acceptance puts them back at 'onboarding', which is where a new hire
+      // starts. The old termination date is cleared, exactly as changing the
+      // status by hand already does -- otherwise it counts them as a separation
+      // in the turnover rate forever -- but it is named in the activity log, so
+      // the fact that they once left, and when, survives.
+      if (["terminated", "archived"].includes(String(emp.status || "").toLowerCase())) {
+        await dbRun(
+          "UPDATE hr_employees SET status = 'onboarding', termination_date = NULL WHERE id = ?",
+          [emp.id]
+        );
+        await logEmpActivity(emp.id, `Rehired -- accepted a new offer${offer && offer.job_title ? ` for ${offer.job_title}` : ""}. Status moved from ${emp.status} to onboarding${emp.termination_date ? `; previous termination date ${emp.termination_date} cleared (kept here as history)` : ""}.`).catch(() => {});
+      }
       return await dbGet("SELECT * FROM hr_employees WHERE id = ?", [emp.id]);
     }
     const row = await dbRun(
