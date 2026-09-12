@@ -4921,6 +4921,9 @@ async function handle(req, res, pathname, method, query = {}) {
         // enforced server-side, so switching them off only hid the sidebar
         // button -- the data was still reachable by URL.
         pathname.startsWith("/api/clients") ? "pipeline" :
+        // The insurer list and the merge are about client records, so they
+        // follow the Clients module's per-user access the same way.
+        pathname.startsWith("/api/insurers") ? "pipeline" :
         pathname.startsWith("/api/stages") ? "pipeline" :
         pathname.startsWith("/api/tasks") ? "tasks" :
         pathname.startsWith("/api/staff-tasks") ? "tasks" :
@@ -6611,6 +6614,101 @@ async function handle(req, res, pathname, method, query = {}) {
       }
       await dbRun("DELETE FROM client_documents WHERE id = ?", [docId]);
       return json(res, 200, { ok: true });
+    }
+
+// ---- Insurers: the same payer filed under more than one name ---------------
+    //
+    // insurance_provider is FREE TEXT on the client record. It arrives typed by
+    // whoever took the enrolment, so one payer ends up on file as "BCBS",
+    // "Blue Cross" and "Blue Cross Blue Shield" -- and every screen that groups
+    // by that string shows the payer three times with its families split
+    // between the thirds: the dashboard chart, the board's insurer filter, and
+    // anyone counting who is with whom.
+    //
+    // NOTHING IS MERGED AUTOMATICALLY. A rule that folded names together would
+    // sooner or later join two payers that really are different -- "Aetna" and
+    // "Aetna Better Health" are not the same contract, and a family filed under
+    // the wrong one is a claim sent to the wrong place. So this LISTS what is
+    // on file, marks the pairs that differ only in capitals or spacing as
+    // likely, and leaves every actual merge to a person pressing a button.
+    if (pathname === "/api/insurers" && method === "GET") {
+      if (!canAccessClients(user)) return json(res, 403, { error: "Not permitted." });
+      const rows = await dbAll(
+        `SELECT TRIM(insurance_provider) AS name, COUNT(*) AS clients,
+                SUM(CASE WHEN stage NOT IN ('discharged','not_moving_forward') THEN 1 ELSE 0 END) AS active
+           FROM clients
+          WHERE insurance_provider IS NOT NULL AND TRIM(insurance_provider) <> ''
+          GROUP BY TRIM(insurance_provider)
+          ORDER BY COUNT(*) DESC, TRIM(insurance_provider)`
+      ).catch(() => []);
+      const insurers = rows.map((r) => ({
+        name: r.name,
+        clients: Number(r.clients) || 0,
+        active: Number(r.active) || 0,
+      }));
+
+      // The one comparison that is safe to make on the CRM's own: same letters,
+      // different capitals or spacing. Anything beyond that is a judgement
+      // about payers and belongs to a person.
+      const key = (n) => String(n).toLowerCase().replace(/\s+/g, " ").trim();
+      const groups = new Map();
+      for (const i of insurers) {
+        const k = key(i.name);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(i);
+      }
+      const likely = [...groups.values()]
+        .filter((g) => g.length > 1)
+        .map((g) => {
+          const sorted = g.slice().sort((a, b) => b.clients - a.clients);
+          return {
+            keep: sorted[0].name,
+            merge: sorted.slice(1).map((x) => x.name),
+            total: sorted.reduce((a, x) => a + x.clients, 0),
+            reason: "Same name, different capitals or spacing",
+          };
+        });
+      return json(res, 200, { insurers, likely });
+    }
+
+    // Rewrites the insurer on every client filed under `from`. Owner/admin
+    // only: it changes many client records at once, and which payer a family
+    // is under decides where their claim goes.
+    if (pathname === "/api/insurers/merge" && method === "POST") {
+      if (!["owner", "super_admin", "admin"].includes(user.role)) {
+        return json(res, 403, { error: "Only an owner or admin can merge insurers." });
+      }
+      const b = await readBody(req);
+      const from = String(b.from == null ? "" : b.from).trim();
+      const to = String(b.to == null ? "" : b.to).trim();
+      if (!from || !to) return json(res, 400, { error: "Both insurer names are needed." });
+      if (from === to) return json(res, 400, { error: "Those are already the same name." });
+
+      const before = await dbGet(
+        "SELECT COUNT(*) AS n FROM clients WHERE TRIM(insurance_provider) = ?", [from]);
+      const moved = Number(before && before.n) || 0;
+      if (!moved) return json(res, 404, { error: `No client is filed under "${from}".` });
+
+      await dbRun(
+        "UPDATE clients SET insurance_provider = ?, updated_at = ? WHERE TRIM(insurance_provider) = ?",
+        [to, nowISO(), from]);
+
+      // WHO CHANGED WHAT, on a field that decides where a claim is sent. The
+      // previous name is in the record, so a merge made in error can be undone
+      // by merging back -- which is only possible if the old name was written
+      // down before it was replaced.
+      await dbRun(
+        `INSERT INTO hr_audit_log (actor, action, entity_type, entity_id, detail, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [(user && (user.email || user.name)) || "unknown", "insurer_merged", "insurer", null,
+         `"${from}" -> "${to}" on ${moved} client${moved === 1 ? "" : "s"}`, nowISO()]
+      ).catch((e) => console.error("insurer merge audit failed:", e.message));
+
+      const after = await dbGet(
+        "SELECT COUNT(*) AS n FROM clients WHERE TRIM(insurance_provider) = ?", [to]);
+      return json(res, 200, {
+        ok: true, from, to, moved, now_on: Number(after && after.n) || 0,
+      });
     }
 
 if (pathname === "/api/dashboard/pipeline-v2" && method === "GET") {
