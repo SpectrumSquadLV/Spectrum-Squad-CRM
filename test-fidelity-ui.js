@@ -500,7 +500,11 @@ const section = (t) => console.log("\n== " + t + " ==");
   check("...and the total starts correct at 100%", totalNow.trim() === "100%", totalNow);
 
   // Break the total and confirm the screen says so BEFORE a save is attempted.
-  await setModal.locator('[data-w="fidelity"]').fill("80");
+  // Taken RELATIVE to whatever Fidelity currently carries, so the assertion is
+  // about the arithmetic the screen does and not about today's default split.
+  const fidWeight = Number((cfg.weights || {}).fidelity || 0);
+  check("Fidelity carries enough weight for this to be a real subtraction", fidWeight >= 20, fidWeight);
+  await setModal.locator('[data-w="fidelity"]').fill(String(fidWeight - 20));
   await page.waitForTimeout(400);
   const warn = await setModal.locator("#fid-weight-warn").innerText();
   check("changing a weight to leave the total short is called out immediately",
@@ -513,7 +517,7 @@ const section = (t) => console.log("\n== " + t + " ==");
   check("the server refuses a total that is not 100 regardless of the screen",
     badSave.status === 400, badSave.body);
 
-  await setModal.locator('[data-w="fidelity"]').fill("100");
+  await setModal.locator('[data-w="fidelity"]').fill(String(fidWeight));
   await page.waitForTimeout(300);
   check("putting it back to 100 clears the warning",
     (await setModal.locator("#fid-weight-warn").innerText()).trim() === "");

@@ -293,6 +293,79 @@ function scoresTotalling(total, opts = {}) {
     /invented/.test(fid.weightsProblem({ fidelity: 50, invented: 50 }) || ""),
     fid.weightsProblem({ fidelity: 50, invented: 50 }));
 
+  // The split the CRM ships with. Asserted here because it decides what a raise
+  // rewards, and a typo in it would be a silent change to somebody's pay.
+  check("the default split gives Attendance half the matrix",
+    Number(fid.DEFAULT_WEIGHTS.attendance) === 50, fid.DEFAULT_WEIGHTS);
+  check("...and the other half to Fidelity",
+    Number(fid.DEFAULT_WEIGHTS.fidelity) === 50, fid.DEFAULT_WEIGHTS);
+  check("...totalling 100, by the same rule the screen enforces",
+    fid.weightsProblem(fid.DEFAULT_WEIGHTS) === null, fid.weightsProblem(fid.DEFAULT_WEIGHTS));
+  check("...and weighting nothing that cannot produce a number",
+    Object.keys(fid.DEFAULT_WEIGHTS).every((k) => fid.CATEGORIES.some((c) => c.key === k && c.live)),
+    Object.keys(fid.DEFAULT_WEIGHTS));
+
+  // ================================================================
+  section("The weights move once, and never again");
+
+  // An install that has been used already has a settings row, so a new default
+  // in code reaches nobody on its own. The move is a migration -- and the part
+  // that matters is that it happens ONCE: a weighting leadership enters on the
+  // Raise Settings screen must survive every restart after it.
+  function migrationHarness(opts = {}) {
+    const store = { weights: opts.weights === undefined ? '{"fidelity":100}' : opts.weights };
+    const app = Object.assign({}, opts.app);
+    const audits = [], updates = [];
+    const mod = require("./fidelity")({
+      dbGet: async (sql) => (/fidelity_settings/.test(sql)
+        ? { id: 1, raise_bands_json: JSON.stringify(fid.DEFAULT_BANDS), weights_json: store.weights }
+        : null),
+      dbAll: async () => [],
+      dbRun: async (sql, params) => {
+        if (/UPDATE fidelity_settings/.test(sql)) { store.weights = params[0]; updates.push(params); }
+        if (/INSERT INTO fidelity_audit/.test(sql)) audits.push(params);
+        return {};
+      },
+      sendEmail: async () => ({}), nowISO: () => new Date().toISOString(),
+      crypto, APP_BASE_URL: "http://localhost", readBody: async () => ({}),
+      json: () => true, moduleGranted: () => false,
+      getAppSetting: async (k, fb) => (app[k] === undefined ? fb : app[k]),
+      setAppSetting: async (k, v) => { app[k] = v; },
+    });
+    return { mod, store, app, audits, updates };
+  }
+
+  let h = migrationHarness();
+  let moved = await h.mod.migrateWeights();
+  check("an install still on Fidelity 100% is moved to the new split",
+    JSON.parse(h.store.weights).attendance === 50 && JSON.parse(h.store.weights).fidelity === 50,
+    h.store.weights);
+  check("...and reports what it changed", moved && moved.changed === true, moved);
+  check("...recording the previous weighting before replacing it",
+    h.audits.length === 1 && h.audits[0][2] === "weights" && h.audits[0][3] === '{"fidelity":100}',
+    h.audits[0]);
+  check("...and stamping a flag so it is not done twice",
+    !!h.app[h.mod.WEIGHTS_MIGRATION_KEY], h.app);
+
+  // The whole point of the flag.
+  const chosen = '{"fidelity":70,"supervision_compliance":30}';
+  h = migrationHarness({ weights: chosen, app: { [fid.WEIGHTS_MIGRATION_KEY]: "2026-09-12T00:00:00.000Z" } });
+  moved = await h.mod.migrateWeights();
+  check("a weighting entered after the move is left alone on the next restart",
+    h.store.weights === chosen, h.store.weights);
+  check("...with nothing written at all", h.updates.length === 0 && h.audits.length === 0,
+    { updates: h.updates.length, audits: h.audits.length });
+  check("...and it says it did nothing", moved === null, moved);
+
+  // Already on the new split: stamp the flag, but do not manufacture an audit
+  // entry saying the weights changed when they did not.
+  h = migrationHarness({ weights: JSON.stringify(fid.DEFAULT_WEIGHTS) });
+  moved = await h.mod.migrateWeights();
+  check("an install already on the new split is not rewritten",
+    h.updates.length === 0 && h.audits.length === 0, { updates: h.updates.length, audits: h.audits.length });
+  check("...but is still flagged, so it is never revisited",
+    !!h.app[fid.WEIGHTS_MIGRATION_KEY] && moved.changed === false, { app: h.app, moved });
+
   // ================================================================
   section("The raise calculator does the maths");
 
@@ -1163,6 +1236,17 @@ function scoresTotalling(total, opts = {}) {
   check("...and the ones that cannot are not, so a weight cannot be given to a blank",
     r.data.categories.filter((c) => !c.live).length >= 5,
     r.data.categories.filter((c) => !c.live).map((c) => c.key));
+
+  check("Attendance carries half the weight on a working install",
+    Number((r.data.weights || {}).attendance) === 50, r.data.weights);
+  check("...and Fidelity the other half", Number((r.data.weights || {}).fidelity) === 50, r.data.weights);
+  // The flag the running server writes at boot. Without it the one-time move
+  // would run on every restart and overwrite whatever leadership last entered,
+  // so its absence here is the bug, not a missing test.
+  const flagRow = await pool.query("SELECT value FROM app_settings WHERE key = $1",
+    ["fidelity_weights_attendance_50"]);
+  check("the server recorded that the one-time move of the weights is done",
+    flagRow.rows.length === 1 && !!flagRow.rows[0].value, flagRow.rows);
 
   r = await owner("/api/fidelity/settings", { method: "PUT", body: { weights: { fidelity: 80, attendance: 30 } } });
   check("weights that do not total 100 are refused", r.status === 400, r.data);

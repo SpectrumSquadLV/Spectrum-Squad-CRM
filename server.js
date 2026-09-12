@@ -8434,6 +8434,9 @@ const fidelity = require("./fidelity")({
   // Clinical Director / owner addresses every other module reads, never a
   // recipient list of Fidelity's own.
   getAppSetting: (key, fallback) => getAppSetting(key, fallback),
+  // Written for one thing only: the flag that records the one-time move of the
+  // raise weights, so a redeploy never overwrites a weighting leadership set.
+  setAppSetting: (key, value) => setAppSetting(key, value),
   // Supervision compliance for the raise calculator, asked of the module that
   // owns supervision rather than read out of its tables from here. What counts
   // as a compliant month is supervision's rule, in one place.
