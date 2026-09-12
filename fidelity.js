@@ -23,6 +23,7 @@ module.exports = function initFidelity(ctx) {
   } = ctx;
   const createStaffTask = ctx.createStaffTask || (async () => null);
   const getAppSetting = ctx.getAppSetting || (async (k, fb) => fb);
+  const setAppSetting = ctx.setAppSetting || (async () => {});
   // Supervision compliance, asked of the module that owns it. Fidelity does
   // not read supervision's tables directly -- the rule for what counts as a
   // compliant month lives in one place, and it is not this one.
@@ -376,6 +377,8 @@ module.exports = function initFidelity(ctx) {
       created_by TEXT,
       created_at TEXT
     )`).catch((e) => console.error("fidelity_raise_reviews initTables:", e.message));
+
+    await migrateWeights().catch((e) => console.error("fidelity weights migration:", e.message));
   }
 
   async function audit(checkId, action, opts = {}) {
@@ -567,7 +570,12 @@ module.exports = function initFidelity(ctx) {
     { key: "professionalism", label: "Professionalism", live: false, source: "Not yet wired in" },
     { key: "performance_review", label: "Performance Reviews", live: false, source: "Not yet wired in" },
   ];
-  const DEFAULT_WEIGHTS = { fidelity: 100 };
+  // Attendance carries half the matrix. Fidelity held all 100% while it was
+  // the only category that could produce a number; Attendance went live with
+  // the 30-day review, and leadership put it on an equal footing with the
+  // observation score. The other 50 comes off Fidelity -- the weights have to
+  // total exactly 100, so a category can only gain what another gives up.
+  const DEFAULT_WEIGHTS = { fidelity: 50, attendance: 50 };
 
   const FIDELITY_METHODS = [
     { key: "most_recent", label: "Most recent Fidelity Check" },
@@ -615,6 +623,43 @@ module.exports = function initFidelity(ctx) {
       if (!CATEGORIES.some((c) => c.key === k)) return `Unknown performance category "${k}".`;
     }
     return null;
+  }
+
+  // ONE TIME, AND NEVER AGAIN. The weights are configuration in the database,
+  // so changing DEFAULT_WEIGHTS in code only reaches an install that has never
+  // read its settings -- every install that has been used already has the row,
+  // and it still says Fidelity 100%. This moves the live row once so Attendance
+  // actually counts, and writes a flag so a deploy never does it a second time.
+  //
+  // WHY THE FLAG MATTERS: without it, every restart would overwrite whatever
+  // leadership last entered on the Raise Settings screen, and a weighting
+  // somebody chose on purpose would quietly revert to what is written here.
+  // A code default gets one chance to move a live setting; after that the
+  // screen owns it.
+  //
+  // The previous weighting goes into the audit trail before it is replaced. A
+  // change to how pay is decided is not something that should happen with no
+  // record of what it was before.
+  const WEIGHTS_MIGRATION_KEY = "fidelity_weights_attendance_50";
+
+  async function migrateWeights() {
+    if (await getAppSetting(WEIGHTS_MIGRATION_KEY, "")) return null;
+    const cur = await getSettings();
+    const before = JSON.stringify(cur.weights || {});
+    const after = JSON.stringify(DEFAULT_WEIGHTS);
+    let changed = false;
+    if (before !== after) {
+      await dbRun(
+        "UPDATE fidelity_settings SET weights_json = ?, updated_by = ?, updated_at = ? WHERE id = 1",
+        [after, "system", nowISO()]
+      );
+      await audit(null, "settings_updated", {
+        field: "weights", old: before, new: after, actor: "system",
+      });
+      changed = true;
+    }
+    await setAppSetting(WEIGHTS_MIGRATION_KEY, nowISO());
+    return { before, after, changed };
   }
 
   function bandFor(bands, pct) {
@@ -3097,6 +3142,7 @@ module.exports = function initFidelity(ctx) {
     initTables, audit, canManageFidelity, canEvaluate,
     employeeSummary, summarise, trendOf, finalizedChecks, allChecksFor,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
+    migrateWeights, WEIGHTS_MIGRATION_KEY,
     buildPdf, refilePdf, statusBannerFor, assessmentDateProblem, clientInitialsProblem,
     sameHuman, selfObservationProblem, notObservableProblem, parseJson, finalizeCheck, STATUSES, dashboard, randomPick, isRbt,
     handleApi, shapeRow, shapePlan, shapePublic, servePage, ackPageHtml,
