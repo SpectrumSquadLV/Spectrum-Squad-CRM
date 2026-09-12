@@ -155,6 +155,32 @@ module.exports = function initHr(ctx) {
     return !!user && HR_SENSITIVE_ROLES.includes(user.role);
   }
 
+  // WHAT SOMEBODY EARNS IS NOT HR ROSTER DATA. hourly_rate lives on
+  // hr_employees because the raise calculator needs somewhere to keep it, and
+  // this module reads employees with SELECT * -- so a column added by another
+  // module arrived in every staff payload without anybody adding it there.
+  // A hiring manager and an interviewer, who are deliberately refused every
+  // raise route, were being handed the whole roster's pay.
+  //
+  // Pay leaves this module only for the sensitive tier. Leadership who decide
+  // raises read it from RBT Fidelity, which is the screen that owns pay and
+  // has its own permission -- there is no screen in HR that shows a rate, so
+  // nothing loses a figure it was displaying.
+  //
+  // Deleted rather than nulled: null reads as "no rate on file", which is a
+  // different fact and one the raise screen reports out loud.
+  const PAY_FIELDS = ["hourly_rate"];
+  function scrubPay(row, user) {
+    if (!row || hrCanSeeSensitive(user)) return row;
+    for (const f of PAY_FIELDS) delete row[f];
+    return row;
+  }
+  function scrubPayRows(rows, user) {
+    if (!Array.isArray(rows) || hrCanSeeSensitive(user)) return rows;
+    for (const r of rows) scrubPay(r, user);
+    return rows;
+  }
+
   // ============================ SCHEMA ============================
   async function initTables() {
     // ---- recruiting core ----
@@ -2721,7 +2747,7 @@ module.exports = function initHr(ctx) {
 
       // ---- employees (future HR) ----
       if (pathname === "/api/hr/employees" && method === "GET") {
-        const rows = await dbAll("SELECT * FROM hr_employees ORDER BY name");
+        const rows = scrubPayRows(await dbAll("SELECT * FROM hr_employees ORDER BY name"), user);
         for (const e of rows) {
           e.credentials = await dbAll("SELECT id, credential_type, credential_number, expiration_date, status FROM hr_employee_credentials WHERE employee_id = ? ORDER BY expiration_date", [e.id]);
         }
@@ -2748,7 +2774,7 @@ module.exports = function initHr(ctx) {
       // Staff detail (with credentials + their timecards) for the Staff directory.
       const empDetailMatch = pathname.match(/^\/api\/hr\/employees\/(\d+)$/);
       if (empDetailMatch && method === "GET") {
-        const emp = await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empDetailMatch[1]]);
+        const emp = scrubPay(await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empDetailMatch[1]]), user);
         if (!emp) return json(res, 404, { error: "Not found" });
         emp.credentials = await dbAll("SELECT id, credential_type, credential_number, expiration_date, status FROM hr_employee_credentials WHERE employee_id = ? ORDER BY expiration_date", [emp.id]);
         emp.timecards = await dbAll(
@@ -2811,7 +2837,7 @@ module.exports = function initHr(ctx) {
         }
 
         await audit(actor, "employee_updated", "employee", empId, fields.join(","));
-        return json(res, 200, await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empId]));
+        return json(res, 200, scrubPay(await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empId]), user));
       }
 
       // Bulk edit staff: apply the same field(s) to many employees at once, or
@@ -2940,7 +2966,7 @@ module.exports = function initHr(ctx) {
         await audit(actor, "offer_accepted_bundle", "employee", empId, fired.join("; "));
         return json(res, 200, {
           ok: true, fired, packet: packetResult,
-          employee: await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empId]),
+          employee: scrubPay(await dbGet("SELECT * FROM hr_employees WHERE id = ?", [empId]), user),
         });
       }
 
@@ -3082,7 +3108,8 @@ module.exports = function initHr(ctx) {
       if (tcIdMatch && method === "GET") {
         const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [tcIdMatch[1]]);
         if (!tc) return json(res, 404, { error: "Not found" });
-        const emp = tc.employee_id ? await dbGet("SELECT * FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
+        const emp = tc.employee_id
+          ? scrubPay(await dbGet("SELECT * FROM hr_employees WHERE id = ?", [tc.employee_id]), user) : null;
         const flags = await dbAll("SELECT * FROM hr_timecard_flags WHERE timecard_id = ? ORDER BY id", [tc.id]);
         // The signed PDF (saved on accept) so the office can open exactly what the
         // employee signed.
@@ -3267,7 +3294,7 @@ module.exports = function initHr(ctx) {
         // The shared rule, so this screen and the Message Outbox strip exactly
         // the same things. A local copy would drift, and the drift would be
         // silent -- one screen leaking a link the other hides.
-        const redact = ctx.redactSecretLinks || ((html) => String(html == null ? "" : html)
+        const redact = ctx.redactStoredBody || ctx.redactSecretLinks || ((html) => String(html == null ? "" : html)
           .replace(/(\/verify-timecard\/)[A-Za-z0-9._~+\/-]+/g, "$1[link removed]"));
 
         return json(res, 200, {

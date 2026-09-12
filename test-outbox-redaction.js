@@ -80,6 +80,57 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
   check("the acknowledgement token is not handed out at all",
     mine.every((r) => r.ack_token === undefined), JSON.stringify(mine[0] || {}).slice(0, 200));
 
+  // ---------------------------------------------------------------- scores
+  // The Fidelity Check email tells an RBT their own result, and that body is
+  // kept verbatim like every other. RBT Fidelity is NOT granted by CRM role,
+  // so an admin who cannot open a single Fidelity screen must not be able to
+  // read somebody's score out of the message log instead.
+  //
+  // Built from the real template rather than a hand-typed lookalike: a body
+  // shaped differently from what the CRM actually sends would assert nothing.
+  const SCORE_BODY = `
+      <p>Hi Casey,</p>
+      <p>Your Fidelity Check from <strong>2026-09-01</strong> has been completed and signed by Someone BCBA.</p>
+      <table style="border-collapse:collapse;font-size:15px;margin:14px 0;">
+        <tr><td style="padding:5px 14px 5px 0;color:#5b6472;">Score</td><td style="padding:5px 0;font-weight:700;">58 / 60</td></tr>
+        <tr><td style="padding:5px 14px 5px 0;color:#5b6472;">Percentage</td><td style="padding:5px 0;font-weight:700;">96.7%</td></tr>
+        <tr><td style="padding:5px 14px 5px 0;color:#5b6472;">Rating</td><td style="padding:5px 0;font-weight:700;">Exceptional</td></tr>
+      </table>
+      <p style="text-align:center;margin:24px 0;">
+        <a href="https://x.test/fidelity-ack/${SECRET}" style="background:#e0a430;">Read it and acknowledge</a>
+      </p>`;
+  await pool.query(
+    `INSERT INTO notifications_log (client_id, type, recipient, subject, body, sent_at, delivered, ack_token)
+     VALUES (NULL, 'test_redact', $1, $2, $3, now()::text, 'sent', $4)`,
+    [`redact.${stamp}@example.invalid`, `REDACT fidelity-score ${stamp}`, SCORE_BODY, "ack" + stamp]
+  );
+
+  const out2 = await api("/api/notifications");
+  const scored = (out2.body || []).find((r) => String(r.subject || "").includes(`fidelity-score ${stamp}`));
+  check("the Fidelity Check message is returned", !!scored, (out2.body || []).length);
+  const sBody = String((scored || {}).body || "");
+  check("the score out of 60 is withheld", !/58 \/ 60/.test(sBody), sBody.slice(0, 300));
+  check("...and the percentage", !/96\.7%/.test(sBody), sBody.slice(0, 300));
+  check("...and the rating in words", !/Exceptional/.test(sBody), sBody.slice(0, 300));
+  check("...each replaced by something that says it was withheld",
+    (sBody.match(/\[withheld\]/g) || []).length === 3, sBody.slice(0, 400));
+
+  // The reader still has to be able to see WHAT was sent. A blank where a
+  // message used to be is its own kind of useless.
+  check("the reader can still tell it was a Fidelity Check, and when",
+    /Fidelity Check from/.test(sBody) && /2026-09-01/.test(sBody), sBody.slice(0, 300));
+  check("...and the labels survive, so the shape of the message is legible",
+    /Score/.test(sBody) && /Percentage/.test(sBody) && /Rating/.test(sBody), sBody.slice(0, 300));
+  check("...and its acknowledgement link is redacted like every other",
+    !sBody.includes(SECRET) && /fidelity-ack\/\[link removed\]/.test(sBody), sBody.slice(0, 300));
+
+  const storedScore = (await pool.query(
+    "SELECT body FROM notifications_log WHERE subject LIKE $1 LIMIT 1", [`REDACT fidelity-score ${stamp}`]
+  )).rows[0];
+  check("the STORED Fidelity email still carries the real score",
+    storedScore && /58 \/ 60/.test(String(storedScore.body))
+      && /96\.7%/.test(String(storedScore.body)), "storage was altered");
+
   // STORAGE IS UNTOUCHED. This is what keeps the recipient's own link working
   // and lets a failed email be re-sent as a working one.
   const stored = (await pool.query(
