@@ -1158,10 +1158,10 @@ function scoresTotalling(total, opts = {}) {
   check("every performance category is offered, with where its number comes from",
     (r.data.categories || []).length >= 5 && r.data.categories.every((c) => !!c.source), r.data.categories);
   check("the categories that can actually produce a number are marked live",
-    r.data.categories.filter((c) => c.live).map((c) => c.key).sort().join() === "fidelity,supervision_compliance",
+    r.data.categories.filter((c) => c.live).map((c) => c.key).sort().join() === "attendance,fidelity,supervision_compliance",
     r.data.categories.filter((c) => c.live).map((c) => c.key));
   check("...and the ones that cannot are not, so a weight cannot be given to a blank",
-    r.data.categories.filter((c) => !c.live).length >= 6,
+    r.data.categories.filter((c) => !c.live).length >= 5,
     r.data.categories.filter((c) => !c.live).map((c) => c.key));
 
   r = await owner("/api/fidelity/settings", { method: "PUT", body: { weights: { fidelity: 80, attendance: 30 } } });
@@ -1791,8 +1791,13 @@ function scoresTotalling(total, opts = {}) {
   check("Supervision Compliance is offered as a live category now",
     (r.data.categories || []).some((c) => c.key === "supervision_compliance" && c.live === true),
     (r.data.categories || []).filter((c) => c.live).map((c) => c.key));
-  check("Attendance still says it is not wired, and why",
-    (r.data.categories || []).some((c) => c.key === "attendance" && c.live === false && /bands rather than a score/i.test(c.source)),
+  // Attendance was unwired for a long time because points run the wrong way and
+  // the policy names bands rather than scores. It is live now, scored as the
+  // share of months at a band the policy calls acceptable -- no invented
+  // points-to-percentage curve. test-attendance-raise-category.js holds that
+  // rule down; here it is enough that the category no longer says it cannot.
+  check("Attendance is live, and says the months are what it counts",
+    (r.data.categories || []).some((c) => c.key === "attendance" && c.live === true && /share of months/i.test(c.source)),
     (r.data.categories || []).find((c) => c.key === "attendance"));
 
   await doCheckFor(empSup, 54);

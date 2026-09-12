@@ -483,12 +483,17 @@ const section = (t) => console.log("\n== " + t + " ==");
   check("every performance category is listed",
     await setModal.locator("[data-w]").count() === (cfg.categories || []).length,
     { inputs: await setModal.locator("[data-w]").count(), cats: (cfg.categories || []).length });
+  // Attendance used to be the example of a dead category here. It is live now
+  // -- scored as the share of months at a band the policy calls acceptable --
+  // so the rule is asserted against one that is still genuinely unwired.
   check("a category with no source of data cannot be given a weight",
-    await setModal.locator('[data-w="attendance"]').isDisabled());
+    await setModal.locator('[data-w="reliability"]').isDisabled());
   check("...and says why on the screen, not only in the API",
-    /not available yet/i.test(setText) && /bands rather than a score/i.test(setText), setText.slice(0, 900));
+    /not available yet/i.test(setText), setText.slice(0, 900));
   check("a category that CAN produce a number is editable",
     !(await setModal.locator('[data-w="supervision_compliance"]').isDisabled()));
+  check("...including Attendance, now that it has a source",
+    !(await setModal.locator('[data-w="attendance"]').isDisabled()));
 
   check("the weights are totalled for the reader", /Total:/.test(setText), setText.slice(0, 600));
   const totalNow = await setModal.locator("#fid-weight-total").innerText();

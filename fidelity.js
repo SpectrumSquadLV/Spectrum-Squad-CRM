@@ -27,6 +27,7 @@ module.exports = function initFidelity(ctx) {
   // not read supervision's tables directly -- the rule for what counts as a
   // compliant month lives in one place, and it is not this one.
   const supervisionCompliance = ctx.supervisionCompliance || null;
+  const attendanceCompliance = ctx.attendanceCompliance || null;
   const HR_DOCS_DIR = ctx.HR_DOCS_DIR || null;
   const fs = require("fs");
   const path = require("path");
@@ -549,14 +550,15 @@ module.exports = function initFidelity(ctx) {
   const CATEGORIES = [
     { key: "fidelity", label: "RBT Fidelity", live: true,
       source: "Finalized Fidelity Checks in the review period" },
-    // Attendance is deliberately still unwired. It is measured in POINTS,
-    // where fewer is better, and the attendance policy defines named bands
-    // ("Coaching Conversation", "Attendance Improvement Plan") rather than
-    // scores. Turning those into a percentage means choosing a number that
-    // changes what somebody is paid, and that is a decision for leadership to
-    // make explicitly rather than for this file to assume.
-    { key: "attendance", label: "Attendance", live: false,
-      source: "Attendance points exist, but the policy defines bands rather than a score — leadership has to say what a band is worth before this can be weighted" },
+    // Attendance is measured in POINTS, where fewer is better, and the policy
+    // describes outcomes as named bands rather than scores. Rather than invent
+    // a points-to-percentage curve -- a number nobody chose that would change
+    // what somebody is paid -- this counts the SHARE OF MONTHS in the review
+    // period that came in at a band the policy already calls acceptable, the
+    // same way Supervision Compliance counts months meeting the BACB minimum.
+    // The threshold lives on the policy matrix in hr-attendance.js, not here.
+    { key: "attendance", label: "Attendance", live: true,
+      source: "The share of months in the review period that came in at Meets Expectations or better on the 30-day attendance review" },
     { key: "reliability", label: "Reliability", live: false, source: "Not yet wired in" },
     { key: "note_timeliness", label: "Session Note Timeliness", live: false, source: "Not yet wired in" },
     { key: "supervision_compliance", label: "Supervision Compliance", live: true,
@@ -661,6 +663,23 @@ module.exports = function initFidelity(ctx) {
   async function gatherCategories(settings, employeeId, periodStart, periodEnd) {
     const values = {}, details = {};
     const weights = settings.weights || {};
+
+    if (Number(weights.attendance) > 0 && attendanceCompliance) {
+      try {
+        const a = await attendanceCompliance(employeeId, periodStart, periodEnd);
+        if (a && a.percentage != null) {
+          values.attendance = a.percentage;
+          const excluded = Number(a.months_before_hire || 0) + Number(a.months_after_leaving || 0);
+          details.attendance =
+            `Attendance is ${a.percentage}%, from ${a.months_meeting} of ${a.months_counted} `
+            + `month${a.months_counted === 1 ? "" : "s"} at ${(a.meets_bands || []).join(" or ")} on the 30-day review`
+            + (excluded
+                ? `; ${excluded} further month${excluded === 1 ? " was" : "s were"} left out because they were not employed for `
+                  + `${excluded === 1 ? "it" : "them"}.`
+                : ".");
+        }
+      } catch (e) { /* a category that cannot be read is reported as missing, not as zero */ }
+    }
 
     if (Number(weights.supervision_compliance) > 0 && supervisionCompliance) {
       try {
