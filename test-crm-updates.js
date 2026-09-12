@@ -478,9 +478,19 @@ const RUN = Math.random().toString(36).slice(2, 8);
   const form = await leaderClient.req("/api/squad/public/form");
   check("the form loads for a signed-in leader", form.status === 200, form.status);
   const names = (form.data.members || []).map((m) => m.name).sort();
-  check("only their own squad members are listed",
-    JSON.stringify(names) === JSON.stringify([`Member A ${RUN}`, `Member B ${RUN}`]), names);
-  check("the leader is not on their own list", !names.includes(`Squad Lead ${RUN}`));
+  check("only their own squad, and nobody else's, is listed",
+    JSON.stringify(names) === JSON.stringify([`Member A ${RUN}`, `Member B ${RUN}`, `Squad Lead ${RUN}`]), names);
+  check("the outsider is nowhere near it", !names.includes(`Outsider ${RUN}`), names);
+  // A leader who is running late has the same obligation as anybody on their
+  // squad. Leaving themselves off the list did not stop under-reporting; it
+  // only meant an honest one had to find an administrator, which in practice
+  // means it never got recorded.
+  const selfRow = (form.data.members || []).find((m) => m.name === `Squad Lead ${RUN}`);
+  check("a leader can report themselves", !!selfRow, names);
+  check("...and the form knows which row is them", selfRow && (selfRow.is_self === true || selfRow.is_self === "t"), selfRow);
+  check("...and they are first, because that is the one you reach for in a hurry",
+    (form.data.members || [])[0] && (form.data.members || [])[0].name === `Squad Lead ${RUN}`,
+    (form.data.members || []).map((m) => m.name));
   const leaked = (form.data.members || []).some((m) => m.email || m.points_90 || m.discipline_level || m.hire_date || m.address);
   check("the roster carries names and titles only -- no contact details, points or standing", !leaked, form.data.members);
   check("the infraction list is the attendance policy matrix, occurrences only",
@@ -539,6 +549,34 @@ const RUN = Math.random().toString(36).slice(2, 8);
   });
   check("the same occurrence cannot be filed twice", twice.status === 409, twice.status);
 
+  section("Squad Leader reporting: a leader reporting themselves");
+  const ownReport = await leaderClient.req("/api/squad/public/report", {
+    method: "POST",
+    body: {
+      employee_id: leaderId, type_key: "late", incident_date: "2026-08-21",
+      incident_time: "09:12", notes: "Traffic on the 215.",
+    },
+  });
+  check("a leader can file a report about themselves", ownReport.status === 201, ownReport.data);
+  const leaderView = await owner.req(`/api/attendance/employee/${leaderId}`);
+  const own = (leaderView.data.flags || []).find((f) => f.incident_date === "2026-08-21" && f.type_key === "late");
+  check("it lands on their own staff file", !!own, (leaderView.data.flags || []).length);
+  check("...scored from the policy matrix like anybody else's", own && own.points > 0, own && own.points);
+  check("...and recorded as having come through the squad channel",
+    own && own.submitted_via === "squad_qr" && own.submitted_by_employee_id === leaderId,
+    own && { via: own.submitted_via, by: own.submitted_by_employee_id });
+
+  // Reporting yourself must not become a way to reach anybody else: the scope
+  // is still the squad, and a leader still cannot hand themselves points back.
+  const stillScoped = await leaderClient.req("/api/squad/public/report", {
+    method: "POST", body: { employee_id: outsider, type_key: "late", incident_date: "2026-08-21" },
+  });
+  check("it does not widen what else they can reach", stillScoped.status === 403, stillScoped.status);
+  const selfEarnback = await leaderClient.req("/api/squad/public/report", {
+    method: "POST", body: { employee_id: leaderId, type_key: "perfect_60", incident_date: "2026-08-21" },
+  });
+  check("and they still cannot award themselves an earn-back", selfEarnback.status === 403, selfEarnback.status);
+
   section("Squad Leader reporting: no HR access comes with it");
   for (const p of ["/api/hr/employees", "/api/attendance/roster", "/api/clients", "/api/dashboard",
                    "/api/hr/turnover", "/api/squad/admin/overview", "/api/squad/admin/reports"]) {
@@ -562,6 +600,12 @@ const RUN = Math.random().toString(36).slice(2, 8);
   const rep = (reports.data.reports || []).find((r) => r.employee_name === `Member A ${RUN}`);
   check("the management view names the submitting leader and their squad",
     rep && rep.leader_name === `Squad Lead ${RUN}` && rep.squad_name === `Test Squad ${RUN}`, rep);
+  const selfRep = (reports.data.reports || []).find((r) => r.employee_name === `Squad Lead ${RUN}`);
+  check("a leader's report about themselves is in the management view too", !!selfRep, selfRep);
+  check("...and is marked as self-reported rather than left to be worked out from two id columns",
+    selfRep && (selfRep.self_reported === true || selfRep.self_reported === "t"), selfRep && selfRep.self_reported);
+  check("...while a report about somebody else is not",
+    rep && (rep.self_reported === false || rep.self_reported === "f"), rep && rep.self_reported);
   for (const [label, c] of [["clinical", clinical], ["scheduling", scheduling]]) {
     const r = await c.req("/api/squad/admin/reports");
     check(`a ${label} account cannot read squad attendance reports`, r.status === 403, r.status);

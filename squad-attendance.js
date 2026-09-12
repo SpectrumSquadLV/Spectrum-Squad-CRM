@@ -198,17 +198,26 @@ module.exports = function initSquadAttendance(ctx) {
   }
 
   // The people a given leader may file a report about: the active members of
-  // the squad they lead, and nobody else. A leader is not on their own list --
-  // reporting yourself is not what this is for, and leaving it out removes an
-  // obvious way to muddy the record.
+  // the squad they lead, plus the leader themselves.
+  //
+  // A leader used to be left off their own list, on the reasoning that
+  // reporting yourself was not what this is for. That was backwards. A leader
+  // who is running late has the same policy obligation as anybody on their
+  // squad, and leaving themselves off did not stop them under-reporting -- it
+  // only forced an honest one to find an administrator to do it for them,
+  // which in practice means it does not get recorded at all.
+  //
+  // The leader is matched by id as well as by squad, so this works whether or
+  // not the office has also rostered them onto the squad they lead, and they
+  // are returned first because "I am late" is the reason somebody pulls this
+  // form out in a car park.
   async function squadMembers(squadId, leaderEmployeeId) {
     return await dbAll(
-      `SELECT id, name, role_title FROM hr_employees
-        WHERE squad_id = ?
-          AND id <> ?
+      `SELECT id, name, role_title, (id = ?) AS is_self FROM hr_employees
+        WHERE (squad_id = ? OR id = ?)
           AND COALESCE(status,'active') <> 'terminated'
-        ORDER BY name`,
-      [squadId, leaderEmployeeId]
+        ORDER BY (id = ?) DESC, name`,
+      [leaderEmployeeId, squadId, leaderEmployeeId, leaderEmployeeId]
     ).catch(() => []);
   }
 
@@ -253,10 +262,12 @@ module.exports = function initSquadAttendance(ctx) {
     const empId = Number(body.employee_id);
     if (!empId) return { ok: false, status: 400, error: "Choose who the report is about." };
 
+    // The leader themselves is always in scope -- see squadMembers -- whether
+    // or not they are also rostered onto the squad they lead.
     const member = await dbGet(
       `SELECT id, name, role_title FROM hr_employees
-        WHERE id = ? AND squad_id = ? AND COALESCE(status,'active') <> 'terminated'`,
-      [empId, leader.squad_id]
+        WHERE id = ? AND (squad_id = ? OR id = ?) AND COALESCE(status,'active') <> 'terminated'`,
+      [empId, leader.squad_id, leader.employee_id]
     ).catch(() => null);
     if (!member) {
       // Deliberately the same answer whether the person does not exist or is
@@ -329,7 +340,12 @@ module.exports = function initSquadAttendance(ctx) {
       .catch((e) => console.error("squad report notify failed:", e.message));
 
     console.log(`[squad] report filed id=${id} by leader=${leader.employee_id} squad=${leader.squad_id} about=${empId} type=${type.key}`);
-    return { ok: true, id, employee_name: member.name, label: type.label, points: Number(type.points) };
+    return {
+      ok: true, id, employee_name: member.name, label: type.label, points: Number(type.points),
+      // So the confirmation can say "your staff file" rather than "their staff
+      // file" to somebody who has just reported their own lateness.
+      self_reported: member.id === leader.employee_id,
+    };
   }
 
   async function notifyManagement(leader, member, type, incidentDate, incidentTime, notes) {
@@ -611,7 +627,11 @@ module.exports = function initSquadAttendance(ctx) {
           `SELECT f.id, f.employee_id, f.incident_date, f.incident_time, f.reason, f.type_key, f.points,
                   f.notes, f.created_by, f.created_at, f.voided, f.voided_reason,
                   e.name AS employee_name, e.role_title,
-                  l.name AS leader_name, sq.name AS squad_name
+                  l.name AS leader_name, sq.name AS squad_name,
+                  -- A leader reporting themselves reads very differently from a
+                  -- leader reporting somebody else, and the office should not
+                  -- have to compare two id columns to see which it was.
+                  (f.submitted_by_employee_id = f.employee_id) AS self_reported
              FROM hr_attendance_flags f
              LEFT JOIN hr_employees e ON e.id = f.employee_id
              LEFT JOIN hr_employees l ON l.id = f.submitted_by_employee_id
@@ -741,10 +761,20 @@ module.exports = function initSquadAttendance(ctx) {
         '<div class="who"><span>'+esc(d.leader.name)+' · '+esc(d.leader.squad_name)+'</span>'+
           '<button class="link" id="sq-out">Sign out</button></div>'+
         (members.length
-          ? '<label class="f" for="sq-emp">Employee</label>'+
-            '<select id="sq-emp"><option value="">Choose someone on your squad…</option>'+
-              members.map(function(m){return '<option value="'+m.id+'">'+esc(m.name)+(m.role_title?' — '+esc(m.role_title):'')+'</option>';}).join('')+
+          ? '<label class="f" for="sq-emp">Who is this about?</label>'+
+            '<select id="sq-emp"><option value="">Choose a name…</option>'+
+              members.map(function(m){
+                /* The leader is first in the list and says so, because the
+                   commonest reason to open this in a hurry is your own
+                   lateness and it should not need hunting for. */
+                var self=(m.is_self===true||m.is_self==='t');
+                return '<option value="'+m.id+'">'+esc(m.name)+(self?' (you)':'')+
+                  (m.role_title?' — '+esc(m.role_title):'')+'</option>';
+              }).join('')+
             '</select>'+
+            (members.length===1
+              ? '<div class="note">Nobody else is on your squad yet, so for now this reports only you. Ask the office to add your squad members.</div>'
+              : '')+
             '<label class="f" for="sq-type">What happened</label>'+
             '<select id="sq-type"><option value="">Choose from the attendance policy…</option>'+
               types.map(function(t){return '<option value="'+esc(t.key)+'">'+esc(t.label)+'</option>';}).join('')+
@@ -759,9 +789,9 @@ module.exports = function initSquadAttendance(ctx) {
             '<label class="f" for="sq-notes">Notes</label>'+
             '<textarea id="sq-notes" rows="3" placeholder="Anything the office should know."></textarea>'+
             '<button class="btn" id="sq-submit">Submit report</button>'
-          : '<p class="sub" style="margin-top:14px;">Nobody is currently assigned to your squad, so there is nobody to report. Ask the office to add your squad members.</p>')+
+          : '<p class="sub" style="margin-top:14px;">We could not load your squad. Try signing in again, and tell the office if it keeps happening.</p>')+
         (msg?'<div class="'+(tone==='ok'?'ok':'err')+'">'+esc(msg)+'</div>':'')+
-        '<p class="note">Submitting records this on the employee\\'s staff file and tells the office. '+
+        '<p class="note">Submitting records this on that person\\'s staff file and tells the office — including when that person is you. '+
         'You cannot see anyone\\'s attendance history, points or records from here.</p>'+
         '</div>';
       document.getElementById('sq-out').addEventListener('click',function(){
@@ -804,9 +834,12 @@ module.exports = function initSquadAttendance(ctx) {
   // ---- step 3: confirmation ----
   function renderDone(r){
     app.innerHTML='<div class="card done">'+head()+
-      '<p class="sub" style="font-size:15px;margin-top:12px;">Report submitted for <strong>'+esc(r.employee_name)+'</strong>.</p>'+
-      '<p class="note">It is on their staff file and the office has been notified. Thank you.</p>'+
-      '<button class="btn" id="sq-again">Report someone else</button>'+
+      (r.self_reported
+        ? '<p class="sub" style="font-size:15px;margin-top:12px;">Report submitted for <strong>yourself</strong>.</p>'+
+          '<p class="note">It is on your staff file and the office has been notified. Thank you for telling us.</p>'
+        : '<p class="sub" style="font-size:15px;margin-top:12px;">Report submitted for <strong>'+esc(r.employee_name)+'</strong>.</p>'+
+          '<p class="note">It is on their staff file and the office has been notified. Thank you.</p>')+
+      '<button class="btn" id="sq-again">File another report</button>'+
       '<button class="link" id="sq-out2" style="margin:12px auto 0;">Sign out</button>'+
       '</div>';
     document.getElementById('sq-again').addEventListener('click',function(){renderForm();});

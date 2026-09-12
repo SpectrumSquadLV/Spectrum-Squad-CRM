@@ -260,6 +260,66 @@ const BASE = process.env.BASE || "http://localhost:3009";
   check("no staff list can be pulled without signing in",
     (await scan.evaluate(async () => (await fetch("/api/squad/public/form", { credentials: "same-origin" })).status)) === 401);
 
+  // ------------------------------------------- signing in and reporting
+  // test-crm-updates.js proves the API lets a leader report themselves. This
+  // proves the thing a leader actually touches: that their own name is in the
+  // picker, says it is them, and files when chosen. The form is a string built
+  // inside squad-attendance.js, so a mistake in it breaks the page silently
+  // rather than failing a route test.
+  section("Squad Leader reporting: a leader reporting themselves, in the browser");
+  const SQ = Date.now().toString().slice(-6);
+  const setup = await page.evaluate(async (sq) => {
+    const post = async (p, body) => {
+      const r = await fetch(p, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        credentials: "same-origin", body: JSON.stringify(body),
+      });
+      return { status: r.status, data: await r.json().catch(() => ({})) };
+    };
+    const lead = await post("/api/hr/employees", {
+      name: `ZzUi Lead ${sq}`, email: `zzuilead.${sq}@spectrumsquadlv.com`,
+      role_title: "RBT - Squad Leader", hire_date: "2024-01-08",
+    });
+    const mate = await post("/api/hr/employees", {
+      name: `ZzUi Mate ${sq}`, email: `zzuimate.${sq}@spectrumsquadlv.com`,
+      role_title: "RBT", hire_date: "2024-02-08",
+    });
+    const leaderId = lead.data.id, mateId = mate.data.id;
+    const made = await post("/api/squad/admin/squads", { name: `ZzUi Squad ${sq}`, leader_employee_id: leaderId });
+    const squad = (made.data.squads || []).find((x) => x.name === `ZzUi Squad ${sq}`);
+    await post("/api/squad/admin/members", { squad_id: squad.id, employee_ids: [mateId] });
+    await post("/api/squad/admin/pin", { employee_id: leaderId, pin: "846213" });
+    return { leaderId, mateId, squadId: squad.id };
+  }, SQ);
+  check("a squad and a leader with a PIN can be set up", !!setup.leaderId && !!setup.squadId, setup);
+
+  await scan.fill('input[type="email"], input[name="email"], #sq-email', `zzuilead.${SQ}@spectrumsquadlv.com`);
+  await scan.fill('input[type="password"]', "846213");
+  await scan.click("button");
+  await scan.waitForTimeout(1800);
+  const options = await scan.evaluate(() =>
+    [].slice.call(document.querySelectorAll("#sq-emp option")).map((o) => o.textContent.trim()));
+  check("the leader's own name is in the picker", options.some((o) => o.indexOf(`ZzUi Lead ${SQ}`) === 0), options);
+  check("...marked as them", options.some((o) => /\(you\)/.test(o) && o.indexOf(`ZzUi Lead ${SQ}`) === 0), options);
+  check("...and first, under the placeholder", (options[1] || "").indexOf(`ZzUi Lead ${SQ}`) === 0, options);
+  check("their squad mate is still there too", options.some((o) => o.indexOf(`ZzUi Mate ${SQ}`) === 0), options);
+
+  await scan.selectOption("#sq-emp", String(setup.leaderId));
+  await scan.selectOption("#sq-type", "late");
+  await scan.fill("#sq-date", "2026-08-22");
+  await scan.click("#sq-submit");
+  await scan.waitForTimeout(2000);
+  const after = await scan.textContent(".card");
+  check("submitting their own lateness is accepted", /Report submitted/i.test(after), after.slice(0, 220));
+  check("...and the confirmation speaks to them, not about them",
+    /for yourself/i.test(after) && /on your staff file/i.test(after), after.slice(0, 220));
+  const landed = await page.evaluate(async (id) => {
+    const r = await fetch(`/api/attendance/employee/${id}`, { credentials: "same-origin" });
+    const d = await r.json().catch(() => ({}));
+    return (d.flags || []).some((f) => f.incident_date === "2026-08-22" && f.type_key === "late");
+  }, setup.leaderId);
+  check("...and it is on their own staff file", landed === true, landed);
+
   section("Errors");
   const real = [...owner.errors, ...clinical.errors].filter((e) => !NETWORK_NOISE.test(e));
   check("no uncaught JavaScript errors anywhere in this run", real.length === 0, real);
