@@ -831,6 +831,18 @@ function canEditAuth() {
   return state.user && ["owner", "super_admin", "admin", "billing"].includes(state.user.role);
 }
 
+// Who may change the Assigned BCBA / Student Analyst on a client. Mirrors the
+// gate on PATCH /api/clients/:id/care-team exactly: anyone who can open a
+// client record, unless the owner has explicitly switched "care-team" OFF for
+// them in the Access editor. Absent means allowed -- the same rule the rest of
+// module_access uses. The server decides; this only decides whether to draw
+// the inputs instead of the read-only rows.
+function canEditCareTeam() {
+  if (!canAccessClients()) return false;
+  const ma = getModuleAccess(state.user);
+  return !(ma && ma["care-team"] === false);
+}
+
 // Can this role see what the family owes and what their plan covers -- the
 // Financial Obligation form and the Benefits & Eligibility Check?
 //
@@ -1359,6 +1371,18 @@ const MODULE_CATALOG = {
   grants: { label: "Grant Finder", icon: "▨" },
   "auth-alerts": { label: "Authorization Alerts", icon: "⧗" },
   admin: { label: "Admin Settings", icon: "⚙" },
+  // A CAPABILITY, not a page -- there is nothing to navigate to, and unlike
+  // every other key here it is ON by default for anyone who can open a client
+  // record. It is listed so it can be switched OFF for one person: setting it
+  // to "Off (hide)" takes away the Assigned BCBA / Student Analyst boxes on the
+  // Care team panel and refuses the save server-side too. "Role default" and
+  // "On" both mean the same thing for this one -- allowed.
+  //
+  // `capability` is what keeps it out of the sidebar: the loop below builds nav
+  // entries straight out of this catalogue, and a key with no hash would render
+  // a button that routes nowhere -- the same trap `external` is guarded
+  // against above.
+  "care-team": { label: "Edit Care Team assignments", icon: "◉", capability: true },
 };
 // Roles allowed to see client (family) records at all. HR-side roles such as
 // hiring_manager and interviewer are deliberately excluded -- they have no
@@ -1522,6 +1546,9 @@ function renderShell(active) {
     Object.keys(ma).forEach((k) => {
       if (ma[k] === true && !navItems.some((n) => n.key === k) && MODULE_CATALOG[k]) {
         const m = MODULE_CATALOG[k];
+        // A capability grant unlocks an action somewhere else in the app; it
+        // has no page of its own, so it must never become a sidebar button.
+        if (m.capability) return;
         // `external` carries the URL, not a flag, so it has to be resolved
         // here too -- otherwise switching Rethink on for one person gives them
         // a button that routes to "#/rethink", which is not a page.
@@ -3379,6 +3406,40 @@ function careTeamHtml(client) {
         : `<span style="color:var(--text-muted); font-weight:400;">Not assigned</span>`}</div>
     </div>`;
   const anyone = client.assigned_bcba_name || client.assigned_student_analyst_name || client.squad_leader_name;
+
+  // EDITABLE for the roles that could always do it through the Authorization
+  // section, and for anybody granted the "care-team" capability. Read-only for
+  // everyone else, exactly as before.
+  //
+  // Squad Leader stays read-only here on purpose: it is set by the Squad
+  // Leader administration screen, which is who may discipline whom, and
+  // quietly making it editable from a client card would move that decision.
+  if (canEditCareTeam()) {
+    const field = (id, label, value, placeholder, hintText) => `
+      <div class="field">
+        <label>${label}${hintText ? " " + hint(hintText) : ""}</label>
+        <input id="${id}" value="${ea(value)}" placeholder="${ea(placeholder)}" style="width:100%;" />
+      </div>`;
+    return `
+      <div class="card" style="margin:0 0 14px; padding:13px 15px;">
+        <div class="section-title" style="margin:0 0 9px;">Care team</div>
+        <div class="form-grid" style="gap:10px;">
+          ${field("ct-bcba-name", "Assigned BCBA", client.assigned_bcba_name, "Name", "Clearing the name unassigns them. The same field the Authorization section writes \u2014 there is one assigned BCBA, not two.")}
+          ${field("ct-bcba-email", "BCBA email", client.assigned_bcba_email, "name@spectrumsquadlv.com")}
+          ${field("ct-analyst-name", "Student Analyst", client.assigned_student_analyst_name, "Name")}
+          ${field("ct-analyst-email", "Student Analyst email", client.assigned_student_analyst_email, "name@spectrumsquadlv.com")}
+          ${row("Squad Leader", client.squad_leader_name, "Set from the Squad Leader administration screen, not here.")}
+        </div>
+        <div style="margin-top:10px;">
+          <button class="btn small" id="save-care-team-btn">Save care team</button>
+          <span id="care-team-status" style="font-size:12.5px; margin-left:8px; color:var(--text-muted);"></span>
+        </div>
+        ${anyone ? "" : `<div style="font-size:12px; color:#946213; margin-top:8px;">
+          Nobody is assigned to this client yet.
+        </div>`}
+      </div>`;
+  }
+
   return `
     <div class="card" style="margin:0 0 14px; padding:13px 15px;">
       <div class="section-title" style="margin:0 0 9px;">Care team</div>
@@ -4085,6 +4146,37 @@ async function openClientModal(id) {
       if (wrap) wrap.style.display = transportToggle.checked ? "" : "none";
     });
   }
+  // Care team: the Assigned BCBA and Student Analyst, saved through the
+  // narrow care-team endpoint rather than the authorization one, so a person
+  // granted this capability never touches the insurance record.
+  const saveCareTeamBtn = backdrop.querySelector("#save-care-team-btn");
+  if (saveCareTeamBtn) {
+    saveCareTeamBtn.addEventListener("click", async () => {
+      const statusEl = backdrop.querySelector("#care-team-status");
+      const val = (sel) => {
+        const el = backdrop.querySelector(sel);
+        return el ? el.value.trim() : "";
+      };
+      const body = {
+        assigned_bcba_name: val("#ct-bcba-name"),
+        assigned_bcba_email: val("#ct-bcba-email"),
+        assigned_student_analyst_name: val("#ct-analyst-name"),
+        assigned_student_analyst_email: val("#ct-analyst-email"),
+      };
+      saveCareTeamBtn.disabled = true;
+      statusEl.textContent = "Saving\u2026";
+      try {
+        await api(`/api/clients/${id}/care-team`, { method: "PATCH", body });
+        statusEl.textContent = "Saved \u2713";
+        setTimeout(() => (statusEl.textContent = ""), 1500);
+      } catch (e) {
+        statusEl.textContent = e.message || "Could not save.";
+      } finally {
+        saveCareTeamBtn.disabled = false;
+      }
+    });
+  }
+
   const saveTransportBtn = backdrop.querySelector("#save-transport-btn");
   if (saveTransportBtn) {
     saveTransportBtn.addEventListener("click", async () => {

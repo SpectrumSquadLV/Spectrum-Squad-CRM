@@ -66,11 +66,6 @@
       return new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
     } catch (e) { return todayStr(); }
   }
-  function shiftDay(iso, by) {
-    const d = new Date(String(iso).slice(0, 10) + "T00:00:00Z");
-    d.setUTCDate(d.getUTCDate() + by);
-    return d.toISOString().slice(0, 10);
-  }
   function greeting() {
     const h = new Date().getHours();
     return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
@@ -103,6 +98,12 @@
 
   let data = null, mountEl = null, viewingEmail = null;
   let caseFilter = "all", caseSearch = "", scheduleDate = todayStr();
+  // The month the calendar is showing, and the month payload it last loaded.
+  // Kept apart from scheduleDate so clicking a day inside the open month is
+  // instant -- the rows are already here, and re-fetching Rethink to show a
+  // day we already hold would be a spinner for nothing.
+  let scheduleMonth = todayStr().slice(0, 7);
+  let monthData = null;
 
   function injectStyles() {
     if (document.getElementById("bd-styles")) return;
@@ -180,9 +181,39 @@
     .bd-x { float:right; border:0; background:none; font-size:18px; cursor:pointer; color:#767488; line-height:1; }
     .bd-tc { margin-bottom:16px; }
     .bd-two { display:grid; grid-template-columns: repeat(auto-fit, minmax(min(330px,100%), 1fr)); gap:16px; }
+
+    /* ---- month calendar ------------------------------------------------
+       Seven equal columns at every width. The cells shrink rather than the
+       grid scrolling sideways, because a calendar you have to scroll is not
+       a calendar -- the whole point is seeing the month at once. */
+    .bd-cal { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+    .bd-cal-dow { font-size:10.5px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+      color:#8b8798; text-align:center; padding:4px 0 2px; }
+    .bd-cal-cell { min-height:74px; border:1px solid #ece8dd; border-radius:9px; background:#fff;
+      padding:5px 6px; text-align:left; font:inherit; cursor:pointer; display:flex; flex-direction:column;
+      gap:3px; transition:border-color .12s, background .12s; }
+    .bd-cal-cell:hover { border-color:#c9c2ae; background:#fdfcf9; }
+    .bd-cal-cell.pad { background:#faf9f6; border-color:#f1eee6; cursor:default; }
+    .bd-cal-cell.pad:hover { background:#faf9f6; border-color:#f1eee6; }
+    .bd-cal-cell.today { border-color:#1b2a6b; box-shadow:inset 0 0 0 1px #1b2a6b; }
+    .bd-cal-cell.sel { background:#1b2a6b; border-color:#1b2a6b; }
+    .bd-cal-cell.sel .bd-cal-n, .bd-cal-cell.sel .bd-cal-h { color:#fff; }
+    .bd-cal-cell.sel .bd-cal-pill { background:#e0a430; color:#1b2a6b; }
+    .bd-cal-n { font-size:12.5px; font-weight:700; color:#33324a; line-height:1.1; }
+    .bd-cal-pill { align-self:flex-start; font-size:10.5px; font-weight:700; padding:1px 6px;
+      border-radius:999px; background:#eef1fa; color:#1b2a6b; }
+    .bd-cal-h { font-size:10.5px; color:#767488; margin-top:auto; }
+    .bd-cal-sum { font-size:12px; color:#767488; margin-top:10px; }
+    @media (max-width:560px) {
+      .bd-cal-cell { min-height:56px; padding:4px; }
+      .bd-cal-n { font-size:11.5px; }
+      .bd-cal-pill { font-size:9.5px; padding:0 4px; }
+      .bd-cal-h { display:none; }
+    }
     @media print {
       .sidebar, .bd-filters, .bd-day, .bd-links, .bd-fb { display:none !important; }
       .bd-panel { break-inside: avoid; }
+      .bd-cal-cell { min-height:58px; }
     }`;
     document.head.appendChild(st);
   }
@@ -309,44 +340,55 @@
         <div><h2 class="bd-pt">${icon("calendar", 16)} My Schedule <span style="font-weight:400; color:var(--text-muted);">(from Rethink)</span></h2>
           <p class="bd-pn">Read from Rethink, which is the source of truth for scheduling. The CRM never changes it.</p></div>
         <div class="bd-day">
-          <button class="bd-db" data-day="prev">‹ Previous</button>
-          <button class="bd-db" data-day="today">Today</button>
-          <button class="bd-db" data-day="next">Next ›</button>
+          <button class="bd-db" data-month="prev">‹ Previous</button>
+          <button class="bd-db" data-month="today">Today</button>
+          <button class="bd-db" data-month="next">Next ›</button>
         </div>
       </div>
       <div class="bd-body" id="bd-sched-body"><div class="bd-empty">Loading the schedule…</div></div>
     </div>`;
   }
 
-  async function fillSchedule() {
-    const box = document.getElementById("bd-sched-body");
-    if (!box) return;
-    box.innerHTML = `<div class="bd-empty">Loading ${esc(dayLabel(scheduleDate))}…</div>`;
-    let d;
-    const qs = "?date=" + encodeURIComponent(scheduleDate) + (viewingEmail ? "&bcba=" + encodeURIComponent(viewingEmail) : "");
-    try { d = await api("/api/caseload/schedule" + qs); }
-    catch (e) { box.innerHTML = `<div class="bd-empty">Couldn't load the schedule: ${esc(e.message)}</div>`; return; }
-
-    if (!d.available) {
-      // Named, not blanked. A schedule panel that silently shows nothing is
-      // indistinguishable from a day with no sessions.
-      box.innerHTML = `<div class="bd-empty"><strong>${esc(dayLabel(d.date))}</strong><br/>${esc(d.reason || "The schedule is not available.")}</div>`;
-      return;
-    }
-    if (!d.rows.length) {
-      box.innerHTML = `<div class="bd-empty">No appointments in Rethink for ${esc(dayLabel(d.date))}.</div>`;
-      return;
-    }
-    const time = (r) => {
-      if (!r.start) return "—";
-      const t = String(r.start).slice(11, 16) || String(r.start).slice(0, 5);
-      const e = r.end ? (String(r.end).slice(11, 16) || String(r.end).slice(0, 5)) : "";
-      return e ? `${t}–${e}` : t;
+  const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"];
+  function monthLabel(m) {
+    const p = String(m || "").split("-");
+    return p.length === 2 ? `${MONTH_NAMES[+p[1] - 1] || p[1]} ${p[0]}` : String(m);
+  }
+  function shiftMonth(m, by) {
+    const [y, mo] = String(m).split("-").map(Number);
+    const d = new Date(Date.UTC(y, mo - 1 + by, 1));
+    return d.toISOString().slice(0, 7);
+  }
+  // Which weekday the 1st falls on, and how many days the month has. Done in
+  // UTC against the date string so the grid cannot slip a day for somebody in
+  // a different timezone than the server.
+  function monthShape(m) {
+    const [y, mo] = String(m).split("-").map(Number);
+    return {
+      firstDow: new Date(Date.UTC(y, mo - 1, 1)).getUTCDay(),
+      days: new Date(Date.UTC(y, mo, 0)).getUTCDate(),
     };
-    box.innerHTML = `<div class="bd-scroll"><table>
+  }
+
+  const apptTime = (r) => {
+    if (!r.start) return "—";
+    const t = String(r.start).slice(11, 16) || String(r.start).slice(0, 5);
+    const e = r.end ? (String(r.end).slice(11, 16) || String(r.end).slice(0, 5)) : "";
+    return e ? `${t}–${e}` : t;
+  };
+
+  // The selected day's appointments, under the grid. Unchanged in substance
+  // from the old day view -- the calendar is how you choose a day, not a
+  // replacement for seeing what is on it.
+  function dayDetailHtml(rows, iso) {
+    if (!rows.length) {
+      return `<div class="bd-empty">No appointments in Rethink for ${esc(dayLabel(iso))}.</div>`;
+    }
+    return `<div class="bd-scroll"><table>
       <thead><tr><th>Time</th><th>Client</th><th>Location</th><th>Type / CPT</th><th>Status</th></tr></thead>
-      <tbody>${d.rows.map((r) => `<tr>
-        <td>${esc(time(r))}</td>
+      <tbody>${rows.map((r) => `<tr>
+        <td>${esc(apptTime(r))}</td>
         <td>${r.client_id
               ? `<button class="bd-link" data-client="${r.client_id}">${esc(r.client_name)}</button>`
               : `<span style="color:#767488;">Not linked to a CRM client</span>`}</td>
@@ -355,7 +397,74 @@
         <td>${esc(r.status || "—")}</td>
       </tr>`).join("")}</tbody>
     </table></div>
-    <div class="bd-note">${esc(dayLabel(d.date))} · ${d.rows.length} appointment${d.rows.length === 1 ? "" : "s"} from Rethink.</div>`;
+    <div class="bd-note">${esc(dayLabel(iso))} · ${rows.length} appointment${rows.length === 1 ? "" : "s"} from Rethink.</div>`;
+  }
+
+  function calendarHtml(d) {
+    const { firstDow, days } = monthShape(d.month);
+    const byDate = new Map((d.days || []).map((c) => [c.date, c]));
+    const t = todayStr();
+    const dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+    const cells = [];
+    // Leading blanks so the 1st lands under its real weekday.
+    for (let i = 0; i < firstDow; i++) cells.push(`<div class="bd-cal-cell pad" aria-hidden="true"></div>`);
+    for (let n = 1; n <= days; n++) {
+      const iso = `${d.month}-${String(n).padStart(2, "0")}`;
+      const c = byDate.get(iso) || { count: 0, hours: 0 };
+      const cls = ["bd-cal-cell"];
+      if (iso === t) cls.push("today");
+      if (iso === scheduleDate) cls.push("sel");
+      cells.push(`<button class="${cls.join(" ")}" data-cal-day="${iso}"
+        aria-label="${esc(dayLabel(iso))}, ${c.count} appointment${c.count === 1 ? "" : "s"}"
+        ${iso === scheduleDate ? 'aria-current="date"' : ""}>
+        <span class="bd-cal-n">${n}</span>
+        ${c.count ? `<span class="bd-cal-pill">${c.count}</span>` : ""}
+        ${c.count && c.hours ? `<span class="bd-cal-h">${c.hours}h</span>` : ""}
+      </button>`);
+    }
+
+    return `<div class="bd-cal" role="grid" aria-label="${esc(monthLabel(d.month))} schedule">
+        ${dow.map((x) => `<div class="bd-cal-dow">${x}</div>`).join("")}
+        ${cells.join("")}
+      </div>
+      <div class="bd-cal-sum">${esc(monthLabel(d.month))} · ${d.total_appointments} appointment${d.total_appointments === 1 ? "" : "s"}${d.total_hours ? ` · ${d.total_hours}h` : ""} from Rethink.</div>`;
+  }
+
+  // Redraws from what is already loaded -- no fetch. Used when the person
+  // clicks a different day inside the open month.
+  function paintSchedule() {
+    const box = document.getElementById("bd-sched-body");
+    if (!box || !monthData || !monthData.available) return;
+    const cell = (monthData.days || []).find((c) => c.date === scheduleDate);
+    box.innerHTML = calendarHtml(monthData)
+      + (scheduleDate.slice(0, 7) === monthData.month ? dayDetailHtml((cell && cell.rows) || [], scheduleDate) : "");
+  }
+
+  async function fillSchedule() {
+    const box = document.getElementById("bd-sched-body");
+    if (!box) return;
+    box.innerHTML = `<div class="bd-empty">Loading ${esc(monthLabel(scheduleMonth))}…</div>`;
+    let d;
+    const qs = "?month=" + encodeURIComponent(scheduleMonth) + (viewingEmail ? "&bcba=" + encodeURIComponent(viewingEmail) : "");
+    try { d = await api("/api/caseload/schedule" + qs); }
+    catch (e) { box.innerHTML = `<div class="bd-empty">Couldn't load the schedule: ${esc(e.message)}</div>`; return; }
+
+    if (!d.available) {
+      // Named, not blanked. A schedule panel that silently shows nothing is
+      // indistinguishable from a month with no sessions.
+      monthData = null;
+      box.innerHTML = `<div class="bd-empty"><strong>${esc(monthLabel(d.month || scheduleMonth))}</strong><br/>${esc(d.reason || "The schedule is not available.")}</div>`;
+      return;
+    }
+    monthData = d;
+    // Opening a month that does not contain the selected day selects a day
+    // inside it, so the detail below the grid is never about a month you are
+    // not looking at: today if it falls here, otherwise the 1st.
+    if (scheduleDate.slice(0, 7) !== d.month) {
+      scheduleDate = todayStr().slice(0, 7) === d.month ? todayStr() : `${d.month}-01`;
+    }
+    paintSchedule();
   }
 
   // ================= caseload =============================================
@@ -657,11 +766,25 @@
       const el = target ? document.querySelector(target) : mountEl.querySelector(".bd-panel:nth-of-type(3)");
       if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
-    mountEl.querySelectorAll("[data-day]").forEach((b) => b.addEventListener("click", () => {
-      const k = b.dataset.day;
-      scheduleDate = k === "today" ? todayStr() : shiftDay(scheduleDate, k === "next" ? 1 : -1);
+    mountEl.querySelectorAll("[data-month]").forEach((b) => b.addEventListener("click", () => {
+      const k = b.dataset.month;
+      if (k === "today") { scheduleMonth = todayStr().slice(0, 7); scheduleDate = todayStr(); }
+      else scheduleMonth = shiftMonth(scheduleMonth, k === "next" ? 1 : -1);
       fillSchedule();
     }));
+    // Day cells are delegated from the panel body rather than bound per cell:
+    // the grid is redrawn on every month change and on every selection, so
+    // handlers bound to the old cells would be gone by the second click.
+    const schedBody = document.getElementById("bd-sched-body");
+    if (schedBody && !schedBody.dataset.calWired) {
+      schedBody.dataset.calWired = "1";
+      schedBody.addEventListener("click", (ev) => {
+        const cell = ev.target.closest("[data-cal-day]");
+        if (!cell || !schedBody.contains(cell)) return;
+        scheduleDate = cell.dataset.calDay;
+        paintSchedule();
+      });
+    }
     mountEl.querySelectorAll("[data-done]").forEach((b) => b.addEventListener("click", async () => {
       b.disabled = true;
       try {

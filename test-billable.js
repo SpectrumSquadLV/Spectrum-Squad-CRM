@@ -152,6 +152,32 @@ const mailsFor = async (addr) =>
   check("the run sends nothing at all", run.sent === 0, run);
   check("and it says why for each person", (run.skipped || []).length > 0, run.skipped);
 
+  section("A PARTIAL sync is a completed sync");
+  // rethink.js logs a sync as "partial" the moment it raises a single warning,
+  // and warnings are ordinary: an appointment with no actualDurationHours, a
+  // provider not yet matched, a future session skipped. The hours are synced
+  // and written in every one of those cases -- partial describes the notes,
+  // not the figures.
+  //
+  // This screen used to insist on exactly "success", so a perfectly good month
+  // was announced as "the Rethink sync has not completed successfully, these
+  // hours are not final", every person was marked untrustworthy and no notice
+  // could be sent. It reads precisely like a page that never updates, which is
+  // how it was reported. Seeded here because the suite only ever wrote
+  // "success" before -- which is why the bug survived being tested.
+  await pool.query(
+    `INSERT INTO rethink_sync_log (kind, month, status, finished_at) VALUES ('supervision_hours', $1, 'partial', now()::text)`,
+    [PERIOD]
+  );
+  sum = (await owner(`/api/billable/summary?month=${PERIOD}`)).data;
+  check("a partial sync counts as completed", sum.sync_ok === true, sum.sync_ok);
+  check("and does not brand every figure untrustworthy",
+    (sum.staff || []).some((r) => r.trustworthy === true),
+    (sum.staff || []).map((r) => r.trustworthy));
+  check("nobody is told the sync failed when it did not",
+    !/has not completed successfully/i.test(((sum.staff || []).find((r) => r.employee_id === met) || {}).note || ""),
+    ((sum.staff || []).find((r) => r.employee_id === met) || {}).note);
+
   section("With a good sync, the arithmetic is right");
   await pool.query(
     `INSERT INTO rethink_sync_log (kind, month, status, finished_at) VALUES ('supervision_hours', $1, 'success', now()::text)`,

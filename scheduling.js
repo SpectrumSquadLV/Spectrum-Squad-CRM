@@ -1167,11 +1167,25 @@ module.exports = function initScheduling(ctx) {
         )).map(shape);
         const scheduled = sessions.filter((s) => s.occurred).reduce((n, s) => n + s.hours, 0);
 
-        // Authorized hours come from the financial form until the Rethink
-        // authorization import lands. Reported as null, not zero, when unknown,
-        // so the UI can say "not on file" instead of implying nothing is
-        // authorised.
-        const fs = await dbGet("SELECT authorized_hours_per_week FROM client_financial_forms WHERE client_id = ? ORDER BY id DESC LIMIT 1", [clientId]).catch(() => null);
+        // Authorized hours live on client_financial_settings -- one row per
+        // client, keyed by client_id, written by the Financial Settings editor.
+        //
+        // This read used to name client_financial_forms, which is the PARENT-
+        // FACING form (copay, deductible, plan type) and has never carried an
+        // authorized_hours_per_week column. Postgres answered every call with
+        // "column does not exist", the .catch below turned that into null, and
+        // so this endpoint reported "not on file" for EVERY client -- including
+        // the ones whose authorized hours were filled in and visible two
+        // screens away. A wrong table that fails silently reads exactly like an
+        // empty one, which is why it survived: the screen looked plausible.
+        //
+        // The failure is logged now rather than swallowed. A query that cannot
+        // run is a bug, and the next one should not get to hide for as long as
+        // this one did.
+        const fs = await dbGet(
+          "SELECT authorized_hours_per_week FROM client_financial_settings WHERE client_id = ?",
+          [clientId]
+        ).catch((e) => { console.error("client summary: authorized hours lookup failed:", e.message); return null; });
         const authorized = fs && fs.authorized_hours_per_week != null ? Number(fs.authorized_hours_per_week) : null;
         const client = await dbGet("SELECT child_name, auth_start_date, auth_expiration_date, authorization_status FROM clients WHERE id = ?", [clientId]);
 

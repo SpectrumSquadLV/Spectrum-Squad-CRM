@@ -6114,6 +6114,102 @@ async function handle(req, res, pathname, method, query = {}) {
       return json(res, 200, { ...authAlerts.sanitizeClientForRole(user, updated), approval_email: approvalEmail });
     }
 
+    // ---- CARE TEAM: who is carrying this child ---------------------------
+    //
+    // Naming a BCBA used to mean going through the Authorization section, and
+    // authorization is INSURANCE data -- the payer, the dates, the notes. So
+    // the only people who could say which clinician has a child were the
+    // people trusted with the insurance record, and "let her reassign a BCBA"
+    // could not be answered without also handing over that.
+    //
+    // The Student Analyst was worse: no endpoint wrote it at all. It was
+    // reachable only from the bulk assignment migration, so correcting one
+    // child meant running a migration over everybody or editing the database
+    // by hand. The Care team panel showed the field and offered no way to set
+    // it.
+    //
+    // This endpoint carries those four fields and NOTHING else, which is
+    // exactly what lets it be granted on its own. "care-team" is a capability
+    // in the Access editor rather than a page: switching it on lets somebody
+    // name the clinician on a client without seeing a payer or a deductible.
+    const careTeamMatch = pathname.match(/^\/api\/clients\/(\d+)\/care-team$/);
+    if (careTeamMatch && method === "PATCH") {
+      // ANYONE WHO CAN OPEN THE RECORD CAN FIX THE ASSIGNMENT.
+      //
+      // This started as a capability nobody had until it was granted. That was
+      // the wrong default for what this actually is: the care team NAMES are
+      // already readable by everyone with client access -- that is settled, and
+      // deliberate, because a card reading "Not assigned yet" about a child who
+      // has a BCBA is worse than a blank. Making the same people ask for
+      // permission to CORRECT what they can already see just means the wrong
+      // name stays on the record until somebody with a grant gets to it.
+      //
+      // So the only hard gate is the one that protects the child's file:
+      // whether you may see clients at all. An HR-side or OT-only role still
+      // cannot reach this, and no toggle can change that.
+      if (!canAccessClients(user)) return json(res, 403, { error: "Not permitted" });
+      // On by default, and still revocable for one person: an explicit "Off"
+      // against "care-team" in the Access editor takes it away again. Absent
+      // means allowed, which is the same rule the rest of module_access uses.
+      if (moduleDenied(user, "care-team")) {
+        return json(res, 403, { error: "Not permitted to change the care team" });
+      }
+
+      const id = careTeamMatch[1];
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+
+      const body = await readBody(req);
+      const CARE_TEAM_FIELDS = [
+        "assigned_bcba_name", "assigned_bcba_email",
+        "assigned_student_analyst_name", "assigned_student_analyst_email",
+      ];
+      const fields = Object.keys(body).filter((k) => CARE_TEAM_FIELDS.includes(k));
+      if (!fields.length) return json(res, 400, { error: "No editable fields provided" });
+
+      // Cleared means NOBODY, stored as NULL rather than an empty string, so
+      // "is anyone assigned to this child" is one question with one answer on
+      // every screen that asks it. An empty string would read as assigned.
+      const valueOf = (f) => {
+        const raw = body[f];
+        const t = raw == null ? "" : String(raw).trim();
+        if (!t) return null;
+        return f.endsWith("_email") ? t.toLowerCase().slice(0, 200) : t.slice(0, 200);
+      };
+      const emailOk = (e) => !e || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
+      const badEmail = fields.filter((f) => f.endsWith("_email") && !emailOk(valueOf(f)));
+      if (badEmail.length) {
+        return json(res, 400, {
+          error: `Not a valid email address: ${badEmail.map((f) => String(body[f])).join(", ")}`,
+        });
+      }
+
+      await dbRun(
+        `UPDATE clients SET ${fields.map((f) => `${f} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
+        [...fields.map(valueOf), nowISO(), id]
+      );
+
+      // Who changed an assignment is worth keeping: a caseload moving is the
+      // kind of thing somebody asks about a month later. Best-effort, and
+      // never allowed to fail the save itself.
+      const changed = fields
+        .filter((f) => (client[f] || null) !== valueOf(f))
+        .map((f) => `${f}: ${client[f] || "(none)"} -> ${valueOf(f) || "(none)"}`);
+      if (changed.length) {
+        console.log(`[care-team] client ${id} updated by ${(user && user.email) || "unknown"} -- ${changed.join("; ")}`);
+      }
+
+      const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      return json(res, 200, {
+        id: Number(id),
+        assigned_bcba_name: updated.assigned_bcba_name || null,
+        assigned_bcba_email: updated.assigned_bcba_email || null,
+        assigned_student_analyst_name: updated.assigned_student_analyst_name || null,
+        assigned_student_analyst_email: updated.assigned_student_analyst_email || null,
+        changed: changed.length,
+      });
+    }
+
     const clientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     if (clientMatch && method === "GET") {
       const id = clientMatch[1];
@@ -8433,6 +8529,18 @@ function moduleGranted(user, key) {
   let ma = user.module_access;
   if (typeof ma === "string") { try { ma = JSON.parse(ma); } catch (e) { return false; } }
   return !!ma && ma[key] === true;
+}
+
+// The mirror image: has the owner explicitly switched this OFF for this
+// person? Needed for capabilities that are ON by default -- for those,
+// "absent" means allowed, so only an explicit false takes it away. `handle()`
+// enforces the OFF case for whole nav SECTIONS by path prefix; this is the
+// same question asked about a capability that has no page of its own.
+function moduleDenied(user, key) {
+  if (!user || !user.module_access || !key) return false;
+  let ma = user.module_access;
+  if (typeof ma === "string") { try { ma = JSON.parse(ma); } catch (e) { return false; } }
+  return !!ma && ma[key] === false;
 }
 
 // ===== SCREENER add-on: clinical screener automation (send, remind, host, save) =====

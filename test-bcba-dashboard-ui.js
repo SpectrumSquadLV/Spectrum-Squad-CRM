@@ -260,7 +260,86 @@ const { chromium } = require("playwright");
   check("and says the figures come from the tracker", /RBT Supervision tracker/i.test(text));
   check("the schedule panel names Rethink as the source",
     /source of truth for scheduling/i.test(text), text.match(/Rethink[^\n]*/));
-  check("the schedule has day controls", await page.locator("[data-day]").count() === 3);
+  // My Schedule is a MONTH calendar now, so the controls step by month.
+  check("the schedule has month controls", await page.locator("[data-month]").count() === 3);
+
+  // THE GRID ITSELF NEEDS DATA, and a build environment has no Rethink
+  // credentials -- the panel correctly says so instead of drawing an empty
+  // month. So the month endpoint is stubbed here and the real rendering is
+  // exercised against it. Without this the calendar would be shipped with its
+  // only UI coverage being "the buttons exist", which is what let the previous
+  // version of this check pass while saying nothing.
+  {
+    const MONTH = "2026-05";           // May 2026: the 1st is a Friday, 31 days
+    await page.route("**/api/caseload/schedule*", async (route) => {
+      const url = new URL(route.request().url());
+      if (!url.searchParams.get("month")) return route.continue();
+      const days = [];
+      for (let n = 1; n <= 31; n++) {
+        const iso = `${MONTH}-${String(n).padStart(2, "0")}`;
+        const count = n === 4 ? 3 : n === 5 ? 1 : 0;
+        days.push({
+          date: iso, count, hours: count * 2,
+          rows: Array.from({ length: count }, (_, i) => ({
+            start: `${iso}T0${8 + i}:00:00`, end: `${iso}T0${9 + i}:00:00`, date: iso,
+            client_id: null, client_name: null, rethink_client_id: "R" + i,
+            location: "Clinic", service: "97153", status: "Scheduled", duration_hours: 2,
+          })),
+        });
+      }
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          month: MONTH, from: `${MONTH}-01`, to: `${MONTH}-31`, available: true,
+          source: "Rethink", staff_id: "S1", days, total_appointments: 4, total_hours: 8,
+        }),
+      });
+    });
+    // Nudge the panel into reloading through the stub.
+    await page.evaluate(() => {
+      const b = document.querySelector('[data-month="next"]');
+      if (b) b.click();
+    });
+    await page.waitForSelector(".bd-cal-cell.sel", { timeout: 15000 }).catch(() => {});
+
+    check("it draws a month calendar grid", await page.locator(".bd-cal").count() === 1);
+    check("the grid is laid out Sunday to Saturday", await page.locator(".bd-cal-dow").count() === 7);
+    check("every day of the month has a cell, quiet ones included",
+      await page.locator("[data-cal-day]").count() === 31,
+      await page.locator("[data-cal-day]").count());
+    check("the 1st sits under its real weekday",
+      await page.locator(".bd-cal-cell.pad").count() === 5,
+      await page.locator(".bd-cal-cell.pad").count());
+    check("a busy day shows how many appointments it has",
+      (await page.locator('[data-cal-day="2026-05-04"] .bd-cal-pill').textContent()) === "3");
+    check("a quiet day shows no count rather than a zero",
+      await page.locator('[data-cal-day="2026-05-01"] .bd-cal-pill').count() === 0);
+
+    const selDay = () => page.evaluate(() => {
+      const el = document.querySelector(".bd-cal-cell.sel");
+      return el ? el.getAttribute("data-cal-day") : null;
+    });
+    const before = await selDay();
+    check("a day is selected", !!before, before);
+    check("exactly one day is selected", await page.locator(".bd-cal-cell.sel").count() === 1);
+
+    // Clicking a day must not refetch the month: the rows are already loaded,
+    // and a spinner per click would make the calendar feel broken.
+    await page.click('[data-cal-day="2026-05-04"]');
+    let after = before;
+    for (let i = 0; i < 40 && after !== "2026-05-04"; i++) {
+      await page.waitForTimeout(100);
+      after = await selDay();
+    }
+    check("clicking a day moves the selection", after === "2026-05-04", { before, after });
+    check("and still exactly one day is selected", await page.locator(".bd-cal-cell.sel").count() === 1);
+    check("the chosen day's appointments are listed underneath",
+      /Clinic/.test(await page.locator("#bd-sched-body").innerText()),
+      (await page.locator("#bd-sched-body").innerText()).slice(0, 160));
+
+    await page.unroute("**/api/caseload/schedule*");
+  }
+
   for (const l of ["Treatment Plan Cheat Sheet", "Form Library", "Programming / BIP", "RBT Supervision", "Policies & SOPs", "Billable Requirements"]) {
     check(`quick link: ${l}`, text.includes(l), l);
   }

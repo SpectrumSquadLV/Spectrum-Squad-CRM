@@ -597,6 +597,78 @@ const R = (n, b, ins, s, e, tp, tx, an) => `| ${n} | ${b || ""} | ${ins || ""} |
       p.analysts[0].clients.length === 2, p.analysts);
   }
 
+  // ==================================================== the month calendar
+  section("My Schedule reads a whole month in one call");
+  {
+    const MONTH = "2026-05";                       // 31 days, the 1st a Friday
+    let asked = null;
+    const { mod } = load({
+      responses: [
+        [/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 7, name: "Bee See", email: "bee@x.invalid", rethink_id: "S7" }],
+        [/FROM clients WHERE rethink_client_id IN/, [{ id: 21, child_name: "Cal Kid", rethink_client_id: "C1" }]],
+      ],
+      fetchAppointments: async (from, to) => {
+        asked = { from, to };
+        return { ok: true, rows: [
+          { staffId: "S7", clientId: "C1", appointmentDate: "2026-05-04", startTime: "2026-05-04T09:00:00", actualDurationHours: 2 },
+          { staffId: "S7", clientId: "C1", appointmentDate: "2026-05-04", startTime: "2026-05-04T13:00:00", actualDurationHours: 1.5 },
+          { staffId: "S7", clientId: "C1", appointmentDate: "2026-05-20", startTime: "2026-05-20T10:00:00", actualDurationHours: 3 },
+          // Somebody else's session in the same month: never this BCBA's.
+          { staffId: "S9", clientId: "C1", appointmentDate: "2026-05-04", startTime: "2026-05-04T08:00:00", actualDurationHours: 8 },
+        ] };
+      },
+    });
+
+    const m = await mod._internal.scheduleMonthFor({ email: "bee@x.invalid" }, MONTH);
+
+    check("ONE Rethink call covers the whole month, not one per day",
+      asked && asked.from === "2026-05-01" && asked.to === "2026-05-31", asked);
+    check("the month is available", m.available === true, m);
+    check("every day of the month gets a cell, quiet ones included",
+      m.days.length === 31, m.days.length);
+    check("appointments land on their own day",
+      (m.days.find((d) => d.date === "2026-05-04") || {}).count === 2
+      && (m.days.find((d) => d.date === "2026-05-20") || {}).count === 1,
+      m.days.filter((d) => d.count).map((d) => d.date + ":" + d.count));
+    check("a quiet day is zero rather than missing",
+      (m.days.find((d) => d.date === "2026-05-05") || {}).count === 0);
+    check("hours are summed per day",
+      (m.days.find((d) => d.date === "2026-05-04") || {}).hours === 3.5,
+      (m.days.find((d) => d.date === "2026-05-04") || {}).hours);
+    check("another provider's sessions are never on this calendar",
+      m.total_appointments === 3, m.total_appointments);
+    check("the month total is the sum of its days", m.total_hours === 6.5, m.total_hours);
+    check("each day carries its own rows, so choosing a day needs no second call",
+      (m.days.find((d) => d.date === "2026-05-04") || {}).rows.length === 2);
+    check("a linked client is named rather than shown as a Rethink id",
+      ((m.days.find((d) => d.date === "2026-05-04") || {}).rows[0] || {}).client_name === "Cal Kid");
+  }
+  {
+    // The day view still answers in its old shape: other callers depend on it.
+    const { mod } = load({
+      responses: [
+        [/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 7, name: "Bee See", email: "bee@x.invalid", rethink_id: "S7" }],
+      ],
+      fetchAppointments: async () => ({ ok: true, rows: [] }),
+    });
+    const d = await mod._internal.scheduleFor({ email: "bee@x.invalid" }, "2026-05-04");
+    check("the single-day view still returns { date, available, rows }",
+      d.date === "2026-05-04" && d.available === true && Array.isArray(d.rows), d);
+  }
+  {
+    // Rethink unreachable must be SAID, not drawn as an empty month.
+    const { mod } = load({
+      responses: [
+        [/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 7, name: "Bee See", email: "bee@x.invalid", rethink_id: "S7" }],
+      ],
+      fetchAppointments: async () => ({ ok: false, error: "Rethink is unavailable." }),
+    });
+    const m = await mod._internal.scheduleMonthFor({ email: "bee@x.invalid" }, "2026-05");
+    check("an unreachable Rethink is named, not drawn as a month of nothing",
+      m.available === false && /unavailable/i.test(m.reason || ""), m);
+    check("and no day cells are invented", m.days === undefined, m.days);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
