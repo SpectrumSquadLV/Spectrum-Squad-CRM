@@ -480,22 +480,25 @@ module.exports = function initBcbaDashboard(ctx) {
   // panel says so; it does not fall back to anything, because the only other
   // schedule available would be the spreadsheet's notes, and those are
   // historical.
-  async function scheduleFor(bcba, date) {
-    const day = /^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ? date : today();
+  // One fetch-and-shape for a DATE RANGE, shared by the day view and the month
+  // grid. Written once on purpose: two readers of the same Rethink schedule
+  // that shaped rows differently would eventually disagree about what is on a
+  // BCBA's calendar, and the calendar is the thing they plan their week from.
+  async function scheduleRange(bcba, from, to, fallbackDay) {
     const emp = await employeeFor(bcba);
-    if (!emp) return { date: day, available: false, reason: "No staff record matched this BCBA." };
-    if (!emp.rethink_id) return { date: day, available: false, reason: "This BCBA is not linked to a Rethink provider yet." };
+    if (!emp) return { available: false, reason: "No staff record matched this BCBA." };
+    if (!emp.rethink_id) return { available: false, reason: "This BCBA is not linked to a Rethink provider yet." };
     if (typeof fetchAppointments !== "function") {
-      return { date: day, available: false, reason: "The Rethink integration is not available." };
+      return { available: false, reason: "The Rethink integration is not available." };
     }
     let fetched;
     try {
-      fetched = await fetchAppointments(day, day);
+      fetched = await fetchAppointments(from, to);
     } catch (e) {
-      return { date: day, available: false, reason: e && e.message ? e.message : "Rethink could not be reached." };
+      return { available: false, reason: e && e.message ? e.message : "Rethink could not be reached." };
     }
     if (!fetched || !fetched.ok) {
-      return { date: day, available: false, reason: (fetched && fetched.error) || "Rethink returned no schedule." };
+      return { available: false, reason: (fetched && fetched.error) || "Rethink returned no schedule." };
     }
 
     const staffId = String(emp.rethink_id);
@@ -521,7 +524,7 @@ module.exports = function initBcbaDashboard(ctx) {
         // Rethink did not send it, not that nothing is scheduled.
         start: r.startTime || r.appointmentStartTime || null,
         end: r.endTime || r.appointmentEndTime || null,
-        date: String(r.appointmentDate || "").slice(0, 10) || day,
+        date: String(r.appointmentDate || "").slice(0, 10) || fallbackDay,
         client_id: c ? c.id : null,
         client_name: c ? c.child_name : null,
         rethink_client_id: rid || null,
@@ -530,9 +533,57 @@ module.exports = function initBcbaDashboard(ctx) {
         status: r.appointmentStatus || null,
         duration_hours: r.actualDurationHours == null ? null : num(r.actualDurationHours),
       };
-    }).sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
+    }).sort((a, b) => (String(a.date || "").localeCompare(String(b.date || ""))
+      || String(a.start || "").localeCompare(String(b.start || ""))));
 
-    return { date: day, available: true, rows, source: "Rethink", staff_id: staffId };
+    return { available: true, rows, source: "Rethink", staff_id: staffId };
+  }
+
+  // The single day, unchanged in shape: the day view and its callers still get
+  // { date, available, rows, ... } exactly as before.
+  async function scheduleFor(bcba, date) {
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ? date : today();
+    const out = await scheduleRange(bcba, day, day, day);
+    return { date: day, ...out };
+  }
+
+  // A whole month, grouped by day, for the calendar grid. One Rethink call for
+  // the month rather than thirty-one: a grid that fetched per cell would hammer
+  // an API whose rate limits we have not been told.
+  async function scheduleMonthFor(bcba, month) {
+    const m = /^\d{4}-\d{2}$/.test(String(month || "")) ? month : today().slice(0, 7);
+    const [y, mo] = m.split("-").map(Number);
+    const lastDay = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+    const from = `${m}-01`;
+    const to = `${m}-${String(lastDay).padStart(2, "0")}`;
+
+    const out = await scheduleRange(bcba, from, to, from);
+    if (!out.available) return { month: m, from, to, available: false, reason: out.reason };
+
+    // Every day of the month is present, including the empty ones. A calendar
+    // that omitted quiet days would silently renumber itself.
+    const byDay = new Map();
+    for (let d = 1; d <= lastDay; d++) {
+      const iso = `${m}-${String(d).padStart(2, "0")}`;
+      byDay.set(iso, { date: iso, count: 0, hours: 0, rows: [] });
+    }
+    for (const r of out.rows) {
+      const cell = byDay.get(String(r.date || "").slice(0, 10));
+      // An appointment Rethink dated outside the window it was asked for is
+      // reported in the total rather than dropped into the wrong cell.
+      if (!cell) continue;
+      cell.count += 1;
+      cell.hours += num(r.duration_hours) || 0;
+      cell.rows.push(r);
+    }
+
+    const days = [...byDay.values()].map((c) => ({ ...c, hours: Math.round(c.hours * 100) / 100 }));
+    return {
+      month: m, from, to, available: true, source: "Rethink", staff_id: out.staff_id,
+      days,
+      total_appointments: out.rows.length,
+      total_hours: Math.round(days.reduce((a, c) => a + c.hours, 0) * 100) / 100,
+    };
   }
 
   // =========================================================================
@@ -1033,6 +1084,13 @@ module.exports = function initBcbaDashboard(ctx) {
 
     if (pathname === "/api/caseload/schedule" && method === "GET") {
       const bcba = await resolveBcba(user, query.bcba);
+      // ?month=YYYY-MM for the calendar grid, ?date=YYYY-MM-DD for one day.
+      // The day form is the original and stays the default, so nothing that
+      // already calls this endpoint changes behaviour.
+      if (query.month) {
+        json(res, 200, await scheduleMonthFor(bcba, query.month));
+        return true;
+      }
       json(res, 200, await scheduleFor(bcba, query.date));
       return true;
     }
@@ -1094,6 +1152,7 @@ module.exports = function initBcbaDashboard(ctx) {
 
   return {
     initTables, handleApi,
-    _internal: { urgency, tpUrgency, daysUntil, planDue, matchClients, matchStaff, buildMigrationPlan, isBcbaRole, canPick },
+    _internal: { urgency, tpUrgency, daysUntil, planDue, matchClients, matchStaff, buildMigrationPlan, isBcbaRole, canPick,
+      scheduleFor, scheduleMonthFor },
   };
 };
