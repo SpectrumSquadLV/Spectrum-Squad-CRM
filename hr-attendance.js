@@ -183,13 +183,35 @@ module.exports = function initHrAttendance(ctx) {
     "(SELECT u.role FROM users u WHERE u.id = hr_employees.user_id) AS crm_role";
 
   function role(user) { return (user && (user.role || user.role_key || "")) || ""; }
+
+  // Supplied by server.js. This module was the ONLY one with an Access-editor
+  // toggle that never received it, and the effect was a switch that did
+  // nothing: the path-prefix gate in server.js enforces an explicit OFF, so
+  // turning Staff Attendance off worked, but turning it ON left canManage()
+  // below refusing on role alone. Somebody granted the section in Admin
+  // Settings, saw the sidebar button appear, clicked it and was told "Not
+  // permitted" -- which reads as a broken CRM rather than a missing wire.
+  //
+  // Defaults to "no grants" so a lost wiring narrows access rather than
+  // widening it.
+  const moduleGranted = ctx.moduleGranted || (() => false);
+
+  // The ORDINARY tier: read the roster, log an absence, see the points and
+  // standings. Role, or an explicit grant of the Staff Attendance section.
   function canManage(user) {
-    return ["owner", "super_admin", "admin", "hr_admin"].includes(role(user));
+    if (["owner", "super_admin", "admin", "hr_admin"].includes(role(user))) return true;
+    return !!user && moduleGranted(user, "attendance");
   }
   // Changing point values, or firing the monthly review by hand, decides
   // discipline levels and who is owed a $50 bonus. Narrower than canManage on
   // purpose: an hr_admin can log and read attendance, but not rewrite the
   // policy the numbers come from.
+  //
+  // DELIBERATELY NOT grant-aware. A nav toggle unlocks a section's ordinary
+  // access; it must never hand over the policy the discipline levels and the
+  // bonus are calculated from. Granting somebody Staff Attendance lets them
+  // read and log it, and still refuses them the matrix, the import and the
+  // monthly review.
   function canEditMatrix(user) {
     return ["owner", "super_admin", "admin"].includes(role(user));
   }

@@ -8646,6 +8646,12 @@ try {
     dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
     // Recipients for the monthly attendance roster summary.
     getAppSetting, setAppSetting,
+    // Staff Attendance is a section in the Access editor, so a grant has to
+    // reach the module that answers for it. Without this the toggle was
+    // one-way: switching the section OFF worked (the path-prefix gate above
+    // enforces that), switching it ON did nothing and the person was told
+    // "Not permitted" on a button the grant had just given them.
+    moduleGranted,
   });
 } catch (e) {
   // The hr-attendance module file isn't present yet. Keep the app booting with a
