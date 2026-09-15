@@ -2754,6 +2754,12 @@ module.exports = function initRethink(ctx) {
     initTables,
     handleApi,
     fetchAppointments,
+    // "Is this appointment staff-verified?", answered by the module that owns
+    // the filter an admin confirmed. Exported rather than left in _internal
+    // because the unverified-appointment report depends on it: two copies of
+    // this rule would mean one screen calling a session verified while the
+    // other filed an infraction for it.
+    verificationVerdict: (row, cfg) => decide(row, cfg),
     syncSupervisionHours,
     syncAuthorizations,
     integrationStatus,
