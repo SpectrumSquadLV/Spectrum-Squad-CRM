@@ -832,14 +832,15 @@ function canEditAuth() {
 }
 
 // Who may change the Assigned BCBA / Student Analyst on a client. Mirrors the
-// gate on PATCH /api/clients/:id/care-team exactly: the roles that could
-// already do it through the Authorization section, plus anybody the owner has
-// granted the "care-team" capability in the Access editor. The server decides;
-// this only decides whether to draw the inputs.
+// gate on PATCH /api/clients/:id/care-team exactly: anyone who can open a
+// client record, unless the owner has explicitly switched "care-team" OFF for
+// them in the Access editor. Absent means allowed -- the same rule the rest of
+// module_access uses. The server decides; this only decides whether to draw
+// the inputs instead of the read-only rows.
 function canEditCareTeam() {
-  if (canEditAuth()) return true;
+  if (!canAccessClients()) return false;
   const ma = getModuleAccess(state.user);
-  return !!ma && ma["care-team"] === true;
+  return !(ma && ma["care-team"] === false);
 }
 
 // Can this role see what the family owes and what their plan covers -- the
@@ -1370,13 +1371,17 @@ const MODULE_CATALOG = {
   grants: { label: "Grant Finder", icon: "▨" },
   "auth-alerts": { label: "Authorization Alerts", icon: "⧗" },
   admin: { label: "Admin Settings", icon: "⚙" },
-  // A CAPABILITY, not a page -- there is nothing to navigate to. Granting it
-  // lets somebody set the Assigned BCBA and Student Analyst on a client's Care
-  // team panel WITHOUT giving them the Authorization section those fields used
-  // to live behind, which is insurance data. `capability` is what keeps it out
-  // of the sidebar: the loop below builds nav entries straight out of this
-  // catalogue, and a key with no hash would render a button that routes
-  // nowhere -- the same trap `external` is guarded against above.
+  // A CAPABILITY, not a page -- there is nothing to navigate to, and unlike
+  // every other key here it is ON by default for anyone who can open a client
+  // record. It is listed so it can be switched OFF for one person: setting it
+  // to "Off (hide)" takes away the Assigned BCBA / Student Analyst boxes on the
+  // Care team panel and refuses the save server-side too. "Role default" and
+  // "On" both mean the same thing for this one -- allowed.
+  //
+  // `capability` is what keeps it out of the sidebar: the loop below builds nav
+  // entries straight out of this catalogue, and a key with no hash would render
+  // a button that routes nowhere -- the same trap `external` is guarded
+  // against above.
   "care-team": { label: "Edit Care Team assignments", icon: "◉", capability: true },
 };
 // Roles allowed to see client (family) records at all. HR-side roles such as

@@ -80,13 +80,17 @@ const login = async (email, password) => {
   const id = made.body && made.body.id;
   check("a client to work with", !!id, made.body);
 
-  // ---------------- the grant ------------------------------------------
+  // ---------------- open by default -------------------------------------
   console.log("\n-- who may change the care team --");
   {
+    // The care team NAMES are already readable by everyone with client access.
+    // Correcting one therefore needs no grant: making people ask permission to
+    // fix what they can already see just leaves the wrong name on the record.
     const r = await sched("/api/clients/" + id + "/care-team", {
-      method: "PATCH", body: { assigned_bcba_name: "Should Not Stick" },
+      method: "PATCH", body: { assigned_bcba_name: "Set By Scheduling" },
     });
-    check("without the grant, the care team is refused", r.status === 403, r);
+    check("anyone who can open a client record may fix the assignment",
+      r.status === 200 && r.body.assigned_bcba_name === "Set By Scheduling", r);
   }
 
   const users = await owner("/api/admin/users");
@@ -94,14 +98,7 @@ const login = async (email, password) => {
   const schedUser = rows.find((u) => String(u.email).startsWith("scheduling"));
   check("the scheduling account is visible to the owner", !!schedUser, users.body);
 
-  const granted = await owner("/api/admin/users/" + schedUser.id, {
-    method: "PATCH", body: { module_access: { "care-team": true } },
-  });
-  check("the owner can grant the care-team capability", granted.status === 200, granted);
-
-  // The grant rides on the session's user row, so sign in again.
-  const brene = await login("scheduling@spectrumsquadlv.com", "TestOwner123!");
-
+  const brene = sched;
   {
     const r = await brene("/api/clients/" + id + "/care-team", {
       method: "PATCH",
@@ -112,8 +109,8 @@ const login = async (email, password) => {
         assigned_student_analyst_email: "analyst@spectrumsquadlv.com",
       },
     });
-    check("with the grant, the BCBA can be assigned", r.status === 200 && r.body.assigned_bcba_name === "Granted BCBA", r);
-    check("with the grant, the STUDENT ANALYST can be assigned at last",
+    check("the BCBA can be assigned", r.status === 200 && r.body.assigned_bcba_name === "Granted BCBA", r);
+    check("the STUDENT ANALYST can be assigned at last",
       r.body && r.body.assigned_student_analyst_name === "Granted Analyst", r.body);
     check("an email is stored lower-cased, so two spellings are one person",
       r.body && r.body.assigned_bcba_email === "granted.bcba@spectrumsquadlv.com", r.body);
@@ -147,6 +144,42 @@ const login = async (email, password) => {
     check("a malformed email is refused rather than stored", r.status === 400, r);
   }
 
+  // ---------------- the boundary that still holds ------------------------
+  // "Anyone can edit the assignment" means anyone who may open the child's
+  // record. HR-side roles may not, and no default and no toggle changes that:
+  // this is the gate that protects the file itself, not a convenience.
+  console.log("\n-- 'anyone' still stops at the client-access line --");
+  {
+    const made = await owner("/api/admin/users", {
+      method: "POST",
+      body: { name: "CTG HR", email: "ctg.hr@example.invalid", password: "TestStaff123!", role: "hr_admin" },
+    });
+    check("an HR-side account can be created for the test", made.status === 200 || made.status === 201, made);
+
+    const hr = await login("ctg.hr@example.invalid", "TestStaff123!");
+    const r = await hr("/api/clients/" + id + "/care-team", {
+      method: "PATCH", body: { assigned_bcba_name: "HR Should Not Reach This" },
+    });
+    check("an HR role cannot touch the care team, default or not", r.status === 403, r);
+
+    // And the same account explicitly switched ON must still be refused --
+    // a capability toggle can widen an edit, never open a child's file.
+    const hrUsers = await owner("/api/admin/users");
+    const hrRows = Array.isArray(hrUsers.body) ? hrUsers.body : (hrUsers.body && (hrUsers.body.users || hrUsers.body.data)) || [];
+    const hrUser = hrRows.find((u) => String(u.email) === "ctg.hr@example.invalid");
+    await owner("/api/admin/users/" + hrUser.id, { method: "PATCH", body: { module_access: { "care-team": true } } });
+    const hr2 = await login("ctg.hr@example.invalid", "TestStaff123!");
+    const r2 = await hr2("/api/clients/" + id + "/care-team", {
+      method: "PATCH", body: { assigned_bcba_name: "Still Not Allowed" },
+    });
+    check("switching it ON for an HR role does NOT open a child's record", r2.status === 403, r2);
+
+    const after = clientOf(await owner("/api/clients/" + id));
+    check("and the assignment is untouched by either attempt",
+      after.assigned_bcba_name !== "HR Should Not Reach This" && after.assigned_bcba_name !== "Still Not Allowed",
+      after.assigned_bcba_name);
+  }
+
   // ---------------- clearing --------------------------------------------
   console.log("\n-- unassigning --");
   {
@@ -158,17 +191,27 @@ const login = async (email, password) => {
   }
 
   // ---------------- revoking --------------------------------------------
-  console.log("\n-- taking it back --");
+  // On by default is not the same as impossible to take away: an explicit
+  // "Off" against care-team in the Access editor still closes it for one
+  // person, server-side and not merely in the UI.
+  console.log("\n-- taking it away from one person --");
   {
-    await owner("/api/admin/users/" + schedUser.id, { method: "PATCH", body: { module_access: {} } });
+    const off = await owner("/api/admin/users/" + schedUser.id, {
+      method: "PATCH", body: { module_access: { "care-team": false } },
+    });
+    check("the owner can switch the capability off for one person", off.status === 200, off);
+
     const revoked = await login("scheduling@spectrumsquadlv.com", "TestOwner123!");
     const r = await revoked("/api/clients/" + id + "/care-team", {
       method: "PATCH", body: { assigned_bcba_name: "After Revoke" },
     });
-    check("revoking the grant closes the door again", r.status === 403, r);
+    check("an explicit Off closes the door at the server, not just the screen", r.status === 403, r);
     const after = clientOf(await owner("/api/clients/" + id));
-    check("the assignment made while granted survives the revoke",
+    check("the assignment made before the revoke survives it",
       after.assigned_bcba_name === "Granted BCBA", after.assigned_bcba_name);
+
+    // Back to the default so the rest of the suite sees the normal world.
+    await owner("/api/admin/users/" + schedUser.id, { method: "PATCH", body: { module_access: {} } });
   }
 
   // ---------------- the owner never needed the grant --------------------
@@ -210,6 +253,8 @@ const login = async (email, password) => {
       /"care-team":[^}]*capability:\s*true/.test(html));
     check("the nav loop honours that flag", /if \(m\.capability\) return;/.test(html));
     check("the client-side gate mirrors the server's", /function canEditCareTeam\(\)/.test(html));
+    check("and it is open by default rather than requiring a grant",
+      /function canEditCareTeam\(\)[\s\S]{0,260}!canAccessClients\(\)/.test(html));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

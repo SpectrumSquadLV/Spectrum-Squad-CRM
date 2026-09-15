@@ -6134,14 +6134,24 @@ async function handle(req, res, pathname, method, query = {}) {
     // name the clinician on a client without seeing a payer or a deductible.
     const careTeamMatch = pathname.match(/^\/api\/clients\/(\d+)\/care-team$/);
     if (careTeamMatch && method === "PATCH") {
-      // Two gates, deliberately separate. The first is "may you see client
-      // records at all" -- a grant can widen what somebody may EDIT, it can
-      // never let an HR-side role reach a child's file.
+      // ANYONE WHO CAN OPEN THE RECORD CAN FIX THE ASSIGNMENT.
+      //
+      // This started as a capability nobody had until it was granted. That was
+      // the wrong default for what this actually is: the care team NAMES are
+      // already readable by everyone with client access -- that is settled, and
+      // deliberate, because a card reading "Not assigned yet" about a child who
+      // has a BCBA is worse than a blank. Making the same people ask for
+      // permission to CORRECT what they can already see just means the wrong
+      // name stays on the record until somebody with a grant gets to it.
+      //
+      // So the only hard gate is the one that protects the child's file:
+      // whether you may see clients at all. An HR-side or OT-only role still
+      // cannot reach this, and no toggle can change that.
       if (!canAccessClients(user)) return json(res, 403, { error: "Not permitted" });
-      // The second is "may you change who is assigned": the roles that could
-      // already do it through the authorization record, or anybody the owner
-      // has explicitly granted the capability to.
-      if (!authAlerts.canEditAuth(user) && !moduleGranted(user, "care-team")) {
+      // On by default, and still revocable for one person: an explicit "Off"
+      // against "care-team" in the Access editor takes it away again. Absent
+      // means allowed, which is the same rule the rest of module_access uses.
+      if (moduleDenied(user, "care-team")) {
         return json(res, 403, { error: "Not permitted to change the care team" });
       }
 
@@ -8519,6 +8529,18 @@ function moduleGranted(user, key) {
   let ma = user.module_access;
   if (typeof ma === "string") { try { ma = JSON.parse(ma); } catch (e) { return false; } }
   return !!ma && ma[key] === true;
+}
+
+// The mirror image: has the owner explicitly switched this OFF for this
+// person? Needed for capabilities that are ON by default -- for those,
+// "absent" means allowed, so only an explicit false takes it away. `handle()`
+// enforces the OFF case for whole nav SECTIONS by path prefix; this is the
+// same question asked about a capability that has no page of its own.
+function moduleDenied(user, key) {
+  if (!user || !user.module_access || !key) return false;
+  let ma = user.module_access;
+  if (typeof ma === "string") { try { ma = JSON.parse(ma); } catch (e) { return false; } }
+  return !!ma && ma[key] === false;
 }
 
 // ===== SCREENER add-on: clinical screener automation (send, remind, host, save) =====
