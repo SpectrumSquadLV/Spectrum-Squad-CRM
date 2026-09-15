@@ -3642,6 +3642,14 @@ const DEFAULT_SETTINGS = {
   // uses until somebody sets one. Without any value the packet completes
   // silently, which is the one outcome nobody wants.
   hire_packet_recipient: "qblake@spectrumsquadlv.com",
+  // Where the Friday unverified-appointment reports go -- RBTs at 06:00, BCBAs
+  // at 19:30. Seeded, not hard-coded, on the same terms as the line above: a
+  // value already stored wins, and RETHINK_VERIFICATION_REPORT_TO overrides
+  // both without a deploy. It is seeded rather than left to the owner-account
+  // fallback because that fallback resolves to the shared admin@ login, and a
+  // compliance report that quietly lands in the wrong inbox reads exactly like
+  // a week with nothing to report.
+  rethink_verification_report_to: "qblake@spectrumsquadlv.com",
   credentialing_link_bcba: "https://sparkz.clickup.com/forms/3501350/f/3av96-450954/AMW0KVAC3YL07DEEMM",
   credentialing_link_rbt: "https://sparkz.clickup.com/forms/3501350/f/3av96-450934/OFTQKDCKHXT758222Z",
   class_dojo_link: "https://teach.classdojo.com/#/singleLinkSignup/TT6SYWAH3",

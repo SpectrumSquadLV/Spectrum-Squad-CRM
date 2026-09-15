@@ -643,6 +643,10 @@ process.env.RETHINK_VERIFICATION_REPORT_TO = "";     // exercise the fallback ch
     check("the tick also runs on boot so a Friday deploy catches up", /rethinkVerification\.tick\("boot"\)/.test(src));
     check("its routes are claimed BEFORE the broader /api/rethink handler",
       src.indexOf('pathname.startsWith("/api/rethink-verification")') < src.indexOf('pathname.startsWith("/api/rethink")'));
+    check("the Friday report is addressed to the practice owner out of the box",
+      /rethink_verification_report_to: "qblake@spectrumsquadlv\.com"/.test(src));
+    check("that address is SEEDED into app_settings, so a stored value still wins",
+      /DEFAULT_SETTINGS[\s\S]{0,4000}rethink_verification_report_to/.test(src));
     check("the module adds nothing to the CRM navigation",
       !/rethink-verification/.test(require("fs").readFileSync(require("path").join(__dirname, "index.html"), "utf8")));
   }
