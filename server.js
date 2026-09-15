@@ -6114,6 +6114,92 @@ async function handle(req, res, pathname, method, query = {}) {
       return json(res, 200, { ...authAlerts.sanitizeClientForRole(user, updated), approval_email: approvalEmail });
     }
 
+    // ---- CARE TEAM: who is carrying this child ---------------------------
+    //
+    // Naming a BCBA used to mean going through the Authorization section, and
+    // authorization is INSURANCE data -- the payer, the dates, the notes. So
+    // the only people who could say which clinician has a child were the
+    // people trusted with the insurance record, and "let her reassign a BCBA"
+    // could not be answered without also handing over that.
+    //
+    // The Student Analyst was worse: no endpoint wrote it at all. It was
+    // reachable only from the bulk assignment migration, so correcting one
+    // child meant running a migration over everybody or editing the database
+    // by hand. The Care team panel showed the field and offered no way to set
+    // it.
+    //
+    // This endpoint carries those four fields and NOTHING else, which is
+    // exactly what lets it be granted on its own. "care-team" is a capability
+    // in the Access editor rather than a page: switching it on lets somebody
+    // name the clinician on a client without seeing a payer or a deductible.
+    const careTeamMatch = pathname.match(/^\/api\/clients\/(\d+)\/care-team$/);
+    if (careTeamMatch && method === "PATCH") {
+      // Two gates, deliberately separate. The first is "may you see client
+      // records at all" -- a grant can widen what somebody may EDIT, it can
+      // never let an HR-side role reach a child's file.
+      if (!canAccessClients(user)) return json(res, 403, { error: "Not permitted" });
+      // The second is "may you change who is assigned": the roles that could
+      // already do it through the authorization record, or anybody the owner
+      // has explicitly granted the capability to.
+      if (!authAlerts.canEditAuth(user) && !moduleGranted(user, "care-team")) {
+        return json(res, 403, { error: "Not permitted to change the care team" });
+      }
+
+      const id = careTeamMatch[1];
+      const client = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      if (!client) return json(res, 404, { error: "Not found" });
+
+      const body = await readBody(req);
+      const CARE_TEAM_FIELDS = [
+        "assigned_bcba_name", "assigned_bcba_email",
+        "assigned_student_analyst_name", "assigned_student_analyst_email",
+      ];
+      const fields = Object.keys(body).filter((k) => CARE_TEAM_FIELDS.includes(k));
+      if (!fields.length) return json(res, 400, { error: "No editable fields provided" });
+
+      // Cleared means NOBODY, stored as NULL rather than an empty string, so
+      // "is anyone assigned to this child" is one question with one answer on
+      // every screen that asks it. An empty string would read as assigned.
+      const valueOf = (f) => {
+        const raw = body[f];
+        const t = raw == null ? "" : String(raw).trim();
+        if (!t) return null;
+        return f.endsWith("_email") ? t.toLowerCase().slice(0, 200) : t.slice(0, 200);
+      };
+      const emailOk = (e) => !e || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
+      const badEmail = fields.filter((f) => f.endsWith("_email") && !emailOk(valueOf(f)));
+      if (badEmail.length) {
+        return json(res, 400, {
+          error: `Not a valid email address: ${badEmail.map((f) => String(body[f])).join(", ")}`,
+        });
+      }
+
+      await dbRun(
+        `UPDATE clients SET ${fields.map((f) => `${f} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
+        [...fields.map(valueOf), nowISO(), id]
+      );
+
+      // Who changed an assignment is worth keeping: a caseload moving is the
+      // kind of thing somebody asks about a month later. Best-effort, and
+      // never allowed to fail the save itself.
+      const changed = fields
+        .filter((f) => (client[f] || null) !== valueOf(f))
+        .map((f) => `${f}: ${client[f] || "(none)"} -> ${valueOf(f) || "(none)"}`);
+      if (changed.length) {
+        console.log(`[care-team] client ${id} updated by ${(user && user.email) || "unknown"} -- ${changed.join("; ")}`);
+      }
+
+      const updated = await dbGet("SELECT * FROM clients WHERE id = ?", [id]);
+      return json(res, 200, {
+        id: Number(id),
+        assigned_bcba_name: updated.assigned_bcba_name || null,
+        assigned_bcba_email: updated.assigned_bcba_email || null,
+        assigned_student_analyst_name: updated.assigned_student_analyst_name || null,
+        assigned_student_analyst_email: updated.assigned_student_analyst_email || null,
+        changed: changed.length,
+      });
+    }
+
     const clientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     if (clientMatch && method === "GET") {
       const id = clientMatch[1];

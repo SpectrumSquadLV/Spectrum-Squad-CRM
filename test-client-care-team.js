@@ -170,7 +170,15 @@ function api() {
     if (!heads.length) return null;
     const card = heads[0].parentElement;
     const r = card.getBoundingClientRect();
-    return { text: card.innerText.replace(/\s+/g, " ").trim(), visible: r.width > 0 && r.height > 0, top: Math.round(r.top) };
+    // The panel is EDITABLE for anyone who may change the care team, so for
+    // those people the assigned names sit in input values rather than in the
+    // card's text. Both are the name being shown on the panel without
+    // expanding anything, which is what these checks are about -- reading only
+    // innerText would report "the BCBA is not shown" at the exact moment the
+    // BCBA is shown in a box you can also correct.
+    const values = [...card.querySelectorAll("input")].map((i) => i.value).filter(Boolean);
+    const text = [card.innerText, ...values].join(" ").replace(/\s+/g, " ").trim();
+    return { text, visible: r.width > 0 && r.height > 0, top: Math.round(r.top) };
   });
 
   console.log("\n== On the client's own record, without expanding anything ==");
