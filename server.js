@@ -5043,6 +5043,15 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Unverified-appointment infractions. Read-only JSON for the quarterly
+  // numbers plus an owner-only manual re-run. Claimed BEFORE /api/rethink,
+  // because "/api/rethink-verification" also starts with "/api/rethink" and
+  // the older handler would otherwise swallow it.
+  if (pathname.startsWith("/api/rethink-verification")) {
+    const handled = await rethinkVerification.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // Rethink integration status, filter confirmation and manual sync.
   if (pathname.startsWith("/api/rethink")) {
     const handled = await rethink.handleApi(req, res, pathname, method, query, user);
@@ -8590,6 +8599,26 @@ const rethink = require("./rethink")({
   // a parent's inbox.
   createClientBackfill: (payload) => createClientBackfill(payload),
 });
+// ===== UNVERIFIED APPOINTMENT INFRACTIONS: the Friday pull from Rethink.
+// RBTs at 06:00 Pacific, BCBAs at 19:30, each looking at sessions dated before
+// that Friday that are still not staff-verified. One unverified session is one
+// infraction against that person, recorded once and carried into the quarterly
+// review. Deliberately headless -- it owns no screen and no nav entry; the
+// numbers come out by email and through read-only JSON. =====
+const rethinkVerification = require("./rethink-verification")({
+  dbGet, dbAll, dbRun, nowISO, json, sendEmail,
+  getAppSetting: (key, fallback) => getAppSetting(key, fallback),
+  // Who is an RBT: Fidelity's rule, not a second copy of it. A test asserts
+  // server.js passes this. Everyone who is neither an RBT by that rule nor a
+  // BCBA by title is on neither report -- a scheduler who appears on an
+  // appointment row does not start collecting infractions.
+  isRbt: (emp) => fidelity.isRbt(emp),
+  // What counts as verified: the filter an admin confirmed on the Rethink
+  // panel, read through the module that owns it. Without both of these the
+  // report refuses to run rather than guess an infraction onto somebody.
+  getRethinkConfig: () => rethink.getConfig(),
+  verificationVerdict: (row, cfg) => rethink.verificationVerdict(row, cfg),
+});
 // ===== COMPLETIONS: one recorder for every "X finished" event, a dashboard
 // feed, and a single daily digest email. Constructed early so every module
 // below can be handed completions.record. =====
@@ -8961,6 +8990,7 @@ async function start() {
   }
   await authorizations.initTables().catch((e) => console.error("Authorizations initTables failed:", e));
   await rethink.initTables().catch((e) => console.error("Rethink initTables failed:", e));
+  await rethinkVerification.initTables().catch((e) => console.error("Rethink verification initTables failed:", e));
 
   // One-time backfill: every client that existed before the eligibility check
   // became card-triggered is stamped as already sent.
@@ -9149,6 +9179,18 @@ async function start() {
   // month-to-date figure live without hammering an API whose rate limits we
   // have not been told. Both syncs are cheap when nothing has changed.
   setInterval(rethinkSweep, 4 * 60 * 60 * 1000);
+
+  // Unverified-appointment check. The tick reads the Las Vegas wall clock and
+  // returns on six days out of seven; on a Friday it fires the RBT report at
+  // 06:00 and the BCBA report at 19:30. Five minutes rather than a timer set
+  // for Friday, because a timer does not survive a redeploy and this has to:
+  // each run is claimed by a unique key before any work happens, so a restart
+  // at 06:02 resumes the run instead of sending a second email. Once on boot
+  // as well, so a deploy inside the Friday window still catches up.
+  rethinkVerification.tick("boot").catch((e) => console.error("Unverified appointment check failed:", e));
+  setInterval(() => {
+    rethinkVerification.tick("scheduled").catch((e) => console.error("Unverified appointment check failed:", e));
+  }, 5 * 60 * 1000);
 
   // Daily authorization-expiration check (also runs once on boot above).
   setInterval(() => {
