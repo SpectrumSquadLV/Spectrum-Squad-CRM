@@ -115,12 +115,27 @@ module.exports = function initBillable(ctx) {
 
     // Did the sync for this month actually succeed? Without this, a month that
     // never synced is indistinguishable from a month where nobody worked.
+    //
+    // "partial" COUNTS AS COMPLETED, and this line used to insist on
+    // "success". rethink.js logs a sync as partial the moment it raises a
+    // single warning, and warnings are ordinary: one appointment with no
+    // actualDurationHours, one provider not yet matched to a CRM record, a
+    // future session skipped. The hours are synced and written in every one of
+    // those cases -- partial describes the NOTES, not the figures.
+    //
+    // So this screen told an owner "the Rethink sync has not completed
+    // successfully, so these hours are not final" on months that had synced
+    // perfectly well, marked every person untrustworthy, and refused to send
+    // the notices -- which reads exactly like a page that never updates.
+    // rethink.js's own status panel has always treated the pair together
+    // (status IN ('success','partial')); this was the one place in the CRM
+    // that disagreed, and it was the one place an owner reads the number.
     const lastSync = await dbGet(
       `SELECT status, finished_at FROM rethink_sync_log
         WHERE kind = 'supervision_hours' AND month = ?
         ORDER BY id DESC LIMIT 1`, [period]
     ).catch(() => null);
-    const syncOk = !!(lastSync && lastSync.status === "success");
+    const syncOk = !!(lastSync && ["success", "partial"].includes(lastSync.status));
 
     const rows = [];
     for (const e of emps) {
