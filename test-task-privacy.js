@@ -104,8 +104,34 @@ const sees = async (who, title, qs) => (await titles(who, qs)).includes(title);
   check("THE ASSIGNEE SEES IT -- the failure nobody would report is work going missing",
     await sees(bcba, HERS), await titles(bcba));
   check("and it is in their Task Center", await sees(bcba, HERS, "?scope=mine"));
-  check("the owner sees it too, as a supervisor", await sees(owner, HERS));
+  check("the owner still sees it -- as the person who raised it", await sees(owner, HERS));
   check("but the unrelated staffer does not", !(await sees(other, HERS)));
+
+  console.log("\n== A task the BCBA raised for THEMSELVES is theirs alone ==");
+  // The report: "everyone can see my task". Being a supervisor is not an
+  // exemption from a task belonging to somebody. Nothing above catches this,
+  // because every task above was created BY the owner -- so she saw them as
+  // their creator, and the supervisor bypass was never the thing under test.
+  const PRIVATE = "Zz The BCBA's own private to-do";
+  await bcba("/api/staff-tasks", {
+    method: "POST",
+    body: { title: PRIVATE, assigned_user_id: them.id, assigned_name: them.name, assigned_email: them.email },
+  });
+  check("the BCBA sees their own to-do", await sees(bcba, PRIVATE), await titles(bcba));
+  check("THE OWNER DOES NOT -- a personal list is personal, supervisor or not",
+    !(await sees(owner, PRIVATE)), await titles(owner));
+  check("nor does an unrelated staffer", !(await sees(other, PRIVATE)));
+  check("and asking for everything does not lift it",
+    !((((await owner("/api/staff-tasks?scope=all")).data) || []).some((t) => t.title === PRIVATE)));
+  {
+    // Hidden from the list has to mean untouchable by id, or "private" is
+    // only a rendering choice.
+    const row = (await pool.query("SELECT id FROM staff_tasks WHERE title = $1", [PRIVATE])).rows[0];
+    const patched = await owner(`/api/staff-tasks/${row.id}`, { method: "PATCH", body: { status: "done" } });
+    check("and the owner cannot tick it off by id either", patched.status === 403, patched.status);
+    const deleted = await owner(`/api/staff-tasks/${row.id}`, { method: "DELETE" });
+    check("nor delete it", deleted.status === 403, deleted.status);
+  }
 
   console.log("\n== Unassigned work on their client still reaches them ==");
   // The reason the caseload rule exists. Narrowing it away entirely would hide
@@ -127,6 +153,16 @@ const sees = async (who, title, qs) => (await titles(who, qs)).includes(title);
   check("THE CLINICIAN ON THAT CLIENT SEES IT", await sees(bcba, LOOSE), await titles(bcba));
   check("and a staffer with no connection to the client does not",
     !(await sees(other, LOOSE)), await titles(other));
+  // The half of supervision that survives. An unassigned task is not personal
+  // to anybody, and somebody has to notice work nobody has picked up.
+  check("A SUPERVISOR STILL SEES UNASSIGNED WORK -- that is what oversight is for",
+    await sees(owner, LOOSE), await titles(owner));
+  {
+    const row = (await pool.query("SELECT id FROM staff_tasks WHERE title = $1", [LOOSE])).rows[0];
+    const patched = await owner(`/api/staff-tasks/${row.id}`, { method: "PATCH", body: { status: "done" } });
+    check("...and can pick it up", patched.status === 200, patched.status);
+    await pool.query("UPDATE staff_tasks SET status = 'open' WHERE id = $1", [row.id]);
+  }
 
   console.log("\n== What a person raised themselves ==");
   const RAISED = "Zz Raised by the BCBA for somebody else";

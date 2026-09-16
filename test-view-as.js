@@ -173,6 +173,46 @@ const idOf = async (email) =>
   check("still the BCBA, not escalated by trying",
     (await owner("/api/auth/me")).data.user.role === "clinical");
 
+  console.log("\n== A grant follows the person being viewed ==");
+  // This is how the owner checks a grant worked: she grants somebody a
+  // section, then views as them to see it. So the impersonated user has to
+  // carry their OWN module_access, not the owner's and not none -- otherwise
+  // "View as" reports a grant broken that is in fact fine, and she goes
+  // looking for a bug that is not there.
+  //
+  // It survives today because sanitizeUser() strips only the password fields.
+  // That is a quiet dependency, so it is asserted rather than assumed.
+  await owner("/api/auth/view-as/stop", { method: "POST" });
+  {
+    const before = await owner("/api/auth/view-as", { method: "POST", body: { user_id: clinical.id } });
+    check("viewing as the clinician", before.status === 200, before.data);
+    const denied = await owner("/api/attendance/roster");
+    check("a section their role does not carry is refused while viewing",
+      denied.status === 403, denied.status);
+    await owner("/api/auth/view-as/stop", { method: "POST" });
+
+    await owner(`/api/admin/users/${clinical.id}`, {
+      method: "PATCH", body: { module_access: { attendance: true } },
+    });
+    const after = await owner("/api/auth/view-as", { method: "POST", body: { user_id: clinical.id } });
+    check("viewing as them again after the grant", after.status === 200, after.data);
+    const me2 = (await owner("/api/auth/me")).data.user;
+    check("THE GRANT TRAVELS WITH THEM -- module_access is theirs, not the owner's",
+      !!me2.module_access && JSON.parse(typeof me2.module_access === "string" ? me2.module_access : JSON.stringify(me2.module_access)).attendance === true,
+      me2.module_access);
+    const allowed = await owner("/api/attendance/roster");
+    check("and the granted section reads while viewing as them", allowed.status === 200, allowed.status);
+
+    // Read-only still wins: seeing their screen is not acting on it.
+    const write = await owner("/api/attendance/types", { method: "PUT", body: { types: [] } });
+    check("but nothing can be written from a viewing session",
+      write.status === 403, { status: write.status, err: write.data && write.data.error });
+
+    await owner("/api/auth/view-as/stop", { method: "POST" });
+    await owner(`/api/admin/users/${clinical.id}`, { method: "PATCH", body: { module_access: {} } });
+  }
+  await owner("/api/auth/view-as", { method: "POST", body: { user_id: clinical.id } });
+
   console.log("\n== The way out ==");
   const stopped = await owner("/api/auth/view-as/stop", { method: "POST" });
   check("STOPPING WORKS even though it is a POST", stopped.status === 200, stopped.data);
