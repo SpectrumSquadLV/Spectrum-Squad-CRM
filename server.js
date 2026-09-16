@@ -7076,6 +7076,13 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     // a family they have nothing to do with -- is invisible to them, and stays
     // invisible however the request is crafted.
     const canSeeAllTasks = (u) => !!u && ["owner", "super_admin", "admin"].includes(u.role);
+    // "Nobody has picked this up." Written once and reused, because three
+    // different rules below turn on it and a fourth spelling of it would
+    // eventually disagree with the other three.
+    const unassignedSql =
+      "(st.assigned_user_id IS NULL" +
+      " AND COALESCE(TRIM(st.assigned_email), '') = ''" +
+      " AND COALESCE(TRIM(st.assigned_name), '') = '')";
     // "Mine" = tasks whose assigned_user_id is me, or whose assigned_email
     // matches my login (which covers staff who have no CRM user id).
     const mineClause = "(st.assigned_user_id = ? OR (st.assigned_email IS NOT NULL AND lower(st.assigned_email) = lower(?)))";
@@ -7128,15 +7135,25 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     // it. Without this, a staffer who knows a task id could tick off or delete
     // work belonging to someone whose list they cannot even read.
     async function canEditStaffTask(u, taskId) {
-      if (canSeeAllTasks(u)) return true;
-      const t = await dbGet("SELECT assigned_user_id, assigned_email, created_by FROM staff_tasks WHERE id = ?", [taskId]);
+      const t = await dbGet(
+        "SELECT assigned_user_id, assigned_name, assigned_email, created_by FROM staff_tasks WHERE id = ?",
+        [taskId]);
       if (!t) return false;
       const email = String((u && u.email) || "").trim().toLowerCase();
-      return (
+      const isMine =
         (t.assigned_user_id != null && Number(t.assigned_user_id) === Number(u.id)) ||
         (!!t.assigned_email && String(t.assigned_email).trim().toLowerCase() === email) ||
-        (!!t.created_by && String(t.created_by).trim().toLowerCase() === email)
-      );
+        (!!t.created_by && String(t.created_by).trim().toLowerCase() === email);
+      if (isMine) return true;
+      // Editing follows seeing. A supervisor may pick up and tick off work
+      // nobody owns, and may not touch a task that belongs to someone --
+      // otherwise a task hidden from their list is still deletable by id,
+      // which is not what "private" means.
+      const unassigned =
+        t.assigned_user_id == null &&
+        !String(t.assigned_email || "").trim() &&
+        !String(t.assigned_name || "").trim();
+      return unassigned && canSeeAllTasks(u);
     }
 
     if (pathname === "/api/staff-tasks/summary" && method === "GET") {
@@ -7170,7 +7187,24 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       if (query.scope === "mine") {
         clauses.push(mineClause);
         params.push(user.id, user.email || "");
-      } else if (!canSeeAllTasks(user)) {
+      } else if (canSeeAllTasks(user)) {
+        // A SUPERVISOR IS NOT EXEMPT FROM A TASK BEING SOMEBODY'S.
+        //
+        // This branch used to add no clause at all, so an owner or admin read
+        // every row in the table -- including another person's private to-do,
+        // which is a personal list and not oversight. Reported as "everyone can
+        // see my task", and the people who could see it were the admin tier.
+        //
+        // What supervision is actually for is work NOBODY has picked up: an
+        // unassigned task is not personal, and somebody has to notice it. So a
+        // supervisor sees their own three-way visible set PLUS every unassigned
+        // task, and an assigned one stays with its assignee and whoever raised
+        // it. Handing work over is still not losing sight of it -- the creator
+        // branch inside visibleClause keeps everything you assigned on your own
+        // list.
+        clauses.push("(" + visibleClause + " OR " + unassignedSql + ")");
+        params.push(...visibleParams(user));
+      } else {
         clauses.push(visibleClause);
         params.push(...visibleParams(user));
       }
@@ -7187,10 +7221,16 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       const email = String(user.email || "").trim().toLowerCase();
       return json(res, 200, rows.map((r) => ({
         ...r,
-        can_edit: canSeeAllTasks(user) ||
+        // Mirrors canEditStaffTask() exactly, so the buttons the screen draws
+        // are the ones the server will honour.
+        can_edit:
           (r.assigned_user_id != null && Number(r.assigned_user_id) === Number(user.id)) ||
           (!!r.assigned_email && String(r.assigned_email).trim().toLowerCase() === email) ||
-          (!!r.created_by && String(r.created_by).trim().toLowerCase() === email),
+          (!!r.created_by && String(r.created_by).trim().toLowerCase() === email) ||
+          (canSeeAllTasks(user)
+            && r.assigned_user_id == null
+            && !String(r.assigned_email || "").trim()
+            && !String(r.assigned_name || "").trim()),
       })));
     }
     if (pathname === "/api/staff-tasks" && method === "POST") {

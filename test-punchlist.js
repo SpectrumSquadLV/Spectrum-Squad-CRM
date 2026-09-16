@@ -203,9 +203,18 @@ async function login(email, password) {
   titles = (r.data || []).map((t) => t.title);
   check("billing does NOT see the client task for a family they aren't on", !titles.includes("Client-linked task " + stamp), titles.slice(0, 10));
 
+  // A SUPERVISOR IS NOT EXEMPT FROM A TASK BEING SOMEBODY'S.
+  //
+  // This used to assert the opposite -- that the owner saw every row in the
+  // table. Reported as "everyone can see my task", and the people who could
+  // see it were the owner and admin tier reading other people's personal
+  // to-dos. A personal list is personal; oversight is for work NOBODY has
+  // picked up, which is asserted just below and in test-task-privacy.js.
   r = await owner("/api/staff-tasks");
   titles = (r.data || []).map((t) => t.title);
-  check("the owner still sees every task", titles.includes("Billing private task " + stamp) && titles.includes("Intake self task " + stamp));
+  check("THE OWNER DOES NOT SEE ANOTHER PERSON'S OWN TASK",
+    !titles.includes("Billing private task " + stamp) && !titles.includes("Intake self task " + stamp),
+    titles.slice(0, 10));
 
   // scope=mine must stay personal even for the owner.
   r = await owner("/api/staff-tasks?scope=mine");
@@ -221,8 +230,10 @@ async function login(email, password) {
   check("the assignee can complete their own task", r.status === 200 && r.data.status === "done", r.data);
   r = await intake(`/api/staff-tasks/${handoffTask}`, { method: "PATCH", body: { due_date: "2026-12-01" } });
   check("the creator can still edit a task they handed off", r.status === 200, r.data);
+  // Editing follows seeing. Hidden from the list has to mean untouchable by
+  // id, or "private" is only a rendering choice.
   r = await owner(`/api/staff-tasks/${billingPrivate}`, { method: "PATCH", body: { title: "Owner edited " + stamp } });
-  check("an administrator can edit anyone's task", r.status === 200, r.data);
+  check("an administrator cannot edit a task that belongs to somebody", r.status === 403, r.data);
 
   // Nav badge stays personal.
   r = await clinical("/api/staff-tasks/summary");
@@ -239,9 +250,12 @@ async function login(email, password) {
   check("the reopened task is back on the open list",
     (r.data || []).some((t) => t.id === billingPrivate), (r.data || []).map((t) => t.title));
 
-  r = await owner("/api/staff-tasks");
+  // Read as the ASSIGNEE now: the owner no longer sees this task at all, so
+  // asking her whether it duplicated would be asking the wrong person.
+  r = await billing("/api/staff-tasks");
   check("reopening did not duplicate the task",
-    (r.data || []).filter((t) => t.id === billingPrivate).length === 1);
+    (r.data || []).filter((t) => t.id === billingPrivate).length === 1,
+    (r.data || []).filter((t) => t.id === billingPrivate).length);
 
   // Client stage tasks.
   r = await owner(`/api/clients/${clientId}`);
