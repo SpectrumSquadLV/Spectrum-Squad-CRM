@@ -943,7 +943,17 @@ module.exports = function initHr(ctx) {
   async function ownerEmail() {
     // A configurable recipient wins, so notifications never get stuck on a dead
     // mailbox (the seeded admin@ account hard-bounced).
-    const configured = await getSetting("owner_notification_email", "");
+    //
+    // app_settings FIRST, because that is the table Admin Settings writes to.
+    // This used to read hr_settings only -- a table nothing has ever written
+    // this key into -- so the branch could not return a value and the field on
+    // the Admin Settings screen silently did nothing for the recruiting
+    // summary. Typing an address into a box that is not consulted is worse than
+    // having no box: it looks handled. hr_settings is still read after it, so
+    // any value stored there by hand keeps working.
+    const configured =
+      (ctx.getAppSetting ? String((await ctx.getAppSetting("owner_notification_email", "")) || "").trim() : "")
+      || String((await getSetting("owner_notification_email", "")) || "").trim();
     if (configured) return configured;
     // Prefer a real owner mailbox over the seeded admin@ account.
     const real = await dbGet("SELECT email FROM users WHERE role = 'owner' AND email <> 'admin@spectrumsquadlv.com' ORDER BY id LIMIT 1");
@@ -6374,6 +6384,9 @@ Write body as plain text with line breaks (no HTML).`;
     hrCanManage,
     // exposed for tests / future phases
     _internal: {
+      // Who owner notifications reach. Exposed because the answer used to be
+      // "whatever Admin Settings says", and was not.
+      ownerEmail,
       evaluateMatch, PIPELINE_STAGES, APPLICATION_SOURCES, MATCH_CATEGORIES,
       hrCanAccess, hrCanManage, hrCanSeeSensitive, runScreening, buildScreeningContent, ASSESSMENT_SCHEMA,
       followupMessage, enrollFollowupSequence, processFollowups, missingQuestions,
