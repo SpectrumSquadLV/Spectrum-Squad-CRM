@@ -366,35 +366,7 @@ module.exports = function initRethinkVerification(ctx) {
       return { ok: true, skipped: "already_ran", cohort, run_date: runDate };
     }
 
-    // Each of these is a reason the report CANNOT be produced honestly. None
-    // of them is guessed around: calling a verified session an infraction is
-    // the one mistake that would put a black mark on somebody's review for
-    // work they did correctly.
-    const blocked =
-      !client.configured()
-        ? { skipped: "not_configured",
-            error: "Rethink credentials are not configured on the server.",
-            fix: "Add RETHINK_CLIENT_ID and RETHINK_CLIENT_SECRET to the server configuration." }
-      : (!getRethinkConfig || !verificationVerdict || !isRbt)
-        ? { skipped: "not_wired",
-            error: "The Rethink verification filter, or the rule for who is an RBT, is not wired into this module.",
-            fix: "This is a wiring fault in the CRM itself rather than a setting. It needs a developer." }
-        : null;
-
-    let cfg = null;
-    let blockedNow = blocked;
-    if (!blockedNow) {
-      cfg = await getRethinkConfig();
-      if (!cfg || !cfg.filter_confirmed) {
-        blockedNow = { skipped: "filter_unconfirmed",
-          error: "The Rethink completed/verified filter has not been confirmed yet, so nothing can be called unverified without guessing.",
-          fix: "Open RBT Supervision, find the Rethink section, tick the appointment statuses and the staffVerification values that mean verified, and confirm the filter. The report runs from the next scheduled time onwards." };
-      } else if (!cfg.require_staff_verification) {
-        blockedNow = { skipped: "verification_off",
-          error: "Staff verification is switched off in the Rethink filter, so there is no such thing as an unverified session to report.",
-          fix: "Turn the staff-verification requirement back on in the Rethink section of RBT Supervision if these reports should resume." };
-      }
-    }
+    const { cfg, blocked: blockedNow } = await blockedReason();
 
     if (blockedNow) {
       client.log("verification_run_skipped", {
@@ -613,6 +585,82 @@ module.exports = function initRethinkVerification(ctx) {
     }
 
     return summary;
+  }
+
+  // ======================= CAN THIS RUN AT ALL? ==============
+  // Each of these is a reason the report CANNOT be produced honestly. None of
+  // them is guessed around: calling a verified session an infraction is the one
+  // mistake that would put a black mark on somebody's review for work they did
+  // correctly.
+  //
+  // One definition, three readers: the Friday run (which turns a reason into a
+  // skipped run and an email), /status, and the line written to the server log
+  // at every boot. They used to be one reader, and the consequence was that the
+  // only way to find out whether Friday's report was armed was to wait for
+  // Friday and see whether anything arrived.
+  async function blockedReason() {
+    if (!client.configured()) {
+      return { cfg: null, blocked: { skipped: "not_configured",
+        error: "Rethink credentials are not configured on the server.",
+        fix: "Add RETHINK_CLIENT_ID and RETHINK_CLIENT_SECRET to the server configuration." } };
+    }
+    if (!getRethinkConfig || !verificationVerdict || !isRbt) {
+      return { cfg: null, blocked: { skipped: "not_wired",
+        error: "The Rethink verification filter, or the rule for who is an RBT, is not wired into this module.",
+        fix: "This is a wiring fault in the CRM itself rather than a setting. It needs a developer." } };
+    }
+    const cfg = await getRethinkConfig();
+    if (!cfg || !cfg.filter_confirmed) {
+      return { cfg, blocked: { skipped: "filter_unconfirmed",
+        error: "The Rethink completed/verified filter has not been confirmed yet, so nothing can be called unverified without guessing.",
+        fix: "Open RBT Supervision, find the Rethink section, tick the appointment statuses and the staffVerification values that mean verified, and confirm the filter. The report runs from the next scheduled time onwards." } };
+    }
+    if (!cfg.require_staff_verification) {
+      return { cfg, blocked: { skipped: "verification_off",
+        error: "Staff verification is switched off in the Rethink filter, so there is no such thing as an unverified session to report.",
+        fix: "Turn the staff-verification requirement back on in the Rethink section of RBT Supervision if these reports should resume." } };
+    }
+    return { cfg, blocked: null };
+  }
+
+  // The same question, answered without running anything and without sending
+  // anything. Safe to call at boot and from a GET.
+  async function readiness() {
+    let cfg = null, blocked = null;
+    try {
+      ({ cfg, blocked } = await blockedReason());
+    } catch (e) {
+      blocked = { skipped: "config_unreadable",
+        error: `The Rethink filter settings could not be read: ${client.redact(e.message)}`,
+        fix: "This is a database or wiring fault rather than a setting. It needs a developer." };
+    }
+    // Resolved here too, because "armed, but addressed to nobody" is a report
+    // that will not arrive just as surely as one that cannot run.
+    const to = await recipients().catch(() => []);
+    return {
+      armed: !blocked && to.length > 0,
+      blocked_reason: blocked ? blocked.skipped : (to.length ? null : "no_recipient"),
+      error: blocked ? blocked.error : (to.length ? null : "No recipient is set, so the report would be produced and then go nowhere."),
+      fix: blocked ? blocked.fix : (to.length ? null : "Set RETHINK_VERIFICATION_REPORT_TO, or a Clinical Director / owner notification address in Admin Settings."),
+      rethink_configured: client.configured(),
+      filter_confirmed: cfg ? !!cfg.filter_confirmed : null,
+      require_staff_verification: cfg ? !!cfg.require_staff_verification : null,
+      recipients: to,
+    };
+  }
+
+  // Written to the server log once per boot. This is the whole point of the
+  // refactor above: whether next Friday's report is armed is now a fact you can
+  // read off a deploy, instead of something you find out by its absence.
+  async function logReadiness(where = "boot") {
+    const r = await readiness().catch((e) => ({ armed: false, blocked_reason: "readiness_failed", error: e.message }));
+    const when = SCHEDULES.map((s) => `${s.label} ${s.at}`).join(", ");
+    if (r.armed) {
+      console.log(`[rethink-verification] ARMED (${where}): ${WEEKDAY} ${when} ${TZ} -> ${r.recipients.join(", ")}`);
+    } else {
+      console.error(`[rethink-verification] NOT ARMED (${where}): ${r.blocked_reason} -- ${r.error}`);
+    }
+    return r;
   }
 
   // ======================= THE EMAIL =========================
@@ -985,6 +1033,7 @@ module.exports = function initRethinkVerification(ctx) {
         schedule: SCHEDULES.map((s) => ({ cohort: s.cohort, label: s.label, at: s.at })),
         recipients: await recipients(),
         rethink_configured: client.configured(),
+        readiness: await readiness(),
         recent: await recentRuns(5),
       });
       return true;
@@ -1014,12 +1063,14 @@ module.exports = function initRethinkVerification(ctx) {
     handleApi,
     tick,
     runCohort,
+    readiness,
+    logReadiness,
     quarterSummary,
     employeeHistory,
     recentRuns,
     _internal: {
       pacificParts, addDays, hhmmToMinutes, quarterOf, quarterWindow,
-      cohortOf, appointmentKey, nameHint, recipients, emailSkipped,
+      cohortOf, appointmentKey, nameHint, recipients, emailSkipped, blockedReason,
       SCHEDULES, WEEKDAY, LOOKBACK_DAYS, TZ,
     },
   };

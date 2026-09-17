@@ -9349,6 +9349,12 @@ async function start() {
   // each run is claimed by a unique key before any work happens, so a restart
   // at 06:02 resumes the run instead of sending a second email. Once on boot
   // as well, so a deploy inside the Friday window still catches up.
+  //
+  // Whether it is armed at all is written to the log on every boot, and served
+  // at /api/rethink-verification/status. Before this, the only way to learn
+  // that Friday's report could not run was to notice it had not arrived -- and
+  // "no report" and "a clean week" look identical from an inbox.
+  rethinkVerification.logReadiness("boot").catch(() => {});
   rethinkVerification.tick("boot").catch((e) => console.error("Unverified appointment check failed:", e));
   setInterval(() => {
     rethinkVerification.tick("scheduled").catch((e) => console.error("Unverified appointment check failed:", e));

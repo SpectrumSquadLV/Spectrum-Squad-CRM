@@ -677,6 +677,74 @@ process.env.RETHINK_VERIFICATION_REPORT_TO = "";     // exercise the fallback ch
       !/client/i.test(key({ ...row, clientId: "C9", clientName: "A Child" })));
   }
 
+  // Whether next Friday's report can run at all used to be unknowable until
+  // Friday: the checks lived inside runCohort and nothing asked them ahead of
+  // time. These assert the answer is now available on demand, and that it is
+  // the SAME answer the run itself would reach -- one definition, not two that
+  // drift apart.
+  console.log("\n--- is the report armed? ---");
+  {
+    const { ctx } = makeDb(seedOpts(FRIDAY_0630_PT,
+      { settings: { rethink_verification_report_to: "qblake@spectrumsquadlv.com" } }));
+    const v = initVerification(ctx);
+    const r = await v.readiness();
+    check("a confirmed filter with a recipient reads as armed", r.armed === true, JSON.stringify(r));
+    check("it reports the filter state itself, not just a verdict",
+      r.filter_confirmed === true && r.require_staff_verification === true, JSON.stringify(r));
+    check("it names who the report would reach",
+      Array.isArray(r.recipients) && r.recipients[0] === "qblake@spectrumsquadlv.com", JSON.stringify(r.recipients));
+    check("an armed report has no blocking reason to give", r.blocked_reason === null, JSON.stringify(r));
+  }
+  {
+    const { ctx } = makeDb(seedOpts(FRIDAY_0630_PT, {
+      settings: { rethink_verification_report_to: "qblake@spectrumsquadlv.com" },
+      config: { ...CONFIRMED, filter_confirmed: false },
+    }));
+    const v = initVerification(ctx);
+    const r = await v.readiness();
+    check("an unconfirmed filter reads as NOT armed, before Friday",
+      r.armed === false && r.blocked_reason === "filter_unconfirmed", JSON.stringify(r));
+    check("it says what fixes it rather than only what is wrong",
+      typeof r.fix === "string" && /RBT Supervision/.test(r.fix), r.fix);
+    check("the filter state is reported as false rather than omitted",
+      r.filter_confirmed === false, JSON.stringify(r));
+  }
+  {
+    const { ctx } = makeDb(seedOpts(FRIDAY_0630_PT, {
+      settings: { rethink_verification_report_to: "qblake@spectrumsquadlv.com" },
+      config: { ...CONFIRMED, require_staff_verification: false },
+    }));
+    const v = initVerification(ctx);
+    const r = await v.readiness();
+    check("staff verification switched off reads as NOT armed",
+      r.armed === false && r.blocked_reason === "verification_off", JSON.stringify(r));
+  }
+  {
+    // Armed, correct, and addressed to nobody is still a report that will not
+    // arrive. The old readiness question would have answered "fine".
+    const { ctx } = makeDb(seedOpts(FRIDAY_0630_PT, { settings: {}, users: [] }));
+    const v = initVerification(ctx);
+    const r = await v.readiness();
+    check("a confirmed filter with no recipient is NOT armed",
+      r.armed === false && r.blocked_reason === "no_recipient", JSON.stringify(r));
+  }
+  {
+    // The point of the refactor: readiness and the run must never disagree.
+    for (const [label, cfg] of [
+      ["an unconfirmed filter", { ...CONFIRMED, filter_confirmed: false }],
+      ["verification switched off", { ...CONFIRMED, require_staff_verification: false }],
+    ]) {
+      const { ctx } = makeDb(seedOpts(FRIDAY_0630_PT, {
+        settings: { rethink_verification_report_to: "qblake@spectrumsquadlv.com" }, config: cfg,
+      }));
+      const v = initVerification(ctx);
+      const ahead = await v.readiness();
+      const actual = await v.runCohort("rbt", { triggeredBy: "test", email: false });
+      check(`readiness and the run agree about ${label}`,
+        ahead.blocked_reason === actual.skipped, `${ahead.blocked_reason} vs ${actual.skipped}`);
+    }
+  }
+
   console.log("\n--- the wiring in server.js ---");
   {
     const src = require("fs").readFileSync(require("path").join(__dirname, "server.js"), "utf8");
@@ -689,6 +757,8 @@ process.env.RETHINK_VERIFICATION_REPORT_TO = "";     // exercise the fallback ch
     check("the tables are created on boot", /rethinkVerification\.initTables\(\)/.test(src));
     check("the Friday clock is ticked on an interval", /rethinkVerification\.tick\("scheduled"\)/.test(src));
     check("the tick also runs on boot so a Friday deploy catches up", /rethinkVerification\.tick\("boot"\)/.test(src));
+    check("every boot records in the log whether Friday's report is armed",
+      /rethinkVerification\.logReadiness\("boot"\)/.test(src));
     check("its routes are claimed BEFORE the broader /api/rethink handler",
       src.indexOf('pathname.startsWith("/api/rethink-verification")') < src.indexOf('pathname.startsWith("/api/rethink")'));
     check("the Friday report is addressed to the practice owner out of the box",
