@@ -183,7 +183,7 @@ module.exports = function initRethinkVerification(ctx) {
       window_to TEXT,                      -- latest scanned: the day BEFORE run_date
       started_at TEXT,
       finished_at TEXT,
-      status TEXT DEFAULT 'running',       -- running|ok|failed
+      status TEXT DEFAULT 'running',       -- running|ok|failed|skipped
       appointments_scanned INTEGER DEFAULT 0,
       unverified_found INTEGER DEFAULT 0,
       new_infractions INTEGER DEFAULT 0,
@@ -343,35 +343,87 @@ module.exports = function initRethinkVerification(ctx) {
     if (cohort !== "rbt" && cohort !== "bcba") {
       return { ok: false, error: `Unknown cohort "${cohort}".` };
     }
-    if (!client.configured()) {
-      return { ok: false, skipped: "not_configured", cohort, run_date: runDate,
-        error: "Rethink credentials are not configured on the server." };
-    }
-    // Refusing rather than guessing. Without the confirmed filter this module
-    // cannot tell a verified session from an unverified one, and the failure
-    // mode of guessing is an infraction on somebody's review for work they did
-    // correctly.
-    if (!getRethinkConfig || !verificationVerdict || !isRbt) {
-      return { ok: false, skipped: "not_wired", cohort, run_date: runDate,
-        error: "The Rethink verification filter, or the rule for who is an RBT, " +
-               "is not wired into this module. It will not guess either one." };
-    }
-    const cfg = await getRethinkConfig();
-    if (!cfg || !cfg.filter_confirmed) {
-      return { ok: false, skipped: "filter_unconfirmed", cohort, run_date: runDate,
-        error: "The Rethink completed/verified filter has not been confirmed yet, so " +
-               "nothing can be called unverified without guessing. Confirm it on the " +
-               "Rethink panel and this report starts the following Friday." };
-    }
-    if (!cfg.require_staff_verification) {
-      return { ok: false, skipped: "verification_off", cohort, run_date: runDate,
-        error: "Staff verification is switched off in the Rethink filter, so there is " +
-               "no such thing as an unverified session to report." };
-    }
 
+    // THE RUN IS CLAIMED BEFORE THE PRECONDITIONS ARE CHECKED, and that order
+    // is the point.
+    //
+    // These checks used to return before anything was written, so a Friday the
+    // report could not run produced NOTHING: no run row, no email, no log. An
+    // owner expecting a report got silence, and silence is exactly what a week
+    // where everybody verified their sessions looks like. The one failure this
+    // module exists to prevent is a compliance figure quietly not being
+    // collected, and it had that failure in its own front door.
+    //
+    // Claiming first means the skip is recorded and announced, once per cohort
+    // per Friday -- the same cadence as the report it replaces. The claim is
+    // NOT released afterwards (unlike a failed pull, which retries): a filter
+    // nobody has confirmed will still be unconfirmed in five minutes, and the
+    // tick runs every five minutes.
     const runId = await claimRun(cohort, runDate, scheduledAt, triggeredBy);
     if (!runId) {
+      // Somebody already ran this cohort today. Silent on purpose: this is the
+      // restart-safety path, not a problem.
       return { ok: true, skipped: "already_ran", cohort, run_date: runDate };
+    }
+
+    // Each of these is a reason the report CANNOT be produced honestly. None
+    // of them is guessed around: calling a verified session an infraction is
+    // the one mistake that would put a black mark on somebody's review for
+    // work they did correctly.
+    const blocked =
+      !client.configured()
+        ? { skipped: "not_configured",
+            error: "Rethink credentials are not configured on the server.",
+            fix: "Add RETHINK_CLIENT_ID and RETHINK_CLIENT_SECRET to the server configuration." }
+      : (!getRethinkConfig || !verificationVerdict || !isRbt)
+        ? { skipped: "not_wired",
+            error: "The Rethink verification filter, or the rule for who is an RBT, is not wired into this module.",
+            fix: "This is a wiring fault in the CRM itself rather than a setting. It needs a developer." }
+        : null;
+
+    let cfg = null;
+    let blockedNow = blocked;
+    if (!blockedNow) {
+      cfg = await getRethinkConfig();
+      if (!cfg || !cfg.filter_confirmed) {
+        blockedNow = { skipped: "filter_unconfirmed",
+          error: "The Rethink completed/verified filter has not been confirmed yet, so nothing can be called unverified without guessing.",
+          fix: "Open RBT Supervision, find the Rethink section, tick the appointment statuses and the staffVerification values that mean verified, and confirm the filter. The report runs from the next scheduled time onwards." };
+      } else if (!cfg.require_staff_verification) {
+        blockedNow = { skipped: "verification_off",
+          error: "Staff verification is switched off in the Rethink filter, so there is no such thing as an unverified session to report.",
+          fix: "Turn the staff-verification requirement back on in the Rethink section of RBT Supervision if these reports should resume." };
+      }
+    }
+
+    if (blockedNow) {
+      client.log("verification_run_skipped", {
+        kind: "unverified_appointments", cohort, run_date: runDate, reason: blockedNow.skipped,
+      });
+      console.error(`Unverified appointment report (${cohort} ${runDate}) did not run: ${blockedNow.error}`);
+      await dbRun(
+        `UPDATE rethink_verification_runs
+            SET status = 'skipped', finished_at = ?, error = ?, warnings = ?
+          WHERE id = ?`,
+        [nowISO(), String(blockedNow.error).slice(0, 500), JSON.stringify([blockedNow.fix]), runId]
+      ).catch(() => {});
+
+      const out = { ok: false, run_id: runId, cohort, run_date: runDate,
+        skipped: blockedNow.skipped, error: blockedNow.error, fix: blockedNow.fix };
+
+      // Said out loud, to the same people the report goes to. A report that
+      // does not arrive and does not explain itself is indistinguishable from
+      // a clean week.
+      if (opts.email !== false) {
+        const mail = await emailSkipped(cohort, runId, runDate, blockedNow);
+        out.emailed_to = mail.to;
+        out.email_status = mail.status;
+        await dbRun(
+          "UPDATE rethink_verification_runs SET emailed_to = ?, email_status = ? WHERE id = ?",
+          [mail.to || null, mail.status || null, runId]
+        ).catch(() => {});
+      }
+      return out;
     }
 
     // The cutoff. Strictly before the run date, for both cohorts: see the note
@@ -681,6 +733,43 @@ module.exports = function initRethinkVerification(ctx) {
     return { to: to.join(", "), status };
   }
 
+  // The report could not be produced. This says so, to the same people who
+  // would have received it, in the same week they expected it.
+  //
+  // It is deliberately NOT apologetic boilerplate: it names the reason and the
+  // exact thing to do about it, because the person reading it is the person
+  // who can fix it, and "something went wrong" would just send them looking.
+  async function emailSkipped(cohort, runId, runDate, blocked) {
+    const to = await recipients();
+    if (!to.length) return { to: null, status: "no_recipient" };
+
+    const label = (SCHEDULES.find((s) => s.cohort === cohort) || {}).label || cohort.toUpperCase();
+    const html = `
+      <p style="font-size:15px;"><strong>The ${esc(label)} unverified-appointment report did not run
+        on Friday ${esc(runDate)}.</strong></p>
+      <p style="font-size:13.5px;">Nothing was recorded against anybody, and no infractions were
+        missed &mdash; the sessions are still in Rethink and will be picked up once this is sorted.
+        This note exists so that a week with no report cannot be mistaken for a week with nothing
+        to report.</p>
+      <p style="font-size:13.5px;background:#fdf6e3;border-left:4px solid #e0a430;padding:10px 12px;">
+        <strong>Why:</strong> ${esc(blocked.error)}</p>
+      <p style="font-size:13.5px;"><strong>What fixes it:</strong> ${esc(blocked.fix)}</p>
+      <p style="font-size:12px;color:#9ca3af;">Unverified Appointments (${esc(label)}) &mdash; Spectrum Squad CRM</p>`;
+
+    const subject = `${label} unverified appointments — NOT RUN on ${runDate} (${blocked.skipped.replace(/_/g, " ")})`;
+
+    let status = "sent";
+    for (const addr of to) {
+      const r = await sendEmail({
+        to: addr, subject, html,
+        type: "rethink_unverified_appointments",
+        refType: "rethink_verification_run", refId: runId,
+      }).catch((e) => ({ delivered: "failed", errorMsg: e.message }));
+      if (r && r.delivered && r.delivered !== "sent") status = String(r.delivered);
+    }
+    return { to: to.join(", "), status };
+  }
+
   // ======================= THE TICK ==========================
   // Called on a short interval by server.js. Cheap: on six days out of seven it
   // reads the clock and returns. It does not hold a timer for Friday, because a
@@ -930,7 +1019,7 @@ module.exports = function initRethinkVerification(ctx) {
     recentRuns,
     _internal: {
       pacificParts, addDays, hhmmToMinutes, quarterOf, quarterWindow,
-      cohortOf, appointmentKey, nameHint, recipients,
+      cohortOf, appointmentKey, nameHint, recipients, emailSkipped,
       SCHEDULES, WEEKDAY, LOOKBACK_DAYS, TZ,
     },
   };

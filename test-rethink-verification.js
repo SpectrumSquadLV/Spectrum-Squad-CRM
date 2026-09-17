@@ -68,6 +68,11 @@ function makeDb(seed) {
       if (r) { r.run_key = params[0]; r.status = "failed"; r.error = params[2]; }
       return { rowCount: r ? 1 : 0 };
     }
+    if (has(q, "SET status = 'skipped'")) {
+      const r = state.runs.find((x) => x.id === params[3]);
+      if (r) { r.status = "skipped"; r.finished_at = params[0]; r.error = params[1]; }
+      return { rowCount: r ? 1 : 0 };
+    }
     if (has(q, "UPDATE rethink_verification_runs SET status = 'ok'")) {
       const r = state.runs.find((x) => x.id === params[11]);
       if (r) Object.assign(r, {
@@ -474,7 +479,12 @@ process.env.RETHINK_VERIFICATION_REPORT_TO = "";     // exercise the fallback ch
       /BCBA unverified appointments/.test((state.emails[0] || {}).subject || ""), (state.emails[0] || {}).subject);
   }
 
-  console.log("\n--- the report refuses to guess ---");
+  console.log("\n--- the report refuses to guess, and SAYS SO ---");
+  // A Friday the report cannot run used to produce nothing at all: no run row,
+  // no email, no log. An owner expecting a report got silence -- which is
+  // exactly what a week where everybody verified their sessions looks like.
+  // The one failure this module exists to prevent is a compliance figure
+  // quietly not being collected, and it had that failure in its own front door.
   {
     const { state, ctx } = makeDb(seedOpts(FRIDAY_0630_PT, {
       config: { ...CONFIRMED, filter_confirmed: false },
@@ -483,7 +493,28 @@ process.env.RETHINK_VERIFICATION_REPORT_TO = "";     // exercise the fallback ch
     const out = await v.runCohort("rbt", { runDate: "2026-09-18", triggeredBy: "test" });
     check("an unconfirmed verified-filter stops the run", out.ok === false && out.skipped === "filter_unconfirmed", JSON.stringify(out));
     check("no infraction is recorded while the filter is unconfirmed", state.infractions.length === 0);
-    check("no email is sent while the filter is unconfirmed", state.emails.length === 0);
+    check("THE SKIPPED RUN IS RECORDED rather than vanishing",
+      state.runs.length === 1 && state.runs[0].status === "skipped", JSON.stringify(state.runs));
+    check("AND SOMEBODY IS TOLD -- silence is indistinguishable from a clean week",
+      state.emails.length === 1, state.emails.length);
+    check("the subject says it did NOT run, so it is not filed as this week's report",
+      /NOT RUN/.test((state.emails[0] || {}).subject || ""), (state.emails[0] || {}).subject);
+    check("the email names what to actually do about it",
+      /RBT Supervision/.test((state.emails[0] || {}).html || "") && /confirm the filter/i.test((state.emails[0] || {}).html || ""));
+    check("and says nothing was missed, so it does not read as lost data",
+      /will be picked up/i.test((state.emails[0] || {}).html || ""));
+  }
+  {
+    // Once per cohort per Friday, not once every five minutes: the tick runs
+    // constantly and a filter nobody has confirmed stays unconfirmed.
+    const { state, ctx } = makeDb(seedOpts(FRIDAY_0630_PT, {
+      config: { ...CONFIRMED, filter_confirmed: false },
+    }));
+    const v = initVerification(ctx);
+    await v.runCohort("rbt", { runDate: "2026-09-18", triggeredBy: "test" });
+    const second = await v.runCohort("rbt", { runDate: "2026-09-18", triggeredBy: "test" });
+    check("a second attempt the same day is the already-ran path", second.skipped === "already_ran", JSON.stringify(second));
+    check("SO THE EXPLANATION IS SENT ONCE, not every tick", state.emails.length === 1, state.emails.length);
   }
   {
     const { state, ctx } = makeDb(seedOpts(FRIDAY_0630_PT, {
@@ -494,10 +525,12 @@ process.env.RETHINK_VERIFICATION_REPORT_TO = "";     // exercise the fallback ch
     check("with staff verification switched off there is nothing to report",
       out.ok === false && out.skipped === "verification_off");
     check("nothing is recorded when verification is switched off", state.infractions.length === 0);
+    check("but that Friday is still accounted for", state.emails.length === 1, state.emails.length);
   }
   {
     // The wiring is what guarantees one definition of "verified". Losing it
-    // must make the report go quiet, not invent a second definition.
+    // must make the report refuse, and say why -- not invent a second
+    // definition, and not go quiet.
     const { state, ctx } = makeDb(seedOpts(FRIDAY_0630_PT));
     delete ctx.verificationVerdict;
     const v = initVerification(ctx);
@@ -505,6 +538,21 @@ process.env.RETHINK_VERIFICATION_REPORT_TO = "";     // exercise the fallback ch
     check("a lost verified-filter wiring stops the run rather than guessing",
       out.ok === false && out.skipped === "not_wired", JSON.stringify(out));
     check("nothing is recorded when the wiring is lost", state.infractions.length === 0);
+    check("and it is reported as a fault rather than swallowed",
+      state.emails.length === 1 && /NOT RUN/.test((state.emails[0] || {}).subject || ""));
+  }
+  {
+    // Credentials missing is the same class: the report cannot run, and the
+    // person expecting it has to hear about it.
+    const { state, ctx } = makeDb(seedOpts(FRIDAY_0630_PT));
+    stub.configured = () => false;
+    const v = initVerification(ctx);
+    const out = await v.runCohort("rbt", { runDate: "2026-09-18", triggeredBy: "test" });
+    stub.configured = () => true;
+    check("missing Rethink credentials stop the run", out.skipped === "not_configured", JSON.stringify(out));
+    check("and that is announced too", state.emails.length === 1, state.emails.length);
+    check("naming the credentials to add",
+      /RETHINK_CLIENT_ID/.test((state.emails[0] || {}).html || ""));
   }
   {
     const { state, ctx } = makeDb(seedOpts(FRIDAY_0630_PT));
