@@ -8016,6 +8016,26 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       if (!target) return json(res, 404, { error: "User not found" });
       const body = await readBody(req);
 
+      // Changing the sign-in address. Handled before the generic field updates
+      // below and not through them, because it is not a column write: it is a
+      // transaction across every table that identifies this person by their
+      // address. See user-email.js.
+      let emailChange = null;
+      if (typeof body.email === "string" && body.email.trim()) {
+        // Same guard the role branch uses: an owner/super_admin account is only
+        // editable by an owner/super_admin, whoever else may manage users.
+        if (PRIVILEGED_ROLES.includes(target.role) && !PRIVILEGED_ROLE_ASSIGNERS.includes(user.role)) {
+          return json(res, 403, { error: "Only an Owner or Super Admin can change an Owner / Super Admin account." });
+        }
+        const problem = userEmail.validate(body.email, target);
+        if (problem) return json(res, 400, { error: problem });
+        const out = await userEmail.changeEmail({
+          targetId, newEmail: body.email, actorEmail: user.email,
+        });
+        if (!out.ok) return json(res, out.conflict ? 409 : 400, { error: out.error });
+        emailChange = out;
+      }
+
       const sets = [];
       const params = [];
 
@@ -8067,13 +8087,20 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
         params.push(ma);
       }
 
-      if (!sets.length) return json(res, 400, { error: "Nothing to update." });
-      params.push(targetId);
-      await dbRun(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`, params);
+      if (!sets.length && !emailChange) return json(res, 400, { error: "Nothing to update." });
+      if (sets.length) {
+        params.push(targetId);
+        await dbRun(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`, params);
+      }
       const updated = await dbGet(
         "SELECT id, name, email, role, department_id, can_view_financials, module_access, created_at FROM users WHERE id = ?",
         [targetId]
       );
+      // What moved with them, so the screen can say so rather than leaving the
+      // person to wonder whether their clients came too.
+      if (emailChange) {
+        updated.email_change = { old_email: emailChange.old_email, moved: emailChange.moved };
+      }
       return json(res, 200, updated);
     }
 
@@ -8776,6 +8803,12 @@ const rethink = require("./rethink")({
 // infraction against that person, recorded once and carried into the quarterly
 // review. Deliberately headless -- it owns no screen and no nav entry; the
 // numbers come out by email and through read-only JSON. =====
+// Changing the address somebody signs in with. In its own module because the
+// interesting part is not the UPDATE -- it is that this codebase identifies
+// staff by email in fifteen other places, and all of them have to move at once
+// or the person is quietly detached from their own clients, tasks and record.
+const userEmail = require("./user-email")({ pool, dbGet, dbAll, dbRun, nowISO });
+
 const rethinkVerification = require("./rethink-verification")({
   dbGet, dbAll, dbRun, nowISO, json, sendEmail,
   getAppSetting: (key, fallback) => getAppSetting(key, fallback),
@@ -9162,6 +9195,7 @@ async function start() {
   await authorizations.initTables().catch((e) => console.error("Authorizations initTables failed:", e));
   await rethink.initTables().catch((e) => console.error("Rethink initTables failed:", e));
   await rethinkVerification.initTables().catch((e) => console.error("Rethink verification initTables failed:", e));
+  await userEmail.initTables().catch((e) => console.error("User email initTables failed:", e));
 
   // One-time backfill: every client that existed before the eligibility check
   // became card-triggered is stamped as already sent.
