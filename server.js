@@ -5084,6 +5084,12 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Its own prefix block: nested inside the BIP's, it would only ever be
+  // consulted for /api/bip* paths and never for its own.
+  if (pathname.startsWith("/api/client-programming")) {
+    if (await clientProgramming.handleApi(req, res, pathname, method, query, user)) return true;
+  }
+
   if (pathname.startsWith("/api/bip")) {
     const handled = await bip.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -8497,6 +8503,7 @@ const PUBLIC_FILES = new Set([
   "/supply-requests-frontend.js",
   "/geo-map-frontend.js",
   "/bip-frontend.js",
+  "/client-programming-frontend.js",
   "/client-behavior-frontend.js",
   // The Drive notes import screen. Same trap as the two entries below: leave it
   // off the allowlist and the file 404s, window.__renderDriveNotesImport never
@@ -8889,6 +8896,14 @@ const growth = require("./growth")({
 });
 // ===== BEHAVIOR INTERVENTION PLAN workspace: lives inside the client card.
 // Owns /api/bip/*. Reuses the clients table, auth, permissions and email. =====
+// ===== CLIENT PROGRAMMING: supervision notes written against the client's
+// programs -- date and RBT at the top, programs and the modification made to
+// each one side by side. Owns /api/client-programming/*. Behaviours are read
+// from the BIP rather than duplicated: that module owns them. =====
+const clientProgramming = require("./client-programming")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, canAccessClients,
+});
+
 const bip = require("./bip")({
   dbGet, dbAll, dbRun, nowISO, crypto, readBody, json,
   sendEmail, APP_BASE_URL, getAppSetting, canAccessClients,
@@ -9196,6 +9211,7 @@ async function start() {
   await rethink.initTables().catch((e) => console.error("Rethink initTables failed:", e));
   await rethinkVerification.initTables().catch((e) => console.error("Rethink verification initTables failed:", e));
   await userEmail.initTables().catch((e) => console.error("User email initTables failed:", e));
+  await clientProgramming.initTables().catch((e) => console.error("Client programming initTables failed:", e));
 
   // One-time backfill: every client that existed before the eligibility check
   // became card-triggered is stamped as already sent.

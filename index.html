@@ -3569,6 +3569,8 @@ async function openClientModal(id) {
 
       ${cs("bip", "", "Behavior Intervention Plan", `<div id="bip-mount"></div>`, { defaultOpen: true })}
 
+      ${cs("programming", "", "Client Programming", `<div id="programming-mount"></div>`, { defaultOpen: true })}
+
       ${cs("services", "", "Transportation", `
         <label style="display:flex; align-items:center; gap:10px; font-size:13.5px; font-weight:600; cursor:pointer;">
           <input type="checkbox" id="cd-transportation" ${client.transportation_services ? "checked" : ""} />
@@ -3870,6 +3872,8 @@ async function openClientModal(id) {
   // attached so it can measure the modal for its sticky header.
   const bipMount = backdrop.querySelector("#bip-mount");
   if (bipMount && window.__renderBipSection) window.__renderBipSection(bipMount, id);
+  const progMount = document.getElementById("programming-mount");
+  if (progMount && window.__renderProgrammingSection) window.__renderProgrammingSection(progMount, id);
 
   const emergencyMount = backdrop.querySelector("#emergency-mount");
   if (emergencyMount && window.PeopleUI) window.PeopleUI.renderEmergencyContacts(emergencyMount, "client", id);
@@ -7165,6 +7169,7 @@ function openAccessModal(u, onDone) {
   <script src="supply-requests-frontend.js"></script>
   <script src="geo-map-frontend.js"></script>
   <script src="bip-frontend.js"></script>
+  <script src="client-programming-frontend.js"></script>
   <script src="client-behavior-frontend.js"></script>
   <script src="drive-notes-frontend.js"></script>
   <script src="bcba-hub-frontend.js"></script>
