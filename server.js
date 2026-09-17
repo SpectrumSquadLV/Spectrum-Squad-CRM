@@ -3650,6 +3650,15 @@ const DEFAULT_SETTINGS = {
   // compliance report that quietly lands in the wrong inbox reads exactly like
   // a week with nothing to report.
   rethink_verification_report_to: "qblake@spectrumsquadlv.com",
+  // Where owner notifications go -- the daily recruiting summary, grant and
+  // fidelity alerts, onboarding and attendance notices. Seeded for the same
+  // reason as the line above, and with more urgency: with nothing stored, every
+  // one of those falls through to the seeded admin@ login, which hard-bounced
+  // on 7 August 2026 and has been discarding them since. inbox@ was the
+  // intended replacement and hard-bounces too; this address is the one the
+  // practice actually reads, confirmed by delivery. A value already stored in
+  // Admin Settings still wins.
+  owner_notification_email: "qblake@spectrumsquadlv.com",
   credentialing_link_bcba: "https://sparkz.clickup.com/forms/3501350/f/3av96-450954/AMW0KVAC3YL07DEEMM",
   credentialing_link_rbt: "https://sparkz.clickup.com/forms/3501350/f/3av96-450934/OFTQKDCKHXT758222Z",
   class_dojo_link: "https://teach.classdojo.com/#/singleLinkSignup/TT6SYWAH3",
@@ -9354,6 +9363,14 @@ async function start() {
   // at /api/rethink-verification/status. Before this, the only way to learn
   // that Friday's report could not run was to notice it had not arrived -- and
   // "no report" and "a clean week" look identical from an inbox.
+  // Same principle as the line below: an address that silently resolves to a
+  // dead mailbox is indistinguishable from one that works until somebody
+  // notices months of missing email. Seeding the setting only takes effect when
+  // nothing is stored, and nothing here can see which -- so the app says where
+  // it landed instead of leaving it to be inferred.
+  hr._internal.ownerEmail()
+    .then((to) => console.log(`[owner-notify] owner notifications resolve to: ${to || "NOBODY"}`))
+    .catch(() => {});
   rethinkVerification.logReadiness("boot").catch(() => {});
   rethinkVerification.tick("boot").catch((e) => console.error("Unverified appointment check failed:", e));
   setInterval(() => {

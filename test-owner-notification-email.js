@@ -139,6 +139,18 @@ const ADMIN = { role: "owner", email: "admin@spectrumsquadlv.com" };
       /setAppSetting\("owner_notification_email"/.test(server));
     check("hr is constructed with getAppSetting so the read is possible at all",
       /require\("\.\/hr"\)\(\{[\s\S]{0,900}?getAppSetting/.test(server));
+
+    // The seed matters because the fallback it replaces is a dead mailbox: with
+    // nothing stored, owner notifications land on the seeded admin@ login,
+    // which hard-bounced. A stored value still wins -- the seeder only writes
+    // when the key is absent.
+    const defaults = server.split("const DEFAULT_SETTINGS")[1] || "";
+    check("a working owner notification address is seeded, so a fresh install reaches somebody",
+      /owner_notification_email: "qblake@spectrumsquadlv\.com"/.test(defaults.slice(0, 4000)));
+    check("the seeder only writes when nothing is stored, so Admin Settings still wins",
+      /Object\.entries\(DEFAULT_SETTINGS\)[\s\S]{0,300}?if \(!existing\)/.test(server));
+    check("and boot records where owner notifications actually resolved",
+      /\[owner-notify\] owner notifications resolve to/.test(server));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
