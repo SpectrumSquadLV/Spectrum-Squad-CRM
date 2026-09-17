@@ -56,6 +56,13 @@ module.exports = function initUserEmail(ctx) {
     { table: "crm_policy_acknowledgments", column: "employee_email", label: "policy acknowledgements" },
     { table: "grant_applications", column: "owner_email", label: "grants they own" },
 
+    // Supervision notes name two people: the RBT who was supervised and the
+    // BCBA who supervised them. Both are identities, not destinations -- these
+    // are the record of who was in the room, and a quarterly review reads them
+    // back per person.
+    { table: "client_supervision_notes", column: "rbt_email", label: "supervision notes where they were the RBT" },
+    { table: "client_supervision_notes", column: "bcba_email", label: "supervision notes they wrote" },
+
     // Authorship. Rewritten rather than left behind, because these are how a
     // person finds the notes they wrote -- the address is an identifier here,
     // not a record of where something was sent.
