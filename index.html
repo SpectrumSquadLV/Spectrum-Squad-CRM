@@ -3569,6 +3569,8 @@ async function openClientModal(id) {
 
       ${cs("bip", "", "Behavior Intervention Plan", `<div id="bip-mount"></div>`, { defaultOpen: true })}
 
+      ${cs("programming", "", "Client Programming", `<div id="programming-mount"></div>`, { defaultOpen: true })}
+
       ${cs("services", "", "Transportation", `
         <label style="display:flex; align-items:center; gap:10px; font-size:13.5px; font-weight:600; cursor:pointer;">
           <input type="checkbox" id="cd-transportation" ${client.transportation_services ? "checked" : ""} />
@@ -3870,6 +3872,8 @@ async function openClientModal(id) {
   // attached so it can measure the modal for its sticky header.
   const bipMount = backdrop.querySelector("#bip-mount");
   if (bipMount && window.__renderBipSection) window.__renderBipSection(bipMount, id);
+  const progMount = document.getElementById("programming-mount");
+  if (progMount && window.__renderProgrammingSection) window.__renderProgrammingSection(progMount, id);
 
   const emergencyMount = backdrop.querySelector("#emergency-mount");
   if (emergencyMount && window.PeopleUI) window.PeopleUI.renderEmergencyContacts(emergencyMount, "client", id);
@@ -6894,6 +6898,7 @@ async function renderTeamSection(mount) {
                 <button class="btn small" data-save-user="${u.id}">Save</button>
                 <button class="btn small secondary" data-access-user="${u.id}">Access</button>
                 <button class="btn small secondary" data-reset-user="${u.id}">Reset password</button>
+                <button class="btn small secondary" data-email-user="${u.id}" title="Change the address they sign in with. Their clients, tasks and staff record move with them.">Change email</button>
                 ${String(u.id) === String(state.user.id) ? "" : `<button class="btn small secondary" data-delete-user="${u.id}" style="color:#b91c1c;">Remove</button>`}
                 ${state.user.role === "owner" && String(u.id) !== String(state.user.id)
                   ? `<button class="btn small secondary" data-viewas-user="${u.id}" title="See the CRM exactly as they see it. Read only.">View as</button>` : ""}
@@ -6982,6 +6987,46 @@ async function renderTeamSection(mount) {
         setStatus("Password reset ✓ — share the new temporary password with them.", true);
       } catch (e) {
         setStatus(e.message, false);
+      }
+    });
+  });
+
+  // Changing the sign-in address. The confirmation spells out both halves of
+  // what happens, because "change email" reads like editing a label and is in
+  // fact moving somebody's identity: what they type to sign in, plus every
+  // client, task and record joined to them by that address.
+  body.querySelectorAll("[data-email-user]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.emailUser;
+      const u = users.find((x) => String(x.id) === String(id));
+      if (!u) return;
+      const next = prompt(
+        `Change the sign-in email for ${u.name}.\n\n` +
+        `They sign in with this address, so from now on they use the new one. ` +
+        `Their password does not change and nobody is signed out.\n\n` +
+        `Their staff record, assigned clients, tasks and supply requests move with them.\n\n` +
+        `Current: ${u.email}`,
+        u.email
+      );
+      if (next == null) return;
+      const clean = String(next).trim().toLowerCase();
+      if (!clean || clean === String(u.email).trim().toLowerCase()) return;
+      btn.disabled = true;
+      try {
+        const out = await api(`/api/admin/users/${id}`, { method: "PATCH", body: { email: clean } });
+        // Say what moved. The alternative is a bare "Saved", which leaves
+        // somebody to wonder whether their clients came too -- and that
+        // uncertainty is the whole reason this is not a plain column edit.
+        const moved = (out && out.email_change && out.email_change.moved) || [];
+        const detail = moved.length
+          ? " — moved with them: " + moved.map((m) => `${m.rows} ${m.label}`).join(", ")
+          : " — nothing else referenced the old address.";
+        setStatus(`Now signs in as ${clean} ✓${detail}`, true);
+        renderTeamSection(mount);
+      } catch (e) {
+        setStatus(e.message, false);
+      } finally {
+        btn.disabled = false;
       }
     });
   });
@@ -7124,6 +7169,7 @@ function openAccessModal(u, onDone) {
   <script src="supply-requests-frontend.js"></script>
   <script src="geo-map-frontend.js"></script>
   <script src="bip-frontend.js"></script>
+  <script src="client-programming-frontend.js"></script>
   <script src="client-behavior-frontend.js"></script>
   <script src="drive-notes-frontend.js"></script>
   <script src="bcba-hub-frontend.js"></script>

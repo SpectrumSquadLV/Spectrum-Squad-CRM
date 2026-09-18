@@ -70,7 +70,13 @@ const BASE = process.env.BASE || "http://localhost:3009";
   // Note this suite signs in as the owner. "eligibility" and "financial" are
   // now limited to administrative/billing roles, so a clinical or scheduling
   // account legitimately sees fifteen sections here, not seventeen.
-  const EXPECTED = ["authorization", "emergency", "bip", "services", "assessment", "notes", "packet",
+  //
+  // "programming" is Client Programming: the BCBA's supervision notes against
+  // this client's programs, sitting beside the BIP because they are read
+  // together. Added deliberately -- this list exists so a section cannot appear
+  // on the card without somebody choosing to put it there, and the check below
+  // is what makes that true.
+  const EXPECTED = ["authorization", "emergency", "bip", "programming", "services", "assessment", "notes", "packet",
     "documents", "docrequests", "eligibility", "financial", "firstday", "schedulereq", "attendance", "tasks",
     "waitlist", "closeout", "comms"];
   const found = await page.$$eval("details.cs", (ds) => ds.map((d) => d.dataset.cs));
