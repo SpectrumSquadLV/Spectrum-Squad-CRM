@@ -58,8 +58,19 @@
   // ============================ STYLES ============================
   function styles() {
     return `<style id="bip-styles">
-      .bip-wrap { --bip-navy:#1b2a6b; --bip-ink:#1f2430; --bip-muted:#6b7280; --bip-line:#e8eaf1;
-        --bip-soft:#f7f8fc; --bip-accent:#4c63c7; margin: 4px 0 8px; }
+      /* The drawer and its scrim are appended to document.body, NOT inside
+         .bip-wrap -- a drawer has to escape the panel's stacking context to
+         cover the page. So they have to be named here too.
+
+         Defining these on .bip-wrap alone meant every var() inside a drawer
+         resolved to nothing. The declaration using it is then dropped, which is
+         silent: .bip-btn.primary lost its background but kept color:#fff, so
+         the Save button rendered as white text on a white drawer -- present,
+         focusable, clickable, and invisible. The footer divider, the muted
+         labels and the prefill box all went the same way. */
+      .bip-wrap, .bip-drawer, .bip-scrim { --bip-navy:#1b2a6b; --bip-ink:#1f2430; --bip-muted:#6b7280;
+        --bip-line:#e8eaf1; --bip-soft:#f7f8fc; --bip-accent:#4c63c7; }
+      .bip-wrap { margin: 4px 0 8px; }
       .bip-ico { display:inline-flex; align-items:center; justify-content:center; vertical-align:-2px; }
       .bip-ico svg { width:100%; height:100%; display:block; }
 

@@ -2129,6 +2129,41 @@ module.exports = function initRethink(ctx) {
       }
     }
 
+    // HTTP 200 carrying nothing at all.
+    //
+    // This used to fall straight through: the loop below ran zero times, no
+    // warning was raised, and the sync recorded "success". A practice whose
+    // authorizations were not reaching the CRM looked exactly like one that has
+    // none on file, and the endpoint has in fact been answering 200 with zero
+    // rows on every sync. The Clients endpoint has treated an empty 200 as a
+    // question worth asking since it was written; this one never did.
+    //
+    // Whether it is a problem depends on whether we had any reason to expect
+    // rows, so it is not a blanket alarm: with clients linked to Rethink, an
+    // empty list is a query or permission question on Rethink's side and is
+    // reported as one. With nothing linked yet, zero is simply true, and says
+    // so instead of crying wolf.
+    if (!rows.length) {
+      client.log("authorizations_empty", {
+        kind: "authorizations", endpoint: DWH_AUTHORIZATIONS,
+        linked_clients: byRethinkClientId.size, pages: fetched.pages,
+      });
+      if (byRethinkClientId.size > 0) {
+        return fail(
+          `The Rethink "${DWH_AUTHORIZATIONS}" endpoint returned HTTP 200 with no authorizations at all, `
+          + `while ${byRethinkClientId.size} active client(s) are linked to Rethink and would be expected to have them. `
+          + `The endpoint is reachable and authenticated, so this is a query or permission question on Rethink's side `
+          + `rather than a connection problem -- set RETHINK_AUTH_ENDPOINT if "${DWH_AUTHORIZATIONS}" is the wrong path. `
+          + `Nothing already synced has been changed.`,
+          "empty"
+        );
+      }
+      warnings.push(
+        `Rethink returned no authorizations. No active client is linked to a Rethink client id yet, so there is `
+        + `nothing to match them to -- link clients under Rethink -> Client Match and they will import from the next sync.`
+      );
+    }
+
     let seen97153 = 0, upserted = 0, unmatched = 0, skippedDeleted = 0;
     const unmatchedClientIds = new Set();
     const perClient = new Map(); // crm client id -> rows[]

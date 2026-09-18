@@ -686,6 +686,39 @@ const initRethink = require("./rethink");
     check("a missing authorization date never writes dates", !state.clientDateWrites.find((w) => w.clientId === 30));
   }
 
+  // An empty 200. The endpoint answers, authenticates, and hands back nothing.
+  //
+  // This used to record "success" and say not one word, which is
+  // indistinguishable from a practice that genuinely has no authorizations --
+  // and the real endpoint has been answering exactly this way on every sync.
+  {
+    const { state, ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: authClients });
+    stub.dwhGetAllPages = async () => ({ rows: [], pages: 1, truncated: false });
+    const out = await initRethink(ctx).syncAuthorizations("test");
+    check("no authorizations, with clients linked, is reported rather than passed as success",
+      out.ok === false && out.kind === "empty", JSON.stringify(out).slice(0, 200));
+    check("and it says the endpoint answered, so nobody goes looking at the connection",
+      /HTTP 200/.test(out.error || ""), out.error);
+    check("and it names the endpoint so a wrong path is fixable",
+      /ClientAuthorization/.test(out.error || ""), out.error);
+    check("an empty pull never blanks a previously synced date", state.clientDateWrites.length === 0);
+    check("an empty pull writes no authorization rows", state.authRows.length === 0);
+  }
+
+  // The same empty 200, but with nothing linked to Rethink yet. Here zero is
+  // simply true, and a hard failure would be crying wolf at a practice that has
+  // not finished setting up.
+  {
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: [{ id: 41, rethink_client_id: null }] });
+    stub.dwhGetAllPages = async () => ({ rows: [], pages: 1, truncated: false });
+    const out = await initRethink(ctx).syncAuthorizations("test");
+    check("with no client linked, an empty pull is not treated as a failure", out.ok !== false, JSON.stringify(out).slice(0, 200));
+    check("but it still says so, rather than reporting a silent success",
+      (out.warnings || []).some((w) => /no authorizations/i.test(w)), out.warnings);
+    check("and it says what to do about it",
+      (out.warnings || []).some((w) => /Client Match/i.test(w)), out.warnings);
+  }
+
   // API failure on the authorization side.
   {
     const { state, ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: authClients });
