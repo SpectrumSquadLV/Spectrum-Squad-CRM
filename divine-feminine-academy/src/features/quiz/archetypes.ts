@@ -86,12 +86,38 @@ export interface Archetype {
 }
 
 /**
- * THE COPY.
+ * THE COPY, in Quiana's register.
  *
- * This is a first draft written to be replaced. It is real writing rather than
- * a placeholder because a quiz with `[PLACEHOLDER]` in the result is a quiz
- * nobody can test on a real person - but every word here should be read aloud
- * by the woman whose brand it is, and changed until it sounds like her.
+ * The first draft of this was mine and it read like a copywriter: "you are"
+ * where she says "you're", long literary sentences, em-dashes stacked three
+ * deep, and the occasional flourish that sounds good and says nothing. This
+ * is the same psychology set in her voice instead, taken from eighty-three
+ * behaviours she wrote for the home page, her four signature lines, and her
+ * three reveal notes.
+ *
+ * WHAT HER VOICE ACTUALLY DOES, from those:
+ *
+ *   Short declaratives. Two clauses, usually. "You keep score."
+ *   Contractions everywhere. "You're", "isn't", "didn't", "they'd".
+ *   The reframe is a pair: "X isn't Y. It's Z."
+ *   The reader is YOU. The archetype is SHE. She switches deliberately -
+ *     "Her silence is not emptiness" - and the distance is the point: the
+ *     protector is someone the woman can look at rather than something she
+ *     is accused of being.
+ *   No therapy words. No flourishes she would not say out loud.
+ *
+ * WHAT WAS CUT and why: a line about the life she is researching being lived
+ * by "women with half your thought and twice your nerve". It is quotable, and
+ * it buys its punch by putting other women down, which is not what this is.
+ *
+ * THE WATCHER IS DELIBERATELY THE THINNEST. Her psychology is still
+ * provisional in the methodology and the instruction was not to expand her
+ * doctrine. What is here says what freeze DOES - the frame Quiana set - and
+ * makes no claim about where hers came from. She gets her doctrine when
+ * Quiana writes it.
+ *
+ * The tagline and revealNote on all four are Quiana's, word for word.
+ * Everything else is her psychology in her register, and still hers to change.
  */
 export const archetypes: Record<ProtectiveMode, Archetype> = {
   fight: {
@@ -102,28 +128,27 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     revealNote:
       'The Commander learned that being powerful could keep her from feeling powerless.',
     oneLiner:
-      'This is the ME who gets bigger, faster and more capable the second something threatens her — and does it alone.',
+      'This is the version of you who gets bigger the second something threatens her. Faster, more capable, more in charge. And alone.',
     soundsLike: [
-      'If I do not do it, it does not get done.',
-      'I am not upset, I am just being realistic.',
-      'I will rest when this is finished.',
+      'If I don’t do it, it doesn’t get done.',
+      'I’m not upset. I’m being realistic.',
+      'I’ll rest when this is finished.',
     ],
     looksLike: [
-      'You take over the moment something wobbles.',
-      'You argue the point long after you stopped caring about the point.',
-      'You are the one everybody calls, and nobody checks on.',
+      'You take over the second something wobbles.',
+      'You’re still arguing the point long after you stopped caring about the point.',
+      'You’re the one everybody calls. Nobody calls to check on you.',
     ],
     protecting:
-      'Control. Somewhere back there, being in charge was the only thing that kept you safe — so now being out of control feels like danger rather than discomfort. Your competence is not a performance. It is a shield you have been carrying so long you forgot to put it down.',
+      'Control. Being in charge was once the only thing that kept you safe, so being out of control doesn’t feel uncomfortable to you. It feels dangerous. Your competence isn’t a performance. It’s armour, and you’ve worn it so long you forgot you put it on.',
     costs:
-      'You are exhausted and nobody knows, because you have trained everyone around you to believe you do not need anything. Help feels like an insult. Softness feels like exposure. And the people who love you are standing outside a door you keep telling them is not locked.',
-    theReturn:
-      'Let one thing be done badly by someone else, on purpose, and do not fix it.',
+      'You’re exhausted and nobody knows, because you trained everyone around you to believe you don’t need anything. Help feels like an insult. Softness feels like exposure. And the people who love you are standing outside a door you keep telling them isn’t locked.',
+    theReturn: 'Let one thing be done badly by someone else. Don’t fix it.',
     firstStep:
-      'Think of one thing you are carrying that is not actually yours. Today, say one sentence out loud: “I need help with this.” Do not explain it, do not soften it, do not add “but it is fine”.',
+      'Find one thing you’re carrying that was never yours. Today, say one sentence out loud: “I need help with this.” Don’t explain it. Don’t soften it. Don’t add “but it’s fine”.',
     area: 'self',
     shareLine:
-      'I got The Commander — the version of me that handles everything and asks for nothing.',
+      'I got The Commander — the version of me who handles everything and asks for nothing.',
   },
 
   flight: {
@@ -134,27 +159,28 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     revealNote:
       'She learned that distance could provide relief from what she didn’t yet know how to sit with.',
     oneLiner:
-      'This is the ME who finds the exit — a new plan, a new city, a new version of your life — before anything can find her.',
+      'This is the version of you who finds the exit first. A new plan, a new city, a new version of your life — before anything can find her.',
     soundsLike: [
-      'I think I have outgrown this.',
+      'I think I’ve outgrown this.',
       'I just need a fresh start.',
-      'I am not running. I am being smart.',
+      'I’m not running. I’m being smart.',
     ],
     looksLike: [
       'You start beautifully and leave at the boring part.',
-      'You keep one foot out of every door — the job, the lease, the relationship.',
-      'You stay so busy that nothing can catch up with you, including you.',
+      'You keep one foot out of every door. The job, the lease, the relationship.',
+      'You stay so busy nothing can catch up with you. Including you.',
     ],
     protecting:
-      'Your freedom. At some point staying cost you something you could not afford, so leaving became the fastest way to feel safe. You are not flaky. You are fast — and you learned to be fast because being trapped once nearly finished you.',
+      'Your freedom. Staying cost you something once that you couldn’t afford, so leaving became the fastest way to feel safe. You’re not flaky. You’re fast — and you learned to be fast because being trapped once nearly finished you.',
     costs:
-      'Nothing gets deep enough to hold you. You have a history of beginnings and almost no endings you chose. And the thing you actually want — to be somewhere, with someone, and stay — is the one thing the exit strategy will not let you build.',
-    theReturn: 'Stay in one uncomfortable conversation past the moment you want to go.',
+      'Nothing gets deep enough to hold you. You have a history of beginnings and almost no endings you chose. And the thing you actually want — to be somewhere, with someone, and stay — is the one thing the exit strategy won’t let you build.',
+    theReturn:
+      'Stay in one uncomfortable conversation past the moment you want to go.',
     firstStep:
-      'Name the thing you are currently halfway out of. Do not decide anything about it. Just write down one honest sentence about what you would lose if you left — and let it be true for ten minutes.',
+      'Name the thing you’re currently halfway out of. Don’t decide anything about it. Write one honest sentence about what you’d lose if you left, and let it be true for ten minutes.',
     area: 'life',
     shareLine:
-      'I got The Escape Artist — the version of me that leaves before she can be left.',
+      'I got The Escape Artist — the version of me who leaves before she can be left.',
   },
 
   freeze: {
@@ -172,27 +198,32 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
      */
     revealNote: null,
     oneLiner:
-      'This is the ME who goes still — researching, preparing, almost-ready — because moving in the wrong direction feels worse than not moving at all.',
+      'This is the version of you who goes still. Researching, preparing, almost ready — because moving in the wrong direction feels worse than not moving at all.',
     soundsLike: [
       'I just need to think about it a bit more.',
-      'Now is not the right time.',
-      'I do not want to do it until I can do it properly.',
+      'Now isn’t the right time.',
+      'I don’t want to do it until I can do it properly.',
     ],
     looksLike: [
-      'You have drafts, plans and a folder of screenshots, and you have posted none of it.',
+      'You have drafts, plans and a folder of screenshots. You’ve posted none of it.',
       'You go quiet in the room where you have the most to say.',
-      'You scroll the evening away and cannot account for it afterwards.',
+      'You lose the evening to your phone and can’t account for it afterwards.',
     ],
+    /*
+     * What freeze DOES, which is the frame Quiana set, and no claim about
+     * where hers came from. The other three say what their protector learned;
+     * this one cannot until she says so.
+     */
     protecting:
-      'Yourself, from being wrong in public. Stillness is not laziness — it is the oldest safety there is. Somewhere you learned that being seen making a mistake was dangerous, and so you got very, very good at not being seen.',
+      'Stillness. It isn’t laziness and it never was. It’s what happens when moving in the wrong direction feels more dangerous than staying where you are.',
     costs:
-      'Time. Quietly and enormously. The life you are researching is being lived by women with half your thought and twice your nerve, and the gap between what you know and what you have done is the thing that keeps you awake.',
+      'Time. Quietly, and enormously. The gap between what you know and what you’ve actually done is the thing that keeps you awake.',
     theReturn: 'Do it at sixty per cent ready, where somebody can see.',
     firstStep:
-      'Pick the smallest version of the thing you have been almost-doing. Set a timer for ten minutes. Do it badly, on purpose, and finish before the timer does.',
+      'Pick the smallest version of the thing you’ve been almost-doing. Set a timer for ten minutes. Do it badly on purpose and finish before the timer does.',
     area: 'wealth',
     shareLine:
-      'I got The Watcher — the version of me who is always almost ready.',
+      'I got The Watcher — the version of me who’s always almost ready.',
   },
 
   sulk: {
@@ -203,27 +234,28 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     revealNote:
       'Her silence is not emptiness. There is usually something happening underneath it.',
     oneLiner:
-      'This is the ME who withdraws — says she is fine, gives a little less, and waits to be noticed.',
+      'This is the version of you who withdraws. Says she’s fine, gives a little less, and waits to be noticed.',
     soundsLike: [
-      'It is fine. Honestly. Forget it.',
+      'It’s fine. Honestly. Forget it.',
       'After everything I do for them.',
-      'If they cared, they would already know.',
+      'If they cared, they’d already know.',
     ],
     looksLike: [
-      'You go short, polite and very, very quiet.',
-      'You do the thing they asked, perfectly, with an atmosphere attached.',
-      'You keep a private ledger of everything you have given and everything you did not get back.',
+      'You go short, polite and very quiet.',
+      'You do exactly what they asked, perfectly, with an atmosphere attached.',
+      'You keep a private ledger of what you’ve given and what you didn’t get back.',
     ],
     protecting:
-      'Your dignity. Asking directly and being refused is a particular kind of humiliation, and you decided a long time ago not to risk it again. Going quiet is not manipulation. It is what asking turns into when asking stopped working.',
+      'Your dignity. Asking directly and being refused is a particular kind of humiliation, and you decided a long time ago not to risk it again. Going quiet isn’t manipulation. It’s what asking turns into when asking stopped working.',
     costs:
-      'The one thing you want — to be chosen without having to beg for it — is the one thing silence guarantees you will not get. Resentment is heavy, it is private, and it is eating the relationships you are trying to protect.',
-    theReturn: 'Say the unmet want out loud, plainly, before it becomes a grudge.',
+      'The one thing you want — to be chosen without having to ask for it — is the one thing silence guarantees you won’t get. Resentment is heavy, it’s private, and it’s eating the relationships you’re trying to protect.',
+    theReturn:
+      'Say the want out loud, plainly, before it turns into a grudge.',
     firstStep:
-      'Find one thing you are quietly angry about. Write the sentence you actually mean, starting with “I wanted”. You do not have to send it. You have to admit it.',
+      'Find one thing you’re quietly angry about. Write the sentence you actually mean, starting with “I wanted”. You don’t have to send it. You have to admit it.',
     area: 'love',
     shareLine:
-      'I got The Quiet Storm — the version of me who says she is fine and keeps the receipts.',
+      'I got The Quiet Storm — the version of me who says she’s fine and keeps the receipts.',
   },
 }
 

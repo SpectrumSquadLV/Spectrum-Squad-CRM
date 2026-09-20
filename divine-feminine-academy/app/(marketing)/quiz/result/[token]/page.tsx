@@ -199,9 +199,9 @@ export default async function QuizResultPage({
 
       {secondary && (
         <p className="mt-6 rounded-lg border border-rule bg-alabaster px-5 py-4 text-sm text-ink-soft">
-          You are close to a blend. <strong>{secondary.name}</strong> was
-          almost as loud — which usually means the one you lead with depends on
-          who is in the room.
+          You’re close to a blend. <strong>{secondary.name}</strong> was
+          almost as loud. Usually that means the one you lead with depends on
+          who’s in the room.
         </p>
       )}
 
@@ -269,7 +269,7 @@ export default async function QuizResultPage({
             highest is the one that appears to take the lead most often.
           </p>
           <p>
-            This is pattern recognition, not another box — and it is a
+            This is pattern recognition, not another box — and it’s a
             reflective framework rather than any kind of diagnosis.
           </p>
         </Prose>
@@ -343,18 +343,18 @@ export default async function QuizResultPage({
         </div>
         <Prose className="mt-5 text-lg">
           <p>
-            Nothing you would do to an enemy. ME is not one — she took a job
-            nobody else was doing, and she has held it for years. Her whole
-            task has been to make you feel good enough.
+            Nothing you’d do to an enemy. ME isn’t one. She took a job nobody
+            else was doing and she’s held it for years, and the whole job has
+            been making you feel good enough.
           </p>
           <p>
             You see her. You understand where she came from. You love her for
-            it. You look honestly at what she has been creating. And then you
-            meet <strong>HER</strong> — the version of you who is not trying to
+            it. You look honestly at what she’s been creating. And then you
+            meet <strong>HER</strong> — the version of you who isn’t trying to
             feel good enough, because she already knows she is.
           </p>
           <p>
-            ME gets to retire. That is the whole of ME VS HER: seven days, one
+            ME gets to retire. That’s the whole of ME VS HER. Seven days, one
             small thing a day, in your own time.
           </p>
         </Prose>
