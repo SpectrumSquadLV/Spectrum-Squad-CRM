@@ -69,13 +69,13 @@ await check('a reminder carries the day, the title and a working link', () => {
     dayNumber: 3,
     dayTitle: 'Whose approval',
     totalDays: 7,
-    programSlug: '7-days-to-her',
+    programSlug: 'me-vs-her',
     siteUrl: SITE,
   })
   assert.match(email.subject, /Day 3 of 7/)
   assert.match(email.html, /Whose approval/)
-  assert.match(email.html, /my-academy\/7-days-to-her\/day\/3/)
-  assert.match(email.text, /my-academy\/7-days-to-her\/day\/3/)
+  assert.match(email.html, /my-practice\/me-vs-her\/day\/3/)
+  assert.match(email.text, /my-practice\/me-vs-her\/day\/3/)
 })
 
 await check('every template has a text part, not just HTML', () => {
@@ -86,7 +86,7 @@ await check('every template has a text part, not just HTML', () => {
     }),
     nudge({ firstName: null, dayNumber: 2, programSlug: 'p', daysSince: 3, siteUrl: SITE }),
     orderReceipt({
-      firstName: null, programTitle: 'The Academy', amountLabel: '$1,000.00',
+      firstName: null, programTitle: 'The Divine Feminine', amountLabel: '$1,000.00',
       orderReference: 'abc123', refundWindowDays: 14, siteUrl: SITE,
     }),
   ]) {
@@ -192,7 +192,7 @@ await check('a BOUNCED address is never written to again', async () => {
 console.log('\nthe reminder job:')
 
 const program = must(
-  (await db.select().from(programs).where(eq(programs.slug, '7-days-to-her')).limit(1))[0],
+  (await db.select().from(programs).where(eq(programs.slug, 'me-vs-her')).limit(1))[0],
   'run `npm run seed:challenge` first',
 )
 const version = must(

@@ -260,7 +260,7 @@ export async function handlePaymentEvent(
         .where(eq(contacts.id, order.contactId))
 
       await grantAccess(db, order.id, order.contactId)
-      await moveToStage(db, order.contactId, 'academy-enrolled')
+      await moveToStage(db, order.contactId, 'enrolled')
 
       return { handled: true, orderId: order.id }
     }

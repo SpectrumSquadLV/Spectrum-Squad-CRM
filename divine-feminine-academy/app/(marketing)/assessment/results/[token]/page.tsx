@@ -129,7 +129,7 @@ export default async function ResultsPage({
         </p>
       </Prose>
       <Button size="lg" className="mt-8" asChild>
-        <Link href="/7-days-to-her">Start 7 Days to HER</Link>
+        <Link href="/me-vs-her">Start ME VS HER</Link>
       </Button>
 
       <p className="mt-10 text-2xs text-ink-muted">

@@ -36,7 +36,7 @@ export default async function AnalyticsPage({
     listActiveProgramSlugs(ctx),
   ])
 
-  const programSlug = requested ?? availablePrograms[0]?.slug ?? '7-days-to-her'
+  const programSlug = requested ?? availablePrograms[0]?.slug ?? 'me-vs-her'
   const dropOff = await getDayDropOff(ctx, programSlug)
 
   const widest = Math.max(1, ...funnel.map((s) => s.count))

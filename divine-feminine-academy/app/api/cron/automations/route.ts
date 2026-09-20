@@ -76,7 +76,7 @@ async function sendEmailAction({
   const rendered = templates.nudge({
     firstName: null,
     dayNumber: Number(rule.actionConfig.dayNumber ?? 1),
-    programSlug: String(rule.actionConfig.programSlug ?? '7-days-to-her'),
+    programSlug: String(rule.actionConfig.programSlug ?? 'me-vs-her'),
     daysSince: 0,
     siteUrl: siteUrl(),
   })

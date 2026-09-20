@@ -5,7 +5,7 @@ import { z } from 'zod'
  *
  * She reaches this on a bad day, at low capacity. Whatever is built on it stays
  * large, calm and short. It is also the one practice she keeps for life, so the
- * same shape backs the standalone /my-academy/return page.
+ * same shape backs the standalone /my-practice/return page.
  */
 export const returnActions = [
   'dance',

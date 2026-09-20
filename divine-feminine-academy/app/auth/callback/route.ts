@@ -9,13 +9,13 @@ import { createServerSupabase } from '@/lib/auth/server'
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
-  const rawNext = searchParams.get('next') ?? '/my-academy'
+  const rawNext = searchParams.get('next') ?? '/my-practice'
 
   // Only ever redirect within this site: an open redirect here would let a
   // crafted link bounce a signed-in woman to somebody else's page.
   const next = rawNext.startsWith('/') && !rawNext.startsWith('//')
     ? rawNext
-    : '/my-academy'
+    : '/my-practice'
 
   if (!code) {
     return NextResponse.redirect(`${origin}/login?error=missing-code`)

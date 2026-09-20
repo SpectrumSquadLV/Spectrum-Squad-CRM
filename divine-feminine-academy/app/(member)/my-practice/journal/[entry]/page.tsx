@@ -28,7 +28,7 @@ export default async function JournalEntryPage({
 
   return (
     <article className="mx-auto max-w-2xl px-5 py-12 md:px-8 md:py-16">
-      <Link href="/my-academy/journal" className="text-2xs text-ink-muted">
+      <Link href="/my-practice/journal" className="text-2xs text-ink-muted">
         ← Journal
       </Link>
 
@@ -56,7 +56,7 @@ export default async function JournalEntryPage({
       <CrisisResources className="mt-14" />
 
       <Button variant="quiet" className="mt-8" asChild>
-        <Link href="/my-academy/journal">Back to your journal</Link>
+        <Link href="/my-practice/journal">Back to your journal</Link>
       </Button>
     </article>
   )

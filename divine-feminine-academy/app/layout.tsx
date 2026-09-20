@@ -17,8 +17,8 @@ const sans = Inter({
 
 export const metadata: Metadata = {
   title: {
-    default: 'Divine Feminine Academy',
-    template: '%s · Divine Feminine Academy',
+    default: 'Divine Feminine',
+    template: '%s · Divine Feminine',
   },
   description:
     'A place to meet the woman you are becoming — and to keep choosing her.',

@@ -5,7 +5,7 @@ import { CrisisResources } from '@/features/care/CrisisResources'
 export const metadata: Metadata = {
   title: 'This is education, not therapy',
   description:
-    'What the Divine Feminine Academy is, what it is not, and where to go if you need real help today.',
+    'What the Divine Feminine is, what it is not, and where to go if you need real help today.',
 }
 
 export default function DisclaimerPage() {
@@ -16,7 +16,7 @@ export default function DisclaimerPage() {
 
       <Prose className="mt-8">
         <p>
-          The Divine Feminine Academy is a personal development programme. It is
+          The Divine Feminine is a personal development programme. It is
           not mental health treatment, not counselling, and not a substitute for
           care from a licensed professional.
         </p>

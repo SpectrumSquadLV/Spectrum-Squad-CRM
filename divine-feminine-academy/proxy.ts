@@ -12,7 +12,7 @@ import { NextResponse, type NextRequest } from 'next/server'
  * is signed in. What they may read is decided by the actor context in the data
  * access layer, with row-level security behind it.
  */
-const PROTECTED = ['/my-academy', '/admin']
+const PROTECTED = ['/my-practice', '/admin']
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request })

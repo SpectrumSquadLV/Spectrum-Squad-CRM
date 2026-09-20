@@ -11,7 +11,7 @@ import { excerpt } from '@/features/writing/markdown'
  * fetched — a build or a render that reaches out to a font CDN is one that
  * fails the first time the network is unkind.
  */
-export const alt = 'Divine Feminine Academy'
+export const alt = 'Divine Feminine'
 export const size = { width: 1200, height: 630 }
 export const contentType = 'image/png'
 
@@ -23,7 +23,7 @@ export default async function Image({
   const { slug } = await params
   const article = await getPublishedArticle(db, slug)
 
-  const title = article?.title ?? 'Divine Feminine Academy'
+  const title = article?.title ?? 'Divine Feminine'
   const standfirst =
     article?.dek?.trim() || (article ? excerpt(article.body, 140) : '')
   const kicker = article?.kind === 'episode' ? 'Listen' : 'Writing'
@@ -80,7 +80,7 @@ export default async function Image({
         </div>
 
         <div style={{ display: 'flex', fontSize: 28, color: '#6f645d' }}>
-          Divine Feminine Academy
+          Divine Feminine
         </div>
       </div>
     ),

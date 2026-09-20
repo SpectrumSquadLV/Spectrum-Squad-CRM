@@ -6,7 +6,7 @@ import { Eyebrow, Placeholder, Prose, Section } from '@/design-system/patterns'
 export const metadata: Metadata = {
   title: 'About',
   description:
-    'Who the Divine Feminine Academy is for, what it is, and what it is not.',
+    'Who the Divine Feminine is for, what it is, and what it is not.',
 }
 
 export default function AboutPage() {

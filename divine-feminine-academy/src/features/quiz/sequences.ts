@@ -14,7 +14,7 @@
  *   3. day 3 — what it costs. Honest and specific. She already knows; being
  *      vague about it to seem kind is patronising, and she can tell.
  *   4. day 5 — one small move she can make today. A win before an ask.
- *   5. day 8 — the invitation, to something free.
+ *   5. day 8 — the invitation. Eleven dollars, said plainly.
  *
  * Rules this copy follows, which matter more than the individual words:
  *
@@ -119,11 +119,11 @@ export const sequences: Record<ProtectiveMode, SequenceEmail[]> = {
       paragraphs: [
         'She saved you once. You do not fire her.',
         'You learn to notice her arriving — and you build somewhere else to go when she does.',
-        'That is the whole of 7 DAYS TO HER. Seven days, one small thing a day, at your own pace. You write it down, it stays yours, and nobody else reads it.',
+        'That is the whole of ME VS HER. Seven days, one small thing a day, at your own pace. You write it down, it stays yours, and nobody else reads it.',
         'Day one is naming her. Day six is the one that tends to get people.',
-        'It is free. And if it is not for you, it is not for you — that is a real answer.',
+        'It is eleven dollars — less than the coffee you will drink while doing Day 1. And if it is not for you, it is not for you: that is a real answer, and there is a refund window for exactly that reason.',
       ],
-      cta: { label: 'Start the seven days', path: '/7-days-to-her' },
+      cta: { label: 'Start ME VS HER', path: '/me-vs-her' },
     },
   ],
 
@@ -196,11 +196,11 @@ export const sequences: Record<ProtectiveMode, SequenceEmail[]> = {
       paragraphs: [
         'She got you out once, and you needed her to. You do not fire her.',
         'You learn to notice her reaching for the handle, and you give yourself a reason to stay in the room a bit longer.',
-        'That is the whole of 7 DAYS TO HER. Seven days, one small thing a day, at your own pace. Deliberately short — long enough to mean something, not so long that leaving becomes the interesting option.',
+        'That is the whole of ME VS HER. Seven days, one small thing a day, at your own pace. Deliberately short — long enough to mean something, not so long that leaving becomes the interesting option.',
         'You write it down, it stays yours, and nobody else reads it.',
-        'It is free. And if it is not for you, it is not for you — that is a real answer.',
+        'It is eleven dollars — less than the coffee you will drink while doing Day 1. And if it is not for you, it is not for you: that is a real answer, and there is a refund window for exactly that reason.',
       ],
-      cta: { label: 'Start the seven days', path: '/7-days-to-her' },
+      cta: { label: 'Start ME VS HER', path: '/me-vs-her' },
     },
   ],
 
@@ -273,11 +273,11 @@ export const sequences: Record<ProtectiveMode, SequenceEmail[]> = {
       paragraphs: [
         'She kept you safe by keeping you still. You do not fire her.',
         'You learn to notice the stillness arriving, and you make the next step small enough that she does not need to stop you.',
-        'That is the whole of 7 DAYS TO HER. Seven days, one small thing a day, at your own pace. Each day is about twenty minutes, and there is no streak to lose if you miss one.',
+        'That is the whole of ME VS HER. Seven days, one small thing a day, at your own pace. Each day is about twenty minutes, and there is no streak to lose if you miss one.',
         'You write it down, it stays yours, and nobody else reads it.',
-        'It is free. And if it is not for you, it is not for you — that is a real answer.',
+        'It is eleven dollars — less than the coffee you will drink while doing Day 1. And if it is not for you, it is not for you: that is a real answer, and there is a refund window for exactly that reason.',
       ],
-      cta: { label: 'Start the seven days', path: '/7-days-to-her' },
+      cta: { label: 'Start ME VS HER', path: '/me-vs-her' },
     },
   ],
 
@@ -351,11 +351,11 @@ export const sequences: Record<ProtectiveMode, SequenceEmail[]> = {
       paragraphs: [
         'She protected your dignity when asking was not safe. You do not fire her.',
         'You learn to notice the silence coming down, and you give the want somewhere to go before it becomes a score.',
-        'That is the whole of 7 DAYS TO HER. Seven days, one small thing a day, at your own pace. There is a place to write the things you have not said, and it is encrypted — not private as a promise, private as a fact. Nobody here can read it either.',
+        'That is the whole of ME VS HER. Seven days, one small thing a day, at your own pace. There is a place to write the things you have not said, and it is encrypted — not private as a promise, private as a fact. Nobody here can read it either.',
         'Day six is the one that tends to get people.',
-        'It is free. And if it is not for you, it is not for you — that is a real answer.',
+        'It is eleven dollars — less than the coffee you will drink while doing Day 1. And if it is not for you, it is not for you: that is a real answer, and there is a refund window for exactly that reason.',
       ],
-      cta: { label: 'Start the seven days', path: '/7-days-to-her' },
+      cta: { label: 'Start ME VS HER', path: '/me-vs-her' },
     },
   ],
 }

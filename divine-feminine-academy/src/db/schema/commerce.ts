@@ -27,7 +27,7 @@ export const offerStatusEnum = pgEnum('offer_status', [
   'archived',
 ])
 
-/** Pricing is never hard-coded. The $1,000 Academy is a row here. */
+/** Pricing is never hard-coded. The full course price is a row here. */
 export const offers = pgTable(
   'offers',
   {

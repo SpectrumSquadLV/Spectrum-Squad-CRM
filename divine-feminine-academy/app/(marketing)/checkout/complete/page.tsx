@@ -76,7 +76,7 @@ export default async function CheckoutCompletePage({
 
       <div className="mt-10 flex flex-wrap gap-4">
         <Button size="lg" asChild>
-          <Link href="/my-academy">Go to your academy</Link>
+          <Link href="/my-practice">Go to your practice</Link>
         </Button>
       </div>
     </Section>

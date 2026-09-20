@@ -132,7 +132,7 @@ export async function join(
     email: input.email,
     options: {
       emailRedirectTo: `${siteUrl()}/auth/callback?next=${encodeURIComponent(
-        input.next ?? '/my-academy',
+        input.next ?? '/my-practice',
       )}`,
       data: { first_name: input.firstName, timezone: input.timezone },
     },
@@ -167,7 +167,7 @@ export async function signInWithLink(
       // separate, deliberate act with a name attached.
       shouldCreateUser: false,
       emailRedirectTo: `${siteUrl()}/auth/callback?next=${encodeURIComponent(
-        parsed.data.next ?? '/my-academy',
+        parsed.data.next ?? '/my-practice',
       )}`,
     },
   })

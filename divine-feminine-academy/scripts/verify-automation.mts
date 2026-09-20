@@ -123,10 +123,10 @@ await check('an event with NO CONTACT fires nothing', () => {
 })
 
 await check('a rule whose conditions do not match is skipped', () => {
-  const r = rule({ conditions: { equals: { programSlug: '7-days-to-her' } } })
+  const r = rule({ conditions: { equals: { programSlug: 'me-vs-her' } } })
   assert.equal(matchRules([r], event({ metadata: { programSlug: 'other' } })).length, 0)
   assert.equal(
-    matchRules([r], event({ metadata: { programSlug: '7-days-to-her' } })).length,
+    matchRules([r], event({ metadata: { programSlug: 'me-vs-her' } })).length,
     1,
   )
 })

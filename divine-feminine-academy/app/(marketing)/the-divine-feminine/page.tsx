@@ -12,19 +12,19 @@ import { getActor } from '@/lib/auth/actor-server'
 export const dynamic = 'force-dynamic'
 
 export const metadata: Metadata = {
-  title: 'The Academy',
+  title: 'The Divine Feminine',
   description:
     'The deeper work, across Self, Love, Life and Wealth — for women who have already met HER and want to stay.',
 }
 
-export default async function AcademyPage() {
+export default async function DivineFemininePage() {
   // Pricing is data: if there is an active offer, the page sells. If there is
   // not, it says so rather than inventing a number.
   const [row] = await db
     .select({ offer: offers })
     .from(offers)
     .innerJoin(programs, eq(programs.id, offers.programId))
-    .where(and(eq(programs.slug, 'the-academy'), eq(offers.status, 'active')))
+    .where(and(eq(programs.slug, 'the-divine-feminine'), eq(offers.status, 'active')))
     .limit(1)
 
   // A woman already signed in should not have to retype her email.
@@ -54,7 +54,7 @@ export default async function AcademyPage() {
   return (
     <>
       <Section className="pt-14 md:pt-24">
-        <Eyebrow>The Academy</Eyebrow>
+        <Eyebrow>The Divine Feminine</Eyebrow>
         <h1 className="mt-6 text-3xl md:text-4xl">
           Seven days will show you who she is.
           <br />
@@ -62,7 +62,7 @@ export default async function AcademyPage() {
         </h1>
         <Prose className="mt-8 text-lg">
           <p>
-            The challenge gives you the practice. The Academy gives you the
+            The challenge gives you the practice. The Divine Feminine gives you the
             time, the depth and the company to make it the way you actually
             live — across all four areas, not just the one that hurts most right
             now.
@@ -79,7 +79,7 @@ export default async function AcademyPage() {
         >
           <Prose className="text-sm">
             <p>
-              This page needs the real shape of the Academy before it can sell
+              This page needs the real shape of the Divine Feminine before it can sell
               anything: how long it runs, what is in it, whether it is
               self-paced or cohort-based, and what a woman actually gets in the
               first week.
@@ -98,7 +98,7 @@ export default async function AcademyPage() {
           <p>
             Everything. Your HER profile, every pattern you named, every time
             you logged choosing her, your RETURN practice and your HER Code — it
-            is all already in your account, and the Academy builds on top of it
+            is all already in your account, and the Divine Feminine builds on top of it
             rather than starting you over.
           </p>
           <p>
@@ -113,7 +113,7 @@ export default async function AcademyPage() {
 
         {offer ? (
           <div className="mt-12 max-w-md rounded-xl border border-rule bg-alabaster p-6 md:p-8">
-            <h2 className="font-display text-xl">Join the Academy</h2>
+            <h2 className="font-display text-xl">Join the Divine Feminine</h2>
             <div className="mt-6">
               <CheckoutForm
                 offerId={offer.id}
@@ -151,12 +151,12 @@ export default async function AcademyPage() {
           <h2 className="text-2xl">Start with the seven days</h2>
           <Prose className="mt-4">
             <p>
-              The Academy is not the first step, and you should not take it
+              The Divine Feminine is not the first step, and you should not take it
               until you have met her. Do the week first.
             </p>
           </Prose>
           <Button size="lg" className="mt-8" asChild>
-            <Link href="/7-days-to-her">Start 7 Days to HER</Link>
+            <Link href="/me-vs-her">Start ME VS HER</Link>
           </Button>
         </div>
       </Section>

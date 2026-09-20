@@ -159,13 +159,13 @@ export default async function QuizResultPage({
           <p>
             You do not get rid of her — she saved you once. You learn to notice
             her arriving, and you build somewhere else to go. That is the whole
-            of 7 DAYS TO HER: seven days, one small thing a day, in your own
+            of ME VS HER: seven days, one small thing a day, in your own
             time.
           </p>
         </Prose>
         <div className="mt-8 flex flex-wrap gap-3">
           <Button asChild size="lg">
-            <Link href="/7-days-to-her">Start the 7 days — free</Link>
+            <Link href="/me-vs-her">Start ME VS HER — $11</Link>
           </Button>
           <Button asChild variant="quiet" size="lg">
             <Link href={`/quiz/${archetype.slug}`}>Share this</Link>

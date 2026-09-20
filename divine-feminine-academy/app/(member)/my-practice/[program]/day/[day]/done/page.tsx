@@ -25,7 +25,7 @@ export default async function DayDonePage({
 
   const ctx = await getQueryContext()
   const state = await getChallengeState(ctx, actor.contactId, programSlug)
-  if (!state) redirect('/my-academy')
+  if (!state) redirect('/my-practice')
 
   const finished = state.unlock.isComplete
   const opensAt = nextUnlockAt(new Date(), state.enrollment.timezoneAtStart)
@@ -49,22 +49,22 @@ export default async function DayDonePage({
           </Prose>
           <div className="mt-10 flex flex-wrap gap-4">
             <Button size="lg" asChild>
-              <Link href="/my-academy/her/code">See your HER Code</Link>
+              <Link href="/my-practice/her/code">See your HER Code</Link>
             </Button>
             <Button size="lg" variant="secondary" asChild>
-              <Link href="/my-academy">Back to your academy</Link>
+              <Link href="/my-practice">Back to your practice</Link>
             </Button>
           </div>
           <Rule tone="gilt" className="my-14" />
           <h2 className="text-xl">What comes next</h2>
           <Prose className="mt-3 text-sm">
             <p>
-              The Academy takes this deeper, across all four areas. It reads
+              The Divine Feminine takes this deeper, across all four areas. It reads
               from everything you just built rather than starting you over.
             </p>
           </Prose>
           <Button variant="link" className="mt-3" asChild>
-            <Link href="/academy">Read about the Academy</Link>
+            <Link href="/the-divine-feminine">Read about the Divine Feminine</Link>
           </Button>
         </>
       ) : (
@@ -77,7 +77,7 @@ export default async function DayDonePage({
             </p>
           </Prose>
           <Button size="lg" className="mt-10" asChild>
-            <Link href="/my-academy">Back to your academy</Link>
+            <Link href="/my-practice">Back to your practice</Link>
           </Button>
         </>
       )}

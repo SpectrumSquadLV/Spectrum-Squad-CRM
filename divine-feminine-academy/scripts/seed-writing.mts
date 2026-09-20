@@ -176,7 +176,7 @@ async function main() {
       title: piece.title,
       dek: piece.dek,
       body: piece.body,
-      authorName: 'Divine Feminine Academy',
+      authorName: 'Divine Feminine',
       area: piece.area,
       archetype: piece.archetype,
       upgradeHeadline: piece.upgradeHeadline,

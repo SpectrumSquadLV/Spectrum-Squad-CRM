@@ -15,7 +15,7 @@ export const metadata = { title: 'Offers' }
 /**
  * Pricing lives here, as data.
  *
- * Nothing about what the Academy costs is written into the code: it is an
+ * Nothing about what the Divine Feminine costs is written into the code: it is an
  * `offers` row, and changing it takes a form rather than a deploy.
  */
 export default async function OffersPage() {

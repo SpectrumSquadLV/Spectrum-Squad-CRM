@@ -22,8 +22,8 @@ const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3000'
 /** Public pages, plus the style guide, which is reachable in development. */
 const PAGES = [
   '/',
-  '/7-days-to-her',
-  '/academy',
+  '/me-vs-her',
+  '/the-divine-feminine',
   '/about',
   '/stories',
   '/programs',

@@ -58,7 +58,7 @@ export async function GET() {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
-    <title>Divine Feminine Academy</title>
+    <title>Divine Feminine</title>
     <link>${escape(base)}/writing</link>
     <atom:link href="${escape(base)}/writing/rss.xml" rel="self" type="application/rss+xml" />
     <description>Essays and episodes on the four rooms — Self, Love, Life and Wealth — and the versions of you that show up in them.</description>

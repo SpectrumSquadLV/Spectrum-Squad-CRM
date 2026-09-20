@@ -5,7 +5,7 @@
  * component and the definition sits beside it.
  *
  * This block is the argument. Not copy about transformation - her sentences,
- * her count, her week. It is also what makes the Academy invitation land,
+ * her count, her week. It is also what makes the Divine Feminine invitation land,
  * because it is true.
  */
 import { z } from 'zod'

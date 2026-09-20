@@ -62,7 +62,7 @@ function toCoupon(row: typeof coupons.$inferSelect): Coupon {
  *
  * The price is computed HERE from the stored offer and the stored coupon.
  * Nothing about the amount comes from the browser — otherwise a crafted
- * request could buy the Academy for a penny.
+ * request could buy the Divine Feminine for a penny.
  */
 export async function startCheckout(
   _prev: CheckoutState,

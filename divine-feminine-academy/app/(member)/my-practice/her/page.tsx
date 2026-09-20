@@ -82,10 +82,10 @@ export default async function HerPage() {
 
       <div className="flex flex-wrap gap-4">
         <Button variant="secondary" asChild>
-          <Link href="/my-academy/her/choices">Every time you chose her</Link>
+          <Link href="/my-practice/her/choices">Every time you chose her</Link>
         </Button>
         <Button variant="secondary" asChild>
-          <Link href="/my-academy/her/code">Your HER Code</Link>
+          <Link href="/my-practice/her/code">Your HER Code</Link>
         </Button>
       </div>
     </div>

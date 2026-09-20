@@ -70,7 +70,7 @@ export default async function AccountPage() {
           What you have finished, with a link anyone can check.
         </CardBody>
         <Link
-          href="/my-academy/certificates"
+          href="/my-practice/certificates"
           className="mt-5 inline-flex min-h-11 items-center text-xs text-clay-deep underline underline-offset-4"
         >
           Open

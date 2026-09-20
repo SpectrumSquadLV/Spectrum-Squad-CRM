@@ -64,7 +64,7 @@ function layout({
 <tr><td align="center" style="padding:40px 20px">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#fffdfa;border:1px solid #e4dcd0;border-radius:14px">
 <tr><td style="padding:40px 32px">
-<p style="margin:0 0 28px;font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#8b6558">Divine Feminine Academy</p>
+<p style="margin:0 0 28px;font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#8b6558">Divine Feminine</p>
 <h1 style="margin:0 0 24px;font-size:26px;line-height:1.25;font-weight:400;color:#1a1614">${escapeHtml(heading)}</h1>
 ${body}${button}
 </td></tr></table>
@@ -72,7 +72,7 @@ ${body}${button}
 <p style="margin:8px 0 0;font-size:12px;color:#a0948c">${
   unsubscribeUrl
     ? `<a href="${escapeHtml(unsubscribeUrl)}" style="color:#a0948c">Unsubscribe</a>`
-    : `<a href="${escapeHtml(siteUrl)}/my-academy/account" style="color:#a0948c">Change what we send you</a>`
+    : `<a href="${escapeHtml(siteUrl)}/my-practice/account" style="color:#a0948c">Change what we send you</a>`
 }</p>
 </td></tr></table></body></html>`
 }
@@ -98,7 +98,7 @@ function plain({
   parts.push(
     unsubscribeUrl
       ? `Unsubscribe: ${unsubscribeUrl}`
-      : `Change what we send you: ${siteUrl}/my-academy/account`,
+      : `Change what we send you: ${siteUrl}/my-practice/account`,
   )
   return parts.join('\n')
 }
@@ -117,7 +117,7 @@ export function dayReminder(input: {
 }): RenderedEmail {
   const cta = {
     label: `Open Day ${input.dayNumber}`,
-    url: `${input.siteUrl}/my-academy/${input.programSlug}/day/${input.dayNumber}`,
+    url: `${input.siteUrl}/my-practice/${input.programSlug}/day/${input.dayNumber}`,
   }
 
   const content = {
@@ -148,7 +148,7 @@ export function nudge(input: {
 }): RenderedEmail {
   const cta = {
     label: `Pick up at Day ${input.dayNumber}`,
-    url: `${input.siteUrl}/my-academy/${input.programSlug}/day/${input.dayNumber}`,
+    url: `${input.siteUrl}/my-practice/${input.programSlug}/day/${input.dayNumber}`,
   }
 
   const content = {
@@ -176,7 +176,7 @@ export function challengeComplete(input: {
   choiceCount: number
   siteUrl: string
 }): RenderedEmail {
-  const cta = { label: 'See your HER Code', url: `${input.siteUrl}/my-academy/her/code` }
+  const cta = { label: 'See your HER Code', url: `${input.siteUrl}/my-practice/her/code` }
 
   const content = {
     preview: 'Seven days. Look at what you did.',
@@ -205,7 +205,7 @@ export function abandonedCheckout(input: {
   programTitle: string
   siteUrl: string
 }): RenderedEmail {
-  const cta = { label: 'Pick up where you left off', url: `${input.siteUrl}/academy` }
+  const cta = { label: 'Pick up where you left off', url: `${input.siteUrl}/the-divine-feminine` }
 
   const content = {
     preview: 'Nothing was charged.',
@@ -234,7 +234,7 @@ export function orderReceipt(input: {
   refundWindowDays: number
   siteUrl: string
 }): RenderedEmail {
-  const cta = { label: 'Go to your academy', url: `${input.siteUrl}/my-academy` }
+  const cta = { label: 'Go to your practice', url: `${input.siteUrl}/my-practice` }
 
   const content = {
     preview: `Your receipt for ${input.programTitle}`,

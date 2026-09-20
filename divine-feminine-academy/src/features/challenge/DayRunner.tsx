@@ -114,7 +114,7 @@ export function DayRunner({
         setError(result.error)
         return
       }
-      router.push(`/my-academy/${programSlug}/day/${dayNumber}/done`)
+      router.push(`/my-practice/${programSlug}/day/${dayNumber}/done`)
     })
   }
 
@@ -146,7 +146,7 @@ export function DayRunner({
           )}
         </div>
         <Link
-          href="/my-academy"
+          href="/my-practice"
           className="shrink-0 text-2xs text-ink-muted hover:text-ink"
         >
           Save and leave

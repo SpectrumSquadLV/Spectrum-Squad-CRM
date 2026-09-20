@@ -84,7 +84,7 @@ ok('the result names one of the four', /The (Commander|Escape Artist|Watcher|Qui
 ok('the result shows what it is protecting', text.includes('What she is protecting'))
 ok('the result shows the return', text.includes('The return') || text.includes('THE RETURN'))
 ok('the result shows all four shares', text.includes('All four, as you answered'))
-ok('the result offers the 7 days', (await page.getByRole('link', { name: /start the 7 days/i }).count()) === 1)
+ok('the result offers the challenge', (await page.getByRole('link', { name: /start me vs her/i }).count()) === 1)
 ok('the result offers a share link', (await page.getByRole('link', { name: /share this/i }).count()) === 1)
 ok('the result carries the not-therapy line', text.toLowerCase().includes('not a diagnosis'))
 

@@ -5,7 +5,7 @@ import { Eyebrow, Prose, PullQuote, Section } from '@/design-system/patterns'
 import { archetypeList } from '@/features/quiz/archetypes'
 
 export const metadata: Metadata = {
-  title: 'Divine Feminine Academy',
+  title: 'Divine Feminine',
   description:
     'She is not someone you become. She is someone you return to. A seven-day practice, and a place that remembers who you are becoming.',
 }
@@ -37,7 +37,7 @@ export default function HomePage() {
   return (
     <>
       <Section className="pt-14 md:pt-24">
-        <Eyebrow>Divine Feminine Academy</Eyebrow>
+        <Eyebrow>Divine Feminine</Eyebrow>
         <h1 className="mt-6 text-3xl md:text-4xl">
           She is not someone you become.
           <br />
@@ -54,7 +54,7 @@ export default function HomePage() {
 
         <div className="mt-10 flex flex-wrap gap-4">
           <Button size="lg" asChild>
-            <Link href="/7-days-to-her">Start 7 Days to HER</Link>
+            <Link href="/me-vs-her">Start ME VS HER</Link>
           </Button>
           <Button size="lg" variant="secondary" asChild>
             <Link href="/quiz">Which version of you is running the show?</Link>
@@ -191,7 +191,7 @@ export default function HomePage() {
             </p>
           </Prose>
           <Button size="lg" className="mt-8" asChild>
-            <Link href="/7-days-to-her">Begin</Link>
+            <Link href="/me-vs-her">Begin</Link>
           </Button>
         </div>
       </Section>

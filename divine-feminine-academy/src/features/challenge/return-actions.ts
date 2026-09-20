@@ -65,7 +65,7 @@ export async function recordReturn(
     entityId: session?.id ?? null,
   })
 
-  revalidatePath('/my-academy/return')
+  revalidatePath('/my-practice/return')
   return { ok: true }
 }
 
@@ -103,7 +103,7 @@ export async function markReturnActionDone(
     reflection: session.whatINeed,
   })
 
-  revalidatePath('/my-academy/return')
-  revalidatePath('/my-academy/her/choices')
+  revalidatePath('/my-practice/return')
+  revalidatePath('/my-practice/her/choices')
   return { ok: true }
 }

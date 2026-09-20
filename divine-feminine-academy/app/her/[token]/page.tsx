@@ -8,7 +8,7 @@ import { HerCodeDocument, parseSections } from '@/features/her/HerCodeDocument'
 
 export const metadata: Metadata = {
   title: 'A HER Code',
-  description: 'Written at the Divine Feminine Academy.',
+  description: 'Written at the Divine Feminine.',
 }
 
 /**
@@ -41,10 +41,10 @@ export default async function SharedHerCodePage({
 
       <div className="mt-12 text-center">
         <p className="text-xs text-ink-muted">
-          Written in seven days at the Divine Feminine Academy.
+          Written in seven days at the Divine Feminine.
         </p>
         <Button className="mt-5" asChild>
-          <Link href="/7-days-to-her">Write your own</Link>
+          <Link href="/me-vs-her">Write your own</Link>
         </Button>
       </div>
     </main>

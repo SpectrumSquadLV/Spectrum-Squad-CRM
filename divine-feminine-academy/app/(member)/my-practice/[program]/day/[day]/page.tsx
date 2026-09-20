@@ -27,7 +27,7 @@ export default async function DayPage({
 
   const ctx = await getQueryContext()
   const state = await getChallengeState(ctx, actor.contactId, programSlug)
-  if (!state) redirect('/my-academy')
+  if (!state) redirect('/my-practice')
 
   if (!isDayUnlocked(dayNumber, state.unlock)) {
     const opensAt = nextUnlockAt(new Date(), state.enrollment.timezoneAtStart)
@@ -46,7 +46,7 @@ export default async function DayPage({
           </p>
         </Prose>
         <Button className="mt-8" asChild>
-          <Link href="/my-academy">Back to your academy</Link>
+          <Link href="/my-practice">Back to your practice</Link>
         </Button>
       </div>
     )

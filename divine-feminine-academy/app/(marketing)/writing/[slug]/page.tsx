@@ -77,7 +77,7 @@ export default async function ArticlePage({
     author: article.authorName
       ? { '@type': 'Person', name: article.authorName }
       : undefined,
-    publisher: { '@type': 'Organization', name: 'Divine Feminine Academy' },
+    publisher: { '@type': 'Organization', name: 'Divine Feminine' },
     mainEntityOfPage: `${base}/writing/${article.slug}`,
     ...(article.heroImageUrl ? { image: article.heroImageUrl } : {}),
   }

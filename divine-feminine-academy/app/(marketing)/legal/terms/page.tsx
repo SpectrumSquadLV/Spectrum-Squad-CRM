@@ -4,7 +4,7 @@ import { Eyebrow, Placeholder, Prose, Section } from '@/design-system/patterns'
 
 export const metadata: Metadata = {
   title: 'Terms',
-  description: 'The terms you agree to by using the Divine Feminine Academy.',
+  description: 'The terms you agree to by using the Divine Feminine.',
 }
 
 export default function TermsPage() {

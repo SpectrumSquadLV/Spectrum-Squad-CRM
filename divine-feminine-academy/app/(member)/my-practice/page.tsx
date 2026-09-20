@@ -10,7 +10,7 @@ import { EnrollButton } from '@/features/challenge/EnrollButton'
 import { nextUnlockAt } from '@/features/challenge/pacing'
 import { getActor, getQueryContext } from '@/lib/auth/actor-server'
 
-const PROGRAM = '7-days-to-her'
+const PROGRAM = 'me-vs-her'
 
 /**
  * The member home. Never called "Dashboard".
@@ -18,7 +18,7 @@ const PROGRAM = '7-days-to-her'
  * ONE primary action. Whatever she is meant to do next is the only thing that
  * looks like a button; everything else is quiet.
  */
-export default async function MyAcademyPage() {
+export default async function MyPracticePage() {
   const actor = await getActor()
 
   let firstName: string | null = null
@@ -68,7 +68,7 @@ export default async function MyAcademyPage() {
             </p>
           </Prose>
           <Button size="lg" className="mt-8" asChild>
-            <Link href="/my-academy/her/code">See your HER Code</Link>
+            <Link href="/my-practice/her/code">See your HER Code</Link>
           </Button>
         </>
       ) : dayIsOpen ? (
@@ -80,7 +80,7 @@ export default async function MyAcademyPage() {
             </p>
           </Prose>
           <Button size="lg" className="mt-8" asChild>
-            <Link href={`/my-academy/${PROGRAM}/day/${state.unlock.currentDay}`}>
+            <Link href={`/my-practice/${PROGRAM}/day/${state.unlock.currentDay}`}>
               {state.completed === 0 ? 'Begin Day 1' : `Open Day ${state.unlock.currentDay}`}
             </Link>
           </Button>
@@ -98,7 +98,7 @@ export default async function MyAcademyPage() {
             </p>
           </Prose>
           <Button size="lg" variant="secondary" className="mt-8" asChild>
-            <Link href="/my-academy/her">Look at what you have named</Link>
+            <Link href="/my-practice/her">Look at what you have named</Link>
           </Button>
         </>
       )}
@@ -115,7 +115,7 @@ export default async function MyAcademyPage() {
               : 'Your patterns and your responses, from Day 1 on.'}
           </CardBody>
           <Link
-            href="/my-academy/her"
+            href="/my-practice/her"
             className="mt-5 inline-flex min-h-11 items-center text-xs text-clay-deep underline underline-offset-4"
           >
             Open
@@ -128,7 +128,7 @@ export default async function MyAcademyPage() {
             Encrypted. Only you can read it — that includes us.
           </CardBody>
           <Link
-            href="/my-academy/journal"
+            href="/my-practice/journal"
             className="mt-5 inline-flex min-h-11 items-center text-xs text-clay-deep underline underline-offset-4"
           >
             Open
@@ -141,7 +141,7 @@ export default async function MyAcademyPage() {
             The practice for the bad days. One tap, from anywhere.
           </CardBody>
           <Link
-            href="/my-academy/return"
+            href="/my-practice/return"
             className="mt-5 inline-flex min-h-11 items-center text-xs text-clay-deep underline underline-offset-4"
           >
             Open

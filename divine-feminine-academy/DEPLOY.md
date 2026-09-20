@@ -1,4 +1,4 @@
-# Deploying the Divine Feminine Academy
+# Deploying the Divine Feminine
 
 Written to be followed in order. Every step says what breaks if you skip it.
 
@@ -96,9 +96,11 @@ DATABASE_URL="postgresql://...direct..." npm run seed:sequences
 DATABASE_URL="postgresql://...direct..." npm run seed:writing
 ```
 
-This creates **7 DAYS TO HER with placeholder prompts**, a placeholder
-assessment, **two draft offers for the Academy**, and **the archetype quiz**.
-Nothing is purchasable until you activate an offer in `/admin/offers`.
+This creates **ME VS HER with placeholder prompts**, a placeholder
+assessment, **ME VS HER priced at $11 and ACTIVE**, **two draft offers for the
+full Divine Feminine course**, and **the archetype quiz**.
+ME VS HER is purchasable the moment the keys are in. The full course is not,
+until you activate one of its offers in `/admin/offers`.
 
 The quiz and its four email sequences are the one part seeded with real copy
 rather than placeholders — but they are a first draft. Read them aloud before
@@ -219,7 +221,8 @@ curl -s https://<your-domain>/api/health     # {"status":"ok"}
       `src/features/care/CrisisResources.tsx`, and they appear wherever a woman
       writes something heavy
 - [ ] The legal pages have been read by a lawyer
-- [ ] An offer is active and you have paid for it yourself with a real card
+- [ ] You have bought ME VS HER yourself, with a real card, at $11
+- [ ] The full course has a price you have decided on, and its offer is active
 - [ ] `JOURNAL_MASTER_KEY` is backed up somewhere other than the host
 - [ ] `npm run preflight` reports no errors
 

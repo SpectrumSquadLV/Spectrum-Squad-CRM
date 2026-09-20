@@ -5,10 +5,10 @@ const columns = [
   {
     heading: 'Start',
     links: [
-      { href: '/7-days-to-her', label: '7 Days to HER' },
+      { href: '/me-vs-her', label: 'ME VS HER' },
       { href: '/quiz', label: 'Which version of you?' },
       { href: '/assessment', label: 'Free assessment' },
-      { href: '/academy', label: 'The Academy' },
+      { href: '/the-divine-feminine', label: 'The Divine Feminine' },
       { href: '/programs', label: 'All programs' },
     ],
   },
@@ -39,9 +39,6 @@ export function SiteFooter() {
           <div>
             <p className="font-display text-lg leading-tight">
               Divine Feminine
-              <span className="block text-2xs uppercase tracking-[0.22em] text-clay-deep">
-                Academy
-              </span>
             </p>
             <p className="mt-4 max-w-56 text-2xs text-ink-muted">
               She is not someone you become. She is someone you return to.
@@ -72,7 +69,7 @@ export function SiteFooter() {
         <Rule tone="gilt" className="mt-12" />
 
         <div className="mt-6 flex flex-wrap items-center justify-between gap-3 text-2xs text-ink-muted">
-          <p>© {new Date().getFullYear()} Divine Feminine Academy</p>
+          <p>© {new Date().getFullYear()} Divine Feminine</p>
           <p>
             Education, not therapy.{' '}
             <Link href="/legal/disclaimer" className="underline underline-offset-2">

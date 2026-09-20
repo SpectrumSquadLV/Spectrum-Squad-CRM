@@ -108,7 +108,7 @@ export default function DesignSystemPage() {
     <main className="mx-auto max-w-5xl px-4 py-12 md:px-8">
       <header className="mb-14">
         <p className="text-2xs uppercase tracking-[0.2em] text-clay-deep">
-          Divine Feminine Academy
+          Divine Feminine
         </p>
         <h1 className="mt-2 text-2xl font-semibold">Design system</h1>
         <p className="mt-2 measure-wide text-xs text-ink-muted">

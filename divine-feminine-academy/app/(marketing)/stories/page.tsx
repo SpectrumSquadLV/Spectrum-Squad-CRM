@@ -46,10 +46,10 @@ export default function StoriesPage() {
       <div className="mt-14">
         <h2 className="text-xl">Be one of the first</h2>
         <Prose className="mt-3 text-sm">
-          <p>The seven days are free, and they start whenever you do.</p>
+          <p>ME VS HER is eleven dollars, and it starts whenever you do.</p>
         </Prose>
         <Button className="mt-6" asChild>
-          <Link href="/7-days-to-her">Start 7 Days to HER</Link>
+          <Link href="/me-vs-her">Start ME VS HER</Link>
         </Button>
       </div>
     </Section>

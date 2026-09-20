@@ -76,7 +76,7 @@ export default async function QuizPage() {
             <JoinForm
               className="mt-6"
               source="quiz-waitlist"
-              next="/my-academy"
+              next="/my-practice"
               submitLabel="Keep me posted"
             />
           </div>

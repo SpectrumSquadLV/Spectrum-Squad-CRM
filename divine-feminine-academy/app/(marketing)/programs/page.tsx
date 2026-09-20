@@ -5,7 +5,7 @@ import { Eyebrow, Prose, Section } from '@/design-system/patterns'
 
 export const metadata: Metadata = {
   title: 'Programs',
-  description: 'Everything on offer at the Divine Feminine Academy.',
+  description: 'Everything on offer at the Divine Feminine.',
 }
 
 /**
@@ -15,14 +15,14 @@ export const metadata: Metadata = {
  */
 const published = [
   {
-    href: '/7-days-to-her',
-    title: '7 Days to HER',
+    href: '/me-vs-her',
+    title: 'ME VS HER',
     body: 'Seven days to name her, practise choosing her, and learn the way back. Start here.',
     meta: 'Seven days · Start any time',
   },
   {
-    href: '/academy',
-    title: 'The Academy',
+    href: '/the-divine-feminine',
+    title: 'The Divine Feminine',
     body: 'The deeper work across Self, Love, Life and Wealth, built on everything the seven days gave you.',
     meta: 'Details coming',
   },

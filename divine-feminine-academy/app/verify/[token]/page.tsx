@@ -8,7 +8,7 @@ import { Button, Rule } from '@/design-system/primitives'
 
 export const metadata: Metadata = {
   title: 'Verify a certificate',
-  description: 'Check that a Divine Feminine Academy certificate is genuine.',
+  description: 'Check that a Divine Feminine certificate is genuine.',
 }
 
 /**
@@ -45,7 +45,7 @@ export default async function VerifyPage({
     <main className="mx-auto min-h-screen max-w-xl px-5 py-16 md:py-24">
       <div className="rounded-xl border border-rule bg-alabaster p-8 md:p-12">
         <p className="text-2xs uppercase tracking-[0.3em] text-clay-deep">
-          Divine Feminine Academy
+          Divine Feminine
         </p>
 
         {revoked ? (
@@ -105,7 +105,7 @@ export default async function VerifyPage({
 
       <div className="mt-10 text-center">
         <Button variant="secondary" asChild>
-          <Link href="/">Divine Feminine Academy</Link>
+          <Link href="/">Divine Feminine</Link>
         </Button>
       </div>
     </main>

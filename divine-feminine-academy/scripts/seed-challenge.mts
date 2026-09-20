@@ -1,5 +1,5 @@
 /**
- * Seeds 7 DAYS TO HER.
+ * Seeds ME VS HER.
  *
  * EVERY PROMPT HERE IS PLACEHOLDER COPY. The real curriculum is the product,
  * and it is not written yet. This exists so the engine can be built, run and
@@ -233,7 +233,7 @@ async function main() {
     { name: 'Challenge started', slug: 'challenge-started', position: 2, isDefault: false },
     { name: 'Challenge complete', slug: 'challenge-complete', position: 3, isDefault: false },
     { name: 'Academy prospect', slug: 'academy-prospect', position: 4, isDefault: false },
-    { name: 'Academy enrolled', slug: 'academy-enrolled', position: 5, isDefault: false },
+    { name: 'Academy enrolled', slug: 'enrolled', position: 5, isDefault: false },
   ]
   for (const stage of stages) {
     await db.insert(crmStages).values(stage).onConflictDoNothing({
@@ -241,13 +241,13 @@ async function main() {
     })
   }
 
-  const slug = '7-days-to-her'
+  const slug = 'me-vs-her'
 
   const [program] = await db
     .insert(programs)
     .values({
       slug,
-      title: '7 DAYS TO HER',
+      title: 'ME VS HER',
       subtitle: 'Meet her. Choose her. Learn the way back.',
       description: PLACEHOLDER,
       kind: 'challenge',

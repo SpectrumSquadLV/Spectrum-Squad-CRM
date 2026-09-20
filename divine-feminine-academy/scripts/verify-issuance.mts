@@ -42,7 +42,7 @@ async function check(name: string, fn: () => void | Promise<void>) {
 
 const program = must(
   (
-    await db.select().from(programs).where(eq(programs.slug, '7-days-to-her')).limit(1)
+    await db.select().from(programs).where(eq(programs.slug, 'me-vs-her')).limit(1)
   )[0],
   'run `npm run seed:challenge` first',
 )

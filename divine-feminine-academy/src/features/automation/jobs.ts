@@ -305,7 +305,7 @@ export async function sendAbandonedCheckouts(
   for (const row of rows) {
     const rendered = abandonedCheckout({
       firstName: row.contact.firstName,
-      programTitle: row.programTitle ?? 'the Academy',
+      programTitle: row.programTitle ?? 'the Divine Feminine',
       siteUrl,
     })
 

@@ -8,9 +8,16 @@ import {
   Section,
 } from '@/design-system/patterns'
 import { JoinForm } from '@/features/auth/JoinForm'
+import { and, eq } from 'drizzle-orm'
+import { db } from '@/db/client'
+import { offers, programs } from '@/db/schema'
+import { CheckoutForm } from '@/features/commerce/CheckoutForm'
+import { formatMoney } from '@/features/commerce/pricing'
+
+export const dynamic = 'force-dynamic'
 
 export const metadata: Metadata = {
-  title: '7 Days to HER',
+  title: 'ME VS HER',
   description:
     'Seven days to name the woman you are becoming, practise choosing her, and learn the way back when you lose her.',
 }
@@ -60,12 +67,29 @@ const days = [
   },
 ]
 
-export default function SevenDaysPage() {
+/** The live price, or null when nobody has activated one. */
+async function activeOffer() {
+  const [row] = await db
+    .select({
+      id: offers.id,
+      priceCents: offers.priceCents,
+      currency: offers.currency,
+      refundWindowDays: offers.refundWindowDays,
+    })
+    .from(offers)
+    .innerJoin(programs, eq(programs.id, offers.programId))
+    .where(and(eq(programs.slug, 'me-vs-her'), eq(offers.status, 'active')))
+    .limit(1)
+  return row ?? null
+}
+
+export default async function SevenDaysPage() {
+  const offer = await activeOffer()
   return (
     <>
       <Section className="pt-14 md:pt-24">
-        <Eyebrow>Free · Seven days</Eyebrow>
-        <h1 className="mt-6 text-3xl md:text-4xl">7 Days to HER</h1>
+        <Eyebrow>$11 · Seven days</Eyebrow>
+        <h1 className="mt-6 text-3xl md:text-4xl">ME VS HER</h1>
         <Prose className="mt-8 text-lg">
           <p>
             Seven days to name the woman you keep catching glimpses of, practise
@@ -75,26 +99,46 @@ export default function SevenDaysPage() {
           <p>About twenty minutes a day. On your phone. Starting whenever you do.</p>
         </Prose>
 
-        <Placeholder
-          label="Confirm before launch"
-          note="pricing not set"
-          className="mt-8 max-w-md"
-        >
-          <p className="text-xs text-ink-soft">
-            This page currently says the challenge is free. If it is paid, or
-            priced as a tripwire, the eyebrow above and the form below both need
-            changing — and it becomes an `offers` row rather than an open
-            sign-up.
-          </p>
-        </Placeholder>
-
         <div className="mt-12 max-w-md rounded-xl border border-rule bg-alabaster p-6 md:p-8">
           <h2 className="font-display text-xl">Start Day 1</h2>
-          <p className="mt-2 text-xs text-ink-muted">
-            Your first name and your email. We will send you a link — there is
-            no password to make up.
-          </p>
-          <JoinForm className="mt-6" source="7-days-to-her" next="/my-academy" submitLabel="Send my link" />
+          {offer ? (
+            <>
+              <p className="mt-2 text-xs text-ink-muted">
+                One payment. Seven days. Yours to keep afterwards.
+              </p>
+              <div className="mt-6">
+                <CheckoutForm
+                  offerId={offer.id}
+                  priceLabel={formatMoney(offer.priceCents, offer.currency)}
+                  refundNote={
+                    offer.refundWindowDays > 0
+                      ? `If it is not right for you, you have ${offer.refundWindowDays} days to say so and get your money back.`
+                      : undefined
+                  }
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <Placeholder
+                label="No active price"
+                note="run npm run seed:offers"
+                className="mt-4"
+              >
+                <p className="text-xs text-ink-soft">
+                  ME VS HER has no active offer, so nobody can buy it. Until
+                  there is one, this falls back to a plain sign-up rather than
+                  showing a button that cannot work.
+                </p>
+              </Placeholder>
+              <JoinForm
+                className="mt-6"
+                source="me-vs-her"
+                next="/my-practice"
+                submitLabel="Send my link"
+              />
+            </>
+          )}
         </div>
       </Section>
 

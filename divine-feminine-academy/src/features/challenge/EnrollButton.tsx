@@ -23,7 +23,7 @@ export function EnrollButton({
       onClick={() =>
         startTransition(async () => {
           const result = await enroll(programSlug)
-          if (!result.error) router.push(`/my-academy/${programSlug}/day/1`)
+          if (!result.error) router.push(`/my-practice/${programSlug}/day/1`)
         })
       }
     >

@@ -55,8 +55,8 @@ const emailFor = (n: string) => `seq-check-${stamp}-${n}@example.test`
 /* Every path a sequence is allowed to link to. A link to a page that does not
  * exist is a 404 in front of a woman who trusted the email enough to tap. */
 const KNOWN_PATHS = new Set([
-  '/7-days-to-her',
-  '/academy',
+  '/me-vs-her',
+  '/the-divine-feminine',
   '/quiz',
   '/quiz/the-commander',
   '/quiz/the-escape-artist',
@@ -108,7 +108,7 @@ for (const mode of modes) {
   )
   check(
     `${name}: it ends with the invitation`,
-    seq[4]!.cta?.path === '/7-days-to-her',
+    seq[4]!.cta?.path === '/me-vs-her',
   )
 }
 
@@ -229,7 +229,7 @@ console.log('\nrendering')
   check('the unsubscribe link is in the text part', rendered.text.includes('/unsubscribe/'))
   check(
     'it does not fall back to the account page',
-    !rendered.html.includes('/my-academy/account'),
+    !rendered.html.includes('/my-practice/account'),
   )
   check('the cta became a full url', rendered.html.includes(`${SITE}/quiz/the-quiet-storm`))
 

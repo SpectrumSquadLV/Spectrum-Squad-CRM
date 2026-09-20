@@ -74,7 +74,7 @@ const program = must(
     await db
       .select()
       .from(programs)
-      .where(eq(programs.slug, '7-days-to-her'))
+      .where(eq(programs.slug, 'me-vs-her'))
       .limit(1)
   )[0],
   'run `npm run seed:challenge` first',

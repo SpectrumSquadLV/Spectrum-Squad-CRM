@@ -26,7 +26,7 @@ export function AdminNav({ canManageRoles }: { canManageRoles: boolean }) {
     <header className="border-b border-rule bg-alabaster">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 md:px-8">
         <Link href="/admin" className="text-xs font-semibold tracking-tight">
-          Academy Admin
+          Divine Feminine Admin
         </Link>
 
         <nav aria-label="Admin" className="flex flex-wrap items-center gap-x-5 gap-y-1">
@@ -59,7 +59,7 @@ export function AdminNav({ canManageRoles }: { canManageRoles: boolean }) {
         </nav>
 
         <Link
-          href="/my-academy"
+          href="/my-practice"
           className="ml-auto inline-flex min-h-9 items-center text-2xs text-ink-muted hover:text-ink"
         >
           Leave admin

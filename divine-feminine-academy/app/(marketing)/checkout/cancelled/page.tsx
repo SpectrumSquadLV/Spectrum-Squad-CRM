@@ -21,10 +21,10 @@ export default function CheckoutCancelledPage() {
       </Prose>
       <div className="mt-10 flex flex-wrap gap-4">
         <Button size="lg" variant="secondary" asChild>
-          <Link href="/academy">Back to the Academy</Link>
+          <Link href="/the-divine-feminine">Back to the Divine Feminine</Link>
         </Button>
         <Button size="lg" asChild>
-          <Link href="/7-days-to-her">Start the free seven days</Link>
+          <Link href="/me-vs-her">Start ME VS HER</Link>
         </Button>
       </div>
     </Section>

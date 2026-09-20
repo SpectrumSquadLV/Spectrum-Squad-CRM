@@ -1,9 +1,13 @@
 /**
- * Seeds the Academy programme and two DRAFT offers.
+ * Seeds the two things there are to buy.
  *
- * Deliberately draft, not active: the price and the refund window are still
- * open decisions, and nothing should be purchasable until somebody chooses.
- * Activating an offer is a form in /admin/offers, not a code change.
+ * ME VS HER at $11, ACTIVE. Eleven dollars is a decision that has been made,
+ * so the offer is live rather than draft — a seeded draft would mean the way
+ * in to the whole funnel was quietly unpurchasable on launch day.
+ *
+ * The Divine Feminine, the full course, as two DRAFT shapes. Its price is
+ * still an open decision, and activating one is a form in /admin/offers rather
+ * than a code change.
  *
  * Run: DATABASE_URL=... npm run seed:offers
  */
@@ -21,8 +25,8 @@ async function main() {
   const [program] = await db
     .insert(programs)
     .values({
-      slug: 'the-academy',
-      title: 'The Academy',
+      slug: 'the-divine-feminine',
+      title: 'The Divine Feminine',
       subtitle: 'The deeper work, across Self, Love, Life and Wealth.',
       description: PLACEHOLDER,
       kind: 'program',
@@ -69,14 +73,14 @@ async function main() {
    */
   const drafts = [
     {
-      name: 'The Academy — one payment',
+      name: 'The Divine Feminine — one payment',
       pricingType: 'one_time' as const,
       priceCents: 100_000,
       installments: null,
       installmentIntervalDays: null,
     },
     {
-      name: 'The Academy — three payments',
+      name: 'The Divine Feminine — three payments',
       pricingType: 'payment_plan' as const,
       priceCents: 37_500,
       installments: 3,
@@ -103,9 +107,55 @@ async function main() {
     created++
   }
 
-  console.log(`seeded "The Academy" and ${created} draft offer(s)`)
-  console.log('both are DRAFT: nothing is purchasable until you activate one')
-  console.log('price and refund window are still open decisions')
+  /*
+   * ME VS HER at $11.
+   *
+   * The price is upserted by name on every run, so correcting it here corrects
+   * it everywhere. The programme has to exist first: `seed:challenge` creates
+   * it, and without it there is nothing to attach a price to.
+   */
+  const [challenge] = await db
+    .select({ id: programs.id })
+    .from(programs)
+    .where(eq(programs.slug, 'me-vs-her'))
+    .limit(1)
+
+  let challengeOffer = 'not seeded — run seed:challenge first'
+  if (challenge) {
+    const name = 'ME VS HER — the 7-day challenge'
+    const values = {
+      programId: challenge.id,
+      name,
+      pricingType: 'one_time' as const,
+      priceCents: 1_100,
+      installments: null,
+      installmentIntervalDays: null,
+      currency: 'usd',
+      refundWindowDays: 14,
+      status: 'active' as const,
+    }
+
+    const [existing] = await db
+      .select({ id: offers.id })
+      .from(offers)
+      .where(eq(offers.name, name))
+      .limit(1)
+
+    if (existing) {
+      await db
+        .update(offers)
+        .set({ ...values, updatedAt: new Date() })
+        .where(eq(offers.id, existing.id))
+      challengeOffer = '$11, active (updated)'
+    } else {
+      await db.insert(offers).values(values)
+      challengeOffer = '$11, active (created)'
+    }
+  }
+
+  console.log(`ME VS HER: ${challengeOffer}`)
+  console.log(`The Divine Feminine: ${created} draft offer(s)`)
+  console.log('the full course is DRAFT: its price is still an open decision')
   process.exit(0)
 }
 

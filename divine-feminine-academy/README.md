@@ -1,9 +1,9 @@
-# Divine Feminine Academy
+# Divine Feminine
 
 A website: one Next.js app serving three faces on one domain.
 
 - **Public site** — indexed marketing pages, where social traffic lands.
-- **Member portal** (`/my-academy`) — where a woman actually spends her time.
+- **Member portal** (`/my-practice`) — where a woman actually spends her time.
 - **Admin / CRM** (`/admin`) — behind a staff login.
 
 Mobile-first. Most women arrive on a phone from Instagram.
@@ -12,13 +12,13 @@ Mobile-first. Most women arrive on a phone from Instagram.
 challenge engine, the LMS/assessments/certificates, the CRM and commerce, and
 automations, analytics and hardening.
 
-**7 DAYS TO HER runs end to end**, a programme can be built in the admin
+**ME VS HER runs end to end**, a programme can be built in the admin
 without a developer, the free assessment scores and compares pre/post, and
 certificates are issued and publicly verifiable — all against placeholder
 copy, because the real curriculum and the real instrument are not written yet.
 
 **Checkout works** — against a fake provider in tests, and against Stripe once
-keys are configured. Nothing is on sale yet: both Academy offers are seeded as
+keys are configured. ME VS HER is on sale at **$11**, active on first seed. The full course is not: both Divine Feminine offers are seeded as
 **drafts**, because the price and refund window are still your decision.
 
 ---
@@ -54,7 +54,7 @@ keys are configured. Nothing is on sale yet: both Academy offers are seeded as
 | Sitemap + robots | Built |
 | Social share cards for the quiz | Built |
 | Certificates + public verification | Built, verified (`verify:certificates`, `verify:issuance`) |
-| 7 DAYS TO HER curriculum | **Placeholder copy only** |
+| ME VS HER curriculum | **Placeholder copy only** |
 | Assessment questions | **Placeholder, not a validated instrument** |
 | Per-archetype email sequences | Built and written, verified (`verify:sequences`) |
 | Unsubscribe that works without a login | Built, verified |
@@ -135,7 +135,7 @@ The arc is the same for all four, and the order is deliberate:
 | 2 | 1 | Where this version of her came from. Compassion before cost, always. |
 | 3 | 3 | What it costs. Honest and specific — she already knows, and being vague to seem kind is patronising. |
 | 4 | 5 | One small move she can make today. A win before an ask. |
-| 5 | 8 | The invitation, to something free. |
+| 5 | 8 | The invitation. Eleven dollars, said plainly. |
 
 **Two ways in, one set of emails.**
 
@@ -265,9 +265,9 @@ npm run verify:rls          # 11 that RLS really isolates members
 BASE_URL=http://127.0.0.1:3000 npm run verify:a11y       # axe, 22 pages
 BASE_URL=http://127.0.0.1:3000 npm run verify:journeys   # the real journeys in a browser, on a phone
 
-npm run seed:challenge  # seed 7 DAYS TO HER (placeholder curriculum)
+npm run seed:challenge  # seed ME VS HER (placeholder curriculum)
 npm run seed:assessment # seed the free assessment (placeholder questions)
-npm run seed:offers     # seed the Academy and its DRAFT offers
+npm run seed:offers     # ME VS HER at $11 ACTIVE, the full course as drafts
 npm run seed:quiz       # seed the archetype quiz (REAL copy, first draft)
 npm run seed:sequences  # seed the 16 rules that send the archetype emails
 npm run seed:writing    # seed three example pieces AS DRAFTS
@@ -306,7 +306,7 @@ by name; the content lives in the database as JSON.
 - A new **block type** is one folder under `src/blocks/types/` plus one line in
   the registry.
 
-This is why 7 DAYS TO HER and DIVINE MONEY can share an engine, and why
+This is why ME VS HER and DIVINE MONEY can share an engine, and why
 launching something new does not require an engineer.
 
 **2. One person record, not two.** A lead and a member are the same woman at
@@ -343,7 +343,7 @@ how an account deletion request is honoured.
 ### Three layers of enforcement
 
 1. **`proxy.ts`** on route groups — the coarse gate. It refreshes the session
-   cookie and keeps signed-out visitors out of `/my-academy` and `/admin`. With
+   cookie and keeps signed-out visitors out of `/my-practice` and `/admin`. With
    no Supabase credentials it fails *closed*. (Next 16 renamed this file
    convention from `middleware` to `proxy`.)
 2. **The actor context** (`src/lib/permissions/actor.ts`) — every query
@@ -363,7 +363,7 @@ Named rules live in `src/lib/permissions/policy.ts`.
 app/
   (marketing)/   public pages
   (auth)/        login, signup, reset            [Phase 2]
-  (member)/      /my-academy
+  (member)/      /my-practice
   (admin)/       /admin, incl. the style guide
 src/
   blocks/        contract.ts, registry.ts, types/*
@@ -517,14 +517,14 @@ a name, a programme, a date and a number. That is what makes one mean anything.
 rounding error here charges a real woman the wrong amount. Dollars are
 converted to cents once, where a price is entered, and nowhere else.
 
-**Pricing is data.** What the Academy costs is a row in `offers`, editable at
+**Pricing is data.** What the Divine Feminine costs is a row in `offers`, editable at
 `/admin/offers`. Both shapes the architecture left open — $1,000 once, or three
 payments of $375 — are seeded as **drafts**. Nothing is purchasable until you
 activate one.
 
 **The price is computed on the server** from the stored offer and the stored
 coupon. Nothing about the amount comes from the browser; otherwise a crafted
-request could buy the Academy for a penny.
+request could buy the Divine Feminine for a penny.
 
 Rules that are tested because they are easy to get backwards:
 

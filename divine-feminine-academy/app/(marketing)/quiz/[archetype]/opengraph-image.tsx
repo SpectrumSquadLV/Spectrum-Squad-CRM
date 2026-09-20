@@ -59,7 +59,7 @@ export default async function Image({
               color: '#7d5a4e',
             }}
           >
-            Divine Feminine Academy
+            Divine Feminine
           </div>
           <div
             style={{

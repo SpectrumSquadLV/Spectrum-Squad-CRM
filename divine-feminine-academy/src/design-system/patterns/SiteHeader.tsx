@@ -9,8 +9,8 @@ import { cn } from '@/lib/utils/cn'
 
 const links = [
   { href: '/quiz', label: 'The quiz' },
-  { href: '/7-days-to-her', label: '7 Days to HER' },
-  { href: '/academy', label: 'The Academy' },
+  { href: '/me-vs-her', label: 'ME VS HER' },
+  { href: '/the-divine-feminine', label: 'The Divine Feminine' },
   { href: '/writing', label: 'Writing' },
   { href: '/about', label: 'About' },
   { href: '/stories', label: 'Stories' },
@@ -66,9 +66,6 @@ export function SiteHeader() {
           onClick={() => setOpen(false)}
         >
           Divine Feminine
-          <span className="block text-2xs uppercase tracking-[0.22em] text-clay-deep">
-            Academy
-          </span>
         </Link>
 
         <nav aria-label="Main" className="hidden items-center gap-8 md:flex">
@@ -91,8 +88,8 @@ export function SiteHeader() {
 
         <div className="hidden md:block">
           <Button size="sm" variant={signedIn ? 'secondary' : 'primary'} asChild>
-            <Link href={signedIn ? '/my-academy' : '/login'}>
-              {signedIn ? 'My Academy' : 'Sign in'}
+            <Link href={signedIn ? '/my-practice' : '/login'}>
+              {signedIn ? 'My practice' : 'Sign in'}
             </Link>
           </Button>
         </div>
@@ -148,8 +145,8 @@ export function SiteHeader() {
             ))}
           </ul>
           <Button className="mt-4 w-full" asChild>
-            <Link href={signedIn ? '/my-academy' : '/login'} onClick={() => setOpen(false)}>
-              {signedIn ? 'My Academy' : 'Sign in'}
+            <Link href={signedIn ? '/my-practice' : '/login'} onClick={() => setOpen(false)}>
+              {signedIn ? 'My practice' : 'Sign in'}
             </Link>
           </Button>
         </nav>
