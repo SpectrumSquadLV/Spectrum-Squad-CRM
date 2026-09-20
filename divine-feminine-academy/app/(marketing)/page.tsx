@@ -54,11 +54,17 @@ export default async function HomePage() {
 
   return (
     <>
-      <Section className="pt-14 md:pt-24">
+      {/*
+        * Wider when there is a photograph, because the editorial measure was
+        * set for a single column of text. Put a 20rem portrait beside it and
+        * the headline is left with under 400px, which breaks "She is not
+        * someone you become" across seven lines.
+        */}
+      <Section className="pt-14 md:pt-24" width={hero ? 'wide' : 'default'}>
         <div
           className={
             hero
-              ? 'grid items-center gap-10 md:grid-cols-[1fr_minmax(0,20rem)] md:gap-14'
+              ? 'grid items-center gap-10 md:grid-cols-[1fr_minmax(0,19rem)] md:gap-16'
               : undefined
           }
         >
@@ -83,7 +89,7 @@ export default async function HomePage() {
                 <Link href="/me-vs-her">Start ME VS HER</Link>
               </Button>
               <Button size="lg" variant="secondary" asChild>
-                <Link href="/quiz">Which version of you is running the show?</Link>
+                <Link href="/quiz">Take the quiz</Link>
               </Button>
             </div>
           </div>
