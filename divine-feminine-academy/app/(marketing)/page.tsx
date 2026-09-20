@@ -19,7 +19,9 @@ import { formatDuration } from '@/features/writing/markdown'
 import { showName } from '@/features/podcast/show'
 import {
   areaRule,
+  homeLines,
   pain,
+  painClose,
   painIsWritten,
   possibility,
   possibilityIsWritten,
@@ -145,7 +147,17 @@ export default async function HomePage() {
       */}
       {painIsWritten ? (
         <>
-          <Section className="pt-24 md:pt-36">
+          {/*
+            Wider than the rest of the page, and only here.
+
+            One behaviour, one line, is the mechanism. At the site's usual
+            4xl measure two thirds of these wrapped, and a wrapped behaviour
+            arrives in two pieces instead of one — the recognition lands on
+            the full sentence or it does not land. Measured rather than
+            guessed: 19 of 32 wrapped at 56rem, 6 at 72rem, and the six that
+            still do are long sentences that were written long.
+          */}
+          <Section width="wide" className="pt-24 md:pt-36">
             <Eyebrow>If you are honest</Eyebrow>
             <h2 className="mt-6 text-3xl md:text-5xl">
               You already know where it goes.
@@ -183,12 +195,24 @@ export default async function HomePage() {
             overlay={false}
           />
 
-          <Section className="pt-20 md:pt-28">
+          <Section width="wide" className="pt-20 md:pt-28">
             <div className="space-y-24 md:space-y-32">
               {pain.slice(2).map((block) => (
                 <PainBlock key={block.word} block={block} />
               ))}
             </div>
+
+            {/*
+              Where the pain section stops.
+
+              Set larger than the behaviours above it and given the width of
+              the page, because it is the sentence all of them were building
+              to — and the first time ME and HER are named at all. Everything
+              before this is recognition; this is the turn.
+            */}
+            <p className="measure-wide mt-24 font-display text-2xl leading-snug text-plum md:mt-32 md:text-4xl">
+              {painClose}
+            </p>
           </Section>
         </>
       ) : (
@@ -270,7 +294,29 @@ export default async function HomePage() {
           You have a <strong>pattern</strong> problem.
         </h2>
 
-        <Prose className="mt-8 text-lg">
+        {/*
+          The question the whole page has been walking toward.
+
+          It gets its own space rather than sitting inside a paragraph,
+          because it is the one line a woman is supposed to still be holding
+          when she reaches the Divine Feminine four screens later.
+        */}
+        <div className="mt-16">
+          <p className="measure-wide font-display text-xl leading-snug text-ink md:text-2xl">
+            You know what you want.
+          </p>
+          <p className="measure-wide mt-4 font-display text-2xl leading-snug text-plum md:text-4xl">
+            The question is: <em>who keeps showing up to create it?</em>
+          </p>
+        </div>
+
+        {/*
+          ME and HER, as the philosophy. Not the challenge.
+          The challenge is a door further down the page and it is one of
+          several; this is the idea the whole platform runs on, and naming it
+          here is what makes the doors mean anything.
+        */}
+        <Prose className="mt-16 text-lg">
           <p>
             There is a version of you who has been running things for a long
             time, and she has been good at it. Call her <strong>ME</strong>.
@@ -309,12 +355,12 @@ export default async function HomePage() {
                   {block.word}
                 </h3>
                 <ul className="mt-8 space-y-5 md:space-y-6">
-                  {block.lines.map((line) => (
+                  {homeLines(block).map((line) => (
                     <li
-                      key={line}
+                      key={line.text}
                       className="measure-wide font-display text-lg leading-snug text-ink md:text-xl"
                     >
-                      {line}
+                      {line.text}
                     </li>
                   ))}
                 </ul>
@@ -655,22 +701,35 @@ function PainBlock({ block }: { block: (typeof pain)[number] }) {
         </h3>
       </div>
 
-      <ul className="mt-10 space-y-6 md:mt-12 md:space-y-8">
-        {block.lines.map((line) => (
+      {/*
+        Only the lines marked for the home page.
+
+        The bank behind this holds every behaviour Quiana wrote — over eighty
+        of them — and printing all of them here would be the one way to ruin
+        it. Recognition stops landing about a third of the way down a list
+        that long, and the section after it never gets read.
+      */}
+      {/*
+        No measure cap, and a size down from the display default.
+
+        One behaviour, one line, is the entire mechanism here — the
+        recognition lands on the full sentence arriving at once. At 36px
+        inside a 44rem measure, "You rewrite the post instead of publishing
+        it." broke with an orphaned "it." on its own line, which reads as a
+        typesetting accident and costs the line its punch. 28px across the
+        section's full width holds nearly all of them on one line; the three
+        or four genuinely long ones wrap, and those are long on purpose.
+      */}
+      <ul className="mt-10 space-y-6 md:mt-12 md:space-y-7">
+        {homeLines(block).map((line) => (
           <li
-            key={line}
-            className="measure-wide font-display text-xl leading-snug text-ink md:text-2xl"
+            key={line.text}
+            className="font-display text-lg leading-snug text-ink md:text-xl"
           >
-            {line}
+            {line.text}
           </li>
         ))}
       </ul>
-
-      {block.close && (
-        <p className="measure mt-10 text-base text-ink-soft md:text-lg">
-          {block.close}
-        </p>
-      )}
     </div>
   )
 }

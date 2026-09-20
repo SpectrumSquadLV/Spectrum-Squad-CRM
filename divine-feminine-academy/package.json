@@ -51,7 +51,8 @@
     "verify:noindex": "tsx scripts/verify-noindex.mts",
     "verify:photo-type": "tsx scripts/verify-photo-type.mts",
     "verify:podcast": "tsx --conditions=react-server scripts/verify-podcast.mts",
-    "verify:public": "tsx scripts/verify-public.mts"
+    "verify:public": "tsx scripts/verify-public.mts",
+    "content-bank": "tsx scripts/content-bank.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",

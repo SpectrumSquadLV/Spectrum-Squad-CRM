@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { JoinForm } from '@/features/auth/JoinForm'
+import { AccountsOff } from '@/features/auth/AccountsOff'
 
 export const metadata: Metadata = {
   title: 'Begin',
@@ -18,6 +19,8 @@ export default async function SignUpPage({
 
   return (
     <div>
+      <AccountsOff />
+
       <h1 className="text-2xl">Begin.</h1>
       <p className="mt-3 text-xs text-ink-muted">
         Your first name and your email. No password — we will send you a link.

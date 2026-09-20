@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import { Fraunces, Inter } from 'next/font/google'
 import './globals.css'
+import { siteUrl } from '@/lib/auth/env'
 
 /*
  * Both faces load their real italic.
@@ -42,6 +43,15 @@ export function generateMetadata(): Metadata {
   const noindex = process.env.SITE_NOINDEX === '1'
 
   return {
+    /*
+     * Every relative image and canonical URL on the site resolves against
+     * this. Without it Next falls back to localhost, so a link shared to
+     * Instagram or iMessage carried an og:image pointing at
+     * http://localhost:8080 — which renders as a broken card everywhere
+     * except the machine that made it. It showed up as a warning in the
+     * production log rather than as anything visible on the page.
+     */
+    metadataBase: new URL(siteUrl()),
     ...(noindex ? { robots: { index: false, follow: false } } : {}),
     title: {
       default: 'Divine Feminine',

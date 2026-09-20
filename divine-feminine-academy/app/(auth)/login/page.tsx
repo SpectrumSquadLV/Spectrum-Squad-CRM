@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { SignInForm } from '@/features/auth/SignInForm'
+import { AccountsOff } from '@/features/auth/AccountsOff'
 
 export const metadata: Metadata = {
   title: 'Sign in',
@@ -26,6 +27,8 @@ export default async function LoginPage({
 
   return (
     <div>
+      <AccountsOff />
+
       <h1 className="text-2xl">Welcome back.</h1>
       <p className="mt-3 text-xs text-ink-muted">
         Your email, and we will send you a link. No password to remember.

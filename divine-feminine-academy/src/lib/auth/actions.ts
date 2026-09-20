@@ -8,7 +8,7 @@ import { db } from '@/db/client'
 import { activityEvents, contacts, crmStages, profiles } from '@/db/schema'
 import { headers } from 'next/headers'
 import { LIMITS, rateLimit } from '@/lib/security/rate-limit'
-import { siteUrl } from './env'
+import { isSupabaseConfigured, siteUrl } from './env'
 import { createServerSupabase } from './server'
 
 /**
@@ -31,6 +31,29 @@ async function withinRateLimit(prefix: string): Promise<boolean> {
 
 const TOO_MANY =
   'That is a lot of tries. Give it fifteen minutes, then check your inbox — a link may already be there.'
+
+/**
+ * What to say when there is no Supabase.
+ *
+ * Every action below reaches Supabase, and supabaseConfig() throws when the
+ * keys are missing — which is correct in a route handler and wrong here. A
+ * server action that throws renders the 500 page, so a woman who pressed
+ * "Sign in" on a deployment without keys got a stack trace instead of an
+ * answer. That happened on the live site.
+ *
+ * She is told the truth in a sentence instead, and the log line tells whoever
+ * is on the other end exactly what to set.
+ */
+const NOT_CONFIGURED =
+  'Accounts are not switched on yet. Nothing is wrong with your email — there is nothing to sign in to here quite yet.'
+
+function accountsOff(where: string): AuthFormState | null {
+  if (isSupabaseConfigured()) return null
+  console.error(
+    `[auth] ${where} attempted with no Supabase keys. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.`,
+  )
+  return { error: NOT_CONFIGURED }
+}
 
 /**
  * Sign-up and sign-in.
@@ -127,6 +150,22 @@ export async function join(
     })
   }
 
+  /*
+   * Her contact row is already written above, so she IS on the list whatever
+   * happens next. Only the magic link needs Supabase — so when there are no
+   * keys, tell her the true thing (you are on the list, there is nothing to
+   * sign in to yet) instead of throwing a 500 over work that succeeded.
+   */
+  if (!isSupabaseConfigured()) {
+    console.error(
+      '[auth] join succeeded but no Supabase keys, so no link was sent. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.',
+    )
+    return {
+      error:
+        'You are on the list — that part saved. Accounts are not switched on yet, so there is no link to send you. You will hear from me when there is.',
+    }
+  }
+
   const supabase = await createServerSupabase()
   const { error } = await supabase.auth.signInWithOtp({
     email: input.email,
@@ -159,6 +198,9 @@ export async function signInWithLink(
 
   if (!(await withinRateLimit('signin'))) return { error: TOO_MANY }
 
+  const off = accountsOff('sign-in')
+  if (off) return off
+
   const supabase = await createServerSupabase()
   const { error } = await supabase.auth.signInWithOtp({
     email: parsed.data.email,
@@ -178,8 +220,12 @@ export async function signInWithLink(
 }
 
 export async function signOut() {
-  const supabase = await createServerSupabase()
-  await supabase.auth.signOut()
+  // Nothing to sign out of without Supabase, and crashing on the way out is
+  // the worst possible moment to crash.
+  if (isSupabaseConfigured()) {
+    const supabase = await createServerSupabase()
+    await supabase.auth.signOut()
+  }
   revalidatePath('/', 'layout')
   redirect('/')
 }

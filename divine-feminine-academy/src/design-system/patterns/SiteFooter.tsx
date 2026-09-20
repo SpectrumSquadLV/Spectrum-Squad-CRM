@@ -28,7 +28,6 @@ const columns = [
     heading: 'About',
     links: [
       { href: '/about', label: 'Quiana' },
-      { href: '/login', label: 'Sign in' },
     ],
   },
   {

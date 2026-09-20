@@ -35,6 +35,20 @@ const links = [
  * prerendered and must stay that way. Defaults to signed-out, which is the
  * correct first paint for the overwhelming majority of visitors.
  */
+/**
+ * Whether accounts exist on this deployment at all.
+ *
+ * NEXT_PUBLIC_ variables are inlined at build time, so a client component can
+ * read this directly. When there are no keys there is nothing to sign in to,
+ * and a "Sign in" button that leads to a form that cannot work is worse than
+ * no button — it was the first thing Quiana clicked on the live site, and it
+ * returned a 500.
+ */
+const accountsOn = Boolean(
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+)
+
 function useSignedIn() {
   const [signedIn, setSignedIn] = useState(false)
 
@@ -99,11 +113,13 @@ export function SiteHeader() {
         </nav>
 
         <div className="hidden md:block">
-          <Button size="sm" variant={signedIn ? 'secondary' : 'primary'} asChild>
-            <Link href={signedIn ? '/my-practice' : '/login'}>
-              {signedIn ? 'My practice' : 'Sign in'}
-            </Link>
-          </Button>
+          {(accountsOn || signedIn) && (
+            <Button size="sm" variant={signedIn ? 'secondary' : 'primary'} asChild>
+              <Link href={signedIn ? '/my-practice' : '/login'}>
+                {signedIn ? 'My practice' : 'Sign in'}
+              </Link>
+            </Button>
+          )}
         </div>
 
         <button
@@ -156,11 +172,13 @@ export function SiteHeader() {
               </li>
             ))}
           </ul>
-          <Button className="mt-4 w-full" asChild>
-            <Link href={signedIn ? '/my-practice' : '/login'} onClick={() => setOpen(false)}>
-              {signedIn ? 'My practice' : 'Sign in'}
-            </Link>
-          </Button>
+          {(accountsOn || signedIn) && (
+            <Button className="mt-4 w-full" asChild>
+              <Link href={signedIn ? '/my-practice' : '/login'} onClick={() => setOpen(false)}>
+                {signedIn ? 'My practice' : 'Sign in'}
+              </Link>
+            </Button>
+          )}
         </nav>
       )}
     </header>
