@@ -9,6 +9,7 @@ import {
 } from '@/features/automation/jobs'
 import { sendToContact } from '@/features/email/send'
 import { runArchetypeRule } from '@/features/quiz/sequence-send'
+import { announceNewWriting } from '@/features/writing/announce'
 import { templates } from '@/features/email/templates'
 import { siteUrl } from '@/lib/auth/env'
 
@@ -108,13 +109,14 @@ export async function POST(request: Request) {
    */
   const swept = await sweepEventsForAutomation(db, now)
 
-  const [automations, reminders, nudges, abandoned] = await Promise.all([
+  const [automations, reminders, nudges, abandoned, writing] = await Promise.all([
     runDue(db, {
       send_email: (ctx) => sendEmailAction(ctx),
     }, now),
     sendDayReminders(db, url, now),
     sendStallNudges(db, url, now),
     sendAbandonedCheckouts(db, url, now),
+    announceNewWriting(db, url, now),
   ])
 
   return NextResponse.json({
@@ -124,6 +126,7 @@ export async function POST(request: Request) {
     reminders,
     nudges,
     abandoned,
+    writing,
   })
 }
 

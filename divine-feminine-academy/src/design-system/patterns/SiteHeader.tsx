@@ -11,6 +11,7 @@ const links = [
   { href: '/quiz', label: 'The quiz' },
   { href: '/7-days-to-her', label: '7 Days to HER' },
   { href: '/academy', label: 'The Academy' },
+  { href: '/writing', label: 'Writing' },
   { href: '/about', label: 'About' },
   { href: '/stories', label: 'Stories' },
 ]

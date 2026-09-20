@@ -1,5 +1,5 @@
 /**
- * The quiz, in a real browser, on a phone.
+ * The journeys a woman actually takes, in a real browser, on a phone.
  *
  * The unit tests prove the scoring; the database tests prove what is stored.
  * Neither of them can tell you whether a woman can actually finish it with her
@@ -17,7 +17,7 @@
  * Needs a built app running at BASE_URL (npm run build && npm run start) and a
  * database with the quiz seeded.
  *
- * Run: npm run verify:quiz-flow
+ * Run: npm run verify:journeys
  */
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -116,11 +116,38 @@ const unsubText = await page.locator('body').innerText()
 ok('a broken unsubscribe link explains itself', /expired/i.test(unsubText))
 ok('and does not claim she was unsubscribed', !/you are unsubscribed/i.test(unsubText))
 
+// The writing. An index that lists nothing, or a piece that renders its own
+// markdown as visible asterisks, is the kind of thing only a browser notices.
+await page.goto(`${BASE}/writing`, { waitUntil: 'networkidle' })
+const writingText = await page.locator('body').innerText()
+ok('the writing index loads', await page.locator('h1').first().isVisible())
+ok('it lists something', (await page.locator('article').count()) >= 1)
+ok('it offers the feed', (await page.getByRole('link', { name: /rss/i }).count()) >= 1)
+ok('it offers the list', (await page.getByRole('button', { name: /send me the next one/i }).count()) === 1)
+ok('the index shows no raw markdown', !/\*\*|^##\s/m.test(writingText))
+
+await page.locator('article h2 a').first().click()
+await page.waitForURL(/\/writing\/[a-z0-9-]+/, { timeout: 15000 })
+const pieceText = await page.locator('body').innerText()
+ok('a piece opens from the index', /\/writing\/[a-z0-9-]+/.test(page.url()), page.url())
+ok('it renders headings as headings', (await page.locator('article h2, h2').count()) >= 1)
+ok('it renders a blockquote', (await page.locator('blockquote').count()) >= 1)
+ok('markdown is rendered, not printed', !/\*\*/.test(pieceText))
+ok('it has an opt-in at the bottom', (await page.locator('aside form').count()) === 1)
+ok('it suggests what to read next', /next/i.test(pieceText))
+
+// Subscribing from a piece.
+await page.locator('aside form').getByLabel('First name').fill('Fay')
+await page.locator('aside form').getByLabel('Email').fill(`flow-writing-${Date.now()}@example.test`)
+await page.locator('aside form').getByRole('button').click()
+await page.getByText(/check your inbox|on the list/i).waitFor({ timeout: 15000 })
+ok('she can subscribe from a piece', true)
+
 // No horizontal scroll on a phone.
 await page.goto(`${BASE}/quiz/the-watcher`, { waitUntil: 'networkidle' })
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
 ok('no sideways scroll on a phone', !overflow)
 
 await browser.close()
-console.log(fails === 0 ? '\nquiz flow: all checks passed\n' : `\nquiz flow: ${fails} failed\n`)
+console.log(fails === 0 ? '\njourneys: all checks passed\n' : `\njourneys: ${fails} failed\n`)
 process.exit(fails > 0 ? 1 : 0)

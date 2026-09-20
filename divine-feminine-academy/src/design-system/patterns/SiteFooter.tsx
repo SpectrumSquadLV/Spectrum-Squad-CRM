@@ -15,6 +15,8 @@ const columns = [
   {
     heading: 'About',
     links: [
+      { href: '/writing', label: 'Writing' },
+      { href: '/listen', label: 'Listen' },
       { href: '/about', label: 'Who this is for' },
       { href: '/stories', label: 'Stories' },
     ],

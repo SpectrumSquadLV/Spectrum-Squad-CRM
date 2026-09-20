@@ -58,6 +58,9 @@ keys are configured. Nothing is on sale yet: both Academy offers are seeded as
 | Assessment questions | **Placeholder, not a validated instrument** |
 | Per-archetype email sequences | Built and written, verified (`verify:sequences`) |
 | Unsubscribe that works without a login | Built, verified |
+| **The content engine** | Built, verified (`verify:writing`) |
+| Writing: articles, episodes, RSS, scheduling | Built |
+| Per-piece opt-ins + new-writing announcements | Built |
 | PDF export of the HER Code | **Not built** — see below |
 | Pricing, coupons, instalments, refunds | Built, verified (`verify:pricing`) |
 | Payment provider + Stripe adapter | Built |
@@ -72,7 +75,7 @@ keys are configured. Nothing is on sale yet: both Academy offers are seeded as
 | Funnel dashboard | Built |
 | Rate limiting | Built, verified (`verify:rate-limit`) |
 | Security headers | Built |
-| WCAG 2.2 AA | **19 pages, 0 violations** (`verify:a11y`) |
+| WCAG 2.2 AA | **22 pages, 0 violations** (`verify:a11y`) |
 | Content-Security-Policy | **Not done** — see Security |
 | Preflight check | Built, verified (`verify:preflight`) |
 | Vercel + Railway config | Both, so hosting is not a blocker |
@@ -159,6 +162,50 @@ click, done, and it only stops lifecycle mail. Her sign-in links and receipts
 keep working.
 
 
+## Writing
+
+`/writing` — essays and episodes. `/listen` — the episodes on their own.
+`/writing/rss.xml` — one feed carrying both, with the enclosures and iTunes
+tags a podcast directory needs.
+
+An article and an episode are **the same row with a different kind**. Same
+title, slug, body, SEO and opt-in; an episode also has a file. Two tables would
+have meant two admin screens, two templates and two sitemaps to keep in step.
+
+**You write Markdown**, in the admin under Writing, with a live preview that
+uses the same renderer the public page does. `##` for a heading, `-` for a
+list, `>` for a quote, `**bold**`, `[words](https://link)`.
+
+Raw HTML is ignored on purpose. The parser produces a **tree**, and the
+renderer turns that tree into React elements — so nothing ever reaches
+`dangerouslySetInnerHTML`, there is no sanitiser to get wrong, and a pasted
+`<script>` tag is something a reader sees rather than something that runs. The
+one hole a tree parser can still leave is a URL, so `javascript:` and `data:`
+links are dropped while keeping the words around them.
+
+**Saving never publishes.** Status moves only when you press Publish. A
+published piece dated in the future is **scheduled** — every public read asks
+for published *and* `published_at <= now()`, so scheduling is one predicate
+rather than a second mechanism that can disagree with the first.
+
+**Every piece earns an email address.** The opt-in at the bottom is the only
+part of an article that compounds. What she is told afterwards depends on what
+actually happens:
+
+- A piece tagged with an archetype puts her into **that sequence**, which
+  starts sending immediately — so she is told to check her inbox.
+- Any other piece puts her on the **letters** list, and she is told she will
+  get the next one when it is written. Saying "check your inbox" when nothing
+  is coming is how a list stops being opened.
+
+**The list gets told.** When a piece is published, the hourly job emails
+everyone on the letters list, once. Back-dating is safe: anything published
+more than 72 hours ago is marked announced without being sent, so importing an
+archive cannot mail your whole list.
+
+Each piece gets its own generated social card, an `Article` or `PodcastEpisode`
+structured-data block, and a sitemap entry the moment it goes live — no deploy.
+
 ## Deploying
 
 **[DEPLOY.md](./DEPLOY.md) is the runbook.** Ordered steps, each saying what
@@ -209,17 +256,19 @@ npm run verify:db-url       # 6  that a pooled Supabase URL is detected
 npm run verify:archetypes   # 68 quiz scoring, ties, and that all four are reachable
 npm run verify:quiz         # 36 the quiz end to end (needs DATABASE_URL)
 npm run verify:sequences    # 87 the four email sequences (needs DATABASE_URL)
+npm run verify:writing      # 96 the content engine and its markdown (needs DATABASE_URL)
 npm run verify:rls          # 11 that RLS really isolates members
 
 # Needs the app running (npm run build && npm start):
-BASE_URL=http://127.0.0.1:3000 npm run verify:a11y       # axe, 19 pages
-BASE_URL=http://127.0.0.1:3000 npm run verify:quiz-flow  # the quiz in a real browser, on a phone
+BASE_URL=http://127.0.0.1:3000 npm run verify:a11y       # axe, 22 pages
+BASE_URL=http://127.0.0.1:3000 npm run verify:journeys   # the real journeys in a browser, on a phone
 
 npm run seed:challenge  # seed 7 DAYS TO HER (placeholder curriculum)
 npm run seed:assessment # seed the free assessment (placeholder questions)
 npm run seed:offers     # seed the Academy and its DRAFT offers
 npm run seed:quiz       # seed the archetype quiz (REAL copy, first draft)
 npm run seed:sequences  # seed the 16 rules that send the archetype emails
+npm run seed:writing    # seed three example pieces AS DRAFTS
 npm run db:generate    # regenerate SQL after a schema change
 npm run db:migrate     # apply migrations (needs DATABASE_URL)
 ```

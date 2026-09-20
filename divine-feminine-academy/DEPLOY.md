@@ -67,7 +67,7 @@ npm ci
 DATABASE_URL="postgresql://...direct..." npm run db:migrate
 ```
 
-Six migrations apply, in order:
+Seven migrations apply, in order:
 
 | | What it does |
 | --- | --- |
@@ -77,6 +77,7 @@ Six migrations apply, in order:
 | `0003_one_certificate_per_program` | Stops a race issuing two certificates |
 | `0004_quiz_archetypes` | Archetype quizzes: `assessments.kind`, the result's archetype |
 | `0005_email_opt_out` | `contacts.email_opted_out_at`, so a lead can unsubscribe |
+| `0006_writing` | The `articles` table: essays, episodes, scheduling, opt-ins |
 
 `0001` defines policies that call `auth.uid()`. **Supabase provides it.** On a
 plain Postgres it does not exist and those policies will fail — preflight warns
@@ -92,6 +93,7 @@ DATABASE_URL="postgresql://...direct..." npm run seed:assessment
 DATABASE_URL="postgresql://...direct..." npm run seed:offers
 DATABASE_URL="postgresql://...direct..." npm run seed:quiz
 DATABASE_URL="postgresql://...direct..." npm run seed:sequences
+DATABASE_URL="postgresql://...direct..." npm run seed:writing
 ```
 
 This creates **7 DAYS TO HER with placeholder prompts**, a placeholder
@@ -105,6 +107,11 @@ you send anybody to them.
 `seed:sequences` creates sixteen automation rules and switches them **on**. A
 sequence nobody remembered to activate is the most common way a launch
 quietly collects addresses and mails none of them.
+
+`seed:writing` adds three example pieces **as drafts**. They are written in
+somebody else's voice and nothing machine-written should appear under your name
+without you having read it, so they stay invisible until you press Publish.
+Edit them or delete them.
 
 ## 5. Environment variables
 
@@ -205,6 +212,9 @@ curl -s https://<your-domain>/api/health     # {"status":"ok"}
       `src/features/quiz/sequences.ts`)
 - [ ] You have sent yourself one archetype sequence end to end and clicked the
       unsubscribe link in it
+- [ ] The three seeded example pieces are edited into your voice, or deleted
+- [ ] `/writing/rss.xml` opens in a feed reader, and in a podcast app if you
+      have published an episode
 - [ ] **The crisis phone numbers are confirmed correct** — they are US lines in
       `src/features/care/CrisisResources.tsx`, and they appear wherever a woman
       writes something heavy

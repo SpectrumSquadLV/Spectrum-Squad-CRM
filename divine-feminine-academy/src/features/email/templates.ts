@@ -330,6 +330,48 @@ export function archetypeSequence(input: {
   }
 }
 
+/**
+ * There is something new to read.
+ *
+ * Short on purpose. The job of this email is to get her to the piece, not to
+ * be the piece — a long summary means she has already had the idea and has no
+ * reason to click.
+ */
+export function newWriting(input: {
+  firstName: string | null
+  title: string
+  dek: string | null
+  url: string
+  kind: 'article' | 'episode'
+  unsubscribeUrl: string
+}): RenderedEmail {
+  const listening = input.kind === 'episode'
+
+  const content = {
+    preview: input.dek?.trim() || input.title,
+    heading: input.title,
+    paragraphs: [
+      `${firstNameOr(input.firstName)}, there is something new.`,
+      input.dek?.trim() ||
+        (listening
+          ? 'A new episode is up.'
+          : 'A new piece is up.'),
+    ],
+    cta: {
+      label: listening ? 'Listen to it' : 'Read it',
+      url: input.url,
+    },
+    siteUrl: input.url,
+    unsubscribeUrl: input.unsubscribeUrl,
+  }
+
+  return {
+    subject: input.title,
+    html: layout(content),
+    text: plain(content),
+  }
+}
+
 export const templates = {
   dayReminder,
   nudge,
@@ -338,6 +380,7 @@ export const templates = {
   orderReceipt,
   certificateIssued,
   archetypeSequence,
+  newWriting,
 } as const
 
 export type TemplateName = keyof typeof templates

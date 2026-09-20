@@ -59,25 +59,20 @@ archetype page without taking it. See `README.md`.
 in, so the old account-settings link would have been a dead end — which is a
 deliverability problem and, in several places she might live, a legal one.
 
+**The content engine** — the gap that used to be first on this list. Articles
+and episodes written in Markdown in the admin, scheduled by date, with RSS, an
+opt-in on every piece, per-piece social cards and structured data, and an
+announcement to the list when something new goes up. See `README.md`.
+
+This one is not finished by being built. It is finished by being **used**: one
+piece a week for a year is what actually closes the gap between this site and
+theirs.
+
 ---
 
 ## Still missing, ranked
 
-### 1. A content engine — the biggest gap by a distance
-
-All three are content businesses first. Kathrin's podcast has **3M+ downloads**
-and it is the top of her entire funnel. Tony Robbins runs a large blog that
-ranks for enormous numbers of search terms. We have **twelve public pages and
-no blog, no podcast page, no article template, and no way to publish anything
-without a developer.**
-
-A quiz gets you the woman who already found you. Content is how she finds you
-at all, and nothing else on this list substitutes for it.
-
-*What it needs:* an article model, an editor, an article template with proper
-schema markup, and a per-article opt-in ("get the worksheet from this post").
-
-### 2. Live cohorts with a date, a countdown and a waitlist
+### 1. Live cohorts with a date, a countdown and a waitlist
 
 Myron's whole business is a **five-day live challenge**. Tony sells live
 events. Kathrin launches her Academy in cohorts. Every one of them runs on
@@ -90,7 +85,7 @@ difference on this page.
 *What it needs:* start dates on a program, a waitlist, a countdown, an
 enrolment window that opens and closes, and a replay.
 
-### 3. Social proof, collected and displayed
+### 2. Social proof, collected and displayed
 
 All three lead with it — numbers, testimonials, logos, student counts.
 `/stories` is deliberately empty and there is no way to collect a testimonial,
@@ -99,14 +94,14 @@ approve it, or put it on a page. The database table exists; nothing else does.
 *What it needs:* a request flow (ask a woman who just finished Day 7), an
 approval screen, and a component that can be dropped on any page.
 
-### 4. Order bumps and upsells
+### 3. Order bumps and upsells
 
 Myron Golden is *the* offer-stacking teacher. Checkout takes one thing at one
 price. There is no tick-box bump at checkout and no offer after the card
 clears — which is the cheapest revenue in the whole business, because she has
 already decided to trust you.
 
-### 5. A high-ticket application funnel
+### 4. A high-ticket application funnel
 
 Myron and Tony both sell four- and five-figure programmes through an
 application and a call, never a buy button. We have self-serve checkout only,
@@ -115,33 +110,34 @@ so there is currently no way to sell anything expensive.
 *What it needs:* an application form, a qualifying question set, a booking
 link, and a CRM stage that tracks it.
 
-### 6. A webinar or masterclass registration flow
+### 5. A webinar or masterclass registration flow
 
 Standard for all three: register, attend live, watch the replay for 48 hours,
 buy. Nothing here does this.
 
-### 7. An affiliate or referral programme
+### 6. An affiliate or referral programme
 
 Kathrin and Tony both run affiliates. Nothing here tracks a referral, attributes
 a sale, or pays anybody.
 
-### 8. Ad tracking
+### 7. Ad tracking
 
 No Meta pixel, no Google Analytics, no conversion events. All three run paid
 traffic. The moment you spend a pound on ads you will be flying blind, and you
 cannot retro-fit data you never collected.
 
-### 9. Broadcast email
+### 8. Broadcast email
 
-The automation engine sends triggered email well. There is no way to write one
-email and send it to everybody, which is what a newsletter is.
+Publishing a piece now emails the letters list about it, which covers the
+common case. There is still no way to write one email that is not an article
+and send it to everybody — an announcement, a launch, a change of plan.
 
-### 10. SMS
+### 9. SMS
 
 `send_sms` exists in the automation actions and has no provider behind it. It
 will fail silently if a rule ever uses it.
 
-### 11. A community
+### 10. A community
 
 Kathrin has a membership community; Tony has coaching and events. There is no
 forum, group, or cohort chat here — every woman does this alone.
@@ -150,9 +146,10 @@ forum, group, or cohort chat here — every woman does this alone.
 
 ## If you only do three things
 
-1. **Put a date on something.** One live cohort, one countdown. This is the
-   cheapest large change on the list.
-2. **Start publishing.** One article or episode a week, consistently, beats
-   everything else here over a year — and it is the one that compounds.
+1. **Publish something.** The engine is built and there are three drafts
+   waiting in the admin in somebody else's voice. Rewrite one, press Publish,
+   and do that again next week. Nothing else on this list compounds.
+2. **Put a date on something.** One live cohort, one countdown. Nothing on the
+   site currently has any reason to be bought today.
 3. **Collect five testimonials.** From the first five women who finish the
    seven days. `/stories` has been empty since the day it was built.

@@ -43,6 +43,13 @@
       "when": 1789895306893,
       "tag": "0005_email_opt_out",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789896220574,
+      "tag": "0006_writing",
+      "breakpoints": true
     }
   ]
 }
