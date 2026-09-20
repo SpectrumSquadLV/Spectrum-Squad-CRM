@@ -56,7 +56,8 @@ keys are configured. Nothing is on sale yet: both Academy offers are seeded as
 | Certificates + public verification | Built, verified (`verify:certificates`, `verify:issuance`) |
 | 7 DAYS TO HER curriculum | **Placeholder copy only** |
 | Assessment questions | **Placeholder, not a validated instrument** |
-| Per-archetype email sequences | **Not written** — the engine is wired, the words are not |
+| Per-archetype email sequences | Built and written, verified (`verify:sequences`) |
+| Unsubscribe that works without a login | Built, verified |
 | PDF export of the HER Code | **Not built** — see below |
 | Pricing, coupons, instalments, refunds | Built, verified (`verify:pricing`) |
 | Payment provider + Stripe adapter | Built |
@@ -71,7 +72,7 @@ keys are configured. Nothing is on sale yet: both Academy offers are seeded as
 | Funnel dashboard | Built |
 | Rate limiting | Built, verified (`verify:rate-limit`) |
 | Security headers | Built |
-| WCAG 2.2 AA | **18 pages, 0 violations** (`verify:a11y`) |
+| WCAG 2.2 AA | **19 pages, 0 violations** (`verify:a11y`) |
 | Content-Security-Policy | **Not done** — see Security |
 | Preflight check | Built, verified (`verify:preflight`) |
 | Vercel + Railway config | Both, so hosting is not a blocker |
@@ -117,7 +118,46 @@ write any result it liked into her segmentation.
 The four public pages are statically prerendered, indexable and carry their own
 social cards, because that is how a shared result brings a stranger in.
 
-**Still to write: the four email sequences.** See `GROWTH.md`.
+## The four email sequences
+
+Five emails over nine days, one set per archetype. Twenty in total, and they
+are written.
+
+The arc is the same for all four, and the order is deliberate:
+
+| | Day | What it does |
+| --- | --- | --- |
+| 1 | 0 | Deliver. She just gave an email; she gets the whole read back immediately, with nothing asked of her. |
+| 2 | 1 | Where this version of her came from. Compassion before cost, always. |
+| 3 | 3 | What it costs. Honest and specific — she already knows, and being vague to seem kind is patronising. |
+| 4 | 5 | One small move she can make today. A win before an ask. |
+| 5 | 8 | The invitation, to something free. |
+
+**Two ways in, one set of emails.**
+
+1. She takes the quiz and is put into the sequence for her result.
+2. She lands on an archetype page from a link a friend sent, recognises
+   herself, and opts in directly — no quiz. She is tagged
+   `archetype-self-identified` as well, because a woman who chose her own
+   archetype and a woman the quiz chose for her are not the same person and
+   the numbers should be able to tell them apart.
+
+Both write one `archetype.assigned` event, which is what the sixteen rules
+match on.
+
+**Email one is sent in the request.** Steps 2 to 5 are automation rules on a
+delay. The hourly job is the only other clock here, so routing the welcome
+through it would make "check your inbox" false for up to an hour — exactly
+while she is still looking.
+
+**The words are in one file:** `src/features/quiz/sequences.ts`. No HTML, no
+sending logic. Rewrite it and the emails change.
+
+**Unsubscribing works without an account.** Most women in these sequences have
+never logged in, so the link is a signed token rather than a session — one
+click, done, and it only stops lifecycle mail. Her sign-in links and receipts
+keep working.
+
 
 ## Deploying
 
@@ -168,16 +208,18 @@ npm run verify:preflight    # 22 that a broken deploy is refused
 npm run verify:db-url       # 6  that a pooled Supabase URL is detected
 npm run verify:archetypes   # 68 quiz scoring, ties, and that all four are reachable
 npm run verify:quiz         # 36 the quiz end to end (needs DATABASE_URL)
+npm run verify:sequences    # 87 the four email sequences (needs DATABASE_URL)
 npm run verify:rls          # 11 that RLS really isolates members
 
 # Needs the app running (npm run build && npm start):
-BASE_URL=http://127.0.0.1:3000 npm run verify:a11y       # axe, 18 pages
+BASE_URL=http://127.0.0.1:3000 npm run verify:a11y       # axe, 19 pages
 BASE_URL=http://127.0.0.1:3000 npm run verify:quiz-flow  # the quiz in a real browser, on a phone
 
 npm run seed:challenge  # seed 7 DAYS TO HER (placeholder curriculum)
 npm run seed:assessment # seed the free assessment (placeholder questions)
 npm run seed:offers     # seed the Academy and its DRAFT offers
 npm run seed:quiz       # seed the archetype quiz (REAL copy, first draft)
+npm run seed:sequences  # seed the 16 rules that send the archetype emails
 npm run db:generate    # regenerate SQL after a schema change
 npm run db:migrate     # apply migrations (needs DATABASE_URL)
 ```

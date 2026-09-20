@@ -33,6 +33,7 @@ const PAGES = [
   '/quiz/the-escape-artist',
   '/quiz/the-watcher',
   '/quiz/the-quiet-storm',
+  '/unsubscribe/not-a-real-token',
   '/legal/privacy',
   '/legal/terms',
   '/legal/disclaimer',

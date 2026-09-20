@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation'
 import { Button, Rule } from '@/design-system/primitives'
 import { Eyebrow, Prose, Section } from '@/design-system/patterns'
 import { archetypeBySlug, archetypeList } from '@/features/quiz/archetypes'
+import { ArchetypeOptIn } from '@/features/quiz/ArchetypeOptIn'
 
 /**
  * The public page for one of the four.
@@ -90,8 +91,12 @@ export default async function ArchetypePage({
         </Prose>
       </section>
 
-      <section className="mt-14 rounded-xl border border-clay bg-plum-wash p-6 md:p-8">
-        <p className="text-2xs uppercase tracking-[0.2em] text-plum">
+      <section className="mt-14">
+        <ArchetypeOptIn slug={archetype.slug} name={archetype.name} />
+      </section>
+
+      <section className="mt-14 rounded-xl border border-rule bg-alabaster p-6 md:p-8">
+        <p className="text-2xs uppercase tracking-[0.2em] text-clay-deep">
           The return
         </p>
         <p className="mt-4 font-display text-2xl leading-snug">

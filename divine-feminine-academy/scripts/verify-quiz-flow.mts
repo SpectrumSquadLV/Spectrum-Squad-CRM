@@ -94,7 +94,30 @@ await page.waitForURL(/\/quiz\/the-/, { timeout: 15000 })
 ok('the share link opens a public archetype page', /\/quiz\/the-/.test(page.url()), page.url())
 ok('the public page invites the visitor to take it', (await page.getByRole('link', { name: /take the quiz/i }).count()) >= 1)
 
+// The opt-in on the public page: she recognised herself and never took the
+// quiz, which is the warmest lead on the site.
+await page.goto(`${BASE}/quiz/the-watcher`, { waitUntil: 'networkidle' })
+ok('the public page offers the emails', (await page.getByRole('button', { name: /send me the five emails/i }).count()) === 1)
+
+await page.getByLabel('First name').fill('Dee')
+await page.getByLabel('Email').fill(`flow-optin-${Date.now()}@example.test`)
+await page.getByRole('button', { name: /send me the five emails/i }).click()
+await page.getByText(/check your inbox/i).waitFor({ timeout: 15000 })
+
+const optInText = await page.locator('body').innerText()
+ok('she is told the first one is on its way', /on its way/i.test(optInText))
+ok('she is told what the rest are', /four more/i.test(optInText))
+ok('she is told unsubscribing is one click', /unsubscribe/i.test(optInText))
+ok('she was not made to take the quiz first', !/1 of 12/.test(optInText))
+
+// A bad unsubscribe link must not 500 or claim success.
+await page.goto(`${BASE}/unsubscribe/not-a-real-token`, { waitUntil: 'networkidle' })
+const unsubText = await page.locator('body').innerText()
+ok('a broken unsubscribe link explains itself', /expired/i.test(unsubText))
+ok('and does not claim she was unsubscribed', !/you are unsubscribed/i.test(unsubText))
+
 // No horizontal scroll on a phone.
+await page.goto(`${BASE}/quiz/the-watcher`, { waitUntil: 'networkidle' })
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
 ok('no sideways scroll on a phone', !overflow)
 

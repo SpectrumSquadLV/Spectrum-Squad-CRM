@@ -12,7 +12,9 @@ import {
 import { getPublishedAssessment } from '@/db/queries/assessments'
 import { findOrCreateLead, tagContact } from '@/db/queries/leads'
 import { newToken } from '@/lib/crypto/journal'
+import { siteUrl } from '@/lib/auth/env'
 import { archetypes, scoreArchetypes, type QuizQuestion } from './archetypes'
+import { joinArchetypeSequence } from './subscribe'
 
 /**
  * Everything the quiz submission DOES, with none of the framework around it.
@@ -159,6 +161,21 @@ export async function recordQuizSubmission(
       isBlend: result.isBlend,
       timing: attempt.timing,
     },
+  })
+
+  /*
+   * Put her in the sequence for the version she came out as.
+   *
+   * After the result is stored, and deliberately not inside a transaction with
+   * it: if the email provider is down, she must still get her result page. The
+   * hourly sweep re-reads the event and catches up.
+   */
+  await joinArchetypeSequence({
+    db,
+    contactId,
+    mode: result.primary,
+    source: 'quiz',
+    siteUrl: siteUrl(),
   })
 
   return { ok: true, token, archetype: result.primary }

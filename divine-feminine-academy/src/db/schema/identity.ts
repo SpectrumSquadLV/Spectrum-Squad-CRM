@@ -46,6 +46,20 @@ export const contacts = pgTable(
     leadAt: timestamp('lead_at', { withTimezone: true }).notNull().defaultNow(),
     lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
 
+    /**
+     * She asked to stop receiving lifecycle email.
+     *
+     * On the CONTACT rather than on `profiles`, because `profiles` requires an
+     * auth user and a lead does not have one. A woman who joined an archetype
+     * sequence from a shared link has never logged in, and telling her to sign
+     * in before she can unsubscribe is both hostile and, in several places she
+     * might live, illegal.
+     *
+     * Transactional mail ignores this, as it must: unsubscribing from a
+     * sequence cannot cost her her own sign-in links or her receipts.
+     */
+    emailOptedOutAt: timestamp('email_opted_out_at', { withTimezone: true }),
+
     /** Set instead of deleting, so orders and certificates stay intact. */
     archivedAt: timestamp('archived_at', { withTimezone: true }),
     ...timestamps,

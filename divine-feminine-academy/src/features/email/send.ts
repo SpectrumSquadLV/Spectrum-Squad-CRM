@@ -77,7 +77,11 @@ export async function sendToContact(
   const { db, contactId, rendered, kind, idempotencyKey } = input
 
   const [contact] = await db
-    .select({ email: contacts.email, archivedAt: contacts.archivedAt })
+    .select({
+      email: contacts.email,
+      archivedAt: contacts.archivedAt,
+      emailOptedOutAt: contacts.emailOptedOutAt,
+    })
     .from(contacts)
     .where(eq(contacts.id, contactId))
     .limit(1)
@@ -87,6 +91,16 @@ export async function sendToContact(
   if (await isSuppressed(db, contactId)) return { sent: false, reason: 'suppressed' }
 
   if (kind === 'lifecycle') {
+    /*
+     * She clicked unsubscribe.
+     *
+     * Checked BEFORE the profile preference, because this is the one a lead
+     * has: a woman who joined an archetype sequence from a shared link has no
+     * auth user and therefore no profile row, and the old check would have
+     * silently kept mailing her forever.
+     */
+    if (contact.emailOptedOutAt) return { sent: false, reason: 'opted-out' }
+
     const [profile] = await db
       .select({ prefs: profiles.notificationPrefs })
       .from(profiles)

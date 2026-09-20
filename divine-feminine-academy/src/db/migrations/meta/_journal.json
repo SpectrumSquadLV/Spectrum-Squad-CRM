@@ -36,6 +36,13 @@
       "when": 1789893863205,
       "tag": "0004_quiz_archetypes",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789895306893,
+      "tag": "0005_email_opt_out",
+      "breakpoints": true
     }
   ]
 }

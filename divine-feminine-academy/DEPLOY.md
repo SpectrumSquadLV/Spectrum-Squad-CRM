@@ -67,7 +67,7 @@ npm ci
 DATABASE_URL="postgresql://...direct..." npm run db:migrate
 ```
 
-Five migrations apply, in order:
+Six migrations apply, in order:
 
 | | What it does |
 | --- | --- |
@@ -76,6 +76,7 @@ Five migrations apply, in order:
 | `0002_source_block_provenance` | Idempotency columns for side effects |
 | `0003_one_certificate_per_program` | Stops a race issuing two certificates |
 | `0004_quiz_archetypes` | Archetype quizzes: `assessments.kind`, the result's archetype |
+| `0005_email_opt_out` | `contacts.email_opted_out_at`, so a lead can unsubscribe |
 
 `0001` defines policies that call `auth.uid()`. **Supabase provides it.** On a
 plain Postgres it does not exist and those policies will fail — preflight warns
@@ -90,14 +91,20 @@ DATABASE_URL="postgresql://...direct..." npm run seed:challenge
 DATABASE_URL="postgresql://...direct..." npm run seed:assessment
 DATABASE_URL="postgresql://...direct..." npm run seed:offers
 DATABASE_URL="postgresql://...direct..." npm run seed:quiz
+DATABASE_URL="postgresql://...direct..." npm run seed:sequences
 ```
 
 This creates **7 DAYS TO HER with placeholder prompts**, a placeholder
 assessment, **two draft offers for the Academy**, and **the archetype quiz**.
 Nothing is purchasable until you activate an offer in `/admin/offers`.
 
-The quiz is the one thing seeded with real copy rather than placeholders — but
-it is a first draft. Read it aloud before you send anybody to it.
+The quiz and its four email sequences are the one part seeded with real copy
+rather than placeholders — but they are a first draft. Read them aloud before
+you send anybody to them.
+
+`seed:sequences` creates sixteen automation rules and switches them **on**. A
+sequence nobody remembered to activate is the most common way a launch
+quietly collects addresses and mails none of them.
 
 ## 5. Environment variables
 
@@ -192,9 +199,12 @@ curl -s https://<your-domain>/api/health     # {"status":"ok"}
 - [ ] `grep -rn "<Placeholder" app src` returns nothing
 - [ ] The seven days have real prompts, not `[PLACEHOLDER COPY]`
 - [ ] The assessment questions are real
-- [ ] The quiz questions and the four results sound like you, not like a draft
-      somebody else wrote (`src/features/quiz/questions.ts`,
-      `src/features/quiz/archetypes.ts`)
+- [ ] The quiz questions, the four results and the twenty sequence emails sound
+      like you, not like a draft somebody else wrote
+      (`src/features/quiz/questions.ts`, `src/features/quiz/archetypes.ts`,
+      `src/features/quiz/sequences.ts`)
+- [ ] You have sent yourself one archetype sequence end to end and clicked the
+      unsubscribe link in it
 - [ ] **The crisis phone numbers are confirmed correct** — they are US lines in
       `src/features/care/CrisisResources.tsx`, and they appear wherever a woman
       writes something heavy

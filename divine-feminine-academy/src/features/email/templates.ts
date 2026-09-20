@@ -10,6 +10,8 @@
  * same template can be rendered in a test without one.
  */
 
+import { personalise, type SequenceEmail as SequenceEmailContent } from '@/features/quiz/sequences'
+
 export interface RenderedEmail {
   subject: string
   html: string
@@ -32,6 +34,7 @@ function layout({
   cta,
   footer,
   siteUrl,
+  unsubscribeUrl,
 }: {
   preview: string
   heading: string
@@ -39,6 +42,7 @@ function layout({
   cta?: { label: string; url: string }
   footer?: string
   siteUrl: string
+  unsubscribeUrl?: string
 }): string {
   const body = paragraphs
     .map(
@@ -65,7 +69,11 @@ function layout({
 ${body}${button}
 </td></tr></table>
 <p style="margin:24px 0 0;font-size:12px;color:#6f645d">${escapeHtml(footer ?? 'Education, not therapy.')}</p>
-<p style="margin:8px 0 0;font-size:12px;color:#a0948c"><a href="${escapeHtml(siteUrl)}/my-academy/account" style="color:#a0948c">Change what we send you</a></p>
+<p style="margin:8px 0 0;font-size:12px;color:#a0948c">${
+  unsubscribeUrl
+    ? `<a href="${escapeHtml(unsubscribeUrl)}" style="color:#a0948c">Unsubscribe</a>`
+    : `<a href="${escapeHtml(siteUrl)}/my-academy/account" style="color:#a0948c">Change what we send you</a>`
+}</p>
 </td></tr></table></body></html>`
 }
 
@@ -75,17 +83,23 @@ function plain({
   cta,
   footer,
   siteUrl,
+  unsubscribeUrl,
 }: {
   heading: string
   paragraphs: string[]
   cta?: { label: string; url: string }
   footer?: string
   siteUrl: string
+  unsubscribeUrl?: string
 }): string {
   const parts = [heading, '', ...paragraphs]
   if (cta) parts.push('', `${cta.label}: ${cta.url}`)
   parts.push('', footer ?? 'Education, not therapy.')
-  parts.push(`Change what we send you: ${siteUrl}/my-academy/account`)
+  parts.push(
+    unsubscribeUrl
+      ? `Unsubscribe: ${unsubscribeUrl}`
+      : `Change what we send you: ${siteUrl}/my-academy/account`,
+  )
   return parts.join('\n')
 }
 
@@ -275,6 +289,47 @@ export function certificateIssued(input: {
   }
 }
 
+/**
+ * One email from an archetype sequence.
+ *
+ * The words come from `src/features/quiz/sequences.ts` — this only dresses
+ * them. Keeping the copy out of here means it can be rewritten by somebody who
+ * has never seen an HTML table in their life.
+ *
+ * `unsubscribeUrl` is REQUIRED, not optional, because this is the one kind of
+ * mail that regularly reaches a woman who has no account: she recognised
+ * herself on a page a friend sent and put her email in. An account-settings
+ * link would be a dead end for her.
+ */
+export function archetypeSequence(input: {
+  firstName: string | null
+  email: SequenceEmailContent
+  siteUrl: string
+  unsubscribeUrl: string
+}): RenderedEmail {
+  const fill = (text: string) => personalise(text, input.firstName)
+
+  const content = {
+    preview: fill(input.email.preview),
+    heading: fill(input.email.heading),
+    paragraphs: input.email.paragraphs.map(fill),
+    cta: input.email.cta
+      ? {
+          label: input.email.cta.label,
+          url: `${input.siteUrl.replace(/\/$/, '')}${input.email.cta.path}`,
+        }
+      : undefined,
+    siteUrl: input.siteUrl,
+    unsubscribeUrl: input.unsubscribeUrl,
+  }
+
+  return {
+    subject: fill(input.email.subject),
+    html: layout(content),
+    text: plain(content),
+  }
+}
+
 export const templates = {
   dayReminder,
   nudge,
@@ -282,6 +337,7 @@ export const templates = {
   abandonedCheckout,
   orderReceipt,
   certificateIssued,
+  archetypeSequence,
 } as const
 
 export type TemplateName = keyof typeof templates

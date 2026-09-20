@@ -1,13 +1,14 @@
 import { NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
 import { db } from '@/db/client'
-import { runDue } from '@/features/automation/runner'
+import { runDue, sweepEventsForAutomation } from '@/features/automation/runner'
 import {
   sendAbandonedCheckouts,
   sendDayReminders,
   sendStallNudges,
 } from '@/features/automation/jobs'
 import { sendToContact } from '@/features/email/send'
+import { runArchetypeRule } from '@/features/quiz/sequence-send'
 import { templates } from '@/features/email/templates'
 import { siteUrl } from '@/lib/auth/env'
 
@@ -51,11 +52,24 @@ async function sendEmailAction({
   contactId: string
   rule: { actionConfig: Record<string, unknown>; name: string }
 }) {
+  // The archetype sequences are the main thing rules drive, and they carry
+  // everything they need in the rule itself.
+  if (
+    await runArchetypeRule({
+      db,
+      contactId,
+      actionConfig: rule.actionConfig,
+      siteUrl: siteUrl(),
+    })
+  ) {
+    return
+  }
+
   const name = String(rule.actionConfig.template ?? '')
   if (!(name in templates)) return
 
-  // Only the templates that need nothing but a name can be driven from a rule;
-  // the rest are sent by the job that has the context they need.
+  // Of the rest, only the templates that need nothing but a name can be driven
+  // from a rule; the others are sent by the job that has their context.
   if (name !== 'nudge') return
 
   const rendered = templates.nudge({
@@ -84,6 +98,16 @@ export async function POST(request: Request) {
   const now = new Date()
   const url = siteUrl()
 
+  /*
+   * Sweep first, then run.
+   *
+   * The sweep turns recent activity events into scheduled runs; `runDue`
+   * executes the ones whose time has come. In that order, an event written
+   * minutes ago with a zero delay goes out in this same invocation instead of
+   * waiting another hour.
+   */
+  const swept = await sweepEventsForAutomation(db, now)
+
   const [automations, reminders, nudges, abandoned] = await Promise.all([
     runDue(db, {
       send_email: (ctx) => sendEmailAction(ctx),
@@ -95,6 +119,7 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     ranAt: now.toISOString(),
+    swept,
     automations,
     reminders,
     nudges,

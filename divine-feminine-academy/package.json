@@ -19,6 +19,7 @@
     "verify:scoring": "tsx scripts/verify-scoring.mts",
     "seed:assessment": "tsx scripts/seed-assessment.mts",
     "seed:quiz": "tsx scripts/seed-quiz.mts",
+    "seed:sequences": "tsx scripts/seed-sequences.mts",
     "verify:certificates": "tsx scripts/verify-certificates.mts",
     "verify:issuance": "tsx --conditions=react-server scripts/verify-issuance.mts",
     "verify:permissions": "tsx scripts/verify-permissions.mts",
@@ -37,7 +38,8 @@
     "verify:db-url": "tsx scripts/verify-db-url.mts",
     "verify:archetypes": "tsx scripts/verify-archetypes.mts",
     "verify:quiz": "tsx --conditions=react-server scripts/verify-quiz.mts",
-    "verify:quiz-flow": "tsx scripts/verify-quiz-flow.mts"
+    "verify:quiz-flow": "tsx scripts/verify-quiz-flow.mts",
+    "verify:sequences": "tsx --conditions=react-server scripts/verify-sequences.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",

@@ -1,8 +1,9 @@
 import 'server-only'
 
-import { and, asc, eq, lte, or, isNull, sql } from 'drizzle-orm'
+import { and, asc, eq, gte, inArray, isNotNull, lte, or, isNull, sql } from 'drizzle-orm'
 import type { Db } from '@/db/client'
 import {
+  activityEvents,
   automationRules,
   automationRuns,
   contactStageHistory,
@@ -282,4 +283,69 @@ export async function runDue(
   }
 
   return summary
+}
+
+/**
+ * Turn recent activity events into scheduled runs.
+ *
+ * THIS IS THE MISSING HALF. Rules are matched against events by
+ * `scheduleForEvent`, but until this existed nothing in the running
+ * application ever called it: events were written, rules sat in the table
+ * marked active, and not one of them ever fired. The engine was tested and
+ * correct and completely disconnected.
+ *
+ * A sweep rather than a hook on every write, because a sweep is self-healing.
+ * If the cron misses an hour, or a rule is switched on after the event it
+ * cares about, the next sweep still catches it — and `scheduleForEvent` is
+ * idempotent on (rule, contact, event), so re-reading the same event as many
+ * times as the window allows produces exactly one run.
+ *
+ * The window matches the staleness cutoff in `isTooLate`. Looking further back
+ * would only schedule runs that would immediately be skipped for being too old
+ * to be useful.
+ */
+export async function sweepEventsForAutomation(
+  db: Db,
+  now = new Date(),
+  windowHours = 36,
+): Promise<{ events: number; scheduled: number }> {
+  const since = new Date(now.getTime() - windowHours * 3_600_000)
+
+  // Only event types some active rule is actually waiting for. Without this a
+  // busy site would re-read every event it has written in a day and a half,
+  // every hour, to match none of them.
+  const triggers = await db
+    .selectDistinct({ triggerEvent: automationRules.triggerEvent })
+    .from(automationRules)
+    .where(eq(automationRules.isActive, true))
+
+  if (triggers.length === 0) return { events: 0, scheduled: 0 }
+
+  const wanted = triggers.map((t) => t.triggerEvent)
+
+  const events = await db
+    .select()
+    .from(activityEvents)
+    .where(
+      and(
+        gte(activityEvents.occurredAt, since),
+        inArray(activityEvents.eventType, wanted),
+        isNotNull(activityEvents.contactId),
+      ),
+    )
+    .orderBy(asc(activityEvents.occurredAt))
+    .limit(1000)
+
+  let scheduled = 0
+  for (const event of events) {
+    scheduled += await scheduleForEvent(db, {
+      id: event.id,
+      type: event.eventType,
+      contactId: event.contactId,
+      metadata: (event.metadata ?? {}) as Record<string, unknown>,
+      occurredAt: event.occurredAt,
+    })
+  }
+
+  return { events: events.length, scheduled }
 }

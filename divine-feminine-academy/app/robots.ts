@@ -25,6 +25,7 @@ export default function robots(): MetadataRoute.Robots {
         '/quiz/result',
         '/assessment/results',
         '/checkout',
+        '/unsubscribe',
       ],
     },
     sitemap: `${base}/sitemap.xml`,

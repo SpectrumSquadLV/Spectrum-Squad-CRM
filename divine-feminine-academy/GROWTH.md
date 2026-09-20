@@ -51,6 +51,14 @@ public pages were only as discoverable as whatever linked to them, and the
 private ones (her result, her certificate) had nothing telling a crawler to
 stay out. Both now exist.
 
+**The four email sequences.** Twenty emails, five per archetype over nine days,
+written and sending. Two ways in: the quiz, or opting in directly from an
+archetype page without taking it. See `README.md`.
+
+**An unsubscribe that works.** Most women in those sequences have never logged
+in, so the old account-settings link would have been a dead end — which is a
+deliverability problem and, in several places she might live, a legal one.
+
 ---
 
 ## Still missing, ranked
@@ -112,36 +120,28 @@ link, and a CRM stage that tracks it.
 Standard for all three: register, attend live, watch the replay for 48 hours,
 buy. Nothing here does this.
 
-### 7. Per-archetype email sequences
-
-The quiz already tags her and fires a `quiz.completed` event carrying her
-archetype, so the automation engine can branch on it today — `equals:
-{ archetype: 'sulk' }` is the whole condition. **What is missing is the
-words.** Four sequences of three to five emails each. That is yours to write,
-and it is probably the highest-return writing you will do this year.
-
-### 8. An affiliate or referral programme
+### 7. An affiliate or referral programme
 
 Kathrin and Tony both run affiliates. Nothing here tracks a referral, attributes
 a sale, or pays anybody.
 
-### 9. Ad tracking
+### 8. Ad tracking
 
 No Meta pixel, no Google Analytics, no conversion events. All three run paid
 traffic. The moment you spend a pound on ads you will be flying blind, and you
 cannot retro-fit data you never collected.
 
-### 10. Broadcast email
+### 9. Broadcast email
 
 The automation engine sends triggered email well. There is no way to write one
 email and send it to everybody, which is what a newsletter is.
 
-### 11. SMS
+### 10. SMS
 
 `send_sms` exists in the automation actions and has no provider behind it. It
 will fail silently if a rule ever uses it.
 
-### 12. A community
+### 11. A community
 
 Kathrin has a membership community; Tony has coaching and events. There is no
 forum, group, or cohort chat here — every woman does this alone.
@@ -150,10 +150,9 @@ forum, group, or cohort chat here — every woman does this alone.
 
 ## If you only do three things
 
-1. **Write the four archetype email sequences.** The machinery is already
-   waiting for them, and this is the difference between a quiz that collects
-   emails and a quiz that sells.
-2. **Put a date on something.** One live cohort, one countdown. This is the
+1. **Put a date on something.** One live cohort, one countdown. This is the
    cheapest large change on the list.
-3. **Start publishing.** One article or episode a week, consistently, beats
+2. **Start publishing.** One article or episode a week, consistently, beats
    everything else here over a year — and it is the one that compounds.
+3. **Collect five testimonials.** From the first five women who finish the
+   seven days. `/stories` has been empty since the day it was built.
