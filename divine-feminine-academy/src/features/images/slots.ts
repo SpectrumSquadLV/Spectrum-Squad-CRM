@@ -84,6 +84,40 @@ export const imageSlots: readonly ImageSlot[] = [
     },
   },
   {
+    key: 'home-life',
+    label: 'The life, not the portrait',
+    where: 'Home page, the full-width band after Money / Love / Yourself',
+    brief:
+      'Not a portrait — a life. You somewhere real, doing something ordinary and good, with the place around you visible. This is the only frame on the page that shows what any of the work is FOR, which is why it comes straight after the three things that change.',
+    desktop: {
+      ratio: '3 / 2',
+      maxPx: 2400,
+      framing: 'You to one side, the place you are in filling the rest.',
+    },
+    mobile: {
+      ratio: '4 / 5',
+      maxPx: 1200,
+      framing: 'Closer, but keep enough of the surroundings to read as a place.',
+    },
+  },
+  {
+    key: 'about-story',
+    label: 'The girl you were',
+    where: 'About, in the story section — before the bio',
+    brief:
+      'You as a child. It belongs to the part of the methodology about the version of you who existed before you learned to manage yourself around what other people thought. It is not decoration and it is never cropped clever: give it room, let it be what it is.',
+    desktop: {
+      ratio: '4 / 5',
+      maxPx: 1200,
+      framing: 'Her face, unhurried. Nothing cropped tight.',
+    },
+    mobile: {
+      ratio: '4 / 5',
+      maxPx: 900,
+      framing: 'The same.',
+    },
+  },
+  {
     key: 'about-portrait',
     label: 'The portrait on About',
     where: 'About, beside your story',
@@ -105,7 +139,7 @@ export const imageSlots: readonly ImageSlot[] = [
     label: 'ME VS HER',
     where: 'The $11 challenge page, edge to edge under the headline',
     brief:
-      'Some tension in it. Not smiling is better than smiling here — this page asks something of her, and a grin undercuts the ask.',
+      'Close and inward. This page is about meeting the version of you who has been managing everything, so the frame wants introspection rather than performance — near enough to see your face thinking. Not smiling is better than smiling here.',
     desktop: {
       ratio: '3 / 2',
       maxPx: 2000,

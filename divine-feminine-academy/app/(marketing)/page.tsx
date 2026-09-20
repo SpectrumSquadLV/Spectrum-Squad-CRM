@@ -54,8 +54,9 @@ const lives = [
 ]
 
 export default async function HomePage() {
-  const [hero, manifesto] = await Promise.all([
+  const [hero, life, manifesto] = await Promise.all([
     siteImage('home-hero'),
+    siteImage('home-life'),
     siteImage('statement-portrait'),
   ])
 
@@ -130,11 +131,31 @@ export default async function HomePage() {
       </Section>
 
       {/*
+        What all of that is actually for.
+        The only frame on the page that shows a life rather than a portrait,
+        and it comes straight after the three things that change. One sentence
+        on it and nothing else - the picture is doing the arguing.
+
+        No words on this one at any width. There is no flat ground in it: the
+        frame is hedges, palms and a mountain range, and verify:photo-type
+        measured the eyebrow at 3.43:1 against it. A plate with the line under
+        it is both readable and the better composition.
+      */}
+      <PhotoBand
+        className="mt-24 md:mt-32"
+        images={life}
+        slot={imageSlot('home-life')!}
+        eyebrow="What it is for"
+        headline={<>A Tuesday that feels like yours.</>}
+        overlay={false}
+      />
+
+      {/*
         The turn. She is seated to the right of this frame with a wall of empty
         plaster beside her, so the largest type on the site goes in that wall.
       */}
       <PhotoBand
-        className="mt-24 md:mt-32"
+        className="mt-20 md:mt-24"
         images={manifesto}
         slot={imageSlot('statement-portrait')!}
         eyebrow="Day five"

@@ -16,7 +16,10 @@ export const metadata: Metadata = {
 }
 
 export default async function AboutPage() {
-  const portrait = await siteImage('about-portrait')
+  const [portrait, story] = await Promise.all([
+    siteImage('about-portrait'),
+    siteImage('about-story'),
+  ])
 
   return (
     <>
@@ -56,6 +59,47 @@ export default async function AboutPage() {
           <Link href="/legal/disclaimer">Read the full disclaimer</Link>
         </Button>
       </Section>
+
+      {/*
+        The girl before.
+        Placed on its own, at a size that says it matters, because the
+        methodology turns on her: the version who existed before any of this
+        was being managed for anybody else's benefit. Never cropped clever and
+        never with words across her.
+      */}
+      {story && (
+        <Section className="pt-20 md:pt-28">
+          <Rule tone="gilt" />
+          <div className="mt-14 grid gap-10 md:grid-cols-[minmax(0,22rem)_1fr] md:items-center md:gap-16">
+            <SiteImageFrame slot={imageSlot('about-story')!} className="rounded-xl">
+              <SiteImage
+                images={story}
+                slot={imageSlot('about-story')!}
+                sizes="(min-width: 768px) 22rem, 100vw"
+              />
+            </SiteImageFrame>
+
+            <div>
+              <Eyebrow>Before</Eyebrow>
+              <h2 className="mt-5 text-3xl md:text-4xl">
+                She was not managing anything yet.
+              </h2>
+              <Prose className="mt-6">
+                <p>
+                  There is a version of every woman who existed before she
+                  learned to read a room on the way into it — before she worked
+                  out which parts of herself were easier for other people to
+                  hold.
+                </p>
+                <p>
+                  She is not gone. She is who ME has been protecting the whole
+                  time.
+                </p>
+              </Prose>
+            </div>
+          </div>
+        </Section>
+      )}
 
       <Section className="pb-24">
         {portrait && (

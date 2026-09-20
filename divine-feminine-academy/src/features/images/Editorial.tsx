@@ -37,6 +37,7 @@ export function PhotoBand({
   place = 'top-left',
   mobilePlace = 'top',
   mobileOverlay = false,
+  overlay = true,
   priority = false,
   className,
 }: {
@@ -62,6 +63,18 @@ export function PhotoBand({
    * claim about a specific crop, made after looking at it.
    */
   mobileOverlay?: boolean
+  /**
+   * Whether the words ever sit on the photograph at all.
+   *
+   * False for a frame with no flat ground in it. A studio portrait against
+   * plaster has an empty half to put a headline in; a terrace above a vineyard
+   * has hedges, palms and a mountain range, and type lands on all of them at
+   * every width — the eyebrow on that frame measured 3.43:1, which is not a
+   * contrast failure to tune away but a photograph saying it is not that kind
+   * of picture. It becomes a plate with the line beneath it instead, which is
+   * the stronger composition anyway.
+   */
+  overlay?: boolean
   priority?: boolean
   className?: string
 }) {
@@ -120,14 +133,18 @@ export function PhotoBand({
    * The region has to be narrower than the emptiness it sits in, at every
    * width, not just the one it was designed at.
    */
-  const desktopRegion = {
+  const desktopRegion = !overlay
+    ? 'hidden'
+    : {
     'top-left': 'xl:inset-x-0 xl:top-0 xl:h-1/2 xl:items-start xl:justify-start',
     top: 'xl:inset-x-0 xl:top-0 xl:h-1/2 xl:items-start xl:justify-center xl:text-center',
     left: 'xl:inset-y-0 xl:left-0 xl:w-[42%] xl:items-center xl:justify-start',
     'bottom-left': 'xl:inset-x-0 xl:bottom-0 xl:h-1/2 xl:items-end xl:justify-start',
-  }[place]
+      }[place]
 
-  const mobileRegion = mobileOverlay
+  const mobileRegion = !overlay
+    ? 'hidden'
+    : mobileOverlay
     ? mobilePlace === 'bottom'
       ? 'inset-x-0 bottom-0 h-1/2 items-end'
       : 'inset-x-0 top-0 h-1/2 items-start'
@@ -163,8 +180,8 @@ export function PhotoBand({
         A plate and then the line under it - which is how a magazine would set
         this anyway, and never how a squeezed desktop layout looks.
       */}
-      {!mobileOverlay && (
-        <div className="px-5 pb-4 pt-10 xl:hidden">
+      {(!mobileOverlay || !overlay) && (
+        <div className={cn('px-5 pb-4 pt-10 md:px-8', overlay && 'xl:hidden')}>
           <div className="max-w-2xl">{words}</div>
         </div>
       )}
