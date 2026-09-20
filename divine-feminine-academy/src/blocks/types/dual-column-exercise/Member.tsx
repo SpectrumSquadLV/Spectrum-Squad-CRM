@@ -1,34 +1,10 @@
 'use client'
 
-import { z } from 'zod'
 import { Field, Textarea } from '@/design-system/primitives'
-import type { BlockDefinition, BlockMemberProps } from '../contract'
+import type { BlockMemberProps } from '../../contract'
+import type { Config, Response } from './schema'
 
-/**
- * Day 1: Current Me / HER.
- *
- * The output of this block is the woman's HER profile, which every later
- * program reads from. It is the reason the platform remembers who she is
- * becoming rather than just what she has watched.
- */
-const configSchema = z.object({
-  prompt: z.string(),
-  triggerLabel: z.string().default('What sets this off?'),
-  currentLabel: z.string().default('Current Me responds by...'),
-  herLabel: z.string().default('HER responds by...'),
-  helper: z.string().optional(),
-})
-
-const responseSchema = z.object({
-  trigger: z.string().min(1),
-  currentResponse: z.string().min(1),
-  herResponse: z.string().min(1),
-})
-
-type Config = z.infer<typeof configSchema>
-type Response = z.infer<typeof responseSchema>
-
-function Member({
+export function DualColumnMember({
   blockId,
   config,
   value,
@@ -77,16 +53,4 @@ function Member({
       </div>
     </div>
   )
-}
-
-export const dualColumnExercise: BlockDefinition<typeof configSchema, Response> = {
-  type: 'dual_column_exercise',
-  label: 'Current Me / HER',
-  description:
-    'Two columns: how she responds now, how HER responds. Writes to her HER profile.',
-  configSchema,
-  responseSchema,
-  Member,
-  isSensitive: false,
-  writesTo: ['her_patterns'],
 }

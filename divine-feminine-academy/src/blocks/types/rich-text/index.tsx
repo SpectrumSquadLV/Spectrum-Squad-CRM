@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { BlockDefinition, BlockMemberProps } from '../contract'
+import type { BlockDefinition, BlockMemberProps } from '../../contract'
 
 const configSchema = z.object({
   heading: z.string().optional(),

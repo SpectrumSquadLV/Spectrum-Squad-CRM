@@ -8,8 +8,9 @@ A website: one Next.js app serving three faces on one domain.
 
 Mobile-first. Most women arrive on a phone from Instagram.
 
-This is **Phase 1: the foundation**. There is no challenge content, no
-checkout and no CRM screens yet — see the roadmap below.
+**Phases 1 and 2 are built**: the foundation, the public site and identity.
+There is no challenge content, no checkout and no CRM screens yet — see the
+roadmap below.
 
 ---
 
@@ -18,13 +19,19 @@ checkout and no CRM screens yet — see the roadmap below.
 | Area | Status |
 | --- | --- |
 | Next.js 16 + TypeScript + Tailwind v4 | Built, builds clean |
-| Design tokens + primitives | Built |
+| Design tokens + primitives + patterns | Built |
 | Living style guide (`/admin/design`) | Built — **start here** |
-| Database schema (51 tables, 25 enums) | Built, migration generated |
+| Database schema (51 tables, 25 enums) | Built, migrations applied and tested |
 | Permissions model + actor context | Built |
 | Journal encryption | Built, verified (`npm run verify:crypto`) |
+| Row-level security | Built, verified (`npm run verify:rls`) |
 | Block registry + 3 reference block types | Built |
-| Auth, challenge engine, CRM, checkout | **Not built** — Phase 2+ |
+| Public site (10 pages, SEO, legal) | Built |
+| Sign-up / sign-in by magic link | Built |
+| Auth gate + session refresh (`proxy.ts`) | Built |
+| Member portal shell + account page | Built |
+| Crisis resources component | Built — **US resources need confirming** |
+| Challenge engine, CRM, checkout | **Not built** — Phase 3+ |
 
 ## Running it
 
@@ -40,9 +47,19 @@ Look at **`/admin/design`** first. Every token and primitive renders there.
 npm run typecheck      # tsc, strict
 npm run build          # production build
 npm run verify:crypto  # 8 checks on journal encryption
+npm run verify:rls     # 11 checks that RLS really isolates members
 npm run db:generate    # regenerate SQL after a schema change
 npm run db:migrate     # apply migrations (needs DATABASE_URL)
 ```
+
+`verify:rls` builds a throwaway database from the migrations, seeds two members
+and a coach, and proves that neither member can read the other's journal and
+that the coach can read neither — while still seeing engagement metadata. It
+needs a Postgres you can `CREATE DATABASE` on (`PGHOST`/`PGPORT`/`PGUSER`).
+
+The style guide at `/admin/design` sits behind the admin gate in production. In
+development it opens without a login, so you can review design tokens before
+Supabase is configured.
 
 ---
 
@@ -92,13 +109,16 @@ how an account deletion request is honoured.
 
 ### Three layers of enforcement
 
-1. **Middleware** on route groups — the coarse gate. *(Phase 2)*
+1. **`proxy.ts`** on route groups — the coarse gate. It refreshes the session
+   cookie and keeps signed-out visitors out of `/my-academy` and `/admin`. With
+   no Supabase credentials it fails *closed*. (Next 16 renamed this file
+   convention from `middleware` to `proxy`.)
 2. **The actor context** (`src/lib/permissions/actor.ts`) — every query
    function takes who is asking as its first argument. There is no overload
    without it, so it cannot be forgotten: the code will not compile. **This is
    where authorization actually lives.**
 3. **Postgres row-level security** — the backstop, so a mistake in application
-   code does not become a breach. *(Phase 2)*
+   code does not become a breach. Proven by `npm run verify:rls`.
 
 Named rules live in `src/lib/permissions/policy.ts`.
 
@@ -153,10 +173,10 @@ Tokens live in `app/globals.css`. Change one, then check `/admin/design`.
 
 ## Roadmap
 
-1. **Foundation** — *this*
-2. **Public site + identity** — homepage, sales pages, signup, magic link
-3. **Challenge engine** — the day experience, HER profile, I CHOSE HER, RETURN,
-   journal, HER Code. *7 DAYS TO HER runs end to end after this.*
+1. **Foundation** — *done*
+2. **Public site + identity** — *done*
+3. **Challenge engine** — *next.* The day experience, HER profile, I CHOSE HER,
+   RETURN, journal, HER Code. *7 DAYS TO HER runs end to end after this.*
 4. **LMS + assessments + certificates** — admin program builder, pre/post
    assessments, certificate generation and public verification
 5. **CRM + commerce** — pipeline, Stripe checkout, payment plans, coupons.
@@ -176,6 +196,20 @@ architecture document.
    (`offers` supports both; the policy needs deciding before checkout is built)
 4. Video in the challenge, community, SMS reminders, dark mode
 
+## Placeholders
+
+Copy and data that are **not real yet** are wrapped in `<Placeholder>`, which
+renders a visible dashed box. That is deliberate: placeholder content that
+looks finished is how invented testimonials ship by accident.
+
+```bash
+grep -rn "<Placeholder" app src   # the list should be empty before launch
+```
+
+`/stories` is deliberately empty. No testimonial is ever invented; real ones
+come from the `testimonials` table, which carries `is_placeholder` and
+`consented_at` columns for exactly this reason.
+
 ## Duty of care
 
 Day 2 asks a woman where she first learned she was not worthy of love. Some
@@ -184,5 +218,10 @@ will write about abuse. Before launch this needs:
 - a clear "this is education, not therapy" disclaimer;
 - a visible crisis-resources link inside the journal and RETURN flows;
 - a written policy for what happens if concerning content reaches a human.
+
+The `CrisisResources` component (`src/features/care/CrisisResources.tsx`) is
+built and already renders inside the reflection block. **Its resources are US
+phone lines and must be confirmed current before launch**, with a plan for
+women outside the US. The disclaimer page exists; the written policy does not.
 
 Cheap to build in now, and the main legal exposure if skipped.
