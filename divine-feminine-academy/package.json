@@ -42,7 +42,8 @@
     "verify:journeys": "tsx scripts/verify-journeys.mts",
     "verify:sequences": "tsx --conditions=react-server scripts/verify-sequences.mts",
     "verify:writing": "tsx --conditions=react-server scripts/verify-writing.mts",
-    "verify:cohorts": "tsx --conditions=react-server scripts/verify-cohorts.mts"
+    "verify:cohorts": "tsx --conditions=react-server scripts/verify-cohorts.mts",
+    "verify:audience": "tsx --conditions=react-server scripts/verify-audience.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",

@@ -38,20 +38,24 @@ export default async function QuizPage() {
     <Section className="pt-14 md:pt-24 pb-24">
       <Eyebrow>Free · about 90 seconds</Eyebrow>
       <h1 className="mt-6 text-3xl md:text-5xl">
-        Which version of you is running the show?
+        Which version of ME is running the show?
       </h1>
 
       <Prose className="mt-8 text-lg">
         <p>
-          When something threatens you, you do not think your way through it.
-          Something older than thinking takes the wheel, and it has been driving
-          since long before you could have stopped it.
+          There is a version of you whose whole job has been to make you feel
+          good enough. Call her ME. She has been at it a long time, and she has
+          been good at it.
         </p>
         <p>
-          There are four of her: the one who <strong>fights</strong>, the one
-          who <strong>runs</strong>, the one who <strong>freezes</strong>, and
-          the one who <strong>goes quiet</strong>. Every one of them is
-          protecting something. Only one of them is usually driving.
+          ME has four strategies: she <strong>fights</strong>, she{' '}
+          <strong>runs</strong>, she <strong>freezes</strong>, or she{' '}
+          <strong>goes quiet</strong>. One of them is usually driving.
+        </p>
+        <p>
+          She is not the enemy, and this does not end with getting rid of her.
+          It ends with her being understood, thanked, and finally allowed to
+          put the job down.
         </p>
       </Prose>
 

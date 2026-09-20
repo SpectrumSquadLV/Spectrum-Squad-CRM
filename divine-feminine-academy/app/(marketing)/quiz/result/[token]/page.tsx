@@ -50,7 +50,11 @@ export default async function QuizResultPage({
 
   return (
     <Section className="pt-14 md:pt-24 pb-24">
-      <Eyebrow>{contact?.firstName ? `${contact.firstName}, this is her` : 'Your result'}</Eyebrow>
+      <Eyebrow>
+        {contact?.firstName
+          ? `${contact.firstName}, meet your ME`
+          : 'Meet your ME'}
+      </Eyebrow>
 
       <h1 className="mt-6 text-4xl md:text-6xl">{archetype.name}</h1>
       <p className="mt-4 font-display text-xl text-clay-deep md:text-2xl">
@@ -147,20 +151,29 @@ export default async function QuizResultPage({
           })}
         </ul>
         <p className="mt-5 text-2xs text-ink-faint">
-          All four live in you. This is which one answers the door first.
+          All four of these are ME. This is the one who answers the door first.
         </p>
       </section>
 
       <Rule tone="gilt" className="my-14" />
 
       <section>
-        <h2 className="text-2xl md:text-3xl">So what do you do about her?</h2>
+        <h2 className="text-2xl md:text-3xl">So what happens to her?</h2>
         <Prose className="mt-5 text-lg">
           <p>
-            You do not get rid of her — she saved you once. You learn to notice
-            her arriving, and you build somewhere else to go. That is the whole
-            of ME VS HER: seven days, one small thing a day, in your own
-            time.
+            Nothing you would do to an enemy. ME is not one — she took a job
+            nobody else was doing, and she has held it for years. Her whole
+            task has been to make you feel good enough.
+          </p>
+          <p>
+            You see her. You understand where she came from. You love her for
+            it. You look honestly at what she has been creating. And then you
+            meet <strong>HER</strong> — the version of you who is not trying to
+            feel good enough, because she already knows she is.
+          </p>
+          <p>
+            ME gets to retire. That is the whole of ME VS HER: seven days, one
+            small thing a day, in your own time.
           </p>
         </Prose>
         <div className="mt-8 flex flex-wrap gap-3">

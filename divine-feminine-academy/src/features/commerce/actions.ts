@@ -155,7 +155,7 @@ export async function startCheckout(
         .values({
           email: input.email,
           firstName: input.firstName || null,
-          acquisitionSource: 'checkout',
+          acquisitionSource: `checkout:${offerRow.program.slug}`,
           crmStageId: defaultStage?.id ?? null,
           lastActivityAt: now,
         })

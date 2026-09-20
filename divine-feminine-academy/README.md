@@ -52,6 +52,7 @@ keys are configured. ME VS HER is on sale at **$11**, active on first seed. The 
 | **The archetype quiz** | Built, verified (`verify:archetypes`, `verify:quiz`, `verify:quiz-flow`) |
 | Quiz result copy (the four) | **Real first-draft copy — read it aloud and make it yours** |
 | Sitemap + robots | Built |
+| Audience view — where everybody came from | Built, verified (`verify:audience`) |
 | Social share cards for the quiz | Built |
 | Certificates + public verification | Built, verified (`verify:certificates`, `verify:issuance`) |
 | ME VS HER curriculum | **Placeholder copy only** |
@@ -207,6 +208,39 @@ archive cannot mail your whole list.
 Each piece gets its own generated social card, an `Article` or `PodcastEpisode`
 structured-data block, and a sitemap entry the moment it goes live — no deploy.
 
+## Audience — where everybody came from
+
+`/admin/audience`. The question an owner asks every week: which of my things is
+actually bringing people in?
+
+**Four numbers at the top.** The one that matters is **reachable** — everybody
+minus the women who unsubscribed and the addresses that bounced. A list size
+that counts people you can no longer write to is a vanity number, and it is the
+one that makes a perfectly good send look like it failed.
+
+**Where they came from,** grouped: the quiz, writing, ME VS HER, The Divine
+Feminine, the assessment, cohort waitlists, straight to the site.
+
+**Broken down,** to the exact door: which piece of writing, which archetype
+page she recognised herself on, which programme she bought. Sources are stored
+as machine strings (`writing:almost-ready-is-a-decision`) and translated in one
+place — and a source the translator has never heard of is **shown as it was
+stored** rather than swallowed into "Other", because a bucket is not an answer
+to "where did she come from".
+
+**Every time somebody opted in,** counted from the event log rather than the
+contact. That is a different question: `acquisitionSource` is where she came
+from the *first* time and never changes, while these are every moment she chose
+to hear from you. A woman who found you through the quiz and later subscribed
+from an article appears once in the table and twice here. Both are correct.
+
+**Who just arrived,** newest first, with the door she came through.
+
+It shows email addresses, because it is your own list on a staff-only page.
+It shows **nothing anybody wrote** — no journal, no quiz answers, no assessment
+responses — and a test seeds a woman with a real encrypted entry and proves
+none of it, nor its ciphertext, reaches the page.
+
 ## Deploying
 
 **[DEPLOY.md](./DEPLOY.md) is the runbook.** Ordered steps, each saying what
@@ -259,6 +293,7 @@ npm run verify:quiz         # 36 the quiz end to end (needs DATABASE_URL)
 npm run verify:sequences    # 87 the four email sequences (needs DATABASE_URL)
 npm run verify:writing      # 96 the content engine and its markdown (needs DATABASE_URL)
 npm run verify:cohorts      # 62 the cohort window, and two regressions (needs DATABASE_URL)
+npm run verify:audience     # 44 where everybody came from (needs DATABASE_URL)
 npm run verify:rls          # 11 that RLS really isolates members
 
 # Needs the app running (npm run build && npm start):

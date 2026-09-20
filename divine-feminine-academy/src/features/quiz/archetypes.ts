@@ -1,16 +1,28 @@
 /**
- * The four versions of her.
+ * THE FOUR VERSIONS OF ME.
  *
- * Every one of these is a PROTECTIVE MODE, not a personality defect. Fight,
- * flight, freeze and sulk are what a nervous system does when something is
- * unsafe, and they are all - every one of them - a form of self-protection
- * that worked at the time. A quiz that tells a woman she is broken converts
- * once and then she never opens an email again. A quiz that tells her what she
- * has been protecting converts, and she forwards it to three friends.
+ * Not four personality types. Four strategies ME uses, and ME is the version
+ * of her whose whole job has been to make her feel good enough.
+ *
+ * ME developed these through experience. She defends, controls, withdraws,
+ * escapes, proves herself, seeks validation, keeps score - and every one of
+ * those was, at some point, the thing that worked. Fight, flight, freeze and
+ * sulk are what a nervous system does when something is unsafe.
+ *
+ * ME IS NOT THE ENEMY. This is the line the whole quiz turns on. The
+ * progression is see ME, understand ME, love ME, recognise what ME has been
+ * creating, and only then meet HER. ME is not destroyed or rejected at the
+ * end of it: she is understood, thanked, and allowed to retire from a job she
+ * no longer has to do. HER does not spend her life trying to feel good
+ * enough, because HER already knows she is.
  *
  * So the copy rule for this file: name the behaviour honestly, name the cost
- * honestly, and never imply she is the problem. The mode is the problem, and
- * the mode is not her.
+ * honestly, and never imply she is the problem. ME is not the problem either
+ * - ME is the solution to a problem that has since passed.
+ *
+ * A quiz that tells a woman she is broken converts once and then she never
+ * opens an email again. A quiz that tells her what she has been protecting
+ * converts, and she forwards it to three friends.
  *
  * Pure data and pure functions. No database, no clock, no React - so the
  * scoring can be tested directly and the copy can be read by a non-developer
@@ -75,7 +87,7 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     name: 'The Commander',
     tagline: 'You handle it. You have always handled it.',
     oneLiner:
-      'When something threatens you, you get bigger, faster and more competent — and you do it alone.',
+      'This is the ME who gets bigger, faster and more capable the second something threatens her — and does it alone.',
     soundsLike: [
       'If I do not do it, it does not get done.',
       'I am not upset, I am just being realistic.',
@@ -105,7 +117,7 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     name: 'The Escape Artist',
     tagline: 'You do not stay long enough to be let down.',
     oneLiner:
-      'When something threatens you, you find the exit — a new plan, a new city, a new version of your life — before it can find you.',
+      'This is the ME who finds the exit — a new plan, a new city, a new version of your life — before anything can find her.',
     soundsLike: [
       'I think I have outgrown this.',
       'I just need a fresh start.',
@@ -134,7 +146,7 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     name: 'The Watcher',
     tagline: 'You are waiting until you are sure. You have been waiting a while.',
     oneLiner:
-      'When something threatens you, you go still — researching, preparing, almost-ready — because moving in the wrong direction feels worse than not moving at all.',
+      'This is the ME who goes still — researching, preparing, almost-ready — because moving in the wrong direction feels worse than not moving at all.',
     soundsLike: [
       'I just need to think about it a bit more.',
       'Now is not the right time.',
@@ -163,7 +175,7 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     name: 'The Quiet Storm',
     tagline: 'You went quiet. You are still keeping score.',
     oneLiner:
-      'When something threatens you, you withdraw — you say you are fine, you give less, and you wait to be noticed.',
+      'This is the ME who withdraws — says she is fine, gives a little less, and waits to be noticed.',
     soundsLike: [
       'It is fine. Honestly. Forget it.',
       'After everything I do for them.',

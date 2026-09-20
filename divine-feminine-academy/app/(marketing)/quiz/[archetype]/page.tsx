@@ -47,7 +47,7 @@ export default async function ArchetypePage({
 
   return (
     <Section className="pt-14 md:pt-24 pb-24">
-      <Eyebrow>One of the four</Eyebrow>
+      <Eyebrow>One of the four versions of ME</Eyebrow>
       <h1 className="mt-6 text-4xl md:text-6xl">{archetype.name}</h1>
       <p className="mt-4 font-display text-xl text-clay-deep md:text-2xl">
         {archetype.tagline}
@@ -108,13 +108,14 @@ export default async function ArchetypePage({
 
       <section>
         <h2 className="text-2xl md:text-3xl">
-          Is she actually the one running yours?
+          Is she the ME running yours?
         </h2>
         <Prose className="mt-5 text-lg">
           <p>
-            There are four, and most women recognise themselves in more than
-            one. Twelve questions, about ninety seconds, and you get the whole
-            read — including the one line that usually lands hardest.
+            There are four versions of ME, and most women recognise themselves
+            in more than one. Twelve questions, about ninety seconds, and you
+            get the whole read — including the one line that usually lands
+            hardest.
           </p>
         </Prose>
         <div className="mt-8 flex flex-wrap gap-3">
@@ -125,7 +126,7 @@ export default async function ArchetypePage({
       </section>
 
       <section className="mt-20 border-t border-rule pt-10">
-        <h2 className="font-display text-lg">The other three</h2>
+        <h2 className="font-display text-lg">The other three MEs</h2>
         <ul className="mt-5 grid gap-3 sm:grid-cols-3">
           {archetypeList
             .filter((a) => a.slug !== archetype.slug)
