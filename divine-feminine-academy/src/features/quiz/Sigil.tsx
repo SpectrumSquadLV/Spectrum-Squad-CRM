@@ -34,45 +34,91 @@ const ink = 'currentColor'
 const gilt = 'var(--color-gilt, #b2914f)'
 
 function Commander({ variant }: { variant: SigilVariant }) {
+  /*
+   * A shield, not an arrow.
+   *
+   * The first version put a blade on a vertical axis that ran past its guard
+   * in both directions, and the eye read a compass - something aimed
+   * outward. The Commander's psychology is the opposite of aim: protection
+   * hardened into control, a shield carried so long she forgot she was
+   * holding it. So it is a closed, symmetrical form that CONTAINS, with one
+   * band across it and nothing pointing anywhere.
+   *
+   * Straight lines only. A curved shield reads as heraldry; an angular one
+   * reads as geometry, which is the family these four belong to.
+   *
+   * The proportions took two more passes. Equal halves - a shoulder block as
+   * deep as the taper below it - read as an envelope rather than a shield.
+   * Correcting that helped; the band across the shoulder did not, wherever it
+   * sat. Any horizontal inside the upper block cuts a strip off the top, and
+   * a strip off the top of a rectangle is a flap. So there is no band.
+   *
+   * What is left is the vessel, the shield and one gilt mark at its heart.
+   * Three elements, the same as The Watcher, and the plainest of the four -
+   * which is right for the protector whose whole strategy is that nothing
+   * gets through.
+   */
   if (variant === 'mark') {
     return (
       <>
         <circle cx="60" cy="60" r="44" fill="none" stroke={ink} strokeWidth="2.5" />
-        <path d="M60 30 L60 92" fill="none" stroke={ink} strokeWidth="3" strokeLinecap="round" />
-        <path d="M44 52 L60 30 L76 52" fill="none" stroke={ink} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M40 66 L80 66" fill="none" stroke={ink} strokeWidth="3" strokeLinecap="round" />
+        <path
+          d="M38 34 L82 34 L82 58 L60 88 L38 58 Z"
+          fill="none"
+          stroke={ink}
+          strokeWidth="3"
+          strokeLinejoin="round"
+        />
       </>
     )
   }
   return (
     <>
       <circle cx="60" cy="60" r="44" fill="none" stroke={ink} strokeWidth="1.5" />
-      <path d="M60 26 L60 96" fill="none" stroke={ink} strokeWidth="2" strokeLinecap="round" />
-      <path d="M42 50 L60 26 L78 50" fill="none" stroke={ink} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M38 66 L82 66" fill="none" stroke={ink} strokeWidth="2" strokeLinecap="round" />
-      <circle cx="60" cy="66" r="3" fill={gilt} />
+      <path
+        d="M38 34 L82 34 L82 58 L60 88 L38 58 Z"
+        fill="none"
+        stroke={ink}
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <circle cx="60" cy="54" r="3" fill={gilt} />
     </>
   )
 }
 
 function EscapeArtist({ variant }: { variant: SigilVariant }) {
+  /*
+   * A road out, not an arrow and not a menu.
+   *
+   * Two attempts got this wrong in opposite directions. Three evenly stacked
+   * horizontals read as a hamburger icon. Three lines converging on a point
+   * past the opening read as a paper plane - directional, aimed, which is the
+   * Commander's problem rather than hers.
+   *
+   * She is not aiming at anything. She is leaving. So it is a single path
+   * that starts low inside the circle, sweeps up and out through the break,
+   * and flattens as it goes - something receding rather than something
+   * launched. One shorter curve beneath it is the trace of the same
+   * movement, stopping before the edge.
+   *
+   * Curves here and straight lines in the Commander is deliberate: the two
+   * loudest protectors should not be confusable at a glance.
+   */
   if (variant === 'mark') {
     return (
       <>
         <path d="M92 38 A44 44 0 1 0 92 82" fill="none" stroke={ink} strokeWidth="2.5" strokeLinecap="round" />
-        <path d="M36 60 L106 60" fill="none" stroke={ink} strokeWidth="3" strokeLinecap="round" />
-        <path d="M44 42 L94 42" fill="none" stroke={ink} strokeWidth="3" strokeLinecap="round" />
-        <path d="M44 78 L94 78" fill="none" stroke={ink} strokeWidth="3" strokeLinecap="round" />
+        <path d="M30 78 Q58 78 78 62 Q96 48 112 46" fill="none" stroke={ink} strokeWidth="3" strokeLinecap="round" />
       </>
     )
   }
   return (
     <>
       <path d="M92 38 A44 44 0 1 0 92 82" fill="none" stroke={ink} strokeWidth="1.5" strokeLinecap="round" />
-      <path d="M40 48 L98 48" fill="none" stroke={ink} strokeWidth="2" strokeLinecap="round" />
-      <path d="M34 60 L108 60" fill="none" stroke={ink} strokeWidth="2" strokeLinecap="round" />
-      <path d="M40 72 L98 72" fill="none" stroke={ink} strokeWidth="2" strokeLinecap="round" />
-      <circle cx="108" cy="60" r="3" fill={gilt} />
+      <path d="M30 78 Q58 78 78 62 Q96 48 112 46" fill="none" stroke={ink} strokeWidth="2" strokeLinecap="round" />
+      <path d="M38 62 Q58 60 72 50" fill="none" stroke={ink} strokeWidth="2" strokeLinecap="round" />
+      <circle cx="112" cy="46" r="3" fill={gilt} />
     </>
   )
 }
@@ -133,10 +179,9 @@ const shapes: Record<
 
 /** What a screen reader gets. The symbol, described, not the archetype name. */
 const described: Record<ProtectiveMode, string> = {
-  fight:
-    'A closed circle holding an upward blade on a single axis, crossed by a guard.',
+  fight: 'A closed circle holding a shield, with a single mark at its centre.',
   flight:
-    'A circle broken open on one side, with three lines of movement leaving through the gap.',
+    'A circle broken open on one side, with a path sweeping up and out through the break.',
   freeze:
     'Two concentric circles, divided by a single horizontal threshold.',
   sulk: 'A circle with a flat surface across it, and waves moving underneath.',
