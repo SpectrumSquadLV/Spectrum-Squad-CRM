@@ -10,6 +10,36 @@
 -- service role, which bypasses them.
 --
 -- auth.uid() is Supabase's current authenticated user id.
+--
+-- Supabase defines it. A plain Postgres - Railway, Neon, a local container,
+-- anything self-hosted - does not, and every policy below is written against
+-- it. A LANGUAGE sql function body is validated when it is created, so on
+-- such a database this migration used to fail on its very first statement and
+-- take the whole deploy with it.
+--
+-- So define it here when it is absent, with the same body Supabase uses: the
+-- subject claim of the request's JWT, or NULL when there is no request. NULL
+-- is the safe direction - every policy below compares against it, so an
+-- unauthenticated connection matches nobody's rows rather than everybody's.
+--
+-- Guarded both ways, because on Supabase this schema is not ours to touch.
+
+DO $shim$
+BEGIN
+  IF to_regnamespace('auth') IS NULL THEN
+    CREATE SCHEMA auth;
+  END IF;
+
+  IF to_regprocedure('auth.uid()') IS NULL THEN
+    CREATE FUNCTION auth.uid() RETURNS uuid
+    LANGUAGE sql
+    STABLE
+    AS $fn$
+      SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+    $fn$;
+  END IF;
+END
+$shim$;
 
 -- A woman's own contact row, resolved once per policy evaluation.
 CREATE OR REPLACE FUNCTION public.current_contact_id()
