@@ -44,10 +44,20 @@ export const imageSlots: readonly ImageSlot[] = [
     protectsSubject: true,
     brief:
       'Open, expansive, looking up or out rather than at the lens. This one has to feel like arriving somewhere, so it wants air around you — the headline lives in that air. Keep yourself to one side or low in the frame and leave the rest plain.',
+    /*
+     * 3:2 rather than the 16:9 a hero usually wants.
+     *
+     * A wide window cut from a tall photograph has to span the full width, so
+     * it can only ever crop height — which means a 16:9 hero from a portrait
+     * source throws away well over half the frame and still cannot move the
+     * subject off centre. 3:2 keeps enough of the photograph for the empty
+     * ground above her head to survive, and that band is where the headline
+     * goes. A source shot wide in the first place could go wider here.
+     */
     desktop: {
-      ratio: '16 / 9',
+      ratio: '3 / 2',
       maxPx: 2400,
-      framing: 'You right of centre, low. Empty ground across the top and left.',
+      framing: 'You centred and low. Empty ground across the top for the headline.',
     },
     mobile: {
       ratio: '4 / 5',

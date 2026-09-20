@@ -2,11 +2,9 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { Button, Rule } from '@/design-system/primitives'
 import { Eyebrow, Prose, PullQuote, Section } from '@/design-system/patterns'
-import { archetypeList } from '@/features/quiz/archetypes'
 import { siteImage } from '@/db/queries/images'
-import { SiteImage, SiteImageFrame } from '@/features/images/SiteImage'
+import { PhotoBand } from '@/features/images/Editorial'
 import { imageSlot } from '@/features/images/slots'
-import { StatementBand } from '@/features/images/StatementBand'
 
 /*
  * Dynamic because the photographs come from the database, and the database is
@@ -20,34 +18,43 @@ export const dynamic = 'force-dynamic'
 export const metadata: Metadata = {
   title: 'Divine Feminine',
   description:
-    'She is not someone you become. She is someone you return to. A seven-day practice, and a place that remembers who you are becoming.',
+    'She is not someone you become. She is someone you return to. Money, love, and the way you speak to yourself when no one is listening.',
 }
 
-const areas = [
+/**
+ * The home page.
+ *
+ * Built as a scroll rather than a stack of cards, and pointed at what changes
+ * rather than at the way in. The quiz used to have a section of its own two
+ * screens down; it is a single line near the end now, because a woman arriving
+ * here is not looking for a quiz, she is looking for her money, her love and
+ * the way she speaks to herself when nobody is listening.
+ *
+ * The rhythm is deliberate and alternating: an enormous photograph, then a
+ * quiet page of words, then an enormous photograph. Two loud things in a row
+ * cancel each other out.
+ */
+
+const lives = [
   {
-    name: 'Self',
-    line: 'How you speak to yourself when no one is listening.',
-    rule: 'border-area-self',
+    word: 'Money',
+    line: 'What you believe you are allowed to want, and what you have been charging for it.',
+    rule: 'border-area-wealth',
   },
   {
-    name: 'Love',
-    line: 'What you accept, and what you stopped asking for.',
+    word: 'Love',
+    line: 'What you accept. What you stopped asking for. Who you become to keep the peace.',
     rule: 'border-area-love',
   },
   {
-    name: 'Life',
-    line: 'The days you are living versus the ones you meant to.',
-    rule: 'border-area-life',
-  },
-  {
-    name: 'Wealth',
-    line: 'What you believe you are allowed to want.',
-    rule: 'border-area-wealth',
+    word: 'Yourself',
+    line: 'How you speak to yourself when no one is listening, and whether you would say it to anybody else.',
+    rule: 'border-area-self',
   },
 ]
 
 export default async function HomePage() {
-  const [hero, statement] = await Promise.all([
+  const [hero, manifesto] = await Promise.all([
     siteImage('home-hero'),
     siteImage('statement-portrait'),
   ])
@@ -55,66 +62,81 @@ export default async function HomePage() {
   return (
     <>
       {/*
-        * Wider when there is a photograph, because the editorial measure was
-        * set for a single column of text. Put a 20rem portrait beside it and
-        * the headline is left with under 400px, which breaks "She is not
-        * someone you become" across seven lines.
-        */}
-      <Section className="pt-14 md:pt-24" width={hero ? 'wide' : 'default'}>
-        <div
-          className={
-            hero
-              ? 'grid items-center gap-10 md:grid-cols-[1fr_minmax(0,19rem)] md:gap-16'
-              : undefined
-          }
-        >
-          <div>
-            <Eyebrow>Divine Feminine</Eyebrow>
-            <h1 className="mt-6 text-3xl md:text-4xl">
-              She is not someone you <em>become</em>.
-              <br />
-              She is someone you <strong>return to</strong>.
-            </h1>
-            <Prose className="mt-8 text-lg">
-              <p>
-                There is a version of you who <em>already</em> knows what she
-                wants, says it out loud, and does not apologise for the wanting.
-                You have met her. You have just not been able to{' '}
-                <em>stay</em> with her.
-              </p>
-              <p>
-                Seven days. One practice. <strong>A way back.</strong>
-              </p>
-            </Prose>
+        The opening. She is looking up and out of frame, and the words sit in
+        the plaster above her head - the reason that crop keeps so much empty
+        ground. Nothing is ever placed over her.
+      */}
+      <PhotoBand
+        images={hero}
+        slot={imageSlot('home-hero')!}
+        eyebrow="Quiana Blake"
+        headline={
+          <>
+            You don’t need
+            <br />
+            to find her.
+          </>
+        }
+        sub="She’s already there."
+        place="top-left"
+        mobilePlace="top"
+        priority
+      />
 
-            <div className="mt-10 flex flex-wrap gap-4">
-              <Button size="lg" asChild>
-                <Link href="/me-vs-her">Start ME VS HER</Link>
-              </Button>
-              <Button size="lg" variant="secondary" asChild>
-                <Link href="/quiz">Take the quiz</Link>
-              </Button>
-            </div>
-          </div>
+      <Section className="pt-20 md:pt-28">
+        <Prose className="text-xl md:text-2xl">
+          <p>
+            There is a version of you who already knows what she wants, says it
+            out loud, and does not apologise for the wanting. You have met her.
+            You have just not been able to <em>stay</em> with her.
+          </p>
+        </Prose>
 
-          {hero && (
-            <div className="order-first md:order-none">
-              <SiteImageFrame slot={imageSlot('home-hero')!} className="rounded-xl">
-                <SiteImage
-                  images={hero}
-                  slot={imageSlot('home-hero')!}
-                  priority
-                  sizes="(min-width: 768px) 19rem, 100vw"
-                />
-              </SiteImageFrame>
-            </div>
-          )}
+        <div className="mt-12 flex flex-wrap gap-4">
+          <Button size="lg" asChild>
+            <Link href="/me-vs-her">Start ME VS HER — $11</Link>
+          </Button>
+          <Button size="lg" variant="quiet" asChild>
+            <Link href="/the-divine-feminine">The full course</Link>
+          </Button>
         </div>
       </Section>
 
-      <StatementBand
-        className="mt-6"
-        image={statement}
+      {/* Quiet, and entirely words. The loud thing is coming. */}
+      <Section className="pt-24 md:pt-32">
+        <Eyebrow>Where it shows up</Eyebrow>
+        <h2 className="mt-6 text-3xl md:text-5xl">
+          It is never only in one room.
+        </h2>
+        <Prose className="mt-6 text-lg">
+          <p>
+            It is the same woman making the same choice, in three different
+            lights. Change it in one and the others move on their own.
+          </p>
+        </Prose>
+
+        <ul className="mt-16 space-y-14">
+          {lives.map((life) => (
+            <li key={life.word} className={`border-l-2 pl-6 md:pl-10 ${life.rule}`}>
+              <h3 className="font-display text-4xl leading-none md:text-6xl">
+                {life.word}
+              </h3>
+              <p className="measure mt-4 text-base text-ink-soft md:text-lg">
+                {life.line}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </Section>
+
+      {/*
+        The turn. She is seated to the right of this frame with a wall of empty
+        plaster beside her, so the largest type on the site goes in that wall.
+      */}
+      <PhotoBand
+        className="mt-24 md:mt-32"
+        images={manifesto}
+        slot={imageSlot('statement-portrait')!}
         eyebrow="Day five"
         headline={
           <>
@@ -123,153 +145,75 @@ export default async function HomePage() {
             is you.
           </>
         }
-        answer="And that is the best news you will ever receive."
-        footnote={
-          <>
-            Not what was done to you. Not what you were handed. The part of the
-            pattern that <strong>belongs to you</strong> — because that is the
-            part you can reach, and the part that moves when you do.
-          </>
-        }
+        sub="And that is the best news you will ever receive."
+        place="left"
+        mobilePlace="top"
       />
 
-      <Section>
-        <Rule tone="gilt" />
-        <h2 className="mt-12 text-2xl">Start by meeting her</h2>
-        <Prose className="mt-4">
+      <Section className="pt-20 md:pt-28">
+        <Prose className="text-lg">
           <p>
-            Before any of it, there is one useful question: when something
-            frightens you, which version of you takes the wheel? There are four
-            of her, and ninety seconds will tell you which one has been driving.
+            Not what was done to you. Not what you were handed. Not the part
+            that was never yours to carry.
+          </p>
+          <p>
+            The part of the pattern that <strong>belongs to you</strong> —
+            because that is the part you can reach, and the part that moves
+            when you do.
           </p>
         </Prose>
-
-        <ul className="mt-10 grid gap-3 sm:grid-cols-2">
-          {archetypeList.map((a) => (
-            <li key={a.slug}>
-              <Link
-                href={`/quiz/${a.slug}`}
-                className="block h-full rounded-xl border border-rule bg-alabaster p-5 transition-colors hover:border-clay"
-              >
-                <h3 className="font-display text-lg">{a.name}</h3>
-                <p className="mt-1.5 text-2xs text-ink-muted">{a.tagline}</p>
-              </Link>
-            </li>
-          ))}
-        </ul>
-
-        <div className="mt-10">
-          <Button size="lg" asChild>
-            <Link href="/quiz">Take the quiz — free</Link>
-          </Button>
-        </div>
-      </Section>
-
-      <Section>
-        <Rule tone="gilt" />
-        <h2 className="mt-12 text-2xl">Four places it shows up</h2>
-        <Prose className="mt-4">
-          <p>
-            The pattern is never only in one room. It is the <em>same woman</em>{' '}
-            making the <em>same choice</em>, in four different lights.
-          </p>
-        </Prose>
-
-        <ul className="mt-12 grid gap-px sm:grid-cols-2">
-          {areas.map((area) => (
-            <li key={area.name} className={`border-l-2 pl-5 py-2 ${area.rule}`}>
-              <h3 className="font-display text-xl">{area.name}</h3>
-              <p className="mt-1 max-w-xs text-xs text-ink-muted">{area.line}</p>
-            </li>
-          ))}
-        </ul>
-      </Section>
-
-      <Section>
-        <Rule tone="gilt" />
-        <h2 className="mt-12 text-2xl">How it works</h2>
-
-        <ol className="mt-10 space-y-10">
-          <li>
-            <Eyebrow>One</Eyebrow>
-            <h3 className="mt-2 font-display text-xl">You name her</h3>
-            <Prose className="mt-2 text-sm">
-              <p>
-                On the first day you write two columns. What sets you off, how
-                you respond now, and how HER would respond instead. That becomes
-                your profile, and the platform keeps it.
-              </p>
-            </Prose>
-          </li>
-          <li>
-            <Eyebrow>Two</Eyebrow>
-            <h3 className="mt-2 font-display text-xl">You practise choosing her</h3>
-            <Prose className="mt-2 text-sm">
-              <p>
-                Over the week you go after the belief underneath the pattern,
-                the audience you are performing for, and the behaviour you keep
-                repeating. Then you log it, in real time, every time you choose
-                HER instead.
-              </p>
-            </Prose>
-          </li>
-          <li>
-            <Eyebrow>Three</Eyebrow>
-            <h3 className="mt-2 font-display text-xl">You learn the way back</h3>
-            <Prose className="mt-2 text-sm">
-              <p>
-                You will lose her. Everyone does. The practice that matters is
-                not staying — it is <strong>returning</strong>, and knowing
-                exactly how. That is the part you keep for good.
-              </p>
-            </Prose>
-          </li>
-        </ol>
 
         <PullQuote className="mt-16">
           You are not starting over. You are <em>coming back</em>.
         </PullQuote>
       </Section>
 
-      <Section>
+      <Section className="pt-24 md:pt-32">
         <Rule tone="gilt" />
-        <div className="mt-12">
-          <h2 className="text-2xl">What you write here stays yours</h2>
-          <Prose className="mt-4">
-            <p>
-              Your journal is encrypted before it reaches our database. Not
-              hidden behind a permission setting — <em>encrypted</em>, so that
-              nobody who works here can read it, including the woman who built
-              this.
-            </p>
-            <p>
-              We can see <em>that</em> you wrote. We cannot see{' '}
-              <em>what</em> you wrote. That is on purpose, and it is not going
-              to change.
-            </p>
-          </Prose>
-          <Button variant="link" className="mt-4" asChild>
-            <Link href="/legal/privacy">How that works</Link>
-          </Button>
-        </div>
+        <h2 className="mt-12 text-2xl md:text-4xl">
+          What you write here stays yours
+        </h2>
+        <Prose className="mt-6 text-lg">
+          <p>
+            Your journal is encrypted before it reaches our database. Not
+            hidden behind a permission setting — <em>encrypted</em>, so that
+            nobody who works here can read it, including me.
+          </p>
+          <p>
+            We can see <em>that</em> you wrote. We cannot see <em>what</em> you
+            wrote. That is on purpose, and it is not going to change.
+          </p>
+        </Prose>
+        <Button variant="link" className="mt-6" asChild>
+          <Link href="/legal/privacy">How that works</Link>
+        </Button>
       </Section>
 
-      <Section className="pb-24">
-        <div className="overflow-hidden rounded-xl border border-rule bg-alabaster">
+      <Section className="pb-32 pt-24 md:pt-32">
+        <Rule tone="gilt" />
+        <h2 className="mt-12 text-3xl md:text-5xl">Seven days.</h2>
+        <Prose className="mt-6 text-lg">
+          <p>
+            About twenty minutes a day, on your phone, starting whenever you
+            do. You will need somewhere to be honest.
+          </p>
+        </Prose>
+        <Button size="lg" className="mt-10" asChild>
+          <Link href="/me-vs-her">Begin — $11</Link>
+        </Button>
 
-          <div className="p-8 md:p-14">
-          <h2 className="text-2xl">Seven days.</h2>
-          <Prose className="mt-4">
-            <p>
-              Start today. You will need about twenty minutes, and somewhere to
-              be honest.
-            </p>
-          </Prose>
-          <Button size="lg" className="mt-8" asChild>
-            <Link href="/me-vs-her">Begin</Link>
-          </Button>
-          </div>
-        </div>
+        {/*
+          The quiz, in one line.
+          It used to have a section two screens up, which pointed the whole page
+          at the way in rather than at what changes.
+        */}
+        <p className="mt-12 text-sm text-ink-muted">
+          Not ready to start?{' '}
+          <Link href="/quiz" className="underline underline-offset-4 hover:text-clay-deep">
+            Find out which version of you is running the show
+          </Link>{' '}
+          — ninety seconds, free.
+        </p>
       </Section>
     </>
   )
