@@ -18,7 +18,7 @@
   --color-ink: #1a1614;          /* warm near-black. body text, dark surfaces */
   --color-ink-soft: #443c37;     /* secondary text */
   --color-ink-muted: #6f645d;    /* tertiary text, captions */
-  --color-ink-faint: #a0948c;    /* disabled, placeholder */
+  --color-ink-faint: #78685f;    /* disabled, placeholder - WCAG AA on bone */
 
   --color-bone: #faf7f2;         /* default page background */
   --color-alabaster: #fffdfa;    /* raised surfaces, cards */
@@ -29,7 +29,7 @@
 
   /* --- Brand accents ----------------------------------------------------- */
   --color-clay: #a97f72;         /* PRIMARY accent - muted rose-taupe */
-  --color-clay-deep: #8b6558;
+  --color-clay-deep: #7d5a4e;
   --color-clay-wash: #f3e9e4;
 
   --color-plum: #4a2f44;         /* emphasis, the HER moments */
@@ -41,15 +41,18 @@
 
   --color-gilt: #b2914f;         /* HAIRLINES AND SMALL MARKS ONLY */
 
-  /* --- The four areas ---------------------------------------------------- */
-  --color-area-self: #7c8b86;
-  --color-area-love: #c2887f;
-  --color-area-life: #c2a06b;
-  --color-area-wealth: #6a6e8c;
+  /* --- The four areas ----------------------------------------------------
+     Each is rendered as 12px TEXT inside a badge on a 5% wash of itself, so
+     each must clear 4.5:1 there - not the 3:1 that applies to a non-text
+     mark. `npm run verify:contrast` enforces it. */
+  --color-area-self: #5a6b66;
+  --color-area-love: #96544b;
+  --color-area-life: #7d6130;
+  --color-area-wealth: #565a75;
 
   /* --- Feedback ---------------------------------------------------------- */
   --color-positive: #4f6f52;
-  --color-caution: #9a7328;
+  --color-caution: #7f5d1b;
   --color-critical: #9c4a3f;
   --color-critical-wash: #f7e9e7;
 

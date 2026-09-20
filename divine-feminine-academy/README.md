@@ -8,8 +8,9 @@ A website: one Next.js app serving three faces on one domain.
 
 Mobile-first. Most women arrive on a phone from Instagram.
 
-**Phases 1–5 are built**: the foundation, the public site and identity, the
-challenge engine, the LMS/assessments/certificates, and the CRM and commerce.
+**All six phases are built.** Foundation, public site and identity, the
+challenge engine, the LMS/assessments/certificates, the CRM and commerce, and
+automations, analytics and hardening.
 
 **7 DAYS TO HER runs end to end**, a programme can be built in the admin
 without a developer, the free assessment scores and compares pre/post, and
@@ -59,7 +60,14 @@ keys are configured. Nothing is on sale yet: both Academy offers are seeded as
 | CRM: contacts, pipeline, notes, tags | Built, verified (`verify:crm-privacy`) |
 | Admin offers, coupons, orders, refunds | Built |
 | Academy pricing | **Draft offers — you decide** |
-| Automations, drip emails, analytics | **Not built** — Phase 6 |
+| Email provider + templates | Built, verified (`verify:reminders`) |
+| Automation engine | Built, verified (`verify:automation`) |
+| Day reminders in her timezone | Built, verified |
+| Funnel dashboard | Built |
+| Rate limiting | Built, verified (`verify:rate-limit`) |
+| Security headers | Built |
+| WCAG 2.2 AA | **13 pages, 0 violations** (`verify:a11y`) |
+| Content-Security-Policy | **Not done** — see Security |
 
 ## Running it
 
@@ -85,7 +93,14 @@ npm run verify:pricing      # 28 money: coupons, instalments, refunds
 npm run verify:webhooks     # 17 that forged webhooks are refused
 npm run verify:fulfilment   # 14 that paying grants access exactly once
 npm run verify:crm-privacy  # 8  that the CRM cannot read her journal
+npm run verify:automation   # 26 that nobody is emailed twice, or not at all
+npm run verify:contrast     # 29 that every colour clears WCAG AA
+npm run verify:reminders    # 15 that a reminder lands in HER morning
+npm run verify:rate-limit   # 7  that the magic-link endpoint cannot be hammered
 npm run verify:rls          # 11 that RLS really isolates members
+
+# Needs the app running (npm run build && npm start):
+BASE_URL=http://127.0.0.1:3000 npm run verify:a11y  # axe, 13 pages
 
 npm run seed:challenge  # seed 7 DAYS TO HER (placeholder curriculum)
 npm run seed:assessment # seed the free assessment (placeholder questions)
@@ -233,7 +248,7 @@ Tokens live in `app/globals.css`. Change one, then check `/admin/design`.
    assessments, certificate generation and public verification
 5. **CRM + commerce** — *done.* — pipeline, Stripe checkout, payment plans, coupons.
    *Money can be taken after this.*
-6. **Automation, analytics, hardening** — *next.* — drip sequences, funnel dashboard,
+6. **Automation, analytics, hardening** — *done.* — drip sequences, funnel dashboard,
    security review, accessibility audit
 
 ## Open decisions
@@ -387,6 +402,77 @@ returns contains any of it — for a coach *or* an owner.
 A contact is **archived, not deleted**. Her orders and certificates are
 financial and legal records. Erasing what she *wrote* is a different operation,
 done by destroying her encryption key.
+
+## Automations
+
+Two kinds, deliberately separate.
+
+**Rules** react to an event: `challenge.started`, `assessment.completed`, and
+so on. A rule matches on the event type plus small conditions over its
+metadata, waits a delay, then acts. `enroll_in_program` is deliberately left
+unimplemented — an automation that can hand out paid programmes is a hole
+waiting to be found.
+
+**Jobs** react to the passage of time, because nothing "happened": a day
+opened, or a woman did not come back. Day reminders, stall nudges and
+abandoned-checkout emails.
+
+Both run from `POST /api/cron/automations`, hourly. **Call it with
+`CRON_SECRET`** — without that variable set the endpoint refuses every request,
+because an open endpoint could trigger every email in the system.
+
+**Everything is idempotent.** Rules are keyed on (rule, contact, event); jobs
+on what the email is about, including *her local date*. Running the cron twice
+in an hour, or having two invocations overlap, sends nothing twice — a run is
+claimed before it is acted on, so the loser of a race does nothing.
+
+A run more than 36 hours stale is **skipped rather than sent late**: "Day 2 is
+open" arriving on Day 6 is worse than silence.
+
+### Email
+
+Turning off reminders never blocks **transactional** mail — a woman who
+silences marketing must not lose her own sign-in links. A **bounced or
+complained** address is never written to again. Our own send failures are
+recorded as activity, *not* as bounces, so one network blip cannot permanently
+suppress her address.
+
+## Analytics
+
+Every funnel number is a query over `activity_events` — which is why writing an
+event row for every meaningful action from Phase 1 was worth it. The most
+useful screen is day-by-day drop-off: if half of them stop on Day 2, Day 2 is
+the problem, and no amount of traffic fixes it.
+
+Journal content appears nowhere and cannot: the queries have no way to read it.
+
+## Security
+
+- **Rate limiting** on the magic-link endpoints. In-memory and per-process, so
+  on several instances the effective limit multiplies — a speed bump against a
+  script, not a defence against a distributed attack. Moving the store to Redis
+  is a drop-in change behind the same interface.
+- **Security headers** on every response: `nosniff`, `DENY` framing,
+  `strict-origin-when-cross-origin`, a locked-down `Permissions-Policy`, HSTS.
+  `x-powered-by` removed. Member and admin pages are `private, no-store`.
+- **No Content-Security-Policy yet.** Next injects inline scripts for
+  hydration, so a correct CSP needs nonces threaded through the document.
+  Shipping a permissive one with `'unsafe-inline'` would look like protection
+  while providing almost none, so it is listed here as outstanding rather than
+  faked.
+
+## Accessibility
+
+**13 pages, 0 axe violations** against WCAG 2.2 AA, in a real browser. The
+audit found real failures the first time it ran — five design tokens below the
+contrast threshold, including the four area colours used as 12px badge text.
+All were darkened, and `verify:contrast` now reads the tokens straight out of
+the stylesheet so a future tweak cannot quietly regress them.
+
+```bash
+npm run build && npm start
+BASE_URL=http://127.0.0.1:3000 npm run verify:a11y
+```
 
 ## Placeholders
 

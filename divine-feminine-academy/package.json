@@ -25,7 +25,12 @@
     "verify:webhooks": "tsx scripts/verify-webhooks.mts",
     "verify:fulfilment": "tsx --conditions=react-server scripts/verify-fulfilment.mts",
     "seed:offers": "tsx scripts/seed-offers.mts",
-    "verify:crm-privacy": "tsx --conditions=react-server scripts/verify-crm-privacy.mts"
+    "verify:crm-privacy": "tsx --conditions=react-server scripts/verify-crm-privacy.mts",
+    "verify:automation": "tsx --conditions=react-server scripts/verify-automation.mts",
+    "verify:reminders": "tsx --conditions=react-server scripts/verify-reminders.mts",
+    "verify:rate-limit": "tsx scripts/verify-rate-limit.mts",
+    "verify:a11y": "tsx scripts/verify-a11y.mts",
+    "verify:contrast": "tsx scripts/verify-contrast.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",
@@ -50,7 +55,9 @@
     "@types/node": "^22.10.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "axe-core": "^4.13.0",
     "drizzle-kit": "^0.31.10",
+    "playwright": "^1.63.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.13",
     "typescript": "^5.9.0"

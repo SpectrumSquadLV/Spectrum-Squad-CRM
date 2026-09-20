@@ -6,8 +6,31 @@ import { redirect } from 'next/navigation'
 import { z } from 'zod'
 import { db } from '@/db/client'
 import { activityEvents, contacts, crmStages, profiles } from '@/db/schema'
+import { headers } from 'next/headers'
+import { LIMITS, rateLimit } from '@/lib/security/rate-limit'
 import { siteUrl } from './env'
 import { createServerSupabase } from './server'
+
+/**
+ * Rate limit by address.
+ *
+ * The magic-link endpoints send an email to any address given, which makes
+ * them usable to spam somebody else's inbox. A per-process fixed window is a
+ * speed bump rather than a boundary - see src/lib/security/rate-limit.ts - but
+ * it stops a script.
+ */
+async function withinRateLimit(prefix: string): Promise<boolean> {
+  const list = await headers()
+  const ip =
+    list.get('x-forwarded-for')?.split(',')[0]?.trim() ??
+    list.get('x-real-ip') ??
+    'unknown'
+  const { limit, windowSeconds } = LIMITS.authRequest
+  return rateLimit(`${prefix}:${ip}`, limit, windowSeconds).allowed
+}
+
+const TOO_MANY =
+  'That is a lot of tries. Give it fifteen minutes, then check your inbox — a link may already be there.'
 
 /**
  * Sign-up and sign-in.
@@ -56,6 +79,8 @@ export async function join(
     }
     return { fieldErrors }
   }
+
+  if (!(await withinRateLimit('join'))) return { error: TOO_MANY }
 
   const input = parsed.data
 
@@ -131,6 +156,8 @@ export async function signInWithLink(
   if (!parsed.success) {
     return { fieldErrors: { email: 'That address does not look right.' } }
   }
+
+  if (!(await withinRateLimit('signin'))) return { error: TOO_MANY }
 
   const supabase = await createServerSupabase()
   const { error } = await supabase.auth.signInWithOtp({
