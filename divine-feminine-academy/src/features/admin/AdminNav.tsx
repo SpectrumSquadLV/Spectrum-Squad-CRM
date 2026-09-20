@@ -6,7 +6,11 @@ import { cn } from '@/lib/utils/cn'
 
 const links = [
   { href: '/admin', label: 'Overview', exact: true },
+  { href: '/admin/contacts', label: 'Contacts' },
+  { href: '/admin/pipeline', label: 'Pipeline' },
   { href: '/admin/programs', label: 'Programs' },
+  { href: '/admin/offers', label: 'Offers' },
+  { href: '/admin/orders', label: 'Orders' },
   { href: '/admin/assessments', label: 'Assessments' },
   { href: '/admin/certificates', label: 'Certificates' },
   { href: '/admin/design', label: 'Design' },

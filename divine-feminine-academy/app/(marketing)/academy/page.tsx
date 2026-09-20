@@ -1,7 +1,15 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
+import { and, eq } from 'drizzle-orm'
+import { db } from '@/db/client'
+import { contacts, offers, programs } from '@/db/schema'
 import { Button, Rule } from '@/design-system/primitives'
 import { Eyebrow, Placeholder, Prose, Section } from '@/design-system/patterns'
+import { CheckoutForm } from '@/features/commerce/CheckoutForm'
+import { formatMoney, offerTotalCents } from '@/features/commerce/pricing'
+import { getActor } from '@/lib/auth/actor-server'
+
+export const dynamic = 'force-dynamic'
 
 export const metadata: Metadata = {
   title: 'The Academy',
@@ -9,7 +17,40 @@ export const metadata: Metadata = {
     'The deeper work, across Self, Love, Life and Wealth — for women who have already met HER and want to stay.',
 }
 
-export default function AcademyPage() {
+export default async function AcademyPage() {
+  // Pricing is data: if there is an active offer, the page sells. If there is
+  // not, it says so rather than inventing a number.
+  const [row] = await db
+    .select({ offer: offers })
+    .from(offers)
+    .innerJoin(programs, eq(programs.id, offers.programId))
+    .where(and(eq(programs.slug, 'the-academy'), eq(offers.status, 'active')))
+    .limit(1)
+
+  // A woman already signed in should not have to retype her email.
+  const actor = await getActor()
+  const [signedIn] =
+    actor.kind === 'user' && actor.contactId
+      ? await db
+          .select({ email: contacts.email })
+          .from(contacts)
+          .where(eq(contacts.id, actor.contactId))
+          .limit(1)
+      : []
+
+  const offer = row?.offer
+  const totalCents = offer
+    ? offerTotalCents({
+        id: offer.id,
+        pricingType: offer.pricingType,
+        priceCents: offer.priceCents,
+        currency: offer.currency,
+        installments: offer.installments,
+        installmentIntervalDays: offer.installmentIntervalDays,
+        refundWindowDays: offer.refundWindowDays,
+      })
+    : 0
+
   return (
     <>
       <Section className="pt-14 md:pt-24">
@@ -69,19 +110,42 @@ export default function AcademyPage() {
 
       <Section className="pb-24">
         <Rule tone="gilt" />
-        <Placeholder
-          label="Pricing not final"
-          note="one-time vs payment plan undecided"
-          className="mt-12"
-        >
-          <p className="text-xs text-ink-soft">
-            The architecture document has this at $1,000, with a payment plan
-            and a refund window still to be decided. Nothing is charged until
-            checkout is built, and the price itself will be a row in the{' '}
-            <code className="text-clay-deep">offers</code> table — not written
-            into this page.
-          </p>
-        </Placeholder>
+
+        {offer ? (
+          <div className="mt-12 max-w-md rounded-xl border border-rule bg-alabaster p-6 md:p-8">
+            <h2 className="font-display text-xl">Join the Academy</h2>
+            <div className="mt-6">
+              <CheckoutForm
+                offerId={offer.id}
+                priceLabel={formatMoney(offer.priceCents, offer.currency)}
+                planNote={
+                  offer.pricingType === 'payment_plan' && offer.installments
+                    ? `${offer.installments} payments · ${formatMoney(totalCents, offer.currency)} in total`
+                    : undefined
+                }
+                refundNote={
+                  offer.refundWindowDays > 0
+                    ? `${offer.refundWindowDays}-day refund window.`
+                    : undefined
+                }
+                signedInEmail={signedIn?.email ?? null}
+              />
+            </div>
+          </div>
+        ) : (
+          <Placeholder
+            label="Not on sale yet"
+            note="no active offer"
+            className="mt-12"
+          >
+            <p className="text-xs text-ink-soft">
+              Checkout is built and tested, but nothing is being sold until an
+              active offer exists. Create one in{' '}
+              <code className="text-clay-deep">/admin/offers</code> — the price
+              is a row there, never a number written into this page.
+            </p>
+          </Placeholder>
+        )}
 
         <div className="mt-12">
           <h2 className="text-2xl">Start with the seven days</h2>

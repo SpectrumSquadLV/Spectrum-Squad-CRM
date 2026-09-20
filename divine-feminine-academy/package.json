@@ -20,7 +20,12 @@
     "seed:assessment": "tsx scripts/seed-assessment.mts",
     "verify:certificates": "tsx scripts/verify-certificates.mts",
     "verify:issuance": "tsx --conditions=react-server scripts/verify-issuance.mts",
-    "verify:permissions": "tsx scripts/verify-permissions.mts"
+    "verify:permissions": "tsx scripts/verify-permissions.mts",
+    "verify:pricing": "tsx scripts/verify-pricing.mts",
+    "verify:webhooks": "tsx scripts/verify-webhooks.mts",
+    "verify:fulfilment": "tsx --conditions=react-server scripts/verify-fulfilment.mts",
+    "seed:offers": "tsx scripts/seed-offers.mts",
+    "verify:crm-privacy": "tsx --conditions=react-server scripts/verify-crm-privacy.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",

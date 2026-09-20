@@ -1,0 +1,229 @@
+'use server'
+
+import { and, eq } from 'drizzle-orm'
+import { redirect } from 'next/navigation'
+import { z } from 'zod'
+import { db } from '@/db/client'
+import {
+  activityEvents,
+  contacts,
+  coupons,
+  crmStages,
+  offers,
+  orderItems,
+  orders,
+  programs,
+} from '@/db/schema'
+import { getActor } from '@/lib/auth/actor-server'
+import { siteUrl } from '@/lib/auth/env'
+import { paymentProvider } from '@/lib/payments'
+import { installmentSchedule, priceOrder, type Coupon, type Offer } from './pricing'
+
+export type CheckoutState = { error?: string }
+
+const schema = z.object({
+  offerId: z.string().uuid('That offer does not exist.'),
+  email: z.string().trim().toLowerCase().email('That address does not look right.'),
+  firstName: z.string().trim().max(80).optional(),
+  couponCode: z.string().trim().max(64).optional(),
+})
+
+function toOffer(row: typeof offers.$inferSelect): Offer {
+  return {
+    id: row.id,
+    pricingType: row.pricingType,
+    priceCents: row.priceCents,
+    currency: row.currency,
+    installments: row.installments,
+    installmentIntervalDays: row.installmentIntervalDays,
+    refundWindowDays: row.refundWindowDays,
+  }
+}
+
+function toCoupon(row: typeof coupons.$inferSelect): Coupon {
+  return {
+    id: row.id,
+    code: row.code,
+    discountType: row.discountType,
+    discountValue: row.discountValue,
+    offerId: row.offerId,
+    maxRedemptions: row.maxRedemptions,
+    redemptionCount: row.redemptionCount,
+    startsAt: row.startsAt,
+    expiresAt: row.expiresAt,
+    isActive: row.isActive,
+  }
+}
+
+/**
+ * Start checkout.
+ *
+ * The price is computed HERE from the stored offer and the stored coupon.
+ * Nothing about the amount comes from the browser — otherwise a crafted
+ * request could buy the Academy for a penny.
+ */
+export async function startCheckout(
+  _prev: CheckoutState,
+  formData: FormData,
+): Promise<CheckoutState> {
+  const parsed = schema.safeParse(Object.fromEntries(formData.entries()))
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? 'Check the fields.' }
+  }
+  const input = parsed.data
+
+  const [offerRow] = await db
+    .select({ offer: offers, program: programs })
+    .from(offers)
+    .innerJoin(programs, eq(programs.id, offers.programId))
+    .where(and(eq(offers.id, input.offerId), eq(offers.status, 'active')))
+    .limit(1)
+
+  if (!offerRow) return { error: 'That offer is not available.' }
+
+  const offer = toOffer(offerRow.offer)
+
+  let couponRow: typeof coupons.$inferSelect | undefined
+  if (input.couponCode) {
+    const [found] = await db
+      .select()
+      .from(coupons)
+      .where(eq(coupons.code, input.couponCode.toUpperCase()))
+      .limit(1)
+    couponRow = found
+  }
+
+  const now = new Date()
+  const pricing = priceOrder(offer, couponRow ? toCoupon(couponRow) : null, now)
+
+  if (input.couponCode && !pricing.couponApplied) {
+    return { error: 'That code is not valid for this.' }
+  }
+
+  // One canonical person, whether she has an account yet or not.
+  const actor = await getActor()
+  let contactId =
+    actor.kind === 'user' && actor.contactId ? actor.contactId : undefined
+
+  if (!contactId) {
+    const [existing] = await db
+      .select({ id: contacts.id })
+      .from(contacts)
+      .where(eq(contacts.email, input.email))
+      .limit(1)
+    contactId = existing?.id
+
+    if (!contactId) {
+      const [defaultStage] = await db
+        .select({ id: crmStages.id })
+        .from(crmStages)
+        .where(eq(crmStages.isDefault, true))
+        .limit(1)
+
+      const [created] = await db
+        .insert(contacts)
+        .values({
+          email: input.email,
+          firstName: input.firstName || null,
+          acquisitionSource: 'checkout',
+          crmStageId: defaultStage?.id ?? null,
+          lastActivityAt: now,
+        })
+        .returning({ id: contacts.id })
+      contactId = created?.id
+    }
+  }
+
+  if (!contactId) return { error: 'That did not work. Try again.' }
+
+  const [order] = await db
+    .insert(orders)
+    .values({
+      contactId,
+      status: 'pending',
+      subtotalCents: pricing.subtotalCents,
+      discountCents: pricing.discountCents,
+      totalCents: pricing.totalCents,
+      currency: pricing.currency,
+      couponId: pricing.couponApplied ? (couponRow?.id ?? null) : null,
+    })
+    .returning()
+
+  if (!order) return { error: 'That did not work. Try again.' }
+
+  await db.insert(orderItems).values({
+    orderId: order.id,
+    offerId: offer.id,
+    quantity: 1,
+    unitPriceCents: pricing.totalCents,
+  })
+
+  await db.insert(activityEvents).values({
+    contactId,
+    eventType: 'checkout.started',
+    entity: 'orders',
+    entityId: order.id,
+    metadata: { offerId: offer.id, totalCents: pricing.totalCents },
+  })
+
+  // A free order has nothing to charge; it is fulfilled straight away by the
+  // same path a paid one takes, so access is granted exactly once.
+  if (pricing.totalCents === 0) {
+    const { handlePaymentEvent } = await import('./fulfilment')
+    await handlePaymentEvent(db, {
+      id: `free_${order.id}`,
+      type: 'checkout.completed',
+      orderId: order.id,
+      sessionId: null,
+      paymentIntentId: null,
+      customerId: null,
+      amountCents: 0,
+      currency: pricing.currency,
+      failureReason: null,
+      metadata: { orderId: order.id },
+      raw: null,
+    })
+    redirect(`/checkout/complete?order=${order.id}`)
+  }
+
+  // A payment plan charges the first instalment now; the schedule tells her
+  // what is coming, and the provider handles the rest.
+  const schedule = installmentSchedule(offer, pricing.totalCents, now)
+  const first = schedule[0]
+  if (!first) return { error: 'That offer is not priced correctly.' }
+
+  const planNote =
+    schedule.length > 1
+      ? `Payment ${first.number} of ${schedule.length}`
+      : undefined
+
+  let checkout
+  try {
+    checkout = await paymentProvider().createCheckout({
+      orderId: order.id,
+      contactEmail: input.email,
+      mode: 'payment',
+      successUrl: `${siteUrl()}/checkout/complete?order=${order.id}`,
+      cancelUrl: `${siteUrl()}/checkout/cancelled?order=${order.id}`,
+      metadata: { orderId: order.id, offerId: offer.id },
+      lineItems: [
+        {
+          name: offerRow.program.title,
+          description: planNote ?? offerRow.offer.name,
+          amountCents: first.amountCents,
+          currency: pricing.currency,
+          quantity: 1,
+        },
+      ],
+    })
+  } catch {
+    return { error: 'Checkout is not available right now. Nothing was charged.' }
+  }
+
+  await db
+    .update(orders)
+    .set({ stripeCheckoutSessionId: checkout.sessionId, updatedAt: new Date() })
+    .where(eq(orders.id, order.id))
+
+  redirect(checkout.url)
+}

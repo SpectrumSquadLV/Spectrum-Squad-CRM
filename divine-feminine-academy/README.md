@@ -8,15 +8,17 @@ A website: one Next.js app serving three faces on one domain.
 
 Mobile-first. Most women arrive on a phone from Instagram.
 
-**Phases 1–4 are built**: the foundation, the public site and identity, the
-challenge engine, and the LMS, assessments and certificates.
+**Phases 1–5 are built**: the foundation, the public site and identity, the
+challenge engine, the LMS/assessments/certificates, and the CRM and commerce.
 
 **7 DAYS TO HER runs end to end**, a programme can be built in the admin
 without a developer, the free assessment scores and compares pre/post, and
 certificates are issued and publicly verifiable — all against placeholder
 copy, because the real curriculum and the real instrument are not written yet.
 
-There is no checkout and no CRM screens — see the roadmap below.
+**Checkout works** — against a fake provider in tests, and against Stripe once
+keys are configured. Nothing is on sale yet: both Academy offers are seeded as
+**drafts**, because the price and refund window are still your decision.
 
 ---
 
@@ -50,7 +52,14 @@ There is no checkout and no CRM screens — see the roadmap below.
 | 7 DAYS TO HER curriculum | **Placeholder copy only** |
 | Assessment questions | **Placeholder, not a validated instrument** |
 | PDF export of the HER Code | **Not built** — see below |
-| CRM screens, checkout | **Not built** — Phase 5 |
+| Pricing, coupons, instalments, refunds | Built, verified (`verify:pricing`) |
+| Payment provider + Stripe adapter | Built |
+| Webhook signature verification | Built, verified (`verify:webhooks`) |
+| Checkout + idempotent fulfilment | Built, verified (`verify:fulfilment`) |
+| CRM: contacts, pipeline, notes, tags | Built, verified (`verify:crm-privacy`) |
+| Admin offers, coupons, orders, refunds | Built |
+| Academy pricing | **Draft offers — you decide** |
+| Automations, drip emails, analytics | **Not built** — Phase 6 |
 
 ## Running it
 
@@ -72,10 +81,15 @@ npm run verify:scoring      # 14 assessment scoring and pre/post
 npm run verify:certificates # 13 certificate eligibility rules
 npm run verify:engine       # 12 the challenge engine (needs DATABASE_URL)
 npm run verify:issuance     # 7  certificate issuance (needs DATABASE_URL)
+npm run verify:pricing      # 28 money: coupons, instalments, refunds
+npm run verify:webhooks     # 17 that forged webhooks are refused
+npm run verify:fulfilment   # 14 that paying grants access exactly once
+npm run verify:crm-privacy  # 8  that the CRM cannot read her journal
 npm run verify:rls          # 11 that RLS really isolates members
 
 npm run seed:challenge  # seed 7 DAYS TO HER (placeholder curriculum)
 npm run seed:assessment # seed the free assessment (placeholder questions)
+npm run seed:offers     # seed the Academy and its DRAFT offers
 npm run db:generate    # regenerate SQL after a schema change
 npm run db:migrate     # apply migrations (needs DATABASE_URL)
 ```
@@ -217,9 +231,9 @@ Tokens live in `app/globals.css`. Change one, then check `/admin/design`.
    RETURN, journal, HER Code.
 4. **LMS + assessments + certificates** — *done.* — admin program builder, pre/post
    assessments, certificate generation and public verification
-5. **CRM + commerce** — *next.* — pipeline, Stripe checkout, payment plans, coupons.
+5. **CRM + commerce** — *done.* — pipeline, Stripe checkout, payment plans, coupons.
    *Money can be taken after this.*
-6. **Automation, analytics, hardening** — drip sequences, funnel dashboard,
+6. **Automation, analytics, hardening** — *next.* — drip sequences, funnel dashboard,
    security review, accessibility audit
 
 ## Open decisions
@@ -315,6 +329,64 @@ Two rules that are easy to get backwards, and are tested:
 
 `/verify/[token]` is public and shows only what is printed on the certificate:
 a name, a programme, a date and a number. That is what makes one mean anything.
+
+## Money
+
+**Every amount is an integer number of cents.** `0.1 + 0.2` is not `0.3`, and a
+rounding error here charges a real woman the wrong amount. Dollars are
+converted to cents once, where a price is entered, and nowhere else.
+
+**Pricing is data.** What the Academy costs is a row in `offers`, editable at
+`/admin/offers`. Both shapes the architecture left open — $1,000 once, or three
+payments of $375 — are seeded as **drafts**. Nothing is purchasable until you
+activate one.
+
+**The price is computed on the server** from the stored offer and the stored
+coupon. Nothing about the amount comes from the browser; otherwise a crafted
+request could buy the Academy for a penny.
+
+Rules that are tested because they are easy to get backwards:
+
+- A discount can never exceed the price. She must never be owed money.
+- A percentage **rounds down**, so a rounding error cannot overcharge.
+- Instalments always sum to exactly the total, and the remainder goes on the
+  **first** payment — a final payment larger than she agreed to is how disputes
+  start.
+- The refund window runs from when she **paid**, not when she ordered.
+
+### Webhooks
+
+`/api/webhooks/payments` is public — it has to be — so **the signature is the
+only thing between an anonymous HTTP request and a free $1,000 programme.** It
+is verified before the body is parsed, and `verify:webhooks` proves it refuses
+a wrong secret, a tampered body, a replayed webhook, and a missing secret.
+
+Verification is implemented in `src/lib/payments/signature.ts` rather than
+delegated to an SDK, specifically so it can be tested. "We trust the SDK" is
+not the same as knowing a forgery is rejected.
+
+**Fulfilment is idempotent**, keyed on the provider's event id. Providers retry
+webhooks and deliver them out of order; handling one twice must not enrol her
+twice, double her lifetime value, or count a coupon again.
+
+The fake provider (`PAYMENTS_PROVIDER=fake`) approves every payment and is
+**refused outright in production**.
+
+## The CRM
+
+Contacts, a pipeline whose columns are `crm_stages` rows, notes, tags,
+follow-ups, and stage changes recorded in `contact_stage_history` — which is
+how you learn where women stall.
+
+**The contact view shows engagement and never words.** `src/db/queries/crm.ts`
+never selects `journalEntries.bodyEncrypted`, and there is deliberately no
+function in it that could. `verify:crm-privacy` seeds a woman with a real
+encrypted entry and asserts that nothing the contact view or the contact list
+returns contains any of it — for a coach *or* an owner.
+
+A contact is **archived, not deleted**. Her orders and certificates are
+financial and legal records. Erasing what she *wrote* is a different operation,
+done by destroying her encryption key.
 
 ## Placeholders
 
