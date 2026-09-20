@@ -39,10 +39,13 @@ const nextConfig: NextConfig = {
     return [
       { source: '/:path*', headers: securityHeaders },
       {
-        // Her own pages must never be cached by a shared proxy.
-        source: '/my-academy/:path*',
+        // Her own pages must never be cached by a shared proxy. The path has
+        // to match the route group on disk: this said /my-academy for a while
+        // after the member area was renamed, which matched nothing at all.
+        source: '/my-practice/:path*',
         headers: [
           { key: 'Cache-Control', value: 'private, no-store, max-age=0' },
+          { key: 'X-Robots-Tag', value: 'noindex, nofollow' },
         ],
       },
       {

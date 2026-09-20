@@ -7,7 +7,11 @@
 
 [build]
 builder = "NIXPACKS"
-buildCommand = "npm ci && npm run build"
+# Nixpacks installs dependencies in its own step before this one. Repeating
+# `npm ci` here fails the build outright: Railway mounts node_modules/.cache as
+# a build cache, and npm ci tries to remove node_modules wholesale, which gives
+# EBUSY on the live mount.
+buildCommand = "npm run build"
 
 [deploy]
 startCommand = "npm run start"
