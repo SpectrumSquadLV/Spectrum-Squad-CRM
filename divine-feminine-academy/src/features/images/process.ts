@@ -1,7 +1,6 @@
 import 'server-only'
 import sharp, { type OutputInfo } from 'sharp'
 import { randomUUID } from 'node:crypto'
-import type { SlotShape } from './slots'
 
 /**
  * Turning whatever came off a phone into something the site can serve.
@@ -27,9 +26,6 @@ import type { SlotShape } from './slots'
 
 /** What the form will accept before we even look at the bytes. */
 export const maxUploadBytes = 20 * 1024 * 1024
-
-/** The long edge after resizing. Twice the largest slot, for sharp screens. */
-const maxEdgePx = 1600
 
 /** Refuse a decompression bomb rather than let libvips chew on it. */
 const maxInputPixels = 80_000_000
@@ -64,16 +60,15 @@ const acceptedFormats = new Set([
   'tiff',
 ])
 
-/** Long edge, by shape, so a square slot does not store a 1600px original. */
-const longEdge: Record<SlotShape, number> = {
-  portrait: maxEdgePx,
-  landscape: maxEdgePx,
-  square: 900,
-}
-
+/**
+ * @param maxPx the longest edge to store, which each slot's crop declares.
+ *   A full-bleed hero wants 2400; the round portrait beside the quiz wants
+ *   600, and storing it at 2400 would be three hundred kilobytes of detail
+ *   nobody will ever see.
+ */
 export async function processUpload(
   input: Buffer,
-  shape: SlotShape,
+  maxPx: number,
 ): Promise<ProcessedImage> {
   if (input.byteLength === 0) {
     throw new ImageRejected('That file was empty.')
@@ -107,12 +102,15 @@ export async function processUpload(
       // Bake the EXIF orientation in, then let the metadata go.
       .rotate()
       .resize({
-        width: longEdge[shape],
-        height: longEdge[shape],
+        width: maxPx,
+        height: maxPx,
         fit: 'inside',
         withoutEnlargement: true,
       })
-      .webp({ quality: 82 })
+      // 86 rather than the usual 80: these are large photographs of one
+      // person's face and skin, shown at full width, and WebP's smoothing at
+      // lower qualities is exactly what flattens skin texture.
+      .webp({ quality: 86 })
       .toBuffer({ resolveWithObject: true })
   } catch {
     throw new ImageRejected(

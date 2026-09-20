@@ -71,6 +71,13 @@
       "when": 1789902409422,
       "tag": "0009_site_images",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789902409423,
+      "tag": "0010_image_art_direction",
+      "breakpoints": true
     }
   ]
 }

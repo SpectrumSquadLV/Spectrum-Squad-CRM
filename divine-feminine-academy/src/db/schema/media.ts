@@ -31,9 +31,9 @@ const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
  * most a couple of dozen portraits. If this ever grows past that, the serving
  * route is the only thing that has to change.
  *
- * One row per slot - see src/features/images/slots.ts. The slot is the whole
- * addressing scheme: pages ask for `home-hero`, not for an id, so replacing a
- * photograph is an upload and never an edit to any page.
+ * One row per slot and variant - see src/features/images/slots.ts. The slot is
+ * the whole addressing scheme: pages ask for `home-hero`, not for an id, so
+ * replacing a photograph is an upload and never an edit to any page.
  *
  * `bytes` is deliberately never selected by the page queries. It is a megabyte
  * or so per row and the pages only ever need the dimensions and the alt text.
@@ -43,6 +43,15 @@ export const siteImages = pgTable(
   {
     id: primaryId(),
     slot: text('slot').notNull(),
+    /**
+     * Which composition this is: 'desktop' or 'mobile'.
+     *
+     * Art direction rather than resizing. A photograph framed for a wide band,
+     * with the subject to one side and the type in the air beside her, has
+     * nothing left once it is squeezed onto a phone - so a phone is given its
+     * own crop, chosen deliberately, and picks it up through <picture>.
+     */
+    variant: text('variant').notNull().default('desktop'),
     /** Required, always. A decorative photograph of a person is not decorative. */
     alt: text('alt').notNull(),
     contentType: text('content_type').notNull(),
@@ -68,5 +77,5 @@ export const siteImages = pgTable(
     uploadedBy: uuid('uploaded_by'),
     ...timestamps,
   },
-  (t) => [uniqueIndex('site_images_slot_key').on(t.slot)],
+  (t) => [uniqueIndex('site_images_slot_key').on(t.slot, t.variant)],
 )

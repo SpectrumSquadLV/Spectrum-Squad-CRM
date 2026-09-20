@@ -4,7 +4,8 @@ import { Button, Rule } from '@/design-system/primitives'
 import { Eyebrow, Prose, PullQuote, Section } from '@/design-system/patterns'
 import { archetypeList } from '@/features/quiz/archetypes'
 import { siteImage } from '@/db/queries/images'
-import { SiteImage } from '@/features/images/SiteImage'
+import { SiteImage, SiteImageFrame } from '@/features/images/SiteImage'
+import { imageSlot } from '@/features/images/slots'
 import { StatementBand } from '@/features/images/StatementBand'
 
 /*
@@ -46,10 +47,9 @@ const areas = [
 ]
 
 export default async function HomePage() {
-  const [hero, statement, close] = await Promise.all([
+  const [hero, statement] = await Promise.all([
     siteImage('home-hero'),
     siteImage('statement-portrait'),
-    siteImage('home-close'),
   ])
 
   return (
@@ -99,7 +99,14 @@ export default async function HomePage() {
 
           {hero && (
             <div className="order-first md:order-none">
-              <SiteImage image={hero} shape="portrait" priority />
+              <SiteImageFrame slot={imageSlot('home-hero')!} className="rounded-xl">
+                <SiteImage
+                  images={hero}
+                  slot={imageSlot('home-hero')!}
+                  priority
+                  sizes="(min-width: 768px) 19rem, 100vw"
+                />
+              </SiteImageFrame>
             </div>
           )}
         </div>
@@ -249,9 +256,7 @@ export default async function HomePage() {
 
       <Section className="pb-24">
         <div className="overflow-hidden rounded-xl border border-rule bg-alabaster">
-          {close && (
-            <SiteImage image={close} shape="landscape" rounded="none" />
-          )}
+
           <div className="p-8 md:p-14">
           <h2 className="text-2xl">Seven days.</h2>
           <Prose className="mt-4">

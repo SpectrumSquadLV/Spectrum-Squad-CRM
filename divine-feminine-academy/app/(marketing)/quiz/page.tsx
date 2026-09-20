@@ -6,7 +6,8 @@ import { getPublishedAssessment } from '@/db/queries/assessments'
 import { QuizFlow, type FlowQuestion } from '@/features/quiz/QuizFlow'
 import { JoinForm } from '@/features/auth/JoinForm'
 import { siteImage } from '@/db/queries/images'
-import { SiteImage } from '@/features/images/SiteImage'
+import { SiteImage, SiteImageFrame } from '@/features/images/SiteImage'
+import { imageSlot } from '@/features/images/slots'
 
 export const metadata: Metadata = {
   title: 'Which version of you is running the show?',
@@ -44,7 +45,9 @@ export default async function QuizPage() {
       <div className="flex items-start gap-6">
         {portrait && (
           <div className="hidden w-28 shrink-0 sm:block">
-            <SiteImage image={portrait} shape="square" rounded="full" priority />
+            <SiteImageFrame slot={imageSlot('quiz-intro')!} className="rounded-full">
+              <SiteImage images={portrait} slot={imageSlot('quiz-intro')!} rounded="full" priority sizes="7rem" />
+            </SiteImageFrame>
           </div>
         )}
         <div>

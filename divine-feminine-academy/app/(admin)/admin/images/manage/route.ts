@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/db/client'
 import { auditLog } from '@/db/schema/activity'
@@ -6,7 +6,13 @@ import { siteImages } from '@/db/schema/media'
 import { getActor } from '@/lib/auth/actor-server'
 import { isAdmin } from '@/lib/permissions/actor'
 import { ImageRejected, processUpload } from '@/features/images/process'
-import { focusChoicesX, focusChoicesY, imageSlot } from '@/features/images/slots'
+import {
+  cropFor,
+  focusChoicesX,
+  focusChoicesY,
+  imageSlot,
+  isVariant,
+} from '@/features/images/slots'
 
 export const dynamic = 'force-dynamic'
 
@@ -61,16 +67,22 @@ export async function POST(request: Request) {
   const spec = imageSlot(slotKey)
   if (!spec) return new Response('Unknown slot', { status: 400 })
 
+  const variant = String(form.get('variant') ?? 'desktop')
+  if (!isVariant(variant)) return new Response('Unknown variant', { status: 400 })
+  const crop = cropFor(spec, variant)
+
   const actorUserId = actor.kind === 'user' ? actor.userId : null
 
   if (form.get('intent') === 'remove') {
-    await db.delete(siteImages).where(eq(siteImages.slot, slotKey))
+    await db
+      .delete(siteImages)
+      .where(and(eq(siteImages.slot, slotKey), eq(siteImages.variant, variant)))
     await db.insert(auditLog).values({
       actorUserId,
       action: 'site_image.removed',
       entity: 'site_images',
       entityId: null,
-      metadata: { slot: slotKey },
+      metadata: { slot: slotKey, variant },
     })
     revalidatePath('/', 'layout')
     return back(request, { removed: slotKey })
@@ -105,7 +117,7 @@ export async function POST(request: Request) {
   const [existing] = await db
     .select({ id: siteImages.id })
     .from(siteImages)
-    .where(eq(siteImages.slot, slotKey))
+    .where(and(eq(siteImages.slot, slotKey), eq(siteImages.variant, variant)))
     .limit(1)
 
   // Changing only the description or the framing must not require choosing the
@@ -118,7 +130,7 @@ export async function POST(request: Request) {
     await db
       .update(siteImages)
       .set({ alt, focalX, focalY, updatedAt: new Date() })
-      .where(eq(siteImages.slot, slotKey))
+      .where(and(eq(siteImages.slot, slotKey), eq(siteImages.variant, variant)))
     revalidatePath('/', 'layout')
     return back(request, { saved: slotKey })
   }
@@ -127,7 +139,7 @@ export async function POST(request: Request) {
   try {
     processed = await processUpload(
       Buffer.from(await file.arrayBuffer()),
-      spec.shape,
+      crop.maxPx,
     )
   } catch (error) {
     if (error instanceof ImageRejected) {
@@ -142,6 +154,7 @@ export async function POST(request: Request) {
 
   const values = {
     slot: slotKey,
+    variant,
     alt,
     contentType: processed.contentType,
     bytes: processed.bytes,
@@ -158,7 +171,10 @@ export async function POST(request: Request) {
   await db
     .insert(siteImages)
     .values(values)
-    .onConflictDoUpdate({ target: siteImages.slot, set: values })
+    .onConflictDoUpdate({
+      target: [siteImages.slot, siteImages.variant],
+      set: values,
+    })
 
   await db.insert(auditLog).values({
     actorUserId,
@@ -167,6 +183,7 @@ export async function POST(request: Request) {
     entityId: null,
     metadata: {
       slot: slotKey,
+      variant,
       byteSize: processed.byteSize,
       width: processed.width,
       height: processed.height,

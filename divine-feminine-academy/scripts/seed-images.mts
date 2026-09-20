@@ -7,8 +7,12 @@
  * finishes. Useful before there is an account to sign in with, and useful
  * afterwards for anything that should travel with the code.
  *
- *     assets/photographs/statement-portrait.jpg  ->  the statement band
- *     assets/photographs/home-hero.jpg           ->  the home page hero
+ *     assets/photographs/home-hero.jpg         ->  the hero, desktop crop
+ *     assets/photographs/home-hero.mobile.jpg  ->  the hero, phone crop
+ *
+ * A name with no `.mobile` in it is the desktop crop. The phone crop is
+ * optional; without one the desktop crop is used everywhere, which is a worse
+ * picture on a phone but never a broken page.
  *
  * The description comes from a .txt file beside it with the same name. That
  * file is not optional: a photograph with no description is refused rather
@@ -30,11 +34,17 @@ import { createHash } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '../src/db/client'
 import { siteImages } from '../src/db/schema/media'
 import { processUpload } from '../src/features/images/process'
-import { focusChoicesX, focusChoicesY, imageSlot } from '../src/features/images/slots'
+import {
+  cropFor,
+  focusChoicesX,
+  focusChoicesY,
+  imageSlot,
+  type Variant,
+} from '../src/features/images/slots'
 
 /**
  * The description file, and an optional line saying how to frame the crop.
@@ -95,7 +105,14 @@ if (photographs.length === 0) {
 }
 
 for (const file of photographs) {
-  const key = file.slice(0, file.length - extname(file).length)
+  let key = file.slice(0, file.length - extname(file).length)
+
+  let variant: Variant = 'desktop'
+  if (key.endsWith('.mobile')) {
+    variant = 'mobile'
+    key = key.slice(0, -'.mobile'.length)
+  }
+
   const spec = imageSlot(key)
 
   if (!spec) {
@@ -114,17 +131,17 @@ for (const file of photographs) {
       alt: siteImages.alt,
     })
     .from(siteImages)
-    .where(eq(siteImages.slot, key))
+    .where(and(eq(siteImages.slot, key), eq(siteImages.variant, variant)))
     .limit(1)
 
   if (existing?.version === version) {
-    console.log(`  same  ${key}`)
+    console.log(`  same  ${key} (${variant})`)
     unchanged++
     continue
   }
 
   if (existing && existing.uploadedBy !== null) {
-    console.log(`  kept  ${key} — someone uploaded this one through the admin`)
+    console.log(`  kept  ${key} (${variant}) — someone uploaded this one through the admin`)
     skipped++
     continue
   }
@@ -146,10 +163,11 @@ for (const file of photographs) {
   }
   const { alt, focalX, focalY } = described
 
-  const processed = await processUpload(source, spec.shape)
+  const processed = await processUpload(source, cropFor(spec, variant).maxPx)
 
   const values = {
     slot: key,
+    variant,
     alt,
     contentType: processed.contentType,
     bytes: processed.bytes,
@@ -163,10 +181,16 @@ for (const file of photographs) {
     updatedAt: new Date(),
   }
 
-  await db.insert(siteImages).values(values).onConflictDoUpdate({ target: siteImages.slot, set: values })
+  await db
+    .insert(siteImages)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [siteImages.slot, siteImages.variant],
+      set: values,
+    })
 
   console.log(
-    `  ${existing ? 'new ' : 'add '} ${key} — ${processed.width}×${processed.height}, ${(processed.byteSize / 1024).toFixed(0)}KB`,
+    `  ${existing ? 'new ' : 'add '} ${key} (${variant}) — ${processed.width}×${processed.height}, ${(processed.byteSize / 1024).toFixed(0)}KB`,
   )
   if (existing) replaced++
   else added++

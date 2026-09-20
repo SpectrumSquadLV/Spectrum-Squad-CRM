@@ -9,7 +9,8 @@ import { CheckoutForm } from '@/features/commerce/CheckoutForm'
 import { formatMoney, offerTotalCents } from '@/features/commerce/pricing'
 import { getActor } from '@/lib/auth/actor-server'
 import { siteImage } from '@/db/queries/images'
-import { SiteImage } from '@/features/images/SiteImage'
+import { SiteImage, SiteImageFrame } from '@/features/images/SiteImage'
+import { imageSlot } from '@/features/images/slots'
 
 export const dynamic = 'force-dynamic'
 
@@ -74,7 +75,9 @@ export default async function DivineFemininePage() {
 
         {hero && (
           <div className="mt-12">
-            <SiteImage image={hero} shape="landscape" priority />
+            <SiteImageFrame slot={imageSlot('divine-feminine-hero')!} className="rounded-xl">
+              <SiteImage images={hero} slot={imageSlot('divine-feminine-hero')!} priority sizes="(min-width: 768px) 56rem, 100vw" />
+            </SiteImageFrame>
           </div>
         )}
       </Section>

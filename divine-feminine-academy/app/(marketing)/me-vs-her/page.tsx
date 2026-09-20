@@ -14,7 +14,8 @@ import { offers, programs } from '@/db/schema'
 import { CheckoutForm } from '@/features/commerce/CheckoutForm'
 import { formatMoney } from '@/features/commerce/pricing'
 import { siteImage } from '@/db/queries/images'
-import { SiteImage } from '@/features/images/SiteImage'
+import { SiteImage, SiteImageFrame } from '@/features/images/SiteImage'
+import { imageSlot } from '@/features/images/slots'
 
 export const dynamic = 'force-dynamic'
 
@@ -106,7 +107,9 @@ export default async function SevenDaysPage() {
 
         {hero && (
           <div className="mt-12">
-            <SiteImage image={hero} shape="landscape" priority />
+            <SiteImageFrame slot={imageSlot('me-vs-her-hero')!} className="rounded-xl">
+              <SiteImage images={hero} slot={imageSlot('me-vs-her-hero')!} priority sizes="(min-width: 768px) 56rem, 100vw" />
+            </SiteImageFrame>
           </div>
         )}
 

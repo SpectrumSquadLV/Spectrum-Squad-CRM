@@ -185,6 +185,20 @@
   }
 }
 
+/* --- Art-directed photography ---------------------------------------------
+   The frame changes shape at exactly the width <picture> swaps sources at, so
+   the box and the photograph in it always agree. 768px is Tailwind's md.
+   -------------------------------------------------------------------------- */
+.art-frame {
+  aspect-ratio: var(--ratio-mobile);
+}
+
+@media (min-width: 768px) {
+  .art-frame {
+    aspect-ratio: var(--ratio-desktop);
+  }
+}
+
 /* --- Motion respect is a floor, not a nicety ------------------------------ */
 @media (prefers-reduced-motion: reduce) {
   *,

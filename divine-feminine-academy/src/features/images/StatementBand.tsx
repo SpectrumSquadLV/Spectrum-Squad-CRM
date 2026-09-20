@@ -1,7 +1,8 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils/cn'
-import type { SiteImageMeta } from '@/db/queries/images'
-import { SiteImage } from './SiteImage'
+import type { SlotImages } from '@/db/queries/images'
+import { SiteImage, SiteImageFrame } from './SiteImage'
+import { imageSlot } from './slots'
 
 /**
  * A full-width band: one line that stops you, and one photograph.
@@ -24,7 +25,7 @@ export function StatementBand({
   footnote,
   className,
 }: {
-  image: SiteImageMeta | null
+  image: SlotImages | null
   eyebrow?: string
   headline: React.ReactNode
   /** The turn. Set apart from the headline because it is the whole point. */
@@ -63,7 +64,16 @@ export function StatementBand({
           * almost immediately - lazy loading would buy nothing and show an
           * empty frame at the exact moment the line is meant to land.
           */}
-        {image && <SiteImage image={image} shape="portrait" priority />}
+        {image && (
+          <SiteImageFrame slot={imageSlot('statement-portrait')!} className="rounded-xl">
+            <SiteImage
+              images={image}
+              slot={imageSlot('statement-portrait')!}
+              priority
+              sizes="(min-width: 768px) 24rem, 100vw"
+            />
+          </SiteImageFrame>
+        )}
       </div>
     </section>
   )

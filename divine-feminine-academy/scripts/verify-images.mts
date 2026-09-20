@@ -25,10 +25,16 @@ import { db } from '../src/db/client'
 import { siteImages } from '../src/db/schema/media'
 import { siteImageBytes, siteImageMap } from '../src/db/queries/images'
 import { ImageRejected, processUpload } from '../src/features/images/process'
-import { imageSlot, imageSlots } from '../src/features/images/slots'
+import { cropFor, imageSlot, imageSlots } from '../src/features/images/slots'
 
 let passed = 0
 let failed = 0
+
+/** '16 / 9' -> 1.777… */
+function ratio(value: string): number {
+  const [w, h] = value.split('/').map((n) => Number(n.trim()))
+  return (w ?? 1) / (h ?? 1)
+}
 
 function check(name: string, condition: boolean, detail?: string) {
   if (condition) {
@@ -82,8 +88,17 @@ console.log('\nthe slot registry')
 
 check('every slot key is unique', new Set(imageSlots.map((s) => s.key)).size === imageSlots.length)
 check('every slot has a brief worth reading', imageSlots.every((s) => s.brief.length > 60))
+check(
+  'every slot declares both a desktop and a phone crop',
+  imageSlots.every((s) => s.desktop.ratio && s.mobile.ratio && s.desktop.maxPx > 0 && s.mobile.maxPx > 0),
+)
+check(
+  'and the phone crop is never the wider of the two',
+  imageSlots.every((s) => ratio(s.mobile.ratio) <= ratio(s.desktop.ratio)),
+  'a phone getting a wider frame than a desktop is the bug this whole system exists to prevent',
+)
 check('an unknown slot is null, not a guess', imageSlot('home-hero-2') === null)
-check('a known slot resolves', imageSlot('home-hero')?.shape === 'portrait')
+check('a known slot resolves', imageSlot('home-hero')?.label === 'The hero')
 
 console.log('\nwhat a phone attaches, and what survives')
 
@@ -106,7 +121,7 @@ const original = await phonePhotograph({ withGps: true })
   check('and really is flagged sideways', withGps.orientation === 6, String(withGps.orientation))
 }
 
-const processed = await processUpload(original, 'portrait')
+const processed = await processUpload(original, 1600)
 
 {
   const after = await sharp(processed.bytes).metadata()
@@ -140,15 +155,18 @@ console.log('\noversized and unreadable')
   })
     .jpeg()
     .toBuffer()
-  const out = await processUpload(big, 'landscape')
+  const out = await processUpload(big, 1600)
   check('a camera original is resized down', Math.max(out.width, out.height) <= 1600, `${out.width}x${out.height}`)
-  check('a square slot is resized harder', Math.max((await processUpload(big, 'square')).width, 0) <= 900)
+  check(
+    'and a small slot is resized harder',
+    Math.max((await processUpload(big, cropFor(imageSlot('quiz-intro')!, 'mobile').maxPx)).width, 0) <= 400,
+  )
 }
 
 {
   let rejected: unknown
   try {
-    await processUpload(Buffer.from('this is not a photograph, it is a sentence'), 'portrait')
+    await processUpload(Buffer.from('this is not a photograph, it is a sentence'), 1600)
   } catch (error) {
     rejected = error
   }
@@ -163,7 +181,7 @@ console.log('\noversized and unreadable')
 {
   let rejected: unknown
   try {
-    await processUpload(Buffer.alloc(0), 'portrait')
+    await processUpload(Buffer.alloc(0), 1600)
   } catch (error) {
     rejected = error
   }
@@ -177,6 +195,7 @@ await db.delete(siteImages).where(eq(siteImages.slot, slot))
 
 await db.insert(siteImages).values({
   slot,
+  variant: 'desktop',
   alt: 'A test photograph.',
   contentType: processed.contentType,
   bytes: processed.bytes,
@@ -188,7 +207,7 @@ await db.insert(siteImages).values({
 })
 
 {
-  const stored = await siteImageBytes(slot)
+  const stored = await siteImageBytes(slot, 'desktop')
   check('the bytes come back', stored !== null)
   check(
     'byte for byte',
@@ -200,7 +219,7 @@ await db.insert(siteImages).values({
 
 {
   const map = await siteImageMap()
-  const meta = map.get(slot)
+  const meta = map.get(slot)?.desktop
   check('the metadata query finds it', meta !== undefined)
   check('and carries the framing', meta?.focalY === 25)
   check(
@@ -212,9 +231,10 @@ await db.insert(siteImages).values({
 
 {
   // Replacing must be an upsert, not a second row: the slot is the identity.
-  const second = await processUpload(original, 'portrait')
+  const second = await processUpload(original, 1600)
   const values = {
     slot,
+    variant: 'desktop' as const,
     alt: 'Replaced.',
     contentType: second.contentType,
     bytes: second.bytes,
@@ -223,7 +243,10 @@ await db.insert(siteImages).values({
     height: second.height,
     version: second.version,
   }
-  await db.insert(siteImages).values(values).onConflictDoUpdate({ target: siteImages.slot, set: values })
+  await db
+    .insert(siteImages)
+    .values(values)
+    .onConflictDoUpdate({ target: [siteImages.slot, siteImages.variant], set: values })
 
   const rows = await db.select({ id: siteImages.id, version: siteImages.version }).from(siteImages).where(eq(siteImages.slot, slot))
   check('replacing leaves one row, not two', rows.length === 1, `${rows.length} rows`)
@@ -232,7 +255,47 @@ await db.insert(siteImages).values({
 
 await db.delete(siteImages).where(eq(siteImages.slot, slot))
 
-check('a removed photograph is simply absent', (await siteImageBytes(slot)) === null)
+check('a removed photograph is simply absent', (await siteImageBytes(slot, 'desktop')) === null)
+
+console.log('\ntwo crops of one slot')
+
+{
+  // The whole point of the variant column: one slot, two different pictures.
+  const large = await sharp({
+    create: { width: 3000, height: 2000, channels: 3, background: { r: 80, g: 70, b: 60 } },
+  })
+    .jpeg()
+    .toBuffer()
+  const desk = await processUpload(large, 1600)
+  const phone = await processUpload(large, 800)
+  for (const [variant, p] of [['desktop', desk], ['mobile', phone]] as const) {
+    const values = {
+      slot,
+      variant,
+      alt: `The ${variant} crop.`,
+      contentType: p.contentType,
+      bytes: p.bytes,
+      byteSize: p.byteSize,
+      width: p.width,
+      height: p.height,
+      version: p.version,
+    }
+    await db
+      .insert(siteImages)
+      .values(values)
+      .onConflictDoUpdate({ target: [siteImages.slot, siteImages.variant], set: values })
+  }
+
+  const both = (await siteImageMap()).get(slot)
+  check('both crops are stored under one slot', both?.desktop !== null && both?.mobile != null)
+  check(
+    'and they are genuinely different files',
+    (await siteImageBytes(slot, 'desktop'))?.version !== (await siteImageBytes(slot, 'mobile'))?.version,
+  )
+  check('the phone crop is the smaller one', phone.width < desk.width, `${phone.width} vs ${desk.width}`)
+
+  await db.delete(siteImages).where(eq(siteImages.slot, slot))
+}
 
 console.log(`\n${passed} passed, ${failed} failed\n`)
 process.exit(failed === 0 ? 0 : 1)

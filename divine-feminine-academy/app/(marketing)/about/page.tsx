@@ -3,7 +3,8 @@ import Link from 'next/link'
 import { Button, Rule } from '@/design-system/primitives'
 import { Eyebrow, Placeholder, Prose, Section } from '@/design-system/patterns'
 import { siteImage } from '@/db/queries/images'
-import { SiteImage } from '@/features/images/SiteImage'
+import { SiteImage, SiteImageFrame } from '@/features/images/SiteImage'
+import { imageSlot } from '@/features/images/slots'
 
 /** The photograph comes from the database, which the build cannot reach. */
 export const dynamic = 'force-dynamic'
@@ -59,7 +60,9 @@ export default async function AboutPage() {
       <Section className="pb-24">
         {portrait && (
           <div className="mb-10 max-w-md">
-            <SiteImage image={portrait} shape="portrait" />
+            <SiteImageFrame slot={imageSlot('about-portrait')!} className="rounded-xl">
+              <SiteImage images={portrait} slot={imageSlot('about-portrait')!} sizes="(min-width: 768px) 28rem, 100vw" />
+            </SiteImageFrame>
           </div>
         )}
         <Placeholder label="Your bio goes here" note="not written yet">

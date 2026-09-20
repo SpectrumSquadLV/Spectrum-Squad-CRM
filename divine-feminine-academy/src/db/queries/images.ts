@@ -1,11 +1,13 @@
 import 'server-only'
 import { cache } from 'react'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '@/db/client'
 import { siteImages } from '@/db/schema/media'
+import type { Variant } from '@/features/images/slots'
 
 export interface SiteImageMeta {
   slot: string
+  variant: Variant
   alt: string
   width: number
   height: number
@@ -16,24 +18,29 @@ export interface SiteImageMeta {
   updatedAt: Date
 }
 
+/** Both compositions of one slot. `mobile` is optional; desktop stands in. */
+export interface SlotImages {
+  desktop: SiteImageMeta | null
+  mobile: SiteImageMeta | null
+}
+
 /**
  * Every filled slot, without the bytes.
  *
- * Wrapped in React's cache so a page rendering three photographs still makes
- * one query, and so the footer and the hero cannot disagree about what is
- * there.
+ * Wrapped in React's cache so a page rendering six photographs still makes one
+ * query, and so two sections cannot disagree about what is there.
  *
  * It swallows its own errors, which is not the house style and is deliberate
- * here. These are decorations on marketing pages. A database that is briefly
- * unreachable should cost the site its photographs, not its home page - the
- * words are the part that has to survive.
+ * here. These are photographs on marketing pages. A database that is briefly
+ * unreachable should cost the site its pictures, not its words.
  */
 export const siteImageMap = cache(
-  async (): Promise<ReadonlyMap<string, SiteImageMeta>> => {
+  async (): Promise<ReadonlyMap<string, SlotImages>> => {
     try {
       const rows = await db
         .select({
           slot: siteImages.slot,
+          variant: siteImages.variant,
           alt: siteImages.alt,
           width: siteImages.width,
           height: siteImages.height,
@@ -45,7 +52,15 @@ export const siteImageMap = cache(
         })
         .from(siteImages)
 
-      return new Map(rows.map((row) => [row.slot, row]))
+      const map = new Map<string, SlotImages>()
+      for (const row of rows) {
+        const entry = map.get(row.slot) ?? { desktop: null, mobile: null }
+        const meta = { ...row, variant: row.variant as Variant }
+        if (meta.variant === 'mobile') entry.mobile = meta
+        else entry.desktop = meta
+        map.set(row.slot, entry)
+      }
+      return map
     } catch (error) {
       console.error('[images] could not read site images', error)
       return new Map()
@@ -53,18 +68,27 @@ export const siteImageMap = cache(
   },
 )
 
-/** One slot, or null. Pages call this; it costs nothing after the first. */
-export async function siteImage(slot: string): Promise<SiteImageMeta | null> {
-  return (await siteImageMap()).get(slot) ?? null
+/**
+ * One slot's photographs, or null when nothing is in it.
+ *
+ * Null when there is no DESKTOP crop specifically: a mobile crop on its own
+ * would leave every wide screen with a hole, so it does not count as filled.
+ */
+export async function siteImage(slot: string): Promise<SlotImages | null> {
+  const entry = (await siteImageMap()).get(slot)
+  return entry?.desktop ? entry : null
 }
 
 /**
  * The bytes, for the serving route only.
  *
- * Separate from everything above so that no page query can ever accidentally
- * drag a megabyte of image data through it.
+ * Separate from everything above so no page query can accidentally drag a
+ * megabyte of image data through it.
  */
-export async function siteImageBytes(slot: string): Promise<{
+export async function siteImageBytes(
+  slot: string,
+  variant: Variant,
+): Promise<{
   bytes: Uint8Array
   contentType: string
   byteSize: number
@@ -78,7 +102,7 @@ export async function siteImageBytes(slot: string): Promise<{
       version: siteImages.version,
     })
     .from(siteImages)
-    .where(eq(siteImages.slot, slot))
+    .where(and(eq(siteImages.slot, slot), eq(siteImages.variant, variant)))
     .limit(1)
 
   return row ?? null

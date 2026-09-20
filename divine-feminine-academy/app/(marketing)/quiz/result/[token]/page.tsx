@@ -7,7 +7,8 @@ import { Eyebrow, Prose, Section } from '@/design-system/patterns'
 import { getAttemptByToken } from '@/db/queries/assessments'
 import { archetypes, isMode, modes } from '@/features/quiz/archetypes'
 import { siteImage } from '@/db/queries/images'
-import { SiteImage } from '@/features/images/SiteImage'
+import { SiteImage, SiteImageFrame } from '@/features/images/SiteImage'
+import { imageSlot } from '@/features/images/slots'
 
 export const metadata: Metadata = {
   title: 'Your result',
@@ -164,7 +165,9 @@ export default async function QuizResultPage({
         <div className="flex items-start gap-6">
           {portrait && (
             <div className="hidden w-24 shrink-0 sm:block">
-              <SiteImage image={portrait} shape="square" rounded="full" />
+              <SiteImageFrame slot={imageSlot('quiz-result')!} className="rounded-full">
+                <SiteImage images={portrait} slot={imageSlot('quiz-result')!} rounded="full" sizes="6rem" />
+              </SiteImageFrame>
             </div>
           )}
           <h2 className="text-2xl md:text-3xl">So what happens to her?</h2>
