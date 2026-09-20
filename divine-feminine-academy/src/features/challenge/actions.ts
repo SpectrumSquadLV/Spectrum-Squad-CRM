@@ -24,6 +24,7 @@ import {
 import { getActor, getQueryContext } from '@/lib/auth/actor-server'
 import { encryptEntry } from '@/lib/crypto/journal'
 import { isDayUnlocked } from './pacing'
+import { issueIfEarned } from '@/features/certificates/issue'
 import { contactDataKey, runSideEffects } from './side-effects'
 
 export type SaveState = { ok?: boolean; error?: string }
@@ -219,6 +220,18 @@ export async function completeDay(
     entityId: state.enrollment.id,
     metadata: { day: dayNumber, programSlug },
   })
+
+  // Finishing the last day is when a certificate becomes possible. Issuing is
+  // idempotent and refuses unless every configured requirement is met, so this
+  // is safe to call on a re-completion and cannot award one by accident.
+  if (isFinalDay) {
+    try {
+      await issueIfEarned(db, state.enrollment.id)
+    } catch {
+      // Never fail her day completion over a certificate. It can be issued
+      // later from the admin, and her progress is already saved.
+    }
+  }
 
   revalidatePath('/my-academy', 'layout')
   return { ok: true }

@@ -17,6 +17,7 @@ import { db } from '../src/db/client'
 // Imported from the concrete modules rather than the barrel: `export *`
 // re-exports do not resolve to named ESM bindings under tsx's transpile-only
 // loader, which the bundler hides in the app but a script hits directly.
+import { certificateRequirements } from '../src/db/schema/certificates'
 import { crmStages } from '../src/db/schema/identity'
 import {
   lessonBlocks,
@@ -286,6 +287,26 @@ async function main() {
 
   if (!version) throw new Error('could not create a version')
 
+  /*
+   * What a woman has to do to earn the certificate. Without these rows the
+   * programme awards nothing - silence does not mean yes.
+   */
+  for (const requirement of [
+    { requirementType: 'lessons_completed_pct' as const, threshold: 100 },
+    { requirementType: 'required_blocks_answered' as const, threshold: 0 },
+    { requirementType: 'her_code_finalized' as const, threshold: 0 },
+  ]) {
+    await db
+      .insert(certificateRequirements)
+      .values({ programId: program.id, ...requirement })
+      .onConflictDoNothing({
+        target: [
+          certificateRequirements.programId,
+          certificateRequirements.requirementType,
+        ],
+      })
+  }
+
   let blockCount = 0
   for (const [index, day] of days.entries()) {
     const [dayModule] = await db
@@ -325,7 +346,7 @@ async function main() {
   }
 
   console.log(
-    `seeded ${program.title} v${nextVersion}: ${days.length} days, ${blockCount} blocks`,
+    `seeded ${program.title} v${nextVersion}: ${days.length} days, ${blockCount} blocks, 3 certificate requirements`,
   )
   console.log('every prompt is placeholder copy awaiting the real curriculum')
   process.exit(0)

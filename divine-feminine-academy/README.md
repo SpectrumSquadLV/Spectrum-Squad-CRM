@@ -8,9 +8,13 @@ A website: one Next.js app serving three faces on one domain.
 
 Mobile-first. Most women arrive on a phone from Instagram.
 
-**Phases 1–3 are built**: the foundation, the public site and identity, and
-the challenge engine. **7 DAYS TO HER runs end to end** — against placeholder
-curriculum copy, because the real prompts are not written yet.
+**Phases 1–4 are built**: the foundation, the public site and identity, the
+challenge engine, and the LMS, assessments and certificates.
+
+**7 DAYS TO HER runs end to end**, a programme can be built in the admin
+without a developer, the free assessment scores and compares pre/post, and
+certificates are issued and publicly verifiable — all against placeholder
+copy, because the real curriculum and the real instrument are not written yet.
 
 There is no checkout and no CRM screens — see the roadmap below.
 
@@ -39,7 +43,12 @@ There is no checkout and no CRM screens — see the roadmap below.
 | HER profile · I CHOSE HER · RETURN | Built |
 | Journal (encrypted) + composer | Built |
 | HER Code + public share page | Built |
+| Admin role gate (staff only) | Built, verified (`npm run verify:permissions`) |
+| Admin program builder | Built |
+| Assessment engine + pre/post | Built, verified (`npm run verify:scoring`) |
+| Certificates + public verification | Built, verified (`verify:certificates`, `verify:issuance`) |
 | 7 DAYS TO HER curriculum | **Placeholder copy only** |
+| Assessment questions | **Placeholder, not a validated instrument** |
 | PDF export of the HER Code | **Not built** — see below |
 | CRM screens, checkout | **Not built** — Phase 5 |
 
@@ -56,11 +65,17 @@ Look at **`/admin/design`** first. Every token and primitive renders there.
 ```bash
 npm run typecheck      # tsc, strict
 npm run build          # production build
-npm run verify:crypto  # 8 checks on journal encryption
-npm run verify:pacing  # 17 checks on drip unlocking and timezones
-npm run verify:engine  # 12 checks on the challenge engine (needs DATABASE_URL)
-npm run verify:rls     # 11 checks that RLS really isolates members
-npm run seed:challenge # seed 7 DAYS TO HER (placeholder curriculum)
+npm run verify:crypto       # 8  journal encryption
+npm run verify:permissions  # 20 who can see what
+npm run verify:pacing       # 17 drip unlocking and timezones
+npm run verify:scoring      # 14 assessment scoring and pre/post
+npm run verify:certificates # 13 certificate eligibility rules
+npm run verify:engine       # 12 the challenge engine (needs DATABASE_URL)
+npm run verify:issuance     # 7  certificate issuance (needs DATABASE_URL)
+npm run verify:rls          # 11 that RLS really isolates members
+
+npm run seed:challenge  # seed 7 DAYS TO HER (placeholder curriculum)
+npm run seed:assessment # seed the free assessment (placeholder questions)
 npm run db:generate    # regenerate SQL after a schema change
 npm run db:migrate     # apply migrations (needs DATABASE_URL)
 ```
@@ -200,9 +215,9 @@ Tokens live in `app/globals.css`. Change one, then check `/admin/design`.
 2. **Public site + identity** — *done*
 3. **Challenge engine** — *done.* The day experience, HER profile, I CHOSE HER,
    RETURN, journal, HER Code.
-4. **LMS + assessments + certificates** — *next.* — admin program builder, pre/post
+4. **LMS + assessments + certificates** — *done.* — admin program builder, pre/post
    assessments, certificate generation and public verification
-5. **CRM + commerce** — pipeline, Stripe checkout, payment plans, coupons.
+5. **CRM + commerce** — *next.* — pipeline, Stripe checkout, payment plans, coupons.
    *Money can be taken after this.*
 6. **Automation, analytics, hardening** — drip sequences, funnel dashboard,
    security review, accessibility audit
@@ -251,6 +266,56 @@ screen, because the growth loop is a screenshot posted to Instagram rather than
 a downloaded file. A real PDF is a later addition; `her_codes.pdf_url` is
 already in the schema for it.
 
+## The admin
+
+`/admin` is **staff only**. `proxy.ts` can only tell whether somebody is signed
+in — checking a role needs a database round trip — so the real gate is the
+admin layout, which resolves the actor and returns a 404 to anyone who is not
+staff. A 404 rather than a redirect, because confirming an admin area exists is
+itself information.
+
+### The program builder
+
+`/admin/programs/[id]` builds a programme out of registry blocks. The promise
+it keeps: **a new programme needs no code at all.**
+
+Two safeguards are worth knowing about:
+
+- **A version women are working through cannot be edited.** The builder locks
+  its structure and offers to publish a new version instead, which is copied
+  rather than modified. Nobody mid-challenge has Day 3 change underneath her.
+- **Block config is validated against that block type's own Zod schema on the
+  server** before it is saved. A config the day runner could not render is
+  rejected in the builder, not in front of a woman halfway through Day 3.
+
+### Assessments
+
+Scoring normalises every area to 0–100, excludes open questions, inverts
+reverse-scored items, and reports an unanswered area as `null` rather than
+zero. An attempt is scored **on the server from the stored questions** — never
+from anything the browser sends.
+
+The flow is deliberate: she answers, sees a partial result, and only then gives
+an email for the full one. Results open from a link in her inbox without a
+login, because asking for an account before she can see something true about
+herself is where the funnel dies.
+
+### Certificates
+
+Requirements are evaluated against her real progress when she finishes the last
+day. Issuance is idempotent, and one certificate per woman per programme is
+enforced by a unique index rather than only by a check.
+
+Two rules that are easy to get backwards, and are tested:
+
+- **A programme with no requirements configured awards nothing.** Silence does
+  not mean yes.
+- **A programme with no lessons is not "100% complete".** Zero of zero must not
+  hand out a certificate.
+
+`/verify/[token]` is public and shows only what is printed on the certificate:
+a name, a programme, a date and a number. That is what makes one mean anything.
+
 ## Placeholders
 
 Copy and data that are **not real yet** are wrapped in `<Placeholder>`, which
@@ -267,6 +332,10 @@ the real structure — seven days, nineteen blocks, the right block type in the
 right place — but every prompt in it is marked
 `[PLACEHOLDER COPY — awaiting the real curriculum]`. The engine is finished;
 the words are the product, and they are still to be written.
+
+**The assessment questions are placeholders too**, and are explicitly *not* a
+validated instrument. `scripts/seed-assessment.mts` seeds eight scored items
+and one open question so the engine can be used; replace them before launch.
 
 `/stories` is deliberately empty. No testimonial is ever invented; real ones
 come from the `testimonials` table, which carries `is_placeholder` and

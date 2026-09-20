@@ -61,5 +61,11 @@ export const certificates = pgTable(
     uniqueIndex('certificates_number_key').on(t.certificateNumber),
     uniqueIndex('certificates_verification_key').on(t.verificationToken),
     index('certificates_contact_idx').on(t.contactId),
+    /**
+     * One certificate per woman per programme. The issuing code checks for an
+     * existing one first, but two completions racing would slip past that
+     * check - this is what actually prevents a duplicate.
+     */
+    uniqueIndex('certificates_contact_program_key').on(t.contactId, t.programId),
   ],
 )

@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import Link from 'next/link'
 import { eq } from 'drizzle-orm'
 import { db } from '@/db/client'
 import { contacts, profiles } from '@/db/schema'
@@ -62,6 +63,19 @@ export default async function AccountPage() {
       />
 
       <Rule tone="gilt" className="my-14" />
+
+      <Card tone="flat" className="mb-8">
+        <CardTitle className="text-lg">Certificates</CardTitle>
+        <CardBody className="text-xs">
+          What you have finished, with a link anyone can check.
+        </CardBody>
+        <Link
+          href="/my-academy/certificates"
+          className="mt-5 inline-flex min-h-11 items-center text-xs text-clay-deep underline underline-offset-4"
+        >
+          Open
+        </Link>
+      </Card>
 
       <Card tone="sunken">
         <CardTitle className="text-lg">Your journal</CardTitle>
