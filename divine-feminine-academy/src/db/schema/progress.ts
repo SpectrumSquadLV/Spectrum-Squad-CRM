@@ -241,6 +241,50 @@ export const herCodes = pgTable(
   ],
 )
 
+/**
+ * The mirror.
+ *
+ * A daily practice across all seven days, each with an intention tied to that
+ * day's work. This table is METADATA ONLY — how long she was asked for, how
+ * long she actually stayed, and whether she finished. Anything she wrote
+ * afterwards is a journal entry and is encrypted like every other one.
+ *
+ * `secondsAsked` and `secondsCompleted` are kept apart on purpose. "She
+ * started it and stopped at forty seconds" is the single most useful number
+ * in the whole challenge: it is the moment a woman meets her own face and
+ * looks away, and it is almost certainly where people quit.
+ */
+export const mirrorSessions = pgTable(
+  'mirror_sessions',
+  {
+    id: primaryId(),
+    contactId: uuid('contact_id')
+      .notNull()
+      .references(() => contacts.id, { onDelete: 'cascade' }),
+    enrollmentId: uuid('enrollment_id').references(() => enrollments.id, {
+      onDelete: 'cascade',
+    }),
+    /** The block that produced it. Re-doing the practice updates the row. */
+    sourceBlockId: uuid('source_block_id').references(() => lessonBlocks.id, {
+      onDelete: 'set null',
+    }),
+    dayNumber: integer('day_number'),
+    /** The line held on screen while she looks. Stored so it can change. */
+    intention: text('intention'),
+    secondsAsked: integer('seconds_asked').notNull().default(60),
+    secondsCompleted: integer('seconds_completed').notNull().default(0),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    ...timestamps,
+  },
+  (t) => [
+    index('mirror_sessions_contact_idx').on(t.contactId, t.createdAt),
+    uniqueIndex('mirror_sessions_source_block_key').on(
+      t.enrollmentId,
+      t.sourceBlockId,
+    ),
+  ],
+)
+
 export const journalSourceEnum = pgEnum('journal_source', [
   'free_write',
   'lesson_prompt',

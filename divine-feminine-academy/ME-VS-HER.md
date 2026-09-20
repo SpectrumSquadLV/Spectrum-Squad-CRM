@@ -1,276 +1,196 @@
-# ME VS HER — the planning package
+# ME VS HER — the seven days
 
-The 7-day challenge. $11. The way in.
+$11. Six days of work and one day of rest. **There is no Day 8.**
 
----
-
-## First: what I actually received, and what I did with it
-
-Your methodology arrived as **§1 THE CORE PHILOSOPHY** and **§2 MANIFESTATION
-MUST UNDERPIN THE ENTIRE EXPERIENCE**. It ends mid-sentence at *"I gain access
-to something I can change"* — no §3, and no planning-package request at the end
-(which you later referred to). The day-by-day curriculum was not in it.
-
-**I have not invented it, and I have not waited for it.** Instead:
-
-> Your progression has exactly seven stages.
->
-> **See ME → Understand ME → Love ME → Recognize what ME has been creating →
-> Meet HER → Choose HER → Let HER lead**
-
-Seven stages, seven days. That is not my structure — it is yours, read off your
-own document. Everything below is built on it. Where a day needs *words* rather
-than *structure*, it is marked **NEEDS QUIANA'S INPUT** and the system is built
-so you can fill it in without a developer.
+> **Status:** the STRUCTURE is built and tested. The WORDS are not written.
+> Every prompt in the seeded challenge reads `[NEEDS QUIANA'S INPUT]` and is
+> edited in the admin, without a developer and without a deploy.
 
 ---
 
-## A. The user journey
+## The days
 
-```
-        Instagram / a friend's share / something you wrote
-                              │
-                              ▼
-                   THE QUIZ  (free, 90 seconds)
-            "Which version of ME is running the show?"
-                              │
-                              ▼
-                  MEET YOUR ME  ·  the result page
-        The Commander · The Escape Artist · The Watcher · The Quiet Storm
-                              │
-                    ┌─────────┴─────────┐
-                    ▼                   ▼
-           5 emails over 9 days    straight to the offer
-                    └─────────┬─────────┘
-                              ▼
-                     ME VS HER  ·  $11
-                              │
-                              ▼
-        ┌─────────────── THE SEVEN DAYS ───────────────┐
-        │  1 See ME            ← her quiz ME, pre-filled │
-        │  2 Understand ME                               │
-        │  3 Love ME                                     │
-        │  4 Recognize what ME has been creating         │
-        │  5 Meet HER                                    │
-        │  6 Choose HER                                  │
-        │  7 Let HER lead  →  ME RETIRES                 │
-        └────────────────────┬───────────────────────────┘
-                             ▼
-              HER CODE  ·  certificate  ·  share page
-                             ▼
-           THE DIVINE FEMININE  — the next container
-                  (architecture only, no curriculum)
-```
+| | Day | What happens | Mirror |
+| --- | --- | --- | --- |
+| 1 | **MEET ME** | Awareness and observation. She names ME and ticks what ME does, in ME's own language | ✓ |
+| 2 | **MEET YOUR PROTECTOR** | The archetype, and how ME has been protecting her sense of being good enough | ✓ |
+| 3 | **FOLLOW THE EMOTION** | The trigger followed backward: event → emotion → reaction → what she was protecting → earlier experience → what she learned about herself | ✓ |
+| 4 | **REVIEW THE BELIEF** | The belief on trial. Where from, what supports it, what contradicts it, closer to HER or further, carrying or letting go | ✓ |
+| 5 | **THE PROBLEM IS YOU** | The manifestation loop. Ends in celebration — being part of the pattern means being part of the solution | ✓ |
+| 6 | **ME VS HER** | The signature exercise. One real choice, made differently, recorded as I CHOSE HER | ✓ |
+| 7 | **REST — LET HER LEAD** | No new work. Integration, spoken declaration, retiring ME, closeout | **✗** |
 
-**What changed from before.** The quiz used to be a separate curiosity beside
-the challenge. It is now the **front door**: her quiz result is her ME, and Day
-1 opens with it already on the screen. She does not meet her ME twice.
+### Day 7 is not another work day
 
-**The join that makes this work.** Her archetype is stored on her contact
-record the moment she finishes the quiz. Day 1 reads it. If she bought without
-taking the quiz, Day 1 offers it inline instead — the only difference is who
-does the naming.
+No new belief to dig for. No trigger work. **No mirror gaze.** A test asserts
+all four of those, because "one more small exercise" is exactly the kind of
+thing that gets added to a rest day six months from now by somebody being
+helpful.
+
+What Day 7 has instead:
+
+1. **Her week, read back** — everything she wrote, in her own words
+2. **The spoken declaration** (below)
+3. **Retiring ME** (below)
+4. Her HER Code, the certificate, the share page
+5. The invitation into the next thing
 
 ---
 
-## B. The seven days — screens and interactions
+## The mirror
 
-Every day is the same shape: **arrive → one or two real interactions → something
-saved → something shown back.** About twenty minutes, on a phone.
+**Days 1–6: Mirror Gaze.** A real timer with that day's intention held on
+screen. She is looking to *find* something.
 
-The rightmost column is what makes it an experience rather than seven
-worksheets: **what the platform shows her that it could only know because she
-told it earlier.**
+Three decisions in it worth keeping:
 
-| Day | Stage | The interaction | Saved as | Called back |
-| --- | --- | --- | --- | --- |
-| **1** | See ME | Her quiz archetype, then the strategies she actually uses — chosen from ME's own list: defend, control, withdraw, escape, prove, seek validation, distract, cut off, question herself, avoid, keep score, manage how she is seen | `her_patterns` (trigger + current response + tags) | — |
-| **2** | Understand ME | When did ME learn this? The moment, and what she concluded from it. **Heaviest day.** Encrypted. | `her_patterns.currentResponse`, journal entry | Her Day 1 strategies, named back |
-| **3** | Love ME | **Mirror timer** — a real countdown, looking at herself, one line held on screen. Then a letter *to* ME. | `mirror_sessions`, encrypted journal entry | The belief from Day 2 |
-| **4** | Recognize what ME has been creating | **The loop.** Experience → Meaning → Belief → Expectation → Attention → Evidence → Stronger Belief, one field per screen, filled in with her own example | `manifestation_loops` (encrypted) | Her Day 2 belief drops straight into the Belief field |
-| **5** | Meet HER | Same trigger from Day 1, other column: what would HER do? Plus the RETURN practice — six questions and one action, hers for life | `her_patterns.herResponse`, `return_sessions` | Day 1's trigger, verbatim |
-| **6** | Choose HER | **A choice point.** A real situation from her own week: what ME would do, what HER would do, which she chose | `her_choices` | Her Day 5 HER response |
-| **7** | Let HER lead | **Retirement.** She writes what ME protected her from and thanks her. ME is marked retired. Then the HER Code. | `her_patterns.retiredAt`, `her_codes` | **Everything.** Her whole week read back to her |
+- **No countdown numbers while she looks.** A woman watching a clock is not
+  looking at herself. A ring fills, and that is all.
+- **It records how long she actually stayed**, not whether she pressed a
+  button. Stopping at eleven seconds is recorded as eleven seconds.
+- **`seconds_asked` and `seconds_completed` are stored separately.** "She
+  started and stopped at eleven seconds" is the most useful number in the
+  whole challenge — it is the moment a woman meets her own face and looks
+  away, and it is almost certainly where people quit.
 
-### Day 7 is the one that matters
+**Day 7: Mirror Declaration.** She is no longer looking to discover anything.
+She looks herself in the eyes and **speaks as HER**.
 
-`her_patterns` already has a **`retired_at`** column. It was built for "a
-pattern she has finished with" — which is exactly ME being understood, thanked,
-and allowed to put the job down. The database already believed your
+The statements are **built from her own six days** — what HER would do, the
+choices she actually made, how many times she chose her — not generic
+affirmations. A woman reading somebody else's affirmation hears somebody else.
+She can edit every line and add her own before she starts.
+
+Then **Declaration Mode**: full screen, one statement at a time, very large,
+nothing else in view. She says each one out loud. The last button says
+**HER LEADS NOW**.
+
+---
+
+## Retiring ME
+
+ME was not bad. Her job was to make her feel good enough, and she did it for
+years. This is not a rejection.
+
+Four sentences, ticked one at a time — because saying them deliberately, one
+by one, *is* the ceremony. A single "complete" button would make it an errand.
+
+> I understand you.
+> I love you.
+> Thank you for protecting me.
+> You do not have to do this job any more.
+
+Then the landing:
+
+> ME protected me. I understand her. I love her. She does not have to make me
+> feel good enough any more. **I already know I am.**
+
+`her_patterns.retired_at` is set — a column that has existed since the first
+migration, for "a pattern she has finished with". The schema believed this
 methodology before it was written down.
 
-So Day 7 is not a summary screen. It is a ceremony:
-
-1. Her week, read back — her trigger, her belief, her loop, her HER response, every choice she logged
-2. The letter retiring ME. Encrypted, hers alone
-3. `retired_at` set. ME does not disappear from her record; she is marked as having finished a job
-4. The HER Code, built from her own words
-5. Certificate + a share page
-
-**NEEDS QUIANA'S INPUT:** the actual prompts for all seven days, the mirror
-timer's length and the line held on screen during it, and the wording of the
-retirement letter. These are the words. The structure holds without them; the
-product does not.
+**It is reversible.** Re-saving without confirming lifts the retirement.
+Nothing in this should feel like a door locking behind her.
 
 ---
 
-## C. Component architecture
+## What was built
 
-The engine already works this way: **a day is a list of typed blocks**, each
-block is one folder plus one registry line, and a new programme needs no code
-at all. Fourteen block types exist.
+### Ten new block types
 
-### What already exists and carries straight over
-
-| Block | Used on | Note |
+| Block | Day | Encrypted |
 | --- | --- | --- |
-| `dual-column-exercise` | Days 1 and 5 | ME column and HER column. Already writes `her_patterns` |
-| `belief-origin` | Day 2 | Already sensitive → encrypted |
-| `validation-audit` | Day 3 or 4 | Whose approval she is arranging her life around |
-| `return-practice` | Day 5 | Six questions, one action |
-| `her-choice-capture` | Day 6 | Already writes `her_choices` |
-| `her-code-builder` | Day 7 | Already writes `her_codes` |
-| `evidence-review` | Day 7 | Already reads her own week back (`resolvesContext`) |
-| `reflection-prompt`, `journal-prompt`, `rich-text`, `video`, `milestone`, `action-commitment`, `behavior-commitment` | throughout | |
+| `mirror_gaze` | 1–6 | ✓ |
+| `me_portrait` | 1 | — |
+| `protector_profile` | 2 | ✓ |
+| `emotion_trail` | 3 | ✓ |
+| `belief_review` | 4 | ✓ |
+| `manifestation_loop` | 5 | ✓ |
+| `celebration` | 5 | display only |
+| `mirror_declaration` | 7 | ✓ |
+| `me_retirement` | 7 | ✓ |
+| `callback` | 2–6 | display only |
 
-### What has to be built — six new block types
+Plus `my_part` — built before the curriculum arrived, kept in the admin
+palette, **not seeded into any day**. It holds the "what was never yours /
+what is yours" ordering if you ever want it.
 
-| New block | Day | What it does | Sensitive? | Writes |
-| --- | --- | --- | --- | --- |
-| `me-portrait` | 1 | Her archetype plus a multi-select of ME's strategies, in ME's own language | no | `her_patterns.currentTags` |
-| `mirror-gaze` | 3 | A real timer. One line held on screen. Optional reflection after | reflection: **yes** | `mirror_sessions` |
-| `letter-to-me` | 3 | A letter written *to* ME, with love | **yes** | journal entry |
-| `manifestation-loop` | 4 | The seven-step loop, one field per screen, her own example | **yes** | `manifestation_loops` |
-| `me-retirement` | 7 | Thanks ME, names what she protected, retires her | **yes** | `her_patterns.retiredAt` + journal |
-| `callback` | 2–7 | Display only. Shows her something she wrote on an earlier day | n/a | nothing |
+`callback` is the cheapest of the ten and does the most: it shows her
+something she wrote on an earlier day. It is what turns seven separate days
+into one week that was paying attention.
 
-`callback` is the cheapest of the six and does the most work. It is what turns
-seven separate days into one week that was paying attention.
+### One new table
 
-### The rules a new block obeys
+`mirror_sessions` — seconds asked, seconds completed, whether she finished.
+**Metadata only.** Anything she wrote afterwards is an encrypted journal entry
+like everything else.
 
-Each is a folder of three files — `schema.ts`, `Member.tsx` (`'use client'`),
-`index.ts` (plain) — because a definition exported from a client module arrives
-on the server with every field `undefined`, which once silently switched
-encryption off. The definition declares `isSensitive` (→ encrypted before it
-reaches Postgres) and `writesTo` (→ what else it updates). **Neither is ever
-taken from the request.**
+The manifestation loop and the retirement letter deliberately did **not** get
+their own tables. They are encrypted block responses and a `retired_at` flag on
+a column that already existed — three tables would have been three places for
+the same truth to disagree.
 
-### Beyond blocks
+### Duty of care, in code not copy
 
-- **Progress spiral** on her home screen — seven stages, where she is, what she has already made. Not a block; part of the day runner.
-- **Celebration moments** at Days 4 and 7, built from her own numbers rather than confetti for its own sake.
+Days 4 and 5 are the two screens where the manifestation model could be
+misread as *you caused this*. Both carry framing that is **hard-coded, not
+editable config** — a test asserts it is not reachable from the admin, so one
+rushed edit cannot remove it from the screen where it matters most.
 
----
+Day 5's is blunt, because its title is `THE PROBLEM IS YOU`:
 
-## D. Data and persistence
+> You did not cause what was done to you. Nothing on this page is asking you
+> to take responsibility for somebody else's behaviour, or for an illness, or
+> for what you were born into.
 
-Most of it already exists. `her_patterns`, `her_choices`, `return_sessions`,
-`her_codes`, `journal_entries` and per-contact encryption are all built and
-tested.
-
-### Three new tables
-
-```
-mirror_sessions        contact, enrollment, day, seconds asked,
-                       seconds completed, completed_at,
-                       reflection (encrypted, optional)
-
-manifestation_loops    contact, enrollment, the seven fields (encrypted),
-                       the belief it produced, created_at
-
-me_retirements         contact, enrollment, letter (encrypted),
-                       retired_at, what ME protected (encrypted)
-```
-
-`mirror_sessions` keeps seconds asked *and* seconds completed separately,
-because "she started it and stopped at forty seconds" is the single most
-interesting number in the whole challenge — it is the day people quit.
-
-### One column, no new table
-
-Day 1's ME strategies go in `her_patterns.currentTags`, which is already a text
-array. No migration.
-
-### What stays encrypted
-
-Everything she writes on Days 2, 3, 4 and 7. Per-contact key, wrapped by the
-master key, sealed before it reaches the database. The admin sees that she
-wrote, how much, and when — **never a word of what.** That is already true and
-tested, and the new blocks inherit it by declaring `isSensitive`.
-
-### Duty of care, in code
-
-Your §2 draws a line I have to keep: never imply she caused abuse, trauma,
-illness, poverty, discrimination, or another person's behaviour.
-
-- The Day 4 loop block carries a fixed, non-editable framing line above the fields: this is about **the part of the pattern that belongs to her**, which is the part she can change.
-- `CrisisResources` already renders on the heavy days. Day 2 and Day 4 are the two that need it most.
-- **NEEDS QUIANA'S INPUT:** the crisis numbers are still unconfirmed US lines, there is nothing for women outside the US, and there is no written policy for what happens when something concerning is written. This is the one open item I would not launch without.
+Every block that asks for something painful is marked `isSensitive`, which is
+what encrypts it before it reaches Postgres. **A test asserts that for all
+eight of them** — a new block added without it would quietly store the worst
+thing that ever happened to her in the clear, and nothing would look broken.
 
 ---
 
-## E. Challenge → The Divine Feminine
+## Verification
 
-**The Academy exists architecturally and has no curriculum. That is the
-correct state and nothing below invents one.**
+**56 checks** in `verify:curriculum`, on top of the existing suites. The ones
+worth naming:
 
-What happens when she finishes Day 7:
-
-1. HER Code, finalised, hers
-2. Certificate issued against real progress, publicly verifiable
-3. A share page — the growth loop
-4. **And then the invitation**
-
-The invitation is the transition, and right now it can only honestly be a
-**waitlist**, because The Divine Feminine has no curriculum and no price. Its
-two offers are seeded as drafts on purpose.
-
-So the Day 7 completion screen offers: *the deeper work is being built — be
-told when it opens.* She joins a list. When you have the curriculum and a
-price, that list is who you tell first, and they are the warmest audience you
-will ever have: women who just finished something of yours.
-
-**The machinery for this already exists** — the cohort waitlist built last
-week is exactly this shape, and needs no new code to point at a programme
-instead of a cohort.
-
-**NEEDS QUIANA'S INPUT:** the curriculum, the price, and whether The Divine
-Feminine is self-paced, cohort-based, or a membership. That last one changes
-the architecture more than the other two.
+- Seven days, the authoritative titles, in order. No eighth.
+- **Day 7 has no mirror gaze**, and digs for nothing new
+- The loop is on Day 5, not Day 4
+- Every block that asks something painful is encrypted
+- The duty-of-care framing is hard-coded, not config
+- Her declaration is built from her own material, her words before any generic
+  ones, and the same true thing is never said twice
+- Stopping the mirror early is recorded as what it was
+- ME can be retired, and un-retired
 
 ---
 
-## F. What genuinely needs you
+## What still needs you
 
-Ranked. The first one blocks launch; the rest do not.
-
-| | What | Why it blocks |
+| | What | Why |
 | --- | --- | --- |
-| **1** | **The seven days of prompts.** Every block on every day is still `[PLACEHOLDER COPY]` | This *is* the product. Nothing else on this list matters until it exists |
-| **2** | **Confirm the crisis numbers** in `CrisisResources`, and decide what happens when something concerning is written | Unverified phone lines in front of a woman on Day 2 |
-| **3** | **Does the 7-stage → 7-day mapping match what you wrote?** I derived it from your progression | Everything in this document assumes it |
-| **4** | **The mirror timer**: how long, and what line stays on screen | It is one of the few genuinely embodied moments |
-| **5** | **The retirement letter wording** on Day 7 | The emotional peak of the whole thing |
-| **6** | A price for The Divine Feminine, and its shape | Blocks the transition being anything but a waitlist |
-| **7** | Legal pages read by a lawyer | Not launch-blocking, but do not leave it |
+| **1** | **The prompts for all seven days.** Every one reads `[NEEDS QUIANA'S INPUT]` | This is the product |
+| **2** | **The six mirror intentions**, one per day, tied to that day's work | The mirror is daily and the intention is the practice |
+| **3** | **Confirm the crisis numbers**, and the policy for concerning content | Unverified US lines, on Day 3 and Day 5 |
+| **4** | The four retirement sentences, if you want them worded differently | Defaults are in place and match the methodology |
+| **5** | The Day 7 fallback declarations, for a woman who skipped days | Her own material is used first regardless |
+| **6** | A price and a shape for The Divine Feminine | The Day 7 invitation is a waitlist until then |
 
-### What I am *not* waiting for
+### Not waiting on
 
-The Divine Feminine curriculum. It stays an empty container with a waitlist
-until you write it, and nothing here depends on it.
+The Divine Feminine curriculum. It stays an empty container with a waitlist,
+exactly as instructed.
 
----
+### Known gap, worth naming
 
-## Build order, once the prompts land
+Her declaration is currently built from her **unencrypted** material: her
+patterns and her I CHOSE HER moments. The richer sources named in the
+methodology — the old belief, what ME was protecting, what she is no longer
+letting determine her worth — live in encrypted Day 2–4 responses, and reading
+them back requires decrypting her own entries server-side for her own eyes.
 
-1. The six new block types, with tests — each is a folder plus a registry line
-2. The three new tables, one migration
-3. Re-seed the seven days against the real curriculum
-4. The progress spiral and the two celebration moments
-5. The Day 7 ceremony, end to end
-6. The completion → waitlist transition
-7. The whole thing driven in a real browser at 390px, as every other journey is
-
-Steps 1, 2, 4 and 6 do not need the words and can be built now. Steps 3, 5 and
-7 cannot.
+That is doable and it is her own data. It is a deliberate follow-up rather
+than something to rush, because it touches the encryption path and that is the
+one part of this system that must never be loosened casually.

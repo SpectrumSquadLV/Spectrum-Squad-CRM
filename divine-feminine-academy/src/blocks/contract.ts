@@ -42,6 +42,8 @@ export interface BlockDefinition<
     | 'return_sessions'
     | 'her_codes'
     | 'journal_entries'
+    | 'mirror_sessions'
+    | 'me_retirement'
   >
 }
 

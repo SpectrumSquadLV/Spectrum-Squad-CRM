@@ -9,6 +9,7 @@ import {
   herCodes,
   herPatterns,
   journalEntries,
+  mirrorSessions,
   returnSessions,
 } from '@/db/schema'
 import {
@@ -278,8 +279,82 @@ async function writeJournalEntry(input: EffectInput) {
   void blockId
 }
 
+/**
+ * The mirror, every day.
+ *
+ * Records the SECONDS, not the words — anything she wrote afterwards is
+ * handled as a journal entry by the block's other target, encrypted like
+ * everything else she writes.
+ *
+ * `secondsCompleted` is stored even when she stopped early. Especially then:
+ * a woman who looked at her own face for eleven seconds and had to stop has
+ * told us the most useful thing in the whole challenge, and on Day 7 she gets
+ * to see that number change.
+ */
+async function writeMirrorSession(input: EffectInput) {
+  const { db, contactId, enrollmentId, blockId, response } = input
+
+  const secondsCompleted = Math.max(0, Math.round(Number(response.secondsCompleted) || 0))
+  const completed = response.completed === true
+
+  const values = {
+    contactId,
+    enrollmentId,
+    sourceBlockId: blockId,
+    intention: asString(response.intention) || null,
+    // Never less than what she actually did, whatever the block reported.
+    secondsAsked: Math.max(secondsCompleted, Number(response.secondsAsked) || secondsCompleted),
+    secondsCompleted,
+    completedAt: completed ? new Date() : null,
+    updatedAt: new Date(),
+  }
+
+  await db
+    .insert(mirrorSessions)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [mirrorSessions.enrollmentId, mirrorSessions.sourceBlockId],
+      set: values,
+    })
+}
+
+/**
+ * Day 7 — ME retires.
+ *
+ * Not a deletion and not a new table. Every pattern she created during this
+ * enrolment is marked `retiredAt`, which is a column that has existed since
+ * the first migration for exactly this: a pattern she has finished with.
+ *
+ * Reversible on purpose. If she re-saves the block without confirming, the
+ * retirement lifts — nothing about this methodology is meant to feel like a
+ * door locking behind her.
+ */
+async function writeMeRetirement(input: EffectInput) {
+  const { db, contactId, enrollmentId, response } = input
+  const retiring = response.retire !== false
+
+  await db
+    .update(herPatterns)
+    .set({ retiredAt: retiring ? new Date() : null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(herPatterns.contactId, contactId),
+        eq(herPatterns.sourceEnrollmentId, enrollmentId),
+      ),
+    )
+
+  await db.insert(activityEvents).values({
+    contactId,
+    eventType: retiring ? 'me.retired' : 'me.unretired',
+    entity: 'her_patterns',
+    metadata: { enrollmentId },
+  })
+}
+
 const handlers = {
   her_patterns: writeHerPattern,
+  mirror_sessions: writeMirrorSession,
+  me_retirement: writeMeRetirement,
   her_choices: writeHerChoice,
   return_sessions: writeReturnSession,
   her_codes: writeHerCode,

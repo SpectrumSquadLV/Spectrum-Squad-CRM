@@ -57,6 +57,13 @@
       "when": 1789897300299,
       "tag": "0007_live_cohorts",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789899477410,
+      "tag": "0008_mirror_sessions",
+      "breakpoints": true
     }
   ]
 }

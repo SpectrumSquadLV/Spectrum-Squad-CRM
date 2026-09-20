@@ -1,7 +1,8 @@
 /**
  * Seeds ME VS HER.
  *
- * EVERY PROMPT HERE IS PLACEHOLDER COPY. The real curriculum is the product,
+ * The STRUCTURE is authoritative; the WORDS are not. Every prompt is marked
+ * [NEEDS QUIANA'S INPUT]. The real curriculum is the product,
  * and it is not written yet. This exists so the engine can be built, run and
  * tested end to end; each day's prompts are marked so nothing invented here
  * can be mistaken for the real thing.
@@ -27,199 +28,309 @@ import {
   programs,
 } from '../src/db/schema/programs'
 
-const PLACEHOLDER = '[PLACEHOLDER COPY — awaiting the real curriculum]'
 
 type BlockSeed = { type: string; config: Record<string, unknown>; isRequired?: boolean }
 type DaySeed = { title: string; subtitle: string; minutes: number; blocks: BlockSeed[] }
 
+const PROMPT = "[NEEDS QUIANA'S INPUT]"
+
+/**
+ * THE SEVEN DAYS.
+ *
+ * Six days of work and one day of rest, exactly as the methodology sets out.
+ * There is no Day 8, and Day 7 is deliberately not another work day: no new
+ * belief to dig for, no trigger work, and no mirror gaze.
+ *
+ * The STRUCTURE here is authoritative — the day titles, what happens on each
+ * one, and which blocks appear in which order. The WORDS are not: every prompt
+ * is marked [NEEDS QUIANA'S INPUT] and is edited in the admin, without a
+ * developer and without a deploy.
+ *
+ * The mirror runs Days 1 to 6 with a different intention each day, tied to
+ * that day's work. On Day 7 it is replaced by the spoken declaration, because
+ * she has stopped looking for something and started speaking as HER.
+ */
 const days: DaySeed[] = [
+  // ------------------------------------------------------------------ Day 1
   {
-    title: 'Meet her',
-    subtitle: 'Name the woman you keep catching glimpses of.',
+    title: 'MEET ME',
+    subtitle: 'Awareness. Observation. Beginning to recognise her.',
     minutes: 20,
     blocks: [
       {
         type: 'rich_text',
         config: {
-          heading: 'Day 1',
-          body: `${PLACEHOLDER}\n\nToday you name her. Not an aspiration — a specific woman, with specific responses, in the situations you actually live in.\n\nStart with one thing that sets you off.`,
+          heading: 'Day 1 — MEET ME',
+          body: `${PROMPT}\n\nToday is not about changing anything. It is about noticing who shows up when something threatens you — and beginning to recognise that she has been doing a job.`,
+        },
+      },
+      {
+        type: 'mirror_gaze',
+        config: {
+          intention: `${PROMPT} Today, just look. You are not fixing anything.`,
+          seconds: 60,
+          askAfter: true,
+          afterPrompt: 'What did you notice?',
+        },
+      },
+      {
+        type: 'me_portrait',
+        isRequired: true,
+        config: {
+          prompt: `${PROMPT} Who is ME?`,
+          helper: `${PROMPT} Name her, name what sets her off, and tick what she does.`,
+        },
+      },
+      {
+        type: 'milestone',
+        config: {
+          title: 'You met her.',
+          body: 'That is the whole of Day 1. Come back tomorrow.',
+        },
+      },
+    ],
+  },
+
+  // ------------------------------------------------------------------ Day 2
+  {
+    title: 'MEET YOUR PROTECTOR',
+    subtitle: 'How ME has been protecting your sense of being good enough.',
+    minutes: 25,
+    blocks: [
+      {
+        type: 'rich_text',
+        config: {
+          heading: 'Day 2 — MEET YOUR PROTECTOR',
+          body: `${PROMPT}\n\nME is not the enemy. Her whole job has been to make you feel good enough, and she has been doing it since before you could have stopped her.`,
+        },
+      },
+      {
+        type: 'mirror_gaze',
+        config: {
+          intention: `${PROMPT} Today, look at the one who has been protecting you.`,
+          seconds: 60,
+          askAfter: true,
+        },
+      },
+      {
+        type: 'callback',
+        config: {
+          facet: 'me_response',
+          heading: 'Yesterday you said she does this',
+          emptyText: '',
+        },
+      },
+      {
+        type: 'protector_profile',
+        isRequired: true,
+        config: {
+          prompt: `${PROMPT} What has she been protecting?`,
+          helper: `${PROMPT}`,
+        },
+      },
+    ],
+  },
+
+  // ------------------------------------------------------------------ Day 3
+  {
+    title: 'FOLLOW THE EMOTION',
+    subtitle: 'The trigger, followed backward to what you learned about yourself.',
+    minutes: 30,
+    blocks: [
+      {
+        type: 'rich_text',
+        config: {
+          heading: 'Day 3 — FOLLOW THE EMOTION',
+          body: `${PROMPT}\n\nThe feeling is the trail. Today you follow it back: what happened, what you felt, what you did, what you were protecting, when you felt it before — and what you decided about yourself.`,
+        },
+      },
+      {
+        type: 'mirror_gaze',
+        config: {
+          intention: `${PROMPT} Today, look at her while you feel it.`,
+          seconds: 60,
+          askAfter: true,
+        },
+      },
+      {
+        type: 'callback',
+        config: { facet: 'trigger', heading: 'What sets you off, in your words' },
+      },
+      {
+        type: 'emotion_trail',
+        isRequired: true,
+        config: { prompt: `${PROMPT} Follow it back.`, helper: `${PROMPT}` },
+      },
+    ],
+  },
+
+  // ------------------------------------------------------------------ Day 4
+  {
+    title: 'REVIEW THE BELIEF',
+    subtitle: 'Where it came from, what holds it up, and whether you are keeping it.',
+    minutes: 30,
+    blocks: [
+      {
+        type: 'rich_text',
+        config: {
+          heading: 'Day 4 — REVIEW THE BELIEF',
+          body: `${PROMPT}\n\nYesterday you found what you learned about yourself. Today it goes on trial.`,
+        },
+      },
+      {
+        type: 'mirror_gaze',
+        config: {
+          intention: `${PROMPT} Today, look at her and ask whether it is true.`,
+          seconds: 60,
+          askAfter: true,
+        },
+      },
+      {
+        type: 'belief_review',
+        isRequired: true,
+        config: { prompt: `${PROMPT} The belief.`, helper: `${PROMPT}` },
+      },
+    ],
+  },
+
+  // ------------------------------------------------------------------ Day 5
+  {
+    title: 'THE PROBLEM IS YOU',
+    subtitle: 'And that is the best news in the whole week.',
+    minutes: 30,
+    blocks: [
+      {
+        type: 'rich_text',
+        config: {
+          heading: 'Day 5 — THE PROBLEM IS YOU',
+          body: `${PROMPT}\n\nRead the framing on the next screen before anything else. This day is good news, and it is easy to hear as the opposite.`,
+        },
+      },
+      {
+        type: 'mirror_gaze',
+        config: {
+          intention: `${PROMPT} Today, look at the woman who can change this.`,
+          seconds: 60,
+          askAfter: true,
+        },
+      },
+      {
+        type: 'manifestation_loop',
+        isRequired: true,
+        config: { prompt: `${PROMPT} The loop.`, helper: `${PROMPT}` },
+      },
+      {
+        // The day ends in celebration on purpose: recognising that she
+        // participates in the pattern is the same thing as recognising she
+        // has power over it.
+        type: 'celebration',
+        config: {
+          heading: `${PROMPT} If you are part of the pattern, you are part of the solution.`,
+          body: `${PROMPT}`,
+          footnote: `${PROMPT}`,
+        },
+      },
+    ],
+  },
+
+  // ------------------------------------------------------------------ Day 6
+  {
+    title: 'ME VS HER',
+    subtitle: 'The signature exercise. One real choice, made differently.',
+    minutes: 30,
+    blocks: [
+      {
+        type: 'rich_text',
+        config: {
+          heading: 'Day 6 — ME VS HER',
+          body: `${PROMPT}\n\nTwo columns. What ME does, and what HER would do instead. Then you go and do one of them for real.`,
+        },
+      },
+      {
+        type: 'mirror_gaze',
+        config: {
+          intention: `${PROMPT} Today, look at HER.`,
+          seconds: 60,
+          askAfter: true,
         },
       },
       {
         type: 'dual_column_exercise',
         isRequired: true,
         config: {
-          prompt: 'What sets you off, and what she does instead',
-          helper: `${PLACEHOLDER} This becomes your HER profile. Everything later reads from it.`,
+          prompt: `${PROMPT} ME does this. HER does that.`,
+          helper: `${PROMPT}`,
           triggerLabel: 'What sets this off?',
-          currentLabel: 'Current Me responds by...',
-          herLabel: 'HER responds by...',
-        },
-      },
-      {
-        type: 'milestone',
-        config: {
-          title: 'You named her.',
-          body: 'That is the whole of Day 1. Come back tomorrow.',
-        },
-      },
-    ],
-  },
-  {
-    title: 'Where it started',
-    subtitle: 'The belief underneath the pattern.',
-    minutes: 25,
-    blocks: [
-      {
-        type: 'rich_text',
-        config: {
-          heading: 'Day 2',
-          body: `${PLACEHOLDER}\n\nToday goes underneath yesterday. Every pattern sits on a belief, and every belief was learned somewhere.\n\nThis one asks a lot. Take it at your own pace — nobody here can read what you write.`,
-        },
-      },
-      {
-        type: 'belief_origin',
-        isRequired: true,
-        config: {
-          prompt: 'The belief, and where you learned it',
-          helper: `${PLACEHOLDER} Encrypted. Only you can read this.`,
-        },
-      },
-    ],
-  },
-  {
-    title: 'Whose approval',
-    subtitle: 'An honest audit of who you are performing for.',
-    minutes: 20,
-    blocks: [
-      {
-        type: 'rich_text',
-        config: {
-          heading: 'Day 3',
-          body: `${PLACEHOLDER}\n\nToday is an inventory. Whose approval are you still arranging your life around, and what does arranging it cost you?`,
-        },
-      },
-      {
-        type: 'validation_audit',
-        isRequired: true,
-        config: {
-          prompt: 'Whose approval are you still arranging your life around?',
-          helper: `${PLACEHOLDER} Three is a start. Add more if they come.`,
-          minEntries: 3,
-        },
-      },
-    ],
-  },
-  {
-    title: 'The behaviour',
-    subtitle: 'One thing you keep doing that she would not.',
-    minutes: 15,
-    blocks: [
-      {
-        type: 'rich_text',
-        config: {
-          heading: 'Day 4',
-          body: `${PLACEHOLDER}\n\nBeliefs are interesting. Behaviour is what changes your life. Today you pick one and get specific about it.`,
-        },
-      },
-      {
-        type: 'behavior_commitment',
-        isRequired: true,
-        config: {
-          prompt: 'One thing you keep doing that HER would not',
-          helper: `${PLACEHOLDER} Specific enough that you will know whether you did it.`,
-        },
-      },
-      {
-        type: 'action_commitment',
-        config: {
-          prompt: 'And one thing you will do about it',
-          helper: `${PLACEHOLDER}`,
-          suggestions: ['Say the thing', 'Leave early', 'Ask directly', 'Say no'],
-        },
-      },
-    ],
-  },
-  {
-    title: 'The way back',
-    subtitle: 'You will lose her. This is how you return.',
-    minutes: 20,
-    blocks: [
-      {
-        type: 'rich_text',
-        config: {
-          heading: 'Day 5',
-          body: `${PLACEHOLDER}\n\nYou will lose her. Everyone does. The practice that matters is not staying — it is returning, and knowing exactly how.\n\nThis is the one you keep for life.`,
-        },
-      },
-      {
-        type: 'return_practice',
-        isRequired: true,
-        config: {
-          prompt: 'The RETURN practice',
-          helper: `${PLACEHOLDER} Walk it once now, on something real but small. It is here whenever you need it.`,
-          teaching: true,
-        },
-      },
-      {
-        type: 'milestone',
-        config: {
-          title: 'This one is yours for good.',
-          body: 'RETURN stays in your account, one tap from anywhere.',
-        },
-      },
-    ],
-  },
-  {
-    title: 'I chose HER',
-    subtitle: 'Start logging it, in the moment.',
-    minutes: 10,
-    blocks: [
-      {
-        type: 'rich_text',
-        config: {
-          heading: 'Day 6',
-          body: `${PLACEHOLDER}\n\nToday is short, because today happens all day. Every time you choose her instead, log it. From your phone, in the moment, in ten seconds.`,
+          currentLabel: 'ME responds by…',
+          herLabel: 'HER responds by…',
         },
       },
       {
         type: 'her_choice_capture',
         isRequired: true,
         config: {
-          prompt: 'One time today you chose HER',
-          helper: `${PLACEHOLDER} Log as many as you like — this is the number you will look back on.`,
+          prompt: `${PROMPT} Go and do it. Then tell me what happened.`,
+          helper: `${PROMPT} This is your first I CHOSE HER.`,
         },
       },
     ],
   },
+
+  // ------------------------------------------------------------------ Day 7
   {
-    title: 'Your HER Code',
-    subtitle: 'Read your week back, then write what you live by.',
+    title: 'REST — LET HER LEAD',
+    subtitle: 'No new work. Rest, integration, declaration, and closeout.',
     minutes: 25,
     blocks: [
       {
         type: 'rich_text',
         config: {
-          heading: 'Day 7',
-          body: `${PLACEHOLDER}\n\nBefore you write anything, read what you already did.`,
+          heading: 'Day 7 — LET HER LEAD',
+          body: `${PROMPT}\n\nNothing to dig for today. Nothing to work out. Today you read your own week back, say it out loud, and let her put the job down.`,
         },
       },
-      { type: 'evidence_review', config: { prompt: 'Look at what you did.' } },
+      // NO mirror_gaze on Day 7. She is not looking to discover something any
+      // more — that is what the declaration below replaces.
       {
-        type: 'her_code_builder',
+        type: 'evidence_review',
+        config: {
+          heading: `${PROMPT} Look what you did.`,
+          body: `${PROMPT}`,
+        },
+      },
+      {
+        type: 'mirror_declaration',
         isRequired: true,
         config: {
-          prompt: 'Your HER Code',
-          helper: `${PLACEHOLDER} In your words. This is yours to keep and yours to share.`,
-          lineCount: 5,
-          linePlaceholder: 'I am the woman who…',
+          prompt: `${PROMPT} Say it as HER.`,
+          helper: `${PROMPT} These came from your own six days. Change them until they sound like you.`,
+          fallbacks: [
+            `${PROMPT} I already am good enough.`,
+            `${PROMPT} I do not have to earn it.`,
+          ],
+          beginLabel: 'Take it to the mirror',
+        },
+      },
+      {
+        type: 'me_retirement',
+        isRequired: true,
+        config: {
+          prompt: `${PROMPT} Let her go.`,
+          helper: `${PROMPT}`,
+        },
+      },
+      {
+        type: 'her_code_builder',
+        config: {
+          prompt: `${PROMPT} Your HER Code.`,
+          helper: `${PROMPT}`,
         },
       },
       {
         type: 'milestone',
         config: {
-          title: 'Seven days.',
-          body: 'Your HER Code is in your account. So is everything else you wrote.',
+          title: 'HER leads now.',
+          body: `${PROMPT}`,
         },
       },
     ],
@@ -249,7 +360,7 @@ async function main() {
       slug,
       title: 'ME VS HER',
       subtitle: 'Meet her. Choose her. Learn the way back.',
-      description: PLACEHOLDER,
+      description: PROMPT,
       kind: 'challenge',
       status: 'published',
       pacing: 'drip',
