@@ -107,7 +107,11 @@ export async function getStateForEnrollment(
     pacing: program.pacing as Pacing,
     startedAt: enrollment.startedAt,
     now,
-    timeZone: enrollment.timezoneAtStart,
+    timeZone: pacingTimeZone(
+      program.pacing as Pacing,
+      enrollment.timezoneAtStart,
+      cohort?.timezone,
+    ),
     durationDays,
     allowEarlyUnlock: program.allowEarlyUnlock,
     highestCompletedDay: completed,
@@ -115,6 +119,28 @@ export async function getStateForEnrollment(
   })
 
   return { enrollment, program, cohort, durationDays, completed, unlock }
+}
+
+/**
+ * Whose clock decides which day is open.
+ *
+ * Under cohort pacing it is the COHORT's, not hers. Everybody in a live run
+ * has to be on the same day — otherwise a woman in Auckland is opening Day 3
+ * while the host is running the Day 2 call, and the whole point of doing it
+ * together is gone.
+ *
+ * Under drip pacing it is hers, which is the opposite and equally deliberate:
+ * a solo practice should arrive in her morning, wherever she is.
+ */
+export function pacingTimeZone(
+  pacing: Pacing,
+  enrollmentTimeZone: string,
+  cohortTimeZone: string | null | undefined,
+): string {
+  if ((pacing === 'cohort' || pacing === 'date_based') && cohortTimeZone) {
+    return cohortTimeZone
+  }
+  return enrollmentTimeZone
 }
 
 /** Everything the member home and the day runner need about where she is. */
@@ -146,7 +172,11 @@ export async function getChallengeState(
     pacing: program.pacing as Pacing,
     startedAt: enrollment.startedAt,
     now,
-    timeZone: enrollment.timezoneAtStart,
+    timeZone: pacingTimeZone(
+      program.pacing as Pacing,
+      enrollment.timezoneAtStart,
+      cohort?.timezone,
+    ),
     durationDays,
     allowEarlyUnlock: program.allowEarlyUnlock,
     highestCompletedDay: completed,

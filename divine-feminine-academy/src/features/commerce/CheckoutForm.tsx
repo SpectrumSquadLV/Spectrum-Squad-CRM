@@ -24,12 +24,15 @@ function Submit({ label }: { label: string }) {
  */
 export function CheckoutForm({
   offerId,
+  cohortId,
   priceLabel,
   planNote,
   refundNote,
   signedInEmail,
 }: {
   offerId: string
+  /** Set when this is a seat in a live run rather than evergreen access. */
+  cohortId?: string
   priceLabel: string
   planNote?: string
   refundNote?: string
@@ -44,6 +47,7 @@ export function CheckoutForm({
   return (
     <form action={formAction} className="flex flex-col gap-5">
       <input type="hidden" name="offerId" value={offerId} />
+      {cohortId && <input type="hidden" name="cohortId" value={cohortId} />}
 
       <div>
         <p className="font-display text-3xl">{priceLabel}</p>

@@ -14,6 +14,7 @@ import {
   orders,
   programs,
 } from '@/db/schema'
+import { getCohortById } from '@/db/queries/cohorts'
 import { getActor } from '@/lib/auth/actor-server'
 import { siteUrl } from '@/lib/auth/env'
 import { paymentProvider } from '@/lib/payments'
@@ -23,6 +24,7 @@ export type CheckoutState = { error?: string }
 
 const schema = z.object({
   offerId: z.string().uuid('That offer does not exist.'),
+  cohortId: z.string().uuid().optional(),
   email: z.string().trim().toLowerCase().email('That address does not look right.'),
   firstName: z.string().trim().max(80).optional(),
   couponCode: z.string().trim().max(64).optional(),
@@ -94,6 +96,34 @@ export async function startCheckout(
   }
 
   const now = new Date()
+
+  /*
+   * The doors are checked HERE, on the server, at the moment of payment.
+   *
+   * The countdown on the page is a picture. It can be stale, the tab can have
+   * been open all afternoon, and the clock on her laptop can be wrong. If this
+   * were not re-checked, a woman could pay for a seat in a room that shut an
+   * hour ago — which means taking money for something she cannot have, which
+   * is the worst failure this system is capable of.
+   */
+  let cohortId: string | null = null
+  if (input.cohortId) {
+    const detail = await getCohortById(db, input.cohortId, now)
+    if (!detail) return { error: 'That group does not exist.' }
+    if (detail.cohort.offerId !== offer.id) {
+      return { error: 'That is not the price for this group.' }
+    }
+    if (!detail.window.canEnroll) {
+      return {
+        error:
+          detail.window.phase === 'full'
+            ? 'Every seat in that group is taken. Join the waitlist and you are first to know.'
+            : 'The doors on that group are closed.',
+      }
+    }
+    cohortId = detail.cohort.id
+  }
+
   const pricing = priceOrder(offer, couponRow ? toCoupon(couponRow) : null, now)
 
   if (input.couponCode && !pricing.couponApplied) {
@@ -146,6 +176,7 @@ export async function startCheckout(
       totalCents: pricing.totalCents,
       currency: pricing.currency,
       couponId: pricing.couponApplied ? (couponRow?.id ?? null) : null,
+      cohortId,
     })
     .returning()
 

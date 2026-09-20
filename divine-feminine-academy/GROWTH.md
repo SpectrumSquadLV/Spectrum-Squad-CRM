@@ -74,6 +74,22 @@ theirs.
 
 ### 1. Live cohorts with a date, a countdown and a waitlist
 
+> **Half-built, and paused on purpose.** The database, the window state
+> machine, the waitlist and the countdown exist and are tested. There is no
+> public page, no admin and no email, so **none of it is reachable by a
+> visitor** — it is committed because the machine it was written on is
+> disposable, not because it is finished.
+>
+> It is paused because finishing it is only worth doing if you actually want
+> to run live calls, and that is a business decision rather than a technical
+> one. The cheaper test is to run one round by hand — a date, a Zoom link and
+> a Stripe payment link — and build the machinery afterwards, when you know
+> what it needs to do.
+>
+> Building it did turn up two real faults in code that had already shipped.
+> Those are fixed and tested, and they matter whether or not a cohort ever
+> runs: see the note below.
+
 Myron's whole business is a **five-day live challenge**. Tony sells live
 events. Kathrin launches her Academy in cohorts. Every one of them runs on
 *this closes on Friday*.

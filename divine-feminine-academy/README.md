@@ -59,6 +59,7 @@ keys are configured. Nothing is on sale yet: both Academy offers are seeded as
 | Per-archetype email sequences | Built and written, verified (`verify:sequences`) |
 | Unsubscribe that works without a login | Built, verified |
 | **The content engine** | Built, verified (`verify:writing`) |
+| Live cohorts | **Half-built and unreachable** — see `GROWTH.md` |
 | Writing: articles, episodes, RSS, scheduling | Built |
 | Per-piece opt-ins + new-writing announcements | Built |
 | PDF export of the HER Code | **Not built** — see below |
@@ -257,6 +258,7 @@ npm run verify:archetypes   # 68 quiz scoring, ties, and that all four are reach
 npm run verify:quiz         # 36 the quiz end to end (needs DATABASE_URL)
 npm run verify:sequences    # 87 the four email sequences (needs DATABASE_URL)
 npm run verify:writing      # 96 the content engine and its markdown (needs DATABASE_URL)
+npm run verify:cohorts      # 62 the cohort window, and two regressions (needs DATABASE_URL)
 npm run verify:rls          # 11 that RLS really isolates members
 
 # Needs the app running (npm run build && npm start):

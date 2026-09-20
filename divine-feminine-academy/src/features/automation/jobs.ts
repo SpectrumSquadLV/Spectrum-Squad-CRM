@@ -3,6 +3,7 @@ import 'server-only'
 import { and, eq, isNull, lt, sql } from 'drizzle-orm'
 import type { Db } from '@/db/client'
 import {
+  cohorts,
   contacts,
   enrollments,
   lessonProgress,
@@ -71,11 +72,14 @@ export async function sendDayReminders(
       program: programs,
       contact: contacts,
       prefs: profiles.notificationPrefs,
+      cohortTimezone: cohorts.timezone,
+      cohortStartsAt: cohorts.startsAt,
     })
     .from(enrollments)
     .innerJoin(programs, eq(programs.id, enrollments.programId))
     .innerJoin(contacts, eq(contacts.id, enrollments.contactId))
     .leftJoin(profiles, eq(profiles.contactId, enrollments.contactId))
+    .leftJoin(cohorts, eq(cohorts.id, enrollments.cohortId))
     .where(and(eq(enrollments.status, 'active'), isNull(contacts.archivedAt)))
 
   const summary: JobSummary = { considered: rows.length, sent: 0, skipped: 0 }
@@ -122,14 +126,29 @@ export async function sendDayReminders(
       continue
     }
 
+    /*
+     * Two different clocks, on purpose.
+     *
+     * `timeZone` above decides WHEN to send — her morning, wherever she is.
+     * This decides WHICH DAY has opened, and under cohort pacing that is the
+     * cohort's clock, because everybody in a live run has to be on the same
+     * day as the live call.
+     */
+    const pacing = row.program.pacing as Pacing
+    const unlockTimeZone =
+      (pacing === 'cohort' || pacing === 'date_based') && row.cohortTimezone
+        ? row.cohortTimezone
+        : timeZone
+
     const unlock = computeUnlockState({
-      pacing: row.program.pacing as Pacing,
+      pacing,
       startedAt: row.enrollment.startedAt,
       now,
-      timeZone,
+      timeZone: unlockTimeZone,
       durationDays,
       allowEarlyUnlock: row.program.allowEarlyUnlock,
       highestCompletedDay: Number(completedAgg?.day ?? 0),
+      cohortStartsAt: row.cohortStartsAt ?? null,
     })
 
     if (unlock.isComplete) {

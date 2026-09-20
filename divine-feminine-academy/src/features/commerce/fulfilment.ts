@@ -96,6 +96,19 @@ async function moveToStage(db: Db, contactId: string, slug: string) {
  * rather than duplicated, so a replayed webhook cannot reset her progress.
  */
 async function grantAccess(db: Db, orderId: string, contactId: string) {
+  /*
+   * Which room she bought into, if any.
+   *
+   * Read from the order rather than guessed from the offer: two cohorts can
+   * share one offer, and putting a woman in the wrong room is the one mistake
+   * she would notice immediately and could not fix herself.
+   */
+  const [order] = await db
+    .select({ cohortId: orders.cohortId })
+    .from(orders)
+    .where(eq(orders.id, orderId))
+    .limit(1)
+
   const items = await db
     .select({ offer: offers, program: programs })
     .from(orderItems)
@@ -135,6 +148,7 @@ async function grantAccess(db: Db, orderId: string, contactId: string) {
       contactId,
       programId: program.id,
       versionId: version.id,
+      cohortId: order?.cohortId ?? null,
       timezoneAtStart: contact?.timezone ?? 'UTC',
       currentDay: 1,
     })
@@ -144,7 +158,7 @@ async function grantAccess(db: Db, orderId: string, contactId: string) {
       eventType: 'enrollment.granted',
       entity: 'programs',
       entityId: program.id,
-      metadata: { orderId },
+      metadata: { orderId, cohortId: order?.cohortId ?? null },
     })
   }
 }

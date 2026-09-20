@@ -72,6 +72,14 @@ export const orders = pgTable(
     totalCents: integer('total_cents').notNull().default(0),
     currency: text('currency').notNull().default('usd'),
     couponId: uuid('coupon_id'),
+    /**
+     * Which live run she bought a seat in, if any.
+     *
+     * Explicit rather than inferred from the offer. Two cohorts can share one
+     * offer, and guessing would put a woman in the wrong room on the one
+     * occasion it matters most.
+     */
+    cohortId: uuid('cohort_id'),
     stripeCheckoutSessionId: text('stripe_checkout_session_id'),
     stripeCustomerId: text('stripe_customer_id'),
     placedAt: timestamp('placed_at', { withTimezone: true })
