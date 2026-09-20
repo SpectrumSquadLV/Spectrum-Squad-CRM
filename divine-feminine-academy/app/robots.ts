@@ -13,6 +13,23 @@ import { siteUrl } from '@/lib/auth/env'
 export default function robots(): MetadataRoute.Robots {
   const base = siteUrl().replace(/\/$/, '')
 
+  /*
+   * A preview must not be findable.
+   *
+   * SITE_NOINDEX=1 shuts the whole site to crawlers. It exists because a
+   * deployed preview carries placeholder curriculum and, more seriously, crisis
+   * phone numbers nobody has confirmed yet — and a URL that exists can be
+   * found, linked and indexed whether or not anybody was told about it.
+   *
+   * Removing the variable is how it goes live. That is deliberately a decision
+   * somebody makes, rather than a default that happens to them.
+   */
+  if (process.env.SITE_NOINDEX === '1') {
+    return {
+      rules: { userAgent: '*', disallow: '/' },
+    }
+  }
+
   return {
     rules: {
       userAgent: '*',

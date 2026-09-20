@@ -15,7 +15,17 @@ const sans = Inter({
   display: 'swap',
 })
 
+/**
+ * Belt and braces with robots.txt.
+ *
+ * A crawler that ignores robots.txt may still respect a noindex meta tag, and
+ * on a preview carrying unconfirmed crisis numbers that redundancy is worth
+ * the two lines.
+ */
+const noindex = process.env.SITE_NOINDEX === '1'
+
 export const metadata: Metadata = {
+  ...(noindex ? { robots: { index: false, follow: false } } : {}),
   title: {
     default: 'Divine Feminine',
     template: '%s · Divine Feminine',
