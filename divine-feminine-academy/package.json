@@ -30,7 +30,10 @@
     "verify:reminders": "tsx --conditions=react-server scripts/verify-reminders.mts",
     "verify:rate-limit": "tsx scripts/verify-rate-limit.mts",
     "verify:a11y": "tsx scripts/verify-a11y.mts",
-    "verify:contrast": "tsx scripts/verify-contrast.mts"
+    "verify:contrast": "tsx scripts/verify-contrast.mts",
+    "preflight": "tsx --conditions=react-server scripts/preflight.mts",
+    "verify:preflight": "tsx scripts/verify-preflight.mts",
+    "verify:db-url": "tsx scripts/verify-db-url.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",
@@ -61,5 +64,8 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.13",
     "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

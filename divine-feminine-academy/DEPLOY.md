@@ -1,0 +1,236 @@
+# Deploying the Divine Feminine Academy
+
+Written to be followed in order. Every step says what breaks if you skip it.
+
+**Before anything:** decide where the app will live. Vercel and Railway are
+both wired up — `vercel.json` and `railway.toml` are in the repository — so
+this is a choice, not a migration.
+
+| | Vercel | Railway |
+| --- | --- | --- |
+| Next.js support | Native | Good |
+| Hourly job | Built in (`vercel.json`) | Needs a second service or an external scheduler |
+| You already use it | No | Yes |
+
+**Recommendation: Vercel**, because the hourly job is one line of config rather
+than a separate service. Railway is a perfectly good answer if consolidating
+billing matters more.
+
+---
+
+## 1. Supabase
+
+1. Create a project. Choose a region near most of the women using it — every
+   page render talks to this database.
+2. From **Project Settings → Database**, copy a connection string.
+
+**Which connection string.** Supabase gives you a direct one and a pooled one.
+
+- **Serverless (Vercel): use the pooled string** (host contains `pooler`, port
+  usually `6543`). A serverless function opens a connection per invocation and
+  a direct connection will exhaust the limit under any real traffic.
+- **A long-running server (Railway): the direct string is fine.**
+
+The app detects a pooled URL and disables prepared statements automatically —
+the pooler does not support them, and without that every query would fail.
+`npm run verify:db-url` covers the detection.
+
+3. From **Project Settings → API**, copy the project URL and the **anon** key.
+
+> You do **not** need the service role key. Nothing in this codebase reads it.
+> If you set it anyway, preflight will tell you to remove it — a key that can
+> bypass every security policy should not sit in an environment for no reason.
+
+## 2. Generate your own secrets
+
+```bash
+# Journals are encrypted with this. Losing it loses every entry, permanently.
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+
+# Protects the hourly job endpoint.
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+**Back up `JOURNAL_MASTER_KEY` somewhere that is not this deployment.** A
+password manager is fine. If you lose it, every journal entry every woman has
+ever written becomes permanently unreadable. That is the design working, not
+failing — but it is unforgiving.
+
+## 3. Apply the migrations
+
+Run these from your machine, against the **direct** connection string (not the
+pooler — migrations create objects and want a real session):
+
+```bash
+cd divine-feminine-academy
+npm ci
+DATABASE_URL="postgresql://...direct..." npm run db:migrate
+```
+
+Four migrations apply, in order:
+
+| | What it does |
+| --- | --- |
+| `0000_thick_magus` | 51 tables, 25 enums |
+| `0001_row_level_security` | Policies, and the `journal_metadata` view |
+| `0002_source_block_provenance` | Idempotency columns for side effects |
+| `0003_one_certificate_per_program` | Stops a race issuing two certificates |
+
+`0001` defines policies that call `auth.uid()`. **Supabase provides it.** On a
+plain Postgres it does not exist and those policies will fail — preflight warns
+if it is missing.
+
+## 4. Seed
+
+Order matters: the offers seed needs the CRM stages the challenge seed creates.
+
+```bash
+DATABASE_URL="postgresql://...direct..." npm run seed:challenge
+DATABASE_URL="postgresql://...direct..." npm run seed:assessment
+DATABASE_URL="postgresql://...direct..." npm run seed:offers
+```
+
+This creates **7 DAYS TO HER with placeholder prompts**, a placeholder
+assessment, and **two draft offers for the Academy**. Nothing is purchasable
+until you activate one in `/admin/offers`.
+
+## 5. Environment variables
+
+Set these on the host. `.env.example` documents every one.
+
+**Required:**
+
+```
+DATABASE_URL
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+JOURNAL_MASTER_KEY
+NEXT_PUBLIC_SITE_URL      # https, no trailing slash
+RESEND_API_KEY            # without it, sign-in links are silently discarded
+EMAIL_FROM
+CRON_SECRET               # without it, no reminder ever sends
+```
+
+**Once you are selling:**
+
+```
+STRIPE_SECRET_KEY
+STRIPE_WEBHOOK_SECRET
+```
+
+## 6. Make yourself an admin
+
+Sign up through the site first, so the account exists. Then:
+
+```sql
+-- Your user id is in Supabase under Authentication → Users.
+INSERT INTO user_roles (user_id, role) VALUES ('<your-auth-user-id>', 'owner');
+```
+
+Until you do this, `/admin` returns 404 to you as well. That is the role gate
+working.
+
+## 7. Stripe
+
+1. **Developers → Webhooks → Add endpoint**:
+   `https://<your-domain>/api/webhooks/payments`
+2. Send these events:
+   `checkout.session.completed`, `payment_intent.succeeded`,
+   `payment_intent.payment_failed`, `charge.refunded`,
+   `customer.subscription.deleted`
+3. Copy the signing secret into `STRIPE_WEBHOOK_SECRET`.
+
+**Test with a real card before you announce anything.** Checkout and fulfilment
+are covered by `verify:fulfilment`, but that runs against a fake provider. It
+has never spoken to Stripe.
+
+## 8. The hourly job
+
+**Vercel:** already configured in `vercel.json`. Vercel sends `CRON_SECRET` as
+a Bearer token automatically.
+
+**Railway:** no built-in scheduler. Either add a second service running
+
+```bash
+while true; do
+  curl -fsS -X POST -H "authorization: Bearer $CRON_SECRET" \
+    "$NEXT_PUBLIC_SITE_URL/api/cron/automations" || true
+  sleep 3600
+done
+```
+
+or point an external scheduler (cron-job.org, EasyCron, a GitHub Action) at the
+same URL hourly.
+
+**Without this, no reminder, nudge or abandoned-checkout email ever sends.**
+The challenge depends on that daily email.
+
+## 9. Preflight
+
+```bash
+npm run preflight
+```
+
+Run it against the deployed environment. It checks every variable, the shape of
+the master key, that the database connects, that the migrations are applied,
+and that `auth.uid()` exists. **It exits non-zero on any error**, so it can gate
+a deploy.
+
+Then confirm the deployment is actually up:
+
+```bash
+curl -s https://<your-domain>/api/health     # {"status":"ok"}
+```
+
+## 10. Before you announce it
+
+- [ ] `grep -rn "<Placeholder" app src` returns nothing
+- [ ] The seven days have real prompts, not `[PLACEHOLDER COPY]`
+- [ ] The assessment questions are real
+- [ ] **The crisis phone numbers are confirmed correct** — they are US lines in
+      `src/features/care/CrisisResources.tsx`, and they appear wherever a woman
+      writes something heavy
+- [ ] The legal pages have been read by a lawyer
+- [ ] An offer is active and you have paid for it yourself with a real card
+- [ ] `JOURNAL_MASTER_KEY` is backed up somewhere other than the host
+- [ ] `npm run preflight` reports no errors
+
+---
+
+## A note on row-level security
+
+The app connects with `DATABASE_URL`, which on Supabase is the `postgres`
+owner — and **an owner bypasses row-level security.** So for the app's own
+queries, the real gate is the actor context in `src/db/queries`, which is
+enforced by the type system and covered by `verify:permissions` and
+`verify:crm-privacy`.
+
+The RLS policies are a backstop for anything that reaches the database another
+way: the Supabase client, a future direct integration, a mistake.
+
+**To put the app itself behind RLS too** — worth doing eventually — create a
+restricted role and connect as that, keeping the owner for migrations:
+
+```sql
+CREATE ROLE dfa_app LOGIN PASSWORD '<a strong password>';
+GRANT USAGE ON SCHEMA public, auth TO dfa_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO dfa_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO dfa_app;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public, auth TO dfa_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO dfa_app;
+```
+
+Then point `DATABASE_URL` at `dfa_app` and keep the owner string for
+`npm run db:migrate`. `npm run verify:rls` exercises exactly this setup.
+
+This is **not** done by default because it needs the request's user id to reach
+Postgres (`request.jwt.claim.sub`), which is a change to how every query is
+issued. It is the right next step for the security posture, and it is not
+required to launch.
+
+## Rollback
+
+Migrations are forward-only. To undo a deploy, redeploy the previous commit —
+none of the four migrations drop data, so an older build runs against a newer
+schema without loss.

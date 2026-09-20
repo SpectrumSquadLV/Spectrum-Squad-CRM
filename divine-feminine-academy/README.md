@@ -68,8 +68,29 @@ keys are configured. Nothing is on sale yet: both Academy offers are seeded as
 | Security headers | Built |
 | WCAG 2.2 AA | **13 pages, 0 violations** (`verify:a11y`) |
 | Content-Security-Policy | **Not done** — see Security |
+| Preflight check | Built, verified (`verify:preflight`) |
+| Vercel + Railway config | Both, so hosting is not a blocker |
+| Health endpoint (`/api/health`) | Built |
+| Deployment runbook | [DEPLOY.md](./DEPLOY.md) |
 
-## Running it
+## Deploying
+
+**[DEPLOY.md](./DEPLOY.md) is the runbook.** Ordered steps, each saying what
+breaks if you skip it. Vercel and Railway are both wired up — `vercel.json` and
+`railway.toml` are in the repository — so the hosting decision is a choice
+rather than a migration.
+
+```bash
+npm run preflight   # exits non-zero if this deployment is not ready
+```
+
+Preflight checks every variable, the shape of the master key, that the database
+connects, that the migrations are applied, and that `auth.uid()` exists. It
+exists because a half-configured deploy is worse than one that refuses to
+start: **with no Resend key the app silently discards every sign-in link**, and
+a woman is locked out of her own account with nothing to tell her why.
+
+## Running it locally
 
 ```bash
 cp .env.example .env.local   # then fill it in
@@ -97,6 +118,8 @@ npm run verify:automation   # 26 that nobody is emailed twice, or not at all
 npm run verify:contrast     # 29 that every colour clears WCAG AA
 npm run verify:reminders    # 15 that a reminder lands in HER morning
 npm run verify:rate-limit   # 7  that the magic-link endpoint cannot be hammered
+npm run verify:preflight    # 22 that a broken deploy is refused
+npm run verify:db-url       # 6  that a pooled Supabase URL is detected
 npm run verify:rls          # 11 that RLS really isolates members
 
 # Needs the app running (npm run build && npm start):
@@ -473,6 +496,19 @@ the stylesheet so a future tweak cannot quietly regress them.
 npm run build && npm start
 BASE_URL=http://127.0.0.1:3000 npm run verify:a11y
 ```
+
+## One thing worth knowing about row-level security
+
+The app connects with `DATABASE_URL`, which on Supabase is the `postgres`
+owner — and **an owner bypasses RLS.** So for the app's own queries the real
+gate is the actor context in `src/db/queries`, enforced by the type system and
+covered by `verify:permissions` and `verify:crm-privacy`. The RLS policies are
+a backstop for anything reaching the database another way.
+
+Putting the app itself behind RLS is the right next step for the security
+posture, and [DEPLOY.md](./DEPLOY.md) has the SQL. It is not required to
+launch, and it is not done by default because it needs the request's user id to
+reach Postgres — a change to how every query is issued.
 
 ## Placeholders
 

@@ -294,14 +294,29 @@ await check('every handled event is recorded for the audit trail', async () => {
 // Orders deliberately do NOT cascade from contacts: they are financial
 // records, and a contact is archived rather than deleted in production (see
 // `contacts.archivedAt`). So the test cleans up in dependency order.
+const createdOffers = new Set<string>()
+
 for (const id of cleanup) {
   const rows = await db.select({ id: orders.id }).from(orders).where(eq(orders.contactId, id))
   for (const order of rows) {
+    const items = await db
+      .select({ offerId: orderItems.offerId })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, order.id))
+    for (const item of items) createdOffers.add(item.offerId)
+
     await db.delete(payments).where(eq(payments.orderId, order.id))
     await db.delete(orderItems).where(eq(orderItems.orderId, order.id))
     await db.delete(orders).where(eq(orders.id, order.id))
   }
   await db.delete(contacts).where(eq(contacts.id, id))
+}
+
+// The test offers are created ACTIVE, which makes them purchasable. Leaving
+// them behind would mean a preflight against this database reports a dozen
+// live offers that nobody meant to sell.
+for (const offerId of createdOffers) {
+  await db.delete(offers).where(eq(offers.id, offerId))
 }
 
 console.log(`\nfulfilment: all ${passed} checks passed`)

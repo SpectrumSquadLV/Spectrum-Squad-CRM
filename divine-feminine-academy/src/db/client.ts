@@ -26,8 +26,26 @@ function createDb() {
     __dfaClient?: ReturnType<typeof postgres>
   }
 
+  /*
+   * Supabase offers a direct connection and a transaction-mode pooler
+   * (pgbouncer, usually port 6543). The pooler does not support prepared
+   * statements, and postgres-js uses them by default — so against a pooled
+   * URL every query fails with a prepared-statement error.
+   *
+   * Serverless deployments are exactly where the pooler is wanted, which is
+   * where this would have bitten. Detected from the URL rather than left as a
+   * variable somebody has to know to set.
+   */
+  const isPooled =
+    /(^|[:@.])6543(\/|$)/.test(connectionString) ||
+    connectionString.includes('pooler.supabase')
+
   const client =
-    globalForDb.__dfaClient ?? postgres(connectionString, { max: 10 })
+    globalForDb.__dfaClient ??
+    postgres(connectionString, {
+      max: isPooled ? 1 : 10,
+      prepare: !isPooled,
+    })
 
   if (process.env.NODE_ENV !== 'production') {
     globalForDb.__dfaClient = client
