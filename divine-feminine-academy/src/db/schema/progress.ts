@@ -128,10 +128,24 @@ export const herPatterns = pgTable(
     sourceEnrollmentId: uuid('source_enrollment_id').references(
       () => enrollments.id,
     ),
+    /**
+     * The lesson block that produced this, when one did. Re-saving that block
+     * updates its pattern instead of adding a second one. Null for patterns
+     * she adds herself outside a lesson.
+     */
+    sourceBlockId: uuid('source_block_id').references(() => lessonBlocks.id, {
+      onDelete: 'set null',
+    }),
     retiredAt: timestamp('retired_at', { withTimezone: true }),
     ...timestamps,
   },
-  (t) => [index('her_patterns_contact_idx').on(t.contactId)],
+  (t) => [
+    index('her_patterns_contact_idx').on(t.contactId),
+    uniqueIndex('her_patterns_source_block_key').on(
+      t.sourceEnrollmentId,
+      t.sourceBlockId,
+    ),
+  ],
 )
 
 /** The core metric of the whole platform. */
@@ -144,6 +158,10 @@ export const herChoices = pgTable(
       .references(() => contacts.id, { onDelete: 'cascade' }),
     programId: uuid('program_id').references(() => programs.id),
     patternId: uuid('pattern_id').references(() => herPatterns.id),
+    /** The lesson block that logged this, when one did. Keeps re-saves idempotent. */
+    sourceBlockId: uuid('source_block_id').references(() => lessonBlocks.id, {
+      onDelete: 'set null',
+    }),
     area: areaEnum('area'),
     situation: text('situation'),
     oldResponse: text('old_response'),
@@ -154,7 +172,10 @@ export const herChoices = pgTable(
       .defaultNow(),
     ...timestamps,
   },
-  (t) => [index('her_choices_contact_idx').on(t.contactId, t.occurredAt)],
+  (t) => [
+    index('her_choices_contact_idx').on(t.contactId, t.occurredAt),
+    uniqueIndex('her_choices_source_block_key').on(t.contactId, t.sourceBlockId),
+  ],
 )
 
 export const returnActionEnum = pgEnum('return_action', [

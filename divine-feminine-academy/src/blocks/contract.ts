@@ -29,6 +29,12 @@ export interface BlockDefinition<
    * admin surfaces see only that the block was answered.
    */
   isSensitive: boolean
+  /**
+   * Some blocks show a woman her own data rather than asking for more of it -
+   * Day 7 reads her week back to her. The day runner resolves this on the
+   * server and hands it to the block as `context`.
+   */
+  resolvesContext?: 'her_evidence'
   /** Where this block writes, beyond block_responses. */
   writesTo?: Array<
     | 'her_patterns'
@@ -46,6 +52,27 @@ export interface BlockMemberProps<Config, Response> {
   value: Response | undefined
   onChange: (value: Response) => void
   disabled?: boolean
+  /** Server-resolved data, for blocks that declare `resolvesContext`. */
+  context?: HerEvidence
+}
+
+/** What Day 7 reads back to her: her own week, in her own words. */
+export interface HerEvidence {
+  patterns: Array<{
+    triggerText: string
+    currentResponse: string | null
+    herResponse: string | null
+  }>
+  choiceCount: number
+  choices: Array<{
+    situation: string | null
+    herResponse: string | null
+    area: string | null
+  }>
+  returnCount: number
+  daysCompleted: number
+  journalEntryCount: number
+  journalWordCount: number
 }
 
 /**

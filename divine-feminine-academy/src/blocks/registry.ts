@@ -1,28 +1,54 @@
 import type { AnyBlockDefinition } from './contract'
+import { actionCommitment } from './types/action-commitment'
+import { behaviorCommitment } from './types/behavior-commitment'
+import { beliefOrigin } from './types/belief-origin'
 import { dualColumnExercise } from './types/dual-column-exercise'
+import { evidenceReview } from './types/evidence-review'
+import { herChoiceCapture } from './types/her-choice-capture'
+import { herCodeBuilder } from './types/her-code-builder'
+import { journalPrompt } from './types/journal-prompt'
+import { milestone } from './types/milestone'
 import { reflectionPrompt } from './types/reflection-prompt'
+import { returnPractice } from './types/return-practice'
 import { richText } from './types/rich-text'
+import { validationAudit } from './types/validation-audit'
+import { video } from './types/video'
 
 /**
  * THE BLOCK REGISTRY.
  *
- * This is the single most important piece of the architecture. A lesson is a
- * list of typed blocks; each type maps to exactly one entry here.
+ * A lesson is a list of typed blocks; each type maps to exactly one entry here.
  *
  * - A new PROGRAM needs no code at all. It is rows in the database, assembled
  *   in the admin program builder.
  * - A new BLOCK TYPE is one folder under ./types plus one line below.
  *
- * Block types still to build (see the Phase 1 architecture doc):
- *   video, audio, download, belief_origin, validation_audit,
- *   behavior_commitment, return_practice, her_choice_capture,
- *   evidence_review, her_code_builder, journal_prompt, quiz_question,
- *   assessment_embed, action_commitment, milestone
+ * Every entry must come from a module that is NOT marked 'use client'. The
+ * server reads these to build the admin palette and to decide which responses
+ * are encrypted; a definition exported from a client module arrives as an
+ * opaque reference with every field undefined.
+ *
+ * Still to build: quiz_question and assessment_embed (Phase 4), audio and
+ * download.
  */
 const definitions: AnyBlockDefinition[] = [
+  // Structure and media
   richText,
-  dualColumnExercise,
+  video,
+  milestone,
+  // The seven days
+  dualColumnExercise, // Day 1 - meet her
+  beliefOrigin, // Day 2 - where it started
+  validationAudit, // Day 3 - whose approval
+  behaviorCommitment, // Day 4 - the behaviour
+  returnPractice, // Day 5 - the way back
+  herChoiceCapture, // Day 6 - I chose HER
+  evidenceReview, // Day 7 - her evidence
+  herCodeBuilder, // Day 7 - her code
+  // General purpose
   reflectionPrompt,
+  journalPrompt,
+  actionCommitment,
 ]
 
 export const blockRegistry: ReadonlyMap<string, AnyBlockDefinition> = new Map(

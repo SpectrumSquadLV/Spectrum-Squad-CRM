@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { MemberTabBar } from '@/design-system/patterns'
+import { MemberTabBar, ReturnAffordance } from '@/design-system/patterns'
 import { SignOutButton } from '@/features/auth/SignOutButton'
 
 /**
@@ -53,6 +53,7 @@ export default function MemberLayout({
         {children}
       </main>
 
+      <ReturnAffordance />
       <MemberTabBar />
     </div>
   )

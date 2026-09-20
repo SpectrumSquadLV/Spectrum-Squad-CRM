@@ -8,9 +8,11 @@ A website: one Next.js app serving three faces on one domain.
 
 Mobile-first. Most women arrive on a phone from Instagram.
 
-**Phases 1 and 2 are built**: the foundation, the public site and identity.
-There is no challenge content, no checkout and no CRM screens yet — see the
-roadmap below.
+**Phases 1–3 are built**: the foundation, the public site and identity, and
+the challenge engine. **7 DAYS TO HER runs end to end** — against placeholder
+curriculum copy, because the real prompts are not written yet.
+
+There is no checkout and no CRM screens — see the roadmap below.
 
 ---
 
@@ -25,13 +27,21 @@ roadmap below.
 | Permissions model + actor context | Built |
 | Journal encryption | Built, verified (`npm run verify:crypto`) |
 | Row-level security | Built, verified (`npm run verify:rls`) |
-| Block registry + 3 reference block types | Built |
+
 | Public site (10 pages, SEO, legal) | Built |
 | Sign-up / sign-in by magic link | Built |
 | Auth gate + session refresh (`proxy.ts`) | Built |
 | Member portal shell + account page | Built |
 | Crisis resources component | Built — **US resources need confirming** |
-| Challenge engine, CRM, checkout | **Not built** — Phase 3+ |
+| Block registry — 14 types | Built |
+| Drip pacing engine | Built, verified (`npm run verify:rls`) |
+| Day runner + response persistence | Built, verified (`npm run verify:engine`) |
+| HER profile · I CHOSE HER · RETURN | Built |
+| Journal (encrypted) + composer | Built |
+| HER Code + public share page | Built |
+| 7 DAYS TO HER curriculum | **Placeholder copy only** |
+| PDF export of the HER Code | **Not built** — see below |
+| CRM screens, checkout | **Not built** — Phase 5 |
 
 ## Running it
 
@@ -47,10 +57,23 @@ Look at **`/admin/design`** first. Every token and primitive renders there.
 npm run typecheck      # tsc, strict
 npm run build          # production build
 npm run verify:crypto  # 8 checks on journal encryption
+npm run verify:pacing  # 17 checks on drip unlocking and timezones
+npm run verify:engine  # 12 checks on the challenge engine (needs DATABASE_URL)
 npm run verify:rls     # 11 checks that RLS really isolates members
+npm run seed:challenge # seed 7 DAYS TO HER (placeholder curriculum)
 npm run db:generate    # regenerate SQL after a schema change
 npm run db:migrate     # apply migrations (needs DATABASE_URL)
 ```
+
+`verify:engine` runs the real save path against a real database and proves that
+a Day 2 answer is stored as ciphertext, that Day 1 creates her HER profile and
+re-saving edits it rather than duplicating it, that Day 6 cannot be
+double-counted by an edit, and that every registry definition still reads
+correctly on the server.
+
+`verify:pacing` covers the drip rules, including both daylight-saving
+transitions and the case that matters most: a woman who starts at 11pm gets
+Day 2 the next **morning**, not the next night.
 
 `verify:rls` builds a throwaway database from the migrations, seeds two members
 and a coach, and proves that neither member can read the other's journal and
@@ -175,9 +198,9 @@ Tokens live in `app/globals.css`. Change one, then check `/admin/design`.
 
 1. **Foundation** — *done*
 2. **Public site + identity** — *done*
-3. **Challenge engine** — *next.* The day experience, HER profile, I CHOSE HER,
-   RETURN, journal, HER Code. *7 DAYS TO HER runs end to end after this.*
-4. **LMS + assessments + certificates** — admin program builder, pre/post
+3. **Challenge engine** — *done.* The day experience, HER profile, I CHOSE HER,
+   RETURN, journal, HER Code.
+4. **LMS + assessments + certificates** — *next.* — admin program builder, pre/post
    assessments, certificate generation and public verification
 5. **CRM + commerce** — pipeline, Stripe checkout, payment plans, coupons.
    *Money can be taken after this.*
@@ -196,6 +219,38 @@ architecture document.
    (`offers` supports both; the policy needs deciding before checkout is built)
 4. Video in the challenge, community, SMS reminders, dark mode
 
+## The challenge engine
+
+A day is a list of typed blocks rendered by `BlockRenderer`, which looks each
+type up in the registry. The day runner never knows what kind of block it is
+showing — that is what makes a new programme need no code.
+
+Two things are driven entirely by the block's own definition, never by the
+request:
+
+- **`isSensitive`** decides whether the answer is encrypted. Day 2 and Day 3
+  are stored exactly like journal bodies.
+- **`writesTo`** decides what else it writes — her HER profile, an I CHOSE HER
+  entry, a RETURN session, a HER Code, a journal entry.
+
+Every side effect is idempotent on (enrollment, block), so re-saving a block
+edits what it wrote rather than duplicating it. This is why editing a Day 6
+answer cannot inflate the metric the whole platform is judged on.
+
+### Pacing
+
+Days unlock on a **calendar-day boundary in the timezone she started in**, not
+24 hours after sign-up. A day she has already completed never re-locks. Both
+rules are in `src/features/challenge/pacing.ts` as pure functions, and both are
+tested.
+
+### What is not built
+
+**PDF export of the HER Code.** The HER Code renders as a page built to a phone
+screen, because the growth loop is a screenshot posted to Instagram rather than
+a downloaded file. A real PDF is a later addition; `her_codes.pdf_url` is
+already in the schema for it.
+
 ## Placeholders
 
 Copy and data that are **not real yet** are wrapped in `<Placeholder>`, which
@@ -203,8 +258,15 @@ renders a visible dashed box. That is deliberate: placeholder content that
 looks finished is how invented testimonials ship by accident.
 
 ```bash
-grep -rn "<Placeholder" app src   # the list should be empty before launch
+grep -rn "<Placeholder" app src           # the list should be empty before launch
+grep -rn "PLACEHOLDER" scripts/seed-challenge.mts   # the whole curriculum
 ```
+
+**The seven days are placeholder copy.** `scripts/seed-challenge.mts` builds
+the real structure — seven days, nineteen blocks, the right block type in the
+right place — but every prompt in it is marked
+`[PLACEHOLDER COPY — awaiting the real curriculum]`. The engine is finished;
+the words are the product, and they are still to be written.
 
 `/stories` is deliberately empty. No testimonial is ever invented; real ones
 come from the `testimonials` table, which carries `is_placeholder` and

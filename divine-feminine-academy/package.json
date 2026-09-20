@@ -12,7 +12,10 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "verify:crypto": "tsx --conditions=react-server scripts/verify-crypto.mts",
-    "verify:rls": "bash scripts/verify-rls.sh"
+    "verify:rls": "bash scripts/verify-rls.sh",
+    "verify:pacing": "tsx scripts/verify-pacing.mts",
+    "seed:challenge": "tsx scripts/seed-challenge.mts",
+    "verify:engine": "tsx --conditions=react-server scripts/verify-engine.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",
