@@ -10,6 +10,18 @@ import { siteUrl } from '@/lib/auth/env'
  * The individual pages also carry `robots: noindex`; this is the belt to that
  * pair of braces, because a crawler that ignores one may respect the other.
  */
+/*
+ * Per request, never baked.
+ *
+ * robots.txt is static output by default, which means SITE_NOINDEX is read at
+ * BUILD time and frozen into the file. Setting the variable on the running
+ * service then does nothing at all, and the switch that is supposed to keep an
+ * unfinished site out of Google silently is not connected to anything. Found
+ * by setting it on a server started from a build made without it, which is
+ * exactly how it would have been set in production.
+ */
+export const dynamic = 'force-dynamic'
+
 export default function robots(): MetadataRoute.Robots {
   const base = siteUrl().replace(/\/$/, '')
 

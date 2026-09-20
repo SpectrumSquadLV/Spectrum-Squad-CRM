@@ -16,7 +16,13 @@ import { archetypeList } from '@/features/quiz/archetypes'
  * strangers land on when somebody shares her result, so they are the pages
  * that need to be findable.
  */
+/** Reads the database and the noindex switch, so never baked at build. */
+export const dynamic = 'force-dynamic'
+
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  // Nothing to offer a crawler that is being told to go away.
+  if (process.env.SITE_NOINDEX === '1') return []
+
   const base = siteUrl().replace(/\/$/, '')
   const now = new Date()
 

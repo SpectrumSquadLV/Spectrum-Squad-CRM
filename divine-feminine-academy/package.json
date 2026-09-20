@@ -47,7 +47,8 @@
     "verify:curriculum": "tsx --conditions=react-server scripts/verify-curriculum.mts",
     "bootstrap": "tsx --conditions=react-server scripts/bootstrap.mts",
     "verify:images": "tsx --conditions=react-server scripts/verify-images.mts",
-    "seed:images": "tsx --conditions=react-server scripts/seed-images.mts"
+    "seed:images": "tsx --conditions=react-server scripts/seed-images.mts",
+    "verify:noindex": "tsx scripts/verify-noindex.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",

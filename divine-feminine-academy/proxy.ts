@@ -14,7 +14,30 @@ import { NextResponse, type NextRequest } from 'next/server'
  */
 const PROTECTED = ['/my-practice', '/admin']
 
+/**
+ * Keeping an unfinished site out of search results.
+ *
+ * The meta tag in the root layout covers pages rendered per request. It cannot
+ * cover pages prerendered at build: their HTML is written before the variable
+ * is ever read, so /legal/privacy and the rest went out indexable however the
+ * switch was set. This header is the one place that runs on every request
+ * whatever the page is, and Google treats X-Robots-Tag exactly as it treats
+ * the meta tag.
+ *
+ * Removing SITE_NOINDEX is how the site goes live - a decision somebody makes,
+ * not a default that happens to them.
+ */
 export async function proxy(request: NextRequest) {
+  const response = await gate(request)
+
+  if (process.env.SITE_NOINDEX === '1') {
+    response.headers.set('X-Robots-Tag', 'noindex, nofollow')
+  }
+
+  return response
+}
+
+async function gate(request: NextRequest): Promise<NextResponse> {
   let response = NextResponse.next({ request })
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL

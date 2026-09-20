@@ -21,17 +21,25 @@ const sans = Inter({
  * A crawler that ignores robots.txt may still respect a noindex meta tag, and
  * on a preview carrying unconfirmed crisis numbers that redundancy is worth
  * the two lines.
+ *
+ * A function rather than a constant, because a constant is read once when the
+ * module is first evaluated and frozen into whatever was prerendered. That is
+ * what made this switch do nothing: the variable would be set on the running
+ * service, and the pages would carry the metadata from a build that never saw
+ * it. generateMetadata runs per request.
  */
-const noindex = process.env.SITE_NOINDEX === '1'
+export function generateMetadata(): Metadata {
+  const noindex = process.env.SITE_NOINDEX === '1'
 
-export const metadata: Metadata = {
-  ...(noindex ? { robots: { index: false, follow: false } } : {}),
-  title: {
-    default: 'Divine Feminine',
-    template: '%s · Divine Feminine',
-  },
-  description:
-    'A place to meet the woman you are becoming — and to keep choosing her.',
+  return {
+    ...(noindex ? { robots: { index: false, follow: false } } : {}),
+    title: {
+      default: 'Divine Feminine',
+      template: '%s · Divine Feminine',
+    },
+    description:
+      'A place to meet the woman you are becoming — and to keep choosing her.',
+  }
 }
 
 export const viewport: Viewport = {

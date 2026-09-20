@@ -219,6 +219,25 @@ Then confirm the deployment is actually up:
 curl -s https://<your-domain>/api/health     # {"status":"ok"}
 ```
 
+## 9b. The noindex switch
+
+`SITE_NOINDEX=1` keeps the site out of search results: `robots.txt` disallows
+everything, the sitemap is emptied, every page carries a noindex meta tag, and
+every response carries `X-Robots-Tag: noindex, nofollow`. Four, because a
+crawler that ignores one may respect another — and because the meta tag alone
+cannot cover a page that was prerendered at build time.
+
+All four are decided per request, so setting or removing the variable takes
+effect on the next request without a rebuild. **Removing it is how the site
+goes live.**
+
+```bash
+npm run build && npm run verify:noindex
+```
+
+That starts the built server twice, with the variable and without it, and
+checks both directions. The off state matters as much as the on state.
+
 ## 10. Before you announce it
 
 - [ ] `grep -rn "<Placeholder" app src` returns nothing
