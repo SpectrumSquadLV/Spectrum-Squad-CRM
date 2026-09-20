@@ -59,14 +59,28 @@ ok('the quiz loads', await page.locator('h1').first().isVisible())
 ok('it opens on question 1 of 12', (await page.getByText('1 of 12').count()) === 1)
 
 // Tap the first option, twelve times.
+//
+// After each tap the quiz advances itself. The check inside the loop is the
+// one that matters: the new question's heading has to be ON SCREEN and not
+// tucked under the sticky header, which is exactly what happened before the
+// scroll fix - four answers visible, and the question they answer hidden.
+let headingAlwaysVisible = true
 for (let i = 1; i <= 12; i++) {
   const buttons = page.locator('button[aria-pressed]')
   await buttons.first().waitFor({ state: 'visible' })
   const before = await buttons.count()
   if (before !== 4) { ok(`question ${i} shows four options`, false, `${before}`); break }
+
+  const heading = page.locator('h2').first()
+  const box = await heading.boundingBox()
+  const headerBox = await page.locator('header').first().boundingBox()
+  const headerBottom = headerBox ? headerBox.y + headerBox.height : 0
+  if (!box || box.y < headerBottom - 1) headingAlwaysVisible = false
+
   await buttons.nth(i % 4).click()
-  await page.waitForTimeout(350)
+  await page.waitForTimeout(450)
 }
+ok('every question stays clear of the sticky header', headingAlwaysVisible)
 
 ok('the email gate appears after the last question', await page.getByLabel('Email').isVisible())
 ok('she is shown something true first', (await page.locator('blockquote').count()) === 1)

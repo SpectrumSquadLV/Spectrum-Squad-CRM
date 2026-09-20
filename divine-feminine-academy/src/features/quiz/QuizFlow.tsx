@@ -1,6 +1,6 @@
 'use client'
 
-import { useActionState, useMemo, useState } from 'react'
+import { useActionState, useEffect, useMemo, useRef, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 import { Button, Field, Input, Rule } from '@/design-system/primitives'
 import { cn } from '@/lib/utils/cn'
@@ -50,6 +50,32 @@ export function QuizFlow({
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [showGate, setShowGate] = useState(false)
   const [state, formAction] = useActionState<QuizState, FormData>(submitQuiz, {})
+  const top = useRef<HTMLDivElement>(null)
+
+  /*
+   * Put the new question back at the top of the screen.
+   *
+   * The quiz advances itself when she taps, and without this the page keeps
+   * whatever scroll position the last answer left it at — so on a phone, after
+   * tapping the fourth option, the next question's heading sits behind the
+   * sticky header and she is looking at four answers to a question she cannot
+   * see.
+   *
+   * Only on a real move, never on first paint: scrolling somebody to the top
+   * of a page they just arrived at is its own small rudeness.
+   */
+  const firstPaint = useRef(true)
+  useEffect(() => {
+    if (firstPaint.current) {
+      firstPaint.current = false
+      return
+    }
+    // Instant, not smooth. The quiz already pauses 220ms on each tap so she
+    // sees her own choice register; adding a half-second glide on top means
+    // she spends a meaningful part of a ninety-second quiz watching the page
+    // move. Smooth scrolling is for pages somebody chose to scroll.
+    top.current?.scrollIntoView({ behavior: 'auto', block: 'start' })
+  }, [index, showGate])
 
   const preview = useMemo(() => {
     const scorable: QuizQuestion[] = questions.map((q) => ({
@@ -77,7 +103,7 @@ export function QuizFlow({
       : null
 
     return (
-      <div className="measure">
+      <div className="measure scroll-mt-28" ref={top}>
         <p className="text-2xs uppercase tracking-[0.2em] text-clay-deep">
           Done
         </p>
@@ -172,7 +198,7 @@ export function QuizFlow({
   }
 
   return (
-    <div className="measure">
+    <div className="measure scroll-mt-28" ref={top}>
       <ol className="flex gap-1.5" aria-label="Progress">
         {questions.map((q, i) => (
           <li
