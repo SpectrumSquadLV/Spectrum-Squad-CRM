@@ -9,7 +9,10 @@ import {
   assessmentResponses,
   assessmentResults,
 } from '@/db/schema/assessments'
-import { getPublishedAssessment } from '@/db/queries/assessments'
+import {
+  getAssessmentVersion,
+  getPublishedAssessment,
+} from '@/db/queries/assessments'
 import { findOrCreateLead, tagContact } from '@/db/queries/leads'
 import { newToken } from '@/lib/crypto/journal'
 import { siteUrl } from '@/lib/auth/env'
@@ -27,6 +30,14 @@ import { joinArchetypeSequence } from './subscribe'
  */
 export const quizInput = z.object({
   slug: z.string().trim().min(1),
+  /**
+   * The version her browser actually rendered.
+   *
+   * Optional only so an older client mid-submit does not break; when it is
+   * missing we fall back to the published version, which is the old
+   * behaviour and the old bug. Every current client sends it.
+   */
+  versionId: z.string().uuid().optional(),
   firstName: z.string().trim().min(1, 'Tell me what to call you.').max(80),
   email: z
     .string()
@@ -46,7 +57,19 @@ export type QuizOutcome =
 export async function recordQuizSubmission(
   input: QuizInput,
 ): Promise<QuizOutcome> {
-  const published = await getPublishedAssessment(db, input.slug)
+  /*
+   * HER version, not the current one.
+   *
+   * Scoring against whatever is published at submit time was the bug that
+   * could end a completed quiz in "Answer at least one question first": her
+   * answers are keyed to the question IDs her browser rendered, and a version
+   * published while she was mid-quiz replaces every one of them. Versions are
+   * immutable, so this is both correct and what makes a retake comparable.
+   */
+  const published = input.versionId
+    ? await getAssessmentVersion(db, input.slug, input.versionId)
+    : await getPublishedAssessment(db, input.slug)
+
   if (!published) return { ok: false, error: 'That quiz is not open.' }
   if (published.assessment.kind !== 'archetype') {
     return { ok: false, error: 'That is not a quiz.' }
@@ -76,8 +99,35 @@ export async function recordQuizSubmission(
   // record, and every email she got afterwards would be addressed to a woman
   // who does not exist.
   const result = scoreArchetypes(questions, answers)
-  if (!result.primary) {
-    return { ok: false, error: 'Those answers did not add up to anything. Try again.' }
+
+  /*
+   * Two different zeroes, and only one of them is hers.
+   *
+   * `answered === 0` means not one thing she sent matched a real option on a
+   * real question - a forged request, or a client so broken it sent nothing
+   * usable. There is no quiz to score and nothing true to tell her, so it is
+   * refused rather than resolved. Fabricating a result here would write a
+   * contact, an attempt and an archetype for a woman who never answered
+   * anything, and then email her about it.
+   */
+  if (result.answered === 0) {
+    return { ok: false, error: 'Those answers did not come through. Try again.' }
+  }
+
+  /*
+   * The other zero IS hers, and it is our fault.
+   *
+   * She answered real questions and the published version could not score
+   * them - no scoring questions, or options carrying no weights. That is a
+   * defect in the data, not a fact about her, so she gets a result (there is
+   * no such thing as a completed quiz without one) and the defect goes to the
+   * log where somebody can fix it.
+   */
+  if (result.degenerate) {
+    console.error(
+      `[quiz] version ${published.version.id} scored zero for ${answers.length} answers. ` +
+        'Its options carry no usable weights. Result resolved by tie-break.',
+    )
   }
 
   const archetype = archetypes[result.primary]
@@ -127,9 +177,19 @@ export async function recordQuizSubmission(
   await db.insert(assessmentResults).values({
     attemptId: attempt.id,
     overallScore: null,
-    categoryScores: Object.fromEntries(
-      result.tallies.map((t) => [t.mode, t.share]),
-    ),
+    /*
+     * Both halves, in one column.
+     *
+     * The four modes answer "how do I protect myself", the four areas answer
+     * "where is it loudest". They are namespaced rather than merged because
+     * `self` is an area and could one day be a mode name too, and a silent
+     * collision here would put a protector's score on a domain bar.
+     */
+    categoryScores: {
+      ...Object.fromEntries(result.tallies.map((t) => [t.mode, t.share])),
+      ...Object.fromEntries(result.areas.map((a) => [`area:${a.area}`, a.share])),
+      ...(result.loudest ? { loudest: result.loudest } : {}),
+    },
     archetype: result.primary,
     secondaryArchetype: result.secondary,
     narrative: archetype.tagline,

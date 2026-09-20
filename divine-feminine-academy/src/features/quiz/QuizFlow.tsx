@@ -41,9 +41,21 @@ function Submit() {
  */
 export function QuizFlow({
   slug,
+  versionId,
   questions,
 }: {
   slug: string
+  /**
+   * The version these questions came from, sent back on submit.
+   *
+   * Her answers are keyed to THESE question IDs. If a new version publishes
+   * while she is part-way through, the server has to score against the
+   * version she actually saw or every answer she gave is discarded - which
+   * is how a finished quiz used to end in "Answer at least one question
+   * first". It is a version ID, not an answer, so it cannot be used to
+   * change her result: the weights are read from the database either way.
+   */
+  versionId: string
   questions: FlowQuestion[]
 }) {
   const [index, setIndex] = useState(0)
@@ -139,6 +151,7 @@ export function QuizFlow({
 
         <form action={formAction} className="flex flex-col gap-5">
           <input type="hidden" name="slug" value={slug} />
+          <input type="hidden" name="versionId" value={versionId} />
           <input type="hidden" name="answers" value={JSON.stringify(answers)} />
 
           <Field label="First name" htmlFor="quiz-name">

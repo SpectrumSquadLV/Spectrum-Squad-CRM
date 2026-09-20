@@ -22,9 +22,33 @@ import {
   assessments,
 } from '../src/db/schema/assessments'
 import { quizQuestions } from '../src/features/quiz/questions'
+import { validateArchetypeVersion } from '../src/features/quiz/archetypes'
 
 async function main() {
   const slug = 'which-version'
+
+  /*
+   * Refuse to publish something that cannot score.
+   *
+   * Before the questions reach the database, not after. A version whose
+   * options carry no weights scores zero for every woman who takes it, and
+   * the only place that failure used to show up was on the result screen of
+   * somebody who had just answered twelve questions honestly.
+   */
+  const problems = validateArchetypeVersion(
+    quizQuestions.map((q, i) => ({
+      id: `q${i + 1}`,
+      type: 'multiple_choice' as const,
+      config: { options: q.options },
+    })),
+  )
+
+  if (problems.length > 0) {
+    console.error('\nthis quiz cannot produce a reliable result:\n')
+    for (const problem of problems) console.error(`  - ${problem}`)
+    console.error('')
+    process.exit(1)
+  }
 
   const [assessment] = await db
     .insert(assessments)

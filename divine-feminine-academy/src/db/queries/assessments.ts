@@ -40,6 +40,48 @@ export async function getPublishedAssessment(
   return { ...row, questions }
 }
 
+/**
+ * One SPECIFIC version, with its questions, checked against a slug.
+ *
+ * This exists because scoring against "whatever is published now" is wrong.
+ * A woman's browser collects answers keyed to the question IDs it rendered;
+ * if a new version publishes while she is mid-quiz, those IDs no longer
+ * exist in the current version and every one of her answers is discarded -
+ * she answers twelve questions and is told to answer at least one. Versions
+ * are immutable, so scoring against the one she actually saw is both correct
+ * and the only thing that makes a retake comparable to the first attempt.
+ *
+ * The slug is checked too, so a version ID from one assessment cannot be
+ * used to submit against another.
+ */
+export async function getAssessmentVersion(
+  db: QueryContext['db'],
+  slug: string,
+  versionId: string,
+) {
+  const [row] = await db
+    .select({ assessment: assessments, version: assessmentVersions })
+    .from(assessments)
+    .innerJoin(
+      assessmentVersions,
+      eq(assessmentVersions.assessmentId, assessments.id),
+    )
+    .where(
+      and(eq(assessments.slug, slug), eq(assessmentVersions.id, versionId)),
+    )
+    .limit(1)
+
+  if (!row) return null
+
+  const questions = await db
+    .select()
+    .from(assessmentQuestions)
+    .where(eq(assessmentQuestions.versionId, row.version.id))
+    .orderBy(asc(assessmentQuestions.position))
+
+  return { ...row, questions }
+}
+
 /** Shape the stored questions into what the scorer expects. */
 export function toScorable(
   questions: (typeof assessmentQuestions.$inferSelect)[],

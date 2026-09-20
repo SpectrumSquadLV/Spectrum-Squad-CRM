@@ -29,7 +29,7 @@
  * in one sitting and edited without touching anything that runs.
  */
 
-import type { Area } from '@/features/assessment/scoring'
+import { areas as allAreas, type Area } from '@/features/assessment/scoring'
 
 /**
  * The four modes.
@@ -50,8 +50,21 @@ export interface Archetype {
   /** URL segment for the public, shareable page. */
   slug: string
   name: string
-  /** Under the name, on the result and on the share card. */
+  /**
+   * The signature line. Under the name on the reveal and on the share card.
+   *
+   * These four are Quiana's, word for word. They are the sentence a woman
+   * reads immediately after her own sigil finishes drawing, which makes them
+   * the highest-stakes copy in the whole instrument.
+   */
   tagline: string
+  /**
+   * One line under the signature, saying what this protector learned.
+   *
+   * Null where the doctrine has not been approved - it renders nothing rather
+   * than being filled in by whoever is next in this file.
+   */
+  revealNote: string | null
   /** One sentence she would actually say out loud about herself. */
   oneLiner: string
   /** What it sounds like in her head. Her words, not a clinician's. */
@@ -85,7 +98,9 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     mode: 'fight',
     slug: 'the-commander',
     name: 'The Commander',
-    tagline: 'You handle it. You have always handled it.',
+    tagline: 'You handle it. You’ve always handled it.',
+    revealNote:
+      'The Commander learned that being powerful could keep her from feeling powerless.',
     oneLiner:
       'This is the ME who gets bigger, faster and more capable the second something threatens her — and does it alone.',
     soundsLike: [
@@ -115,7 +130,9 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     mode: 'flight',
     slug: 'the-escape-artist',
     name: 'The Escape Artist',
-    tagline: 'You do not stay long enough to be let down.',
+    tagline: 'You don’t stay long enough to be let down.',
+    revealNote:
+      'She learned that distance could provide relief from what she didn’t yet know how to sit with.',
     oneLiner:
       'This is the ME who finds the exit — a new plan, a new city, a new version of your life — before anything can find her.',
     soundsLike: [
@@ -144,7 +161,16 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     mode: 'freeze',
     slug: 'the-watcher',
     name: 'The Watcher',
-    tagline: 'You are waiting until you are sure. You have been waiting a while.',
+    tagline: 'You wait. You watch. You make sure.',
+    /*
+     * Deliberately absent.
+     *
+     * The Watcher's psychology is still provisional in the methodology, and
+     * the instruction was explicit: do not expand her doctrine beyond
+     * approved copy. A second line here would be me writing doctrine, so
+     * there is no second line until Quiana writes one.
+     */
+    revealNote: null,
     oneLiner:
       'This is the ME who goes still — researching, preparing, almost-ready — because moving in the wrong direction feels worse than not moving at all.',
     soundsLike: [
@@ -173,7 +199,9 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     mode: 'sulk',
     slug: 'the-quiet-storm',
     name: 'The Quiet Storm',
-    tagline: 'You went quiet. You are still keeping score.',
+    tagline: 'You went quiet. You’re still keeping score.',
+    revealNote:
+      'Her silence is not emptiness. There is usually something happening underneath it.',
     oneLiner:
       'This is the ME who withdraws — says she is fine, gives a little less, and waits to be noticed.',
     soundsLike: [
@@ -208,12 +236,20 @@ export function archetypeBySlug(slug: string): Archetype | null {
 /** Weights a single option contributes, e.g. { fight: 2, sulk: 1 }. */
 export type ModeWeights = Partial<Record<ProtectiveMode, number>>
 
+/** Where in her life an answer says the pattern is loudest. */
+export type AreaWeights = Partial<Record<Area, number>>
+
 export interface QuizQuestion {
   id: string
   /** Only multiple_choice questions carry weights; anything else is ignored. */
   type: 'likert' | 'multiple_choice' | 'open'
   config: {
-    options?: Array<{ value: string; label?: string; weights?: ModeWeights }>
+    options?: Array<{
+      value: string
+      label?: string
+      weights?: ModeWeights
+      areas?: AreaWeights
+    }>
   }
 }
 
@@ -230,12 +266,32 @@ export interface ModeTally {
   share: number
 }
 
+export interface AreaTally {
+  area: Area
+  points: number
+  /** Share of all area points collected, 0-100. */
+  share: number
+}
+
 export interface ArchetypeResult {
-  /** Null only when nothing she answered carried any weight. */
-  primary: ProtectiveMode | null
+  /**
+   * NEVER null.
+   *
+   * It used to be nullable, and that nullability was the bug: a woman could
+   * answer twelve questions and be told her answers "did not add up to
+   * anything". There is no such thing as a completed quiz with no result.
+   * Every path below resolves to one of the four, and `degenerate` records
+   * the case where it had to be resolved without signal so it can be alerted
+   * on rather than shown to her.
+   */
+  primary: ProtectiveMode
   /** The runner-up, when it is close enough to be worth naming. */
   secondary: ProtectiveMode | null
   tallies: ModeTally[]
+  /** Where it is loudest. The other half of the same instrument. */
+  areas: AreaTally[]
+  /** The area with the most points, or null when no option carried any. */
+  loudest: Area | null
   answered: number
   /**
    * True when primary and secondary are within `blendWithin` points of share.
@@ -247,6 +303,16 @@ export interface ArchetypeResult {
    * which is the failure mode of most quizzes on the internet.
    */
   isBlend: boolean
+  /**
+   * Nothing she answered carried any weight, so `primary` was resolved by the
+   * final tie-break rather than by her answers.
+   *
+   * This is a DEFECT IN THE DATA, not a fact about her: a published version
+   * with no scoring questions, or options with no weights. She still gets a
+   * result - she has to - and this flag is how the failure reaches a log
+   * instead of reaching her.
+   */
+  degenerate: boolean
 }
 
 const emptyTallies = (): Record<ProtectiveMode, number> => ({
@@ -278,9 +344,30 @@ export function scoreArchetypes(
 ): ArchetypeResult {
   const byId = new Map(answers.map((a) => [a.questionId, a.value]))
   const points = emptyTallies()
+  const areaPoints: Record<Area, number> = { self: 0, love: 0, life: 0, wealth: 0 }
+
+  /**
+   * The two tie-breakers that mean something.
+   *
+   * `leads` counts the questions where a mode was the single strongest weight
+   * in the option she chose - a protector she reached for outright, rather
+   * than one that only ever came along with another. `lastSeen` is the
+   * position of the last question where a mode scored at all; answers late in
+   * a quiz are less shaped by the framing of the first one.
+   */
+  const leads = emptyTallies()
+  const lastSeen: Record<ProtectiveMode, number> = {
+    fight: -1,
+    flight: -1,
+    freeze: -1,
+    sulk: -1,
+  }
+
   let answered = 0
+  let position = 0
 
   for (const question of questions) {
+    position++
     if (question.type !== 'multiple_choice') continue
 
     const value = byId.get(question.id)
@@ -293,16 +380,38 @@ export function scoreArchetypes(
 
     answered++
 
+    const valid: Array<[ProtectiveMode, number]> = []
     for (const [mode, weight] of Object.entries(chosen.weights ?? {})) {
       if (!isMode(mode)) continue
-      if (typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0) {
+      if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0) {
         continue
       }
+      valid.push([mode, weight])
+    }
+
+    for (const [mode, weight] of valid) {
       points[mode] += weight
+      lastSeen[mode] = position
+    }
+
+    // The single strongest mode in this answer, if one is strictly strongest.
+    if (valid.length > 0) {
+      const top = Math.max(...valid.map(([, w]) => w))
+      const atTop = valid.filter(([, w]) => w === top)
+      if (atTop.length === 1) leads[atTop[0]![0]] += 1
+    }
+
+    for (const [area, weight] of Object.entries(chosen.areas ?? {})) {
+      if (!allAreas.includes(area as Area)) continue
+      if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0) {
+        continue
+      }
+      areaPoints[area as Area] += weight
     }
   }
 
   const total = modes.reduce((sum, m) => sum + points[m], 0)
+  const areaTotal = allAreas.reduce((sum, a) => sum + areaPoints[a], 0)
 
   const tallies: ModeTally[] = modes.map((mode) => ({
     mode,
@@ -310,28 +419,124 @@ export function scoreArchetypes(
     share: total > 0 ? Math.round((points[mode] / total) * 100) : 0,
   }))
 
-  if (total === 0) {
-    return { primary: null, secondary: null, tallies, answered, isBlend: false }
-  }
+  const areaTallies: AreaTally[] = allAreas.map((area) => ({
+    area,
+    points: areaPoints[area],
+    share: areaTotal > 0 ? Math.round((areaPoints[area] / areaTotal) * 100) : 0,
+  }))
 
-  // Declaration order is preserved by `modes`, and `>` (not `>=`) keeps the
-  // earliest-declared mode on a tie.
+  /*
+   * Four tiers, and the last one cannot fail.
+   *
+   * Points, then the protector she reached for outright most often, then the
+   * one she was still reaching for latest in the quiz, then declaration
+   * order. Declaration order alone used to decide every tie, which handed all
+   * of them to The Commander and quietly biased the whole instrument toward
+   * one archetype.
+   */
   const ranked = [...tallies].sort((a, b) => {
     if (b.points !== a.points) return b.points - a.points
+    if (leads[b.mode] !== leads[a.mode]) return leads[b.mode] - leads[a.mode]
+    if (lastSeen[b.mode] !== lastSeen[a.mode]) {
+      return lastSeen[b.mode] - lastSeen[a.mode]
+    }
     return modes.indexOf(a.mode) - modes.indexOf(b.mode)
   })
 
   const first = ranked[0]!
   const second = ranked[1]!
-  const isBlend = second.points > 0 && first.share - second.share <= blendWithin
+  const isBlend =
+    total > 0 && second.points > 0 && first.share - second.share <= blendWithin
+
+  const loudest =
+    areaTotal > 0
+      ? [...areaTallies].sort((a, b) => {
+          if (b.points !== a.points) return b.points - a.points
+          return allAreas.indexOf(a.area) - allAreas.indexOf(b.area)
+        })[0]!.area
+      : null
 
   return {
     primary: first.mode,
     secondary: isBlend ? second.mode : null,
     tallies,
+    areas: areaTallies,
+    loudest,
     answered,
     isBlend,
+    degenerate: total === 0,
   }
+}
+
+/**
+ * Can this set of questions actually produce a result?
+ *
+ * The second way a completed quiz used to end in nothing: a published version
+ * whose options carry no usable weights scores zero for everybody, and the
+ * failure surfaces at the worst possible moment - to a woman who has just
+ * answered twelve honest questions.
+ *
+ * So the check runs at PUBLISH time instead, where the person who caused it
+ * is standing right there and can fix it in a minute. Returns the problems
+ * rather than throwing, so a caller can show all of them at once instead of
+ * making somebody fix them one deploy at a time.
+ */
+export function validateArchetypeVersion(questions: QuizQuestion[]): string[] {
+  const problems: string[] = []
+
+  const scoring = questions.filter((q) => q.type === 'multiple_choice')
+  if (scoring.length === 0) {
+    problems.push(
+      'No multiple-choice questions. Nothing else carries weights, so every result would be resolved by tie-break.',
+    )
+  }
+
+  const reachable = new Set<ProtectiveMode>()
+
+  for (const question of scoring) {
+    const options = question.config.options ?? []
+    if (options.length === 0) {
+      problems.push(`Question ${question.id} has no options.`)
+      continue
+    }
+
+    for (const option of options) {
+      const weights = Object.entries(option.weights ?? {}).filter(
+        ([mode, w]) =>
+          isMode(mode) && typeof w === 'number' && Number.isFinite(w) && w > 0,
+      )
+      if (weights.length === 0) {
+        problems.push(
+          `Question ${question.id}, option "${option.value}" carries no usable protector weight, so choosing it says nothing.`,
+        )
+      }
+      for (const [mode] of weights) if (isMode(mode)) reachable.add(mode)
+
+      const areaWeights = Object.entries(option.areas ?? {}).filter(
+        ([area, w]) =>
+          allAreas.includes(area as Area) &&
+          typeof w === 'number' &&
+          Number.isFinite(w) &&
+          w > 0,
+      )
+      if (areaWeights.length === 0) {
+        problems.push(
+          `Question ${question.id}, option "${option.value}" carries no area weight, so it cannot say where this is loudest.`,
+        )
+      }
+    }
+  }
+
+  // An archetype no answer can reach is a quiz nobody is ever told they are.
+  for (const mode of modes) {
+    if (!reachable.has(mode)) {
+      problems.push(
+        `Nothing can score ${archetypes[mode].name} (${mode}). No woman could ever receive this result.`,
+      )
+    }
+  }
+
+  return problems
 }
 
 /**
@@ -345,8 +550,7 @@ export function bareName(archetype: Archetype): string {
 }
 
 /** The headline sentence on the result page. */
-export function resultHeadline(result: ArchetypeResult): string | null {
-  if (!result.primary) return null
+export function resultHeadline(result: ArchetypeResult): string {
   const primary = archetypes[result.primary]
   if (!result.secondary) return primary.name
   return `${primary.name}, with a strong ${bareName(archetypes[result.secondary])}`

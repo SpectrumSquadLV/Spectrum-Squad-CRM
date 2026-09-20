@@ -77,7 +77,11 @@ export default async function QuizPage() {
 
       {questions.length > 0 ? (
         <div className="mt-14">
-          <QuizFlow slug={QUIZ_SLUG} questions={questions} />
+          <QuizFlow
+            slug={QUIZ_SLUG}
+            versionId={published!.version.id}
+            questions={questions}
+          />
         </div>
       ) : (
         <>

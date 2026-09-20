@@ -59,7 +59,16 @@ console.log('\nscoring')
 {
   const questions = [q('q1', { a: { fight: 2 }, b: { sulk: 2 } })]
   const r = scoreArchetypes(questions, [])
-  check('no answers produces no archetype', r.primary === null)
+  /*
+   * This used to assert `primary === null`, and that nullability WAS the bug:
+   * a woman could finish and be told her answers did not add up to anything.
+   * Nothing is ever null now. What "she answered nothing" produces instead is
+   * a resolved archetype plus two honest flags - answered 0, degenerate true
+   * - and it is the CALLER's job to refuse a submission with zero answers
+   * rather than the scorer's job to return a hole.
+   */
+  check('no answers still resolves to one of the four', isMode(r.primary))
+  check('no answers is flagged as having no signal', r.degenerate === true)
   check('no answers is not a blend', r.isBlend === false)
   check('no answers counts zero answered', r.answered === 0)
 }
@@ -73,7 +82,14 @@ console.log('\nscoring')
 }
 
 {
-  // fight and flight dead level. Declaration order must decide, every time.
+  /*
+   * fight and flight dead level, each the outright choice once.
+   *
+   * Declaration order used to decide this and always said fight, which
+   * handed every tie in the instrument to The Commander. It now goes to the
+   * protector she was still reaching for LATEST, because answers late in a
+   * quiz are less shaped by the framing of the first question.
+   */
   const questions = [
     q('q1', { a: { fight: 2 } }),
     q('q2', { a: { flight: 2 } }),
@@ -82,14 +98,19 @@ console.log('\nscoring')
     { questionId: 'q1', value: 'a' },
     { questionId: 'q2', value: 'a' },
   ])
-  check('a tie breaks toward declaration order', r.primary === 'fight')
+  check('a tie goes to the one she was still reaching for latest', r.primary === 'flight')
 
-  // ...and the same tie the other way round in the input must not flip it.
+  /*
+   * And it is still order-insensitive, which is the property that actually
+   * matters: recency is measured by position in the QUESTIONS, not by the
+   * order the answers happen to arrive in. Two submissions of the same quiz
+   * must never disagree about the same woman.
+   */
   const flipped = scoreArchetypes(questions, [
     { questionId: 'q2', value: 'a' },
     { questionId: 'q1', value: 'a' },
   ])
-  check('a tie is not sensitive to answer order', flipped.primary === 'fight')
+  check('and does not depend on the order the answers arrive in', flipped.primary === 'flight')
 }
 
 {
@@ -98,7 +119,8 @@ console.log('\nscoring')
     { questionId: 'q1', value: 'a' },
     { questionId: 'q2', value: 'a' },
   ])
-  check('a later tie also breaks by declaration order', r.primary === 'freeze')
+  // Same rule again, two modes further down the list: recency, not order.
+  check('the same rule holds further down the list', r.primary === 'sulk')
 }
 
 {
@@ -127,8 +149,16 @@ console.log('\nscoring')
 {
   const questions = [q('q1', { a: { fight: 2 } })]
   const r = scoreArchetypes(questions, [{ questionId: 'q1', value: 'z' }])
-  check('an option that does not exist scores nothing', r.primary === null)
+  check('an option that does not exist scores nothing', r.degenerate === true)
   check('an option that does not exist is not counted as answered', r.answered === 0)
+  /*
+   * The scorer still resolves - it always does - and the SUBMIT path is what
+   * refuses this, because a submission where nothing matched a real option is
+   * a broken or forged request rather than a completed quiz. Fabricating a
+   * result here would write a contact, an attempt and an archetype for a
+   * woman who never answered anything, and then email her about it.
+   */
+  check('but it is the submit path that refuses it, not the scorer', isMode(r.primary))
 }
 
 {

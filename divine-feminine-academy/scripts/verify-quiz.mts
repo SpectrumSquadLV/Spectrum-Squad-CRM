@@ -28,7 +28,11 @@ import { contactTags, contacts, tags } from '../src/db/schema/identity'
 import { getPublishedAssessment } from '../src/db/queries/assessments'
 import { quizInput, recordQuizSubmission } from '../src/features/quiz/submit'
 import { quizQuestions } from '../src/features/quiz/questions'
-import type { ProtectiveMode } from '../src/features/quiz/archetypes'
+import {
+  scoreArchetypes,
+  validateArchetypeVersion,
+  type ProtectiveMode,
+} from '../src/features/quiz/archetypes'
 
 let passed = 0
 let failed = 0
@@ -339,7 +343,146 @@ async function main() {
     .where(sql`${contacts.email} like ${'quiz-check-' + stamp + '-%'}`)
   check('the test left no contacts behind', left.length === 0)
 
-  console.log(`\n${passed} passed, ${failed} failed\n`)
+  
+/* ==========================================================================
+   ONE INSTRUMENT: a guaranteed archetype, and where it is loudest.
+
+   Everything below is about the promise that a completed quiz always
+   resolves. It used to be able to end in nothing, which is the one outcome a
+   woman who answered twelve honest questions must never get.
+   ========================================================================== */
+
+console.log('\nevery completed quiz resolves to one of the four')
+
+{
+  const q = (id: string, weights: Record<string, number>, areas: Record<string, number>) => ({
+    id,
+    type: 'multiple_choice' as const,
+    config: { options: [{ value: 'a', weights, areas }] },
+  })
+
+  // A single answer, carrying a single point.
+  const one = scoreArchetypes([q('q1', { sulk: 1 }, { love: 1 })], [
+    { questionId: 'q1', value: 'a' },
+  ])
+  check('one answer is enough', one.primary === 'sulk', String(one.primary))
+  check('and it is not flagged as a defect', one.degenerate === false)
+
+  // A dead-flat four-way tie.
+  const tie = scoreArchetypes(
+    [q('q1', { fight: 1, flight: 1, freeze: 1, sulk: 1 }, { self: 1 })],
+    [{ questionId: 'q1', value: 'a' }],
+  )
+  check('a perfect tie still names one', tie.primary !== null, String(tie.primary))
+  check(
+    'and names the same one every time',
+    scoreArchetypes(
+      [q('q1', { fight: 1, flight: 1, freeze: 1, sulk: 1 }, { self: 1 })],
+      [{ questionId: 'q1', value: 'a' }],
+    ).primary === tie.primary,
+  )
+
+  // A version that cannot score. She still gets a result; it is flagged.
+  const dead = scoreArchetypes([q('q1', {}, {})], [{ questionId: 'q1', value: 'a' }])
+  check('an unscoreable version still resolves', Boolean(dead.primary))
+  check('and is flagged as a defect, not a result', dead.degenerate === true)
+  check('while still counting her as having answered', dead.answered === 1)
+}
+
+console.log('\nthe tie-break is decided by her answers, not by the list order')
+
+{
+  /*
+   * Fight and sulk finish level on points. Sulk was the OUTRIGHT choice
+   * twice - the single strongest weight in the option she picked - while
+   * fight only ever arrived alongside something else. Declaration order
+   * would hand this to fight, which is exactly the bias being removed.
+   */
+  const questions = [
+    { id: 'q1', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { love: 2 } }] } },
+    { id: 'q2', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { love: 2 } }] } },
+    { id: 'q3', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { fight: 2, flight: 2 }, areas: { self: 2 } }] } },
+    { id: 'q4', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { fight: 2, freeze: 2 }, areas: { self: 2 } }] } },
+  ]
+  const answers = questions.map((q) => ({ questionId: q.id, value: 'a' }))
+  const r = scoreArchetypes(questions, answers)
+
+  const fight = r.tallies.find((t) => t.mode === 'fight')!.points
+  const sulk = r.tallies.find((t) => t.mode === 'sulk')!.points
+  check('the two are genuinely level on points', fight === sulk, `${fight} vs ${sulk}`)
+  check(
+    'the one she reached for outright wins',
+    r.primary === 'sulk',
+    `${r.primary} — declaration order would have said fight`,
+  )
+}
+
+console.log('\nwhere it is loudest')
+
+{
+  const questions = [
+    { id: 'q1', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { wealth: 3 } }] } },
+    { id: 'q2', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { wealth: 3, love: 1 } }] } },
+    { id: 'q3', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { love: 2 } }] } },
+  ]
+  const r = scoreArchetypes(questions, questions.map((q) => ({ questionId: q.id, value: 'a' })))
+
+  check('the loudest area is named', r.loudest === 'wealth', String(r.loudest))
+  check('all four areas are reported', r.areas.length === 4)
+  check(
+    'the shares add up to about a hundred',
+    Math.abs(r.areas.reduce((n, a) => n + a.share, 0) - 100) <= 2,
+    String(r.areas.reduce((n, a) => n + a.share, 0)),
+  )
+  check(
+    'an area nothing touched is zero rather than absent',
+    r.areas.find((a) => a.area === 'self')?.share === 0,
+  )
+  check(
+    'the two halves are independent',
+    r.primary === 'sulk' && r.loudest === 'wealth',
+    'how she protects herself and where it costs her are different answers',
+  )
+}
+
+console.log('\nthe real quiz can produce all four, and can say where')
+
+{
+  const problems = validateArchetypeVersion(
+    quizQuestions.map((q, i) => ({
+      id: `q${i + 1}`,
+      type: 'multiple_choice' as const,
+      config: { options: q.options },
+    })),
+  )
+  check(
+    'the published quiz passes its own publish check',
+    problems.length === 0,
+    problems.join(' | '),
+  )
+
+  // Every archetype must be reachable, and every area must be too.
+  for (const mode of ['fight', 'flight', 'freeze', 'sulk'] as const) {
+    const answers = quizQuestions.map((q, i) => {
+      const best = [...q.options].sort(
+        (a, b) => (b.weights[mode] ?? 0) - (a.weights[mode] ?? 0),
+      )[0]!
+      return { questionId: `q${i + 1}`, value: best.value }
+    })
+    const r = scoreArchetypes(
+      quizQuestions.map((q, i) => ({
+        id: `q${i + 1}`,
+        type: 'multiple_choice' as const,
+        config: { options: q.options },
+      })),
+      answers,
+    )
+    check(`a woman can come out as ${mode}`, r.primary === mode, String(r.primary))
+    check(`  and ${mode} is told where it is loudest`, r.loudest !== null)
+  }
+}
+
+console.log(`\n${passed} passed, ${failed} failed\n`)
   process.exit(failed > 0 ? 1 : 0)
 }
 

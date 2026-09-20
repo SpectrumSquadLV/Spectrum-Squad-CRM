@@ -199,6 +199,53 @@
   }
 }
 
+/* --- The sigil drawing itself --------------------------------------------
+   One property on every stroke: dash offset. It reads as expensive because it
+   is slow and singular, not because anything sparkles. The vessel goes first
+   and her own geometry follows, so the symbol assembles in the order it was
+   designed in.
+
+   The gilt dot is a filled circle rather than a stroke, so it cannot be
+   dashed - it fades instead, and lands last.
+   -------------------------------------------------------------------------- */
+.sigil-draw [stroke] {
+  stroke-dasharray: 420;
+  stroke-dashoffset: 420;
+  animation: sigil-stroke 1.5s var(--ease-out-soft) forwards;
+}
+.sigil-draw [stroke]:nth-of-type(2) { animation-delay: 0.32s; }
+.sigil-draw [stroke]:nth-of-type(3) { animation-delay: 0.52s; }
+.sigil-draw [stroke]:nth-of-type(4) { animation-delay: 0.68s; }
+
+.sigil-draw [fill]:not([stroke]) {
+  opacity: 0;
+  animation: sigil-mark 0.6s var(--ease-out-soft) 1.25s forwards;
+}
+
+@keyframes sigil-stroke {
+  to { stroke-dashoffset: 0; }
+}
+@keyframes sigil-mark {
+  to { opacity: 1; }
+}
+
+/*
+ * Reduced motion gets the finished mark, not a slower one.
+ * An animation that still runs at 0.01ms would leave the dash offset
+ * mid-flight on a slow paint, so these are reset outright rather than sped up.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .sigil-draw [stroke] {
+    stroke-dasharray: none;
+    stroke-dashoffset: 0;
+    animation: none;
+  }
+  .sigil-draw [fill]:not([stroke]) {
+    opacity: 1;
+    animation: none;
+  }
+}
+
 /* --- Motion respect is a floor, not a nicety ------------------------------ */
 @media (prefers-reduced-motion: reduce) {
   *,

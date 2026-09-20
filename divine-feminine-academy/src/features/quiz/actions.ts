@@ -18,6 +18,9 @@ export async function submitQuiz(
 ): Promise<QuizState> {
   const raw = {
     slug: formData.get('slug'),
+    // Undefined rather than null when absent, so the optional field in
+    // quizInput falls back instead of failing its uuid check.
+    versionId: formData.get('versionId') ?? undefined,
     firstName: formData.get('firstName'),
     email: formData.get('email'),
     answers: formData.get('answers'),
