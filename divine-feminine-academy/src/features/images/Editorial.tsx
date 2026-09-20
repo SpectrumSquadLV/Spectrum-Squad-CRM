@@ -52,7 +52,7 @@ export function PhotoBand({
   /** And of the phone crop, when the words sit on the photograph at all. */
   mobilePlace?: 'top' | 'bottom'
   /**
-   * Whether the words sit ON the photograph at phone width.
+   * Whether the words sit ON the photograph at wide widths.
    *
    * Off by default, and that default is the lesson. A phone crop is taller and
    * tighter than a wide one, so the empty ground a desktop composition puts
@@ -72,11 +72,25 @@ export function PhotoBand({
           {eyebrow}
         </p>
       )}
-      <h2 className="mt-5 font-display text-[2.6rem] leading-[0.95] tracking-[-0.03em] text-ink sm:text-6xl md:text-7xl lg:text-8xl">
+      <h2
+        className={cn(
+          'mt-5 font-display leading-[0.95] tracking-[-0.03em] text-ink',
+          // A column pinned beside her cannot carry the same size as one with
+          // the whole width to itself.
+          place === 'left'
+            ? 'text-[2.6rem] sm:text-5xl xl:text-6xl 2xl:text-7xl'
+            : 'text-[2.6rem] sm:text-6xl md:text-7xl xl:text-8xl',
+        )}
+      >
         {headline}
       </h2>
       {sub && (
-        <p className="measure mt-6 font-display text-lg leading-snug text-ink md:text-2xl">
+        <p
+          className={cn(
+            'measure mt-6 font-display leading-snug text-ink',
+            place === 'left' ? 'text-lg xl:text-xl' : 'text-lg md:text-2xl',
+          )}
+        >
           {sub}
         </p>
       )}
@@ -96,19 +110,29 @@ export function PhotoBand({
     )
   }
 
+  /*
+   * How much of the frame the words may occupy.
+   *
+   * `left` is the tight one and it is tight on purpose. The empty plaster in
+   * that composition runs out around a third of the way across, so a half-width
+   * column overruns it and the second line ends up on her leg — which is what
+   * the first build did at 1280px, in a band that measured perfectly at 1440.
+   * The region has to be narrower than the emptiness it sits in, at every
+   * width, not just the one it was designed at.
+   */
   const desktopRegion = {
-    'top-left': 'md:inset-x-0 md:top-0 md:h-1/2 md:items-start md:justify-start',
-    top: 'md:inset-x-0 md:top-0 md:h-1/2 md:items-start md:justify-center md:text-center',
-    left: 'md:inset-y-0 md:left-0 md:w-1/2 md:items-center md:justify-start',
-    'bottom-left': 'md:inset-x-0 md:bottom-0 md:h-1/2 md:items-end md:justify-start',
+    'top-left': 'xl:inset-x-0 xl:top-0 xl:h-1/2 xl:items-start xl:justify-start',
+    top: 'xl:inset-x-0 xl:top-0 xl:h-1/2 xl:items-start xl:justify-center xl:text-center',
+    left: 'xl:inset-y-0 xl:left-0 xl:w-[42%] xl:items-center xl:justify-start',
+    'bottom-left': 'xl:inset-x-0 xl:bottom-0 xl:h-1/2 xl:items-end xl:justify-start',
   }[place]
 
   const mobileRegion = mobileOverlay
     ? mobilePlace === 'bottom'
       ? 'inset-x-0 bottom-0 h-1/2 items-end'
       : 'inset-x-0 top-0 h-1/2 items-start'
-    : // Off the photograph entirely below md, and back on it above.
-      'hidden md:flex'
+    : // Off the photograph entirely below xl, and back on it above.
+      'hidden xl:flex'
 
   return (
     <section className={cn('relative', className)}>
@@ -125,7 +149,7 @@ export function PhotoBand({
 
         <div
           className={cn(
-            'absolute flex px-5 py-8 md:px-14 md:py-12 lg:px-20',
+            'absolute flex px-5 py-8 xl:px-16 xl:py-12 2xl:px-24',
             mobileRegion,
             desktopRegion,
           )}
@@ -140,7 +164,7 @@ export function PhotoBand({
         this anyway, and never how a squeezed desktop layout looks.
       */}
       {!mobileOverlay && (
-        <div className="px-5 pb-4 pt-10 md:hidden">
+        <div className="px-5 pb-4 pt-10 xl:hidden">
           <div className="max-w-2xl">{words}</div>
         </div>
       )}

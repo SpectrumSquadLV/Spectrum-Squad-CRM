@@ -48,7 +48,8 @@
     "bootstrap": "tsx --conditions=react-server scripts/bootstrap.mts",
     "verify:images": "tsx --conditions=react-server scripts/verify-images.mts",
     "seed:images": "tsx --conditions=react-server scripts/seed-images.mts",
-    "verify:noindex": "tsx scripts/verify-noindex.mts"
+    "verify:noindex": "tsx scripts/verify-noindex.mts",
+    "verify:photo-type": "tsx scripts/verify-photo-type.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",
