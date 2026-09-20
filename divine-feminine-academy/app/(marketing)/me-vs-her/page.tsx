@@ -13,6 +13,8 @@ import { db } from '@/db/client'
 import { offers, programs } from '@/db/schema'
 import { CheckoutForm } from '@/features/commerce/CheckoutForm'
 import { formatMoney } from '@/features/commerce/pricing'
+import { siteImage } from '@/db/queries/images'
+import { SiteImage } from '@/features/images/SiteImage'
 
 export const dynamic = 'force-dynamic'
 
@@ -84,7 +86,10 @@ async function activeOffer() {
 }
 
 export default async function SevenDaysPage() {
-  const offer = await activeOffer()
+  const [offer, hero] = await Promise.all([
+    activeOffer(),
+    siteImage('me-vs-her-hero'),
+  ])
   return (
     <>
       <Section className="pt-14 md:pt-24">
@@ -98,6 +103,12 @@ export default async function SevenDaysPage() {
           </p>
           <p>About twenty minutes a day. On your phone. Starting whenever you do.</p>
         </Prose>
+
+        {hero && (
+          <div className="mt-12">
+            <SiteImage image={hero} shape="landscape" priority />
+          </div>
+        )}
 
         <div className="mt-12 max-w-md rounded-xl border border-rule bg-alabaster p-6 md:p-8">
           <h2 className="font-display text-xl">Start Day 1</h2>

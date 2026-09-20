@@ -5,6 +5,8 @@ import { Placeholder } from '@/design-system/patterns'
 import { getPublishedAssessment } from '@/db/queries/assessments'
 import { QuizFlow, type FlowQuestion } from '@/features/quiz/QuizFlow'
 import { JoinForm } from '@/features/auth/JoinForm'
+import { siteImage } from '@/db/queries/images'
+import { SiteImage } from '@/features/images/SiteImage'
 
 export const metadata: Metadata = {
   title: 'Which version of you is running the show?',
@@ -22,7 +24,10 @@ export const dynamic = 'force-dynamic'
 export const QUIZ_SLUG = 'which-version'
 
 export default async function QuizPage() {
-  const published = await getPublishedAssessment(db, QUIZ_SLUG)
+  const [published, portrait] = await Promise.all([
+    getPublishedAssessment(db, QUIZ_SLUG),
+    siteImage('quiz-intro'),
+  ])
   const isQuiz = published?.assessment.kind === 'archetype'
 
   const questions: FlowQuestion[] = isQuiz
@@ -36,10 +41,19 @@ export default async function QuizPage() {
 
   return (
     <Section className="pt-14 md:pt-24 pb-24">
-      <Eyebrow>Free · about 90 seconds</Eyebrow>
-      <h1 className="mt-6 text-3xl md:text-5xl">
-        Which version of ME is running the show?
-      </h1>
+      <div className="flex items-start gap-6">
+        {portrait && (
+          <div className="hidden w-28 shrink-0 sm:block">
+            <SiteImage image={portrait} shape="square" rounded="full" priority />
+          </div>
+        )}
+        <div>
+          <Eyebrow>Free · about 90 seconds</Eyebrow>
+          <h1 className="mt-6 text-3xl md:text-5xl">
+            Which version of ME is running the show?
+          </h1>
+        </div>
+      </div>
 
       <Prose className="mt-8 text-lg">
         <p>

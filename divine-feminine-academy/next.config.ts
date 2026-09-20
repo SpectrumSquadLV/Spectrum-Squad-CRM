@@ -30,6 +30,9 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // sharp is a native module. Bundling it is neither possible nor wanted; it
+  // is required at run time by the photograph upload route only.
+  serverExternalPackages: ['sharp'],
   experimental: {
     // Journal bodies and HER responses are decrypted on the server only.
     // Keeping server actions tight is part of that boundary.

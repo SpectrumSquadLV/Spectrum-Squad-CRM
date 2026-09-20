@@ -11,6 +11,7 @@ const links = [
   { href: '/admin/pipeline', label: 'Pipeline' },
   { href: '/admin/programs', label: 'Programs' },
   { href: '/admin/writing', label: 'Writing' },
+  { href: '/admin/images', label: 'Photographs' },
   { href: '/admin/offers', label: 'Offers' },
   { href: '/admin/orders', label: 'Orders' },
   { href: '/admin/analytics', label: 'Analytics' },

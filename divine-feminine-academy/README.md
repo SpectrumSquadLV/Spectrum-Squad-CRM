@@ -208,6 +208,48 @@ archive cannot mail your whole list.
 Each piece gets its own generated social card, an `Article` or `PodcastEpisode`
 structured-data block, and a sitemap entry the moment it goes live — no deploy.
 
+## Photographs
+
+The site has seven named places for a photograph — the home hero, the
+statement band, About, ME VS HER, The Divine Feminine, the quiz and the quiz
+result. They are listed in `src/features/images/slots.ts`, and that list is
+also the shot list: every slot carries a plain-English description of what to
+actually photograph, and the admin at `/admin/images` shows it beside an empty
+frame until something is in it.
+
+A page asks for a slot by name, so replacing a photograph never touches a
+page. Nothing breaks when a slot is empty — the section renders as words.
+
+Two ways in:
+
+- **`/admin/images`.** Upload, describe, and say which part of the frame must
+  not be cropped off. Needs a login.
+- **`assets/photographs/<slot>.jpg`**, with a `<slot>.txt` beside it holding
+  the description. Committed to the repository and applied on every deploy by
+  `npm run seed:images`. Useful before there is an account to sign in with. It
+  never overwrites something a person uploaded through the admin.
+
+Everything is processed on the way in, by `src/features/images/process.ts`:
+
+- **Metadata is stripped.** A phone photograph carries EXIF, and EXIF
+  routinely carries GPS. Publishing an untouched picture taken at home
+  publishes the address, and nobody would ever notice.
+- **The orientation flag is applied before it is dropped**, which is the only
+  way stripping it stays safe — otherwise the photograph lands sideways.
+- **It is resized and re-encoded to WebP**, so what is served is one format at
+  a sane size rather than whatever the uploader happened to have.
+
+Bytes live in Postgres and are served by `/api/images/[slot]`. In the database
+because the container filesystem is rebuilt on every deploy, so an uploaded
+photograph would silently vanish on the next push; not in object storage
+because that is a second provider and a second set of credentials for what is
+at most a couple of dozen portraits. Each URL carries `?v=<version>` and the
+version changes on every upload, which is what makes it safe to serve them as
+immutable for a year and what makes a replacement appear immediately.
+
+`npm run verify:images` proves the privacy claims above against a JPEG built
+to carry GPS coordinates and a rotation flag.
+
 ## Audience — where everybody came from
 
 `/admin/audience`. The question an owner asks every week: which of my things is

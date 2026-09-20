@@ -79,9 +79,15 @@ Seven migrations apply, in order:
 | `0005_email_opt_out` | `contacts.email_opted_out_at`, so a lead can unsubscribe |
 | `0006_writing` | The `articles` table: essays, episodes, scheduling, opt-ins |
 
+| `0007_live_cohorts` | Cohorts, waitlists, cohort-paced enrollments |
+| `0008_mirror_sessions` | Mirror Gaze sessions and retiring ME |
+| `0009_site_images` | The photographs on the public site |
+
 `0001` defines policies that call `auth.uid()`. **Supabase provides it.** On a
-plain Postgres it does not exist and those policies will fail — preflight warns
-if it is missing.
+plain Postgres it does not, so `0001` now defines it — the JWT subject claim,
+or NULL when there is no request — and does nothing when it is already there.
+That makes the schema installable on Railway, Neon or a local container.
+Preflight reports which one you have.
 
 ## 4. Seed
 
@@ -138,6 +144,16 @@ CRON_SECRET               # without it, no reminder ever sends
 STRIPE_SECRET_KEY
 STRIPE_WEBHOOK_SECRET
 ```
+
+## 5b. Photographs
+
+The site is plain without them. Seven slots, listed at `/admin/images` with
+what to shoot in each; or drop files into `assets/photographs/` named after
+the slot, with a `.txt` beside each holding its description, and
+`npm run seed:images` puts them in on every deploy.
+
+Location data and orientation flags are stripped on the way in. See
+`## Photographs` in the README.
 
 ## 6. Make yourself an admin
 

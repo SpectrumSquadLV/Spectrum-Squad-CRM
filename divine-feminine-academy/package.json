@@ -45,7 +45,9 @@
     "verify:cohorts": "tsx --conditions=react-server scripts/verify-cohorts.mts",
     "verify:audience": "tsx --conditions=react-server scripts/verify-audience.mts",
     "verify:curriculum": "tsx --conditions=react-server scripts/verify-curriculum.mts",
-    "bootstrap": "tsx --conditions=react-server scripts/bootstrap.mts"
+    "bootstrap": "tsx --conditions=react-server scripts/bootstrap.mts",
+    "verify:images": "tsx --conditions=react-server scripts/verify-images.mts",
+    "seed:images": "tsx --conditions=react-server scripts/seed-images.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",
@@ -62,6 +64,7 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "server-only": "^0.0.1",
+    "sharp": "^0.35.4",
     "tailwind-merge": "^3.7.0",
     "zod": "^4.6.5"
   },

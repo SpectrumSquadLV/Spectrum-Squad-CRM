@@ -3,6 +3,18 @@ import Link from 'next/link'
 import { Button, Rule } from '@/design-system/primitives'
 import { Eyebrow, Prose, PullQuote, Section } from '@/design-system/patterns'
 import { archetypeList } from '@/features/quiz/archetypes'
+import { siteImage } from '@/db/queries/images'
+import { SiteImage } from '@/features/images/SiteImage'
+import { StatementBand } from '@/features/images/StatementBand'
+
+/*
+ * Dynamic because the photographs come from the database, and the database is
+ * not reachable from the build. A statically generated home page would be
+ * frozen with whatever was in the slots at build time - which, on a platform
+ * where the database sits on a private network the builder cannot see, is
+ * nothing, forever.
+ */
+export const dynamic = 'force-dynamic'
 
 export const metadata: Metadata = {
   title: 'Divine Feminine',
@@ -33,34 +45,77 @@ const areas = [
   },
 ]
 
-export default function HomePage() {
+export default async function HomePage() {
+  const [hero, statement, close] = await Promise.all([
+    siteImage('home-hero'),
+    siteImage('statement-portrait'),
+    siteImage('home-close'),
+  ])
+
   return (
     <>
       <Section className="pt-14 md:pt-24">
-        <Eyebrow>Divine Feminine</Eyebrow>
-        <h1 className="mt-6 text-3xl md:text-4xl">
-          She is not someone you become.
-          <br />
-          She is someone you return to.
-        </h1>
-        <Prose className="mt-8 text-lg">
-          <p>
-            There is a version of you who already knows what she wants, says it
-            out loud, and does not apologise for the wanting. You have met her.
-            You have just not been able to stay with her.
-          </p>
-          <p>Seven days. One practice. A way back.</p>
-        </Prose>
+        <div
+          className={
+            hero
+              ? 'grid items-center gap-10 md:grid-cols-[1fr_minmax(0,20rem)] md:gap-14'
+              : undefined
+          }
+        >
+          <div>
+            <Eyebrow>Divine Feminine</Eyebrow>
+            <h1 className="mt-6 text-3xl md:text-4xl">
+              She is not someone you become.
+              <br />
+              She is someone you return to.
+            </h1>
+            <Prose className="mt-8 text-lg">
+              <p>
+                There is a version of you who already knows what she wants, says
+                it out loud, and does not apologise for the wanting. You have met
+                her. You have just not been able to stay with her.
+              </p>
+              <p>Seven days. One practice. A way back.</p>
+            </Prose>
 
-        <div className="mt-10 flex flex-wrap gap-4">
-          <Button size="lg" asChild>
-            <Link href="/me-vs-her">Start ME VS HER</Link>
-          </Button>
-          <Button size="lg" variant="secondary" asChild>
-            <Link href="/quiz">Which version of you is running the show?</Link>
-          </Button>
+            <div className="mt-10 flex flex-wrap gap-4">
+              <Button size="lg" asChild>
+                <Link href="/me-vs-her">Start ME VS HER</Link>
+              </Button>
+              <Button size="lg" variant="secondary" asChild>
+                <Link href="/quiz">Which version of you is running the show?</Link>
+              </Button>
+            </div>
+          </div>
+
+          {hero && (
+            <div className="order-first md:order-none">
+              <SiteImage image={hero} shape="portrait" priority />
+            </div>
+          )}
         </div>
       </Section>
+
+      <StatementBand
+        className="mt-6"
+        image={statement}
+        eyebrow="Day five"
+        headline={
+          <>
+            The problem
+            <br />
+            is you.
+          </>
+        }
+        answer="And that is the best news you will ever receive."
+        footnote={
+          <>
+            Not what was done to you. Not what you were handed. The part of the
+            pattern that belongs to you — because that is the part you can
+            reach, and the part that moves when you do.
+          </>
+        }
+      />
 
       <Section>
         <Rule tone="gilt" />
@@ -182,7 +237,11 @@ export default function HomePage() {
       </Section>
 
       <Section className="pb-24">
-        <div className="rounded-xl border border-rule bg-alabaster p-8 md:p-14">
+        <div className="overflow-hidden rounded-xl border border-rule bg-alabaster">
+          {close && (
+            <SiteImage image={close} shape="landscape" rounded="none" />
+          )}
+          <div className="p-8 md:p-14">
           <h2 className="text-2xl">Seven days.</h2>
           <Prose className="mt-4">
             <p>
@@ -193,6 +252,7 @@ export default function HomePage() {
           <Button size="lg" className="mt-8" asChild>
             <Link href="/me-vs-her">Begin</Link>
           </Button>
+          </div>
         </div>
       </Section>
     </>

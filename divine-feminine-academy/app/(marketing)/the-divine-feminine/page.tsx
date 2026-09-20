@@ -8,6 +8,8 @@ import { Eyebrow, Placeholder, Prose, Section } from '@/design-system/patterns'
 import { CheckoutForm } from '@/features/commerce/CheckoutForm'
 import { formatMoney, offerTotalCents } from '@/features/commerce/pricing'
 import { getActor } from '@/lib/auth/actor-server'
+import { siteImage } from '@/db/queries/images'
+import { SiteImage } from '@/features/images/SiteImage'
 
 export const dynamic = 'force-dynamic'
 
@@ -28,6 +30,7 @@ export default async function DivineFemininePage() {
     .limit(1)
 
   // A woman already signed in should not have to retype her email.
+  const hero = await siteImage('divine-feminine-hero')
   const actor = await getActor()
   const [signedIn] =
     actor.kind === 'user' && actor.contactId
@@ -68,6 +71,12 @@ export default async function DivineFemininePage() {
             now.
           </p>
         </Prose>
+
+        {hero && (
+          <div className="mt-12">
+            <SiteImage image={hero} shape="landscape" priority />
+          </div>
+        )}
       </Section>
 
       <Section>

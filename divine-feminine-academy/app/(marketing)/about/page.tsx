@@ -2,6 +2,11 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { Button, Rule } from '@/design-system/primitives'
 import { Eyebrow, Placeholder, Prose, Section } from '@/design-system/patterns'
+import { siteImage } from '@/db/queries/images'
+import { SiteImage } from '@/features/images/SiteImage'
+
+/** The photograph comes from the database, which the build cannot reach. */
+export const dynamic = 'force-dynamic'
 
 export const metadata: Metadata = {
   title: 'About',
@@ -9,7 +14,9 @@ export const metadata: Metadata = {
     'Who the Divine Feminine is for, what it is, and what it is not.',
 }
 
-export default function AboutPage() {
+export default async function AboutPage() {
+  const portrait = await siteImage('about-portrait')
+
   return (
     <>
       <Section className="pt-14 md:pt-24">
@@ -50,6 +57,11 @@ export default function AboutPage() {
       </Section>
 
       <Section className="pb-24">
+        {portrait && (
+          <div className="mb-10 max-w-md">
+            <SiteImage image={portrait} shape="portrait" />
+          </div>
+        )}
         <Placeholder label="Your bio goes here" note="not written yet">
           <Prose className="text-sm">
             <p>
@@ -58,10 +70,13 @@ export default function AboutPage() {
               part of the page people actually read, and it is the one thing
               nobody else can write for you.
             </p>
-            <p>
-              A photograph belongs here too. Not stock photography: the
-              positioning does not survive it.
-            </p>
+            {!portrait && (
+              <p>
+                A photograph belongs here too — put one in under Photographs in
+                the admin. Not stock photography: the positioning does not
+                survive it.
+              </p>
+            )}
           </Prose>
         </Placeholder>
       </Section>

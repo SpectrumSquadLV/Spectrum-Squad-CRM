@@ -54,6 +54,15 @@ interface Step {
   script: string
   /** A failure here should not stop the deploy. */
   optional?: boolean
+  /**
+   * Run every time, existence check ignored.
+   *
+   * Only for a seed that decides for itself whether it has work - the
+   * photographs one compares file hashes and writes nothing when they match.
+   * Everything else here publishes a new version when it runs, so running it
+   * twice would move women mid-challenge onto content they never started.
+   */
+  always?: boolean
 }
 
 const steps: Step[] = [
@@ -89,6 +98,13 @@ const steps: Step[] = [
     script: 'seed:writing',
     optional: true,
   },
+  {
+    name: 'the photographs committed to the repository',
+    existing: `select 1 from site_images limit 1`,
+    script: 'seed:images',
+    always: true,
+    optional: true,
+  },
 ]
 
 async function main() {
@@ -99,7 +115,7 @@ async function main() {
   let failed = 0
 
   for (const step of steps) {
-    if (await has(step.existing)) {
+    if (!step.always && (await has(step.existing))) {
       console.log(`  skip  ${step.name} — already there`)
       skipped++
       continue

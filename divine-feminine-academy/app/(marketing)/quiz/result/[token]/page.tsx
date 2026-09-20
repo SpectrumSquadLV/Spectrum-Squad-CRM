@@ -6,6 +6,8 @@ import { Button, Rule } from '@/design-system/primitives'
 import { Eyebrow, Prose, Section } from '@/design-system/patterns'
 import { getAttemptByToken } from '@/db/queries/assessments'
 import { archetypes, isMode, modes } from '@/features/quiz/archetypes'
+import { siteImage } from '@/db/queries/images'
+import { SiteImage } from '@/features/images/SiteImage'
 
 export const metadata: Metadata = {
   title: 'Your result',
@@ -34,6 +36,7 @@ export default async function QuizResultPage({
 }) {
   const { token } = await params
   const found = await getAttemptByToken(db, token)
+  const portrait = await siteImage('quiz-result')
   if (!found?.result) notFound()
 
   const { result, contact } = found
@@ -158,7 +161,14 @@ export default async function QuizResultPage({
       <Rule tone="gilt" className="my-14" />
 
       <section>
-        <h2 className="text-2xl md:text-3xl">So what happens to her?</h2>
+        <div className="flex items-start gap-6">
+          {portrait && (
+            <div className="hidden w-24 shrink-0 sm:block">
+              <SiteImage image={portrait} shape="square" rounded="full" />
+            </div>
+          )}
+          <h2 className="text-2xl md:text-3xl">So what happens to her?</h2>
+        </div>
         <Prose className="mt-5 text-lg">
           <p>
             Nothing you would do to an enemy. ME is not one — she took a job
