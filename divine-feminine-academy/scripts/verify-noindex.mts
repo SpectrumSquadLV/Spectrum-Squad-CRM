@@ -34,7 +34,10 @@ function check(name: string, condition: boolean, detail?: string) {
   }
 }
 
-async function serve(port: number, env: NodeJS.ProcessEnv): Promise<ChildProcess> {
+async function serve(
+  port: number,
+  env: Record<string, string>,
+): Promise<ChildProcess> {
   const child = spawn('npx', ['next', 'start', '-p', String(port)], {
     env: { ...process.env, ...env },
     stdio: 'ignore',
