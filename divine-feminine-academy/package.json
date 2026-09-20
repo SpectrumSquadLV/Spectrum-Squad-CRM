@@ -44,7 +44,8 @@
     "verify:writing": "tsx --conditions=react-server scripts/verify-writing.mts",
     "verify:cohorts": "tsx --conditions=react-server scripts/verify-cohorts.mts",
     "verify:audience": "tsx --conditions=react-server scripts/verify-audience.mts",
-    "verify:curriculum": "tsx --conditions=react-server scripts/verify-curriculum.mts"
+    "verify:curriculum": "tsx --conditions=react-server scripts/verify-curriculum.mts",
+    "bootstrap": "tsx --conditions=react-server scripts/bootstrap.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",
