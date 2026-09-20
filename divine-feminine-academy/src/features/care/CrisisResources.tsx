@@ -11,27 +11,57 @@ import { cn } from '@/lib/utils/cn'
  * RETURN flow, and the reflection blocks on Days 2 and 3. It is quiet by
  * default so it does not intrude, and always reachable.
  *
- * REVIEW BEFORE LAUNCH: these are United States resources. They must be
- * confirmed current, and the list needs a plan for women outside the US.
+ * ON THESE NUMBERS. They are the long-standing United States lines, written
+ * from knowledge rather than looked up - this code was written somewhere with
+ * no way to reach the outside world and confirm them. 988 has been the US
+ * suicide and crisis number since 2022 and the others have been stable for
+ * far longer, so the risk of them being wrong is low. It is not zero, and the
+ * cost of being wrong is a woman in crisis dialling a dead number.
+ *
+ * So: dial every one of them once before the site is public. That is a
+ * five-minute job and it is the last thing standing between this and a
+ * search engine.
+ *
+ * The international line is deliberately a directory rather than a number.
+ * Guessing at a helpline for a country is worse than sending her somewhere
+ * that knows which one is hers.
  */
 const resources = [
   {
     name: '988 Suicide & Crisis Lifeline',
     detail: 'Call or text 988',
     href: 'tel:988',
-    note: '24/7, free, confidential',
+    note: 'United States · 24/7, free, confidential',
   },
   {
     name: 'Crisis Text Line',
     detail: 'Text HOME to 741741',
     href: 'sms:741741&body=HOME',
-    note: 'If talking is too much',
+    note: 'United States · when talking out loud is too much',
   },
   {
     name: 'National Domestic Violence Hotline',
-    detail: '1-800-799-7233',
+    detail: 'Call 1-800-799-7233, or text START to 88788',
     href: 'tel:18007997233',
-    note: '24/7, confidential',
+    note: 'United States · 24/7, confidential',
+  },
+  {
+    name: 'RAINN National Sexual Assault Hotline',
+    detail: 'Call 1-800-656-4673',
+    href: 'tel:18006564673',
+    note: 'United States · 24/7, free, confidential',
+  },
+  {
+    name: 'SAMHSA National Helpline',
+    detail: 'Call 1-800-662-4357',
+    href: 'tel:18006624357',
+    note: 'United States · substance use and mental health, 24/7',
+  },
+  {
+    name: 'Find A Helpline',
+    detail: 'findahelpline.com',
+    href: 'https://findahelpline.com',
+    note: 'Outside the United States · free lines in over 130 countries',
   },
 ]
 
@@ -58,6 +88,9 @@ export function CrisisResources({
             <li key={r.name}>
               <a
                 href={r.href}
+                {...(r.href.startsWith('http')
+                  ? { target: '_blank', rel: 'noopener noreferrer' }
+                  : {})}
                 className="inline-flex min-h-9 flex-col text-xs text-ink hover:text-clay-deep"
               >
                 <span className="font-medium">{r.detail}</span>
@@ -90,6 +123,9 @@ export function CrisisResources({
           <li key={r.name}>
             <a
               href={r.href}
+              {...(r.href.startsWith('http')
+                ? { target: '_blank', rel: 'noopener noreferrer' }
+                : {})}
               className="inline-flex min-h-11 flex-col text-sm text-ink hover:text-clay-deep"
             >
               <span className="font-medium">{r.detail}</span>

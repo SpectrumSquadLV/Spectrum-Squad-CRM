@@ -169,14 +169,25 @@ export async function recordQuizSubmission(
    * After the result is stored, and deliberately not inside a transaction with
    * it: if the email provider is down, she must still get her result page. The
    * hourly sweep re-reads the event and catches up.
+   *
+   * The try/catch is the half that was missing. Everything above has already
+   * been written by this point - her attempt, her answers, her result, her tag
+   * - so throwing here would hand her a failed submission for work that
+   * actually succeeded, and she would answer twelve questions again to get a
+   * second copy of a row she already has. The comment above claimed this was
+   * safe; only now is it.
    */
-  await joinArchetypeSequence({
-    db,
-    contactId,
-    mode: result.primary,
-    source: 'quiz',
-    siteUrl: siteUrl(),
-  })
+  try {
+    await joinArchetypeSequence({
+      db,
+      contactId,
+      mode: result.primary,
+      source: 'quiz',
+      siteUrl: siteUrl(),
+    })
+  } catch (error) {
+    console.error('[quiz] result saved, sequence enrolment failed', error)
+  }
 
   return { ok: true, token, archetype: result.primary }
 }
