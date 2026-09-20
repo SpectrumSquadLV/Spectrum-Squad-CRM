@@ -13,6 +13,18 @@ import { areaEnum, primaryId, timestamps } from './_shared'
 import { contacts } from './identity'
 import { programs } from './programs'
 
+/**
+ * How an assessment is read.
+ *
+ * `scored` normalises to 0-100 per area. `archetype` sorts her into one of a
+ * fixed set of named types. They are different instruments with different
+ * maths, and storing which one this is stops a quiz being scored as a survey.
+ */
+export const assessmentKindEnum = pgEnum('assessment_kind', [
+  'scored',
+  'archetype',
+])
+
 export const assessments = pgTable(
   'assessments',
   {
@@ -20,6 +32,7 @@ export const assessments = pgTable(
     slug: text('slug').notNull(),
     title: text('title').notNull(),
     description: text('description'),
+    kind: assessmentKindEnum('kind').notNull().default('scored'),
     isPublic: integer('is_public').notNull().default(1),
     ...timestamps,
   },
@@ -116,10 +129,25 @@ export const assessmentResults = pgTable(
       .notNull()
       .references(() => assessmentAttempts.id, { onDelete: 'cascade' }),
     overallScore: integer('overall_score'),
-    /** { self: n, love: n, life: n, wealth: n } */
+    /**
+     * For a `scored` assessment: { self: n, love: n, life: n, wealth: n }.
+     * For an `archetype` quiz: the share each mode took, 0-100.
+     */
     categoryScores: jsonb('category_scores').notNull().default({}),
+    /**
+     * The protective mode she came out as, on an `archetype` quiz. Text rather
+     * than an enum on purpose: the four modes are a content decision that will
+     * be edited by somebody who is not a developer, and a migration to rename
+     * one would be absurd.
+     */
+    archetype: text('archetype'),
+    /** The runner-up, when it was close enough to be worth naming. */
+    secondaryArchetype: text('secondary_archetype'),
     narrative: text('narrative'),
     ...timestamps,
   },
-  (t) => [uniqueIndex('assessment_results_key').on(t.attemptId)],
+  (t) => [
+    uniqueIndex('assessment_results_key').on(t.attemptId),
+    index('assessment_results_archetype_idx').on(t.archetype),
+  ],
 )

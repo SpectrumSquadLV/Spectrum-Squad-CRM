@@ -49,9 +49,14 @@ keys are configured. Nothing is on sale yet: both Academy offers are seeded as
 | Admin role gate (staff only) | Built, verified (`npm run verify:permissions`) |
 | Admin program builder | Built |
 | Assessment engine + pre/post | Built, verified (`npm run verify:scoring`) |
+| **The archetype quiz** | Built, verified (`verify:archetypes`, `verify:quiz`, `verify:quiz-flow`) |
+| Quiz result copy (the four) | **Real first-draft copy — read it aloud and make it yours** |
+| Sitemap + robots | Built |
+| Social share cards for the quiz | Built |
 | Certificates + public verification | Built, verified (`verify:certificates`, `verify:issuance`) |
 | 7 DAYS TO HER curriculum | **Placeholder copy only** |
 | Assessment questions | **Placeholder, not a validated instrument** |
+| Per-archetype email sequences | **Not written** — the engine is wired, the words are not |
 | PDF export of the HER Code | **Not built** — see below |
 | Pricing, coupons, instalments, refunds | Built, verified (`verify:pricing`) |
 | Payment provider + Stripe adapter | Built |
@@ -66,12 +71,53 @@ keys are configured. Nothing is on sale yet: both Academy offers are seeded as
 | Funnel dashboard | Built |
 | Rate limiting | Built, verified (`verify:rate-limit`) |
 | Security headers | Built |
-| WCAG 2.2 AA | **13 pages, 0 violations** (`verify:a11y`) |
+| WCAG 2.2 AA | **18 pages, 0 violations** (`verify:a11y`) |
 | Content-Security-Policy | **Not done** — see Security |
 | Preflight check | Built, verified (`verify:preflight`) |
 | Vercel + Railway config | Both, so hosting is not a blocker |
 | Health endpoint (`/api/health`) | Built |
 | Deployment runbook | [DEPLOY.md](./DEPLOY.md) |
+
+## The quiz
+
+`/quiz` — twelve questions, about ninety seconds, two form fields.
+
+She answers, sees one of her own sentences read back to her, gives a first name
+and an email, and lands on a result naming one of four protective modes:
+
+| Mode | She is | Public page |
+| --- | --- | --- |
+| Fight | The Commander | `/quiz/the-commander` |
+| Flight | The Escape Artist | `/quiz/the-escape-artist` |
+| Freeze | The Watcher | `/quiz/the-watcher` |
+| Sulk | The Quiet Storm | `/quiz/the-quiet-storm` |
+
+Every one is framed as protection rather than a flaw, because that is both
+truer and the thing she forwards to three friends.
+
+**The words live in two files and nowhere else.** Change them there and the
+whole site follows:
+
+- `src/features/quiz/questions.ts` — the twelve questions and their weights
+- `src/features/quiz/archetypes.ts` — the four results
+
+**What it does behind the scenes.** She becomes one contact (never two — an
+email that already exists is her coming back). She is tagged
+`archetype-the-quiet-storm` or similar, so every page and email afterwards can
+know which of the four she is. A `quiz.completed` event is written carrying
+her archetype, which the automation engine can branch on directly:
+`equals: { archetype: 'sulk' }`. A retake writes a second attempt rather than
+overwriting the first, so how she moves over months is kept.
+
+**Scoring happens on the server**, from the stored questions and their stored
+weights. The browser computes the same thing for the preview, but that number
+is decoration — if the client could name the archetype, a crafted request could
+write any result it liked into her segmentation.
+
+The four public pages are statically prerendered, indexable and carry their own
+social cards, because that is how a shared result brings a stranger in.
+
+**Still to write: the four email sequences.** See `GROWTH.md`.
 
 ## Deploying
 
@@ -120,14 +166,18 @@ npm run verify:reminders    # 15 that a reminder lands in HER morning
 npm run verify:rate-limit   # 7  that the magic-link endpoint cannot be hammered
 npm run verify:preflight    # 22 that a broken deploy is refused
 npm run verify:db-url       # 6  that a pooled Supabase URL is detected
+npm run verify:archetypes   # 68 quiz scoring, ties, and that all four are reachable
+npm run verify:quiz         # 36 the quiz end to end (needs DATABASE_URL)
 npm run verify:rls          # 11 that RLS really isolates members
 
 # Needs the app running (npm run build && npm start):
-BASE_URL=http://127.0.0.1:3000 npm run verify:a11y  # axe, 13 pages
+BASE_URL=http://127.0.0.1:3000 npm run verify:a11y       # axe, 18 pages
+BASE_URL=http://127.0.0.1:3000 npm run verify:quiz-flow  # the quiz in a real browser, on a phone
 
 npm run seed:challenge  # seed 7 DAYS TO HER (placeholder curriculum)
 npm run seed:assessment # seed the free assessment (placeholder questions)
 npm run seed:offers     # seed the Academy and its DRAFT offers
+npm run seed:quiz       # seed the archetype quiz (REAL copy, first draft)
 npm run db:generate    # regenerate SQL after a schema change
 npm run db:migrate     # apply migrations (needs DATABASE_URL)
 ```

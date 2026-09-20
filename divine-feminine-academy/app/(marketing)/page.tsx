@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { Button, Rule } from '@/design-system/primitives'
 import { Eyebrow, Prose, PullQuote, Section } from '@/design-system/patterns'
+import { archetypeList } from '@/features/quiz/archetypes'
 
 export const metadata: Metadata = {
   title: 'Divine Feminine Academy',
@@ -56,7 +57,39 @@ export default function HomePage() {
             <Link href="/7-days-to-her">Start 7 Days to HER</Link>
           </Button>
           <Button size="lg" variant="secondary" asChild>
-            <Link href="/assessment">Take the free assessment</Link>
+            <Link href="/quiz">Which version of you is running the show?</Link>
+          </Button>
+        </div>
+      </Section>
+
+      <Section>
+        <Rule tone="gilt" />
+        <h2 className="mt-12 text-2xl">Start by meeting her</h2>
+        <Prose className="mt-4">
+          <p>
+            Before any of it, there is one useful question: when something
+            frightens you, which version of you takes the wheel? There are four
+            of her, and ninety seconds will tell you which one has been driving.
+          </p>
+        </Prose>
+
+        <ul className="mt-10 grid gap-3 sm:grid-cols-2">
+          {archetypeList.map((a) => (
+            <li key={a.slug}>
+              <Link
+                href={`/quiz/${a.slug}`}
+                className="block h-full rounded-xl border border-rule bg-alabaster p-5 transition-colors hover:border-clay"
+              >
+                <h3 className="font-display text-lg">{a.name}</h3>
+                <p className="mt-1.5 text-2xs text-ink-muted">{a.tagline}</p>
+              </Link>
+            </li>
+          ))}
+        </ul>
+
+        <div className="mt-10">
+          <Button size="lg" asChild>
+            <Link href="/quiz">Take the quiz — free</Link>
           </Button>
         </div>
       </Section>

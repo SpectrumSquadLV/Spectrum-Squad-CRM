@@ -6,6 +6,7 @@ const columns = [
     heading: 'Start',
     links: [
       { href: '/7-days-to-her', label: '7 Days to HER' },
+      { href: '/quiz', label: 'Which version of you?' },
       { href: '/assessment', label: 'Free assessment' },
       { href: '/academy', label: 'The Academy' },
       { href: '/programs', label: 'All programs' },

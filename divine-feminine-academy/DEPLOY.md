@@ -67,7 +67,7 @@ npm ci
 DATABASE_URL="postgresql://...direct..." npm run db:migrate
 ```
 
-Four migrations apply, in order:
+Five migrations apply, in order:
 
 | | What it does |
 | --- | --- |
@@ -75,6 +75,7 @@ Four migrations apply, in order:
 | `0001_row_level_security` | Policies, and the `journal_metadata` view |
 | `0002_source_block_provenance` | Idempotency columns for side effects |
 | `0003_one_certificate_per_program` | Stops a race issuing two certificates |
+| `0004_quiz_archetypes` | Archetype quizzes: `assessments.kind`, the result's archetype |
 
 `0001` defines policies that call `auth.uid()`. **Supabase provides it.** On a
 plain Postgres it does not exist and those policies will fail — preflight warns
@@ -88,11 +89,15 @@ Order matters: the offers seed needs the CRM stages the challenge seed creates.
 DATABASE_URL="postgresql://...direct..." npm run seed:challenge
 DATABASE_URL="postgresql://...direct..." npm run seed:assessment
 DATABASE_URL="postgresql://...direct..." npm run seed:offers
+DATABASE_URL="postgresql://...direct..." npm run seed:quiz
 ```
 
 This creates **7 DAYS TO HER with placeholder prompts**, a placeholder
-assessment, and **two draft offers for the Academy**. Nothing is purchasable
-until you activate one in `/admin/offers`.
+assessment, **two draft offers for the Academy**, and **the archetype quiz**.
+Nothing is purchasable until you activate an offer in `/admin/offers`.
+
+The quiz is the one thing seeded with real copy rather than placeholders — but
+it is a first draft. Read it aloud before you send anybody to it.
 
 ## 5. Environment variables
 
@@ -187,6 +192,9 @@ curl -s https://<your-domain>/api/health     # {"status":"ok"}
 - [ ] `grep -rn "<Placeholder" app src` returns nothing
 - [ ] The seven days have real prompts, not `[PLACEHOLDER COPY]`
 - [ ] The assessment questions are real
+- [ ] The quiz questions and the four results sound like you, not like a draft
+      somebody else wrote (`src/features/quiz/questions.ts`,
+      `src/features/quiz/archetypes.ts`)
 - [ ] **The crisis phone numbers are confirmed correct** — they are US lines in
       `src/features/care/CrisisResources.tsx`, and they appear wherever a woman
       writes something heavy

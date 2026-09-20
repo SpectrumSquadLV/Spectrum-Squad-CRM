@@ -8,6 +8,7 @@ import { createClient } from '@/lib/auth/client'
 import { cn } from '@/lib/utils/cn'
 
 const links = [
+  { href: '/quiz', label: 'The quiz' },
   { href: '/7-days-to-her', label: '7 Days to HER' },
   { href: '/academy', label: 'The Academy' },
   { href: '/about', label: 'About' },
