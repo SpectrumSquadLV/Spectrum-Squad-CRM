@@ -146,6 +146,27 @@
     text-wrap: pretty;
   }
 
+  /*
+   * Emphasis.
+   *
+   * Headings sit at 400 in the display face, so the browser default of 700
+   * for <strong> lands like a shout next to them. 600 is the smallest step
+   * that still reads as emphasis at 48px, which is all it needs to do.
+   *
+   * Body copy keeps the default: at 16px a semibold is too quiet to notice.
+   */
+  h1 strong,
+  h2 strong,
+  h3 strong {
+    font-weight: 600;
+  }
+
+  /* Never let a browser slant an upright face. Both have a real italic. */
+  em,
+  i {
+    font-synthesis-style: none;
+  }
+
   /* Every interactive thing gets a visible focus ring. Non-negotiable. */
   :focus-visible {
     outline: 2px solid var(--color-plum);

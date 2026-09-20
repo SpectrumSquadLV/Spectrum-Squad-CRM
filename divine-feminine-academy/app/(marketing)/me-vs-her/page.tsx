@@ -97,9 +97,9 @@ export default async function SevenDaysPage() {
         <h1 className="mt-6 text-3xl md:text-4xl">ME VS HER</h1>
         <Prose className="mt-8 text-lg">
           <p>
-            Seven days to name the woman you keep catching glimpses of, practise
-            choosing her on purpose, and learn exactly how to come back when you
-            lose her again.
+            Seven days to name the woman you keep catching glimpses of,
+            practise choosing her <em>on purpose</em>, and learn exactly how to{' '}
+            <strong>come back</strong> when you lose her again.
           </p>
           <p>About twenty minutes a day. On your phone. Starting whenever you do.</p>
         </Prose>
@@ -180,7 +180,7 @@ export default async function SevenDaysPage() {
         </Prose>
 
         <PullQuote className="mt-12">
-          The practice is not staying. It is returning.
+          The practice is not staying. It is <em>returning</em>.
         </PullQuote>
       </Section>
 

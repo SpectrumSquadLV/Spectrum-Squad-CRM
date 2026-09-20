@@ -2,10 +2,19 @@ import type { Metadata, Viewport } from 'next'
 import { Fraunces, Inter } from 'next/font/google'
 import './globals.css'
 
+/*
+ * Both faces load their real italic.
+ *
+ * Without style: ['normal', 'italic'] the browser has no italic to use and
+ * slants the upright one instead. In a sans that is merely a bit off; in a
+ * display serif it is obviously wrong - the letterforms of a true italic are
+ * drawn differently, not tilted - and this face carries every headline.
+ */
 const display = Fraunces({
   subsets: ['latin'],
   variable: '--font-display-family',
   display: 'swap',
+  style: ['normal', 'italic'],
   axes: ['SOFT', 'WONK', 'opsz'],
 })
 
@@ -13,6 +22,7 @@ const sans = Inter({
   subsets: ['latin'],
   variable: '--font-sans-family',
   display: 'swap',
+  style: ['normal', 'italic'],
 })
 
 /**

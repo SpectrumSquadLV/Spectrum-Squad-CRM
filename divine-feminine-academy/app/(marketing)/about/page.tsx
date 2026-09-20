@@ -25,12 +25,12 @@ export default async function AboutPage() {
         <Prose className="mt-8 text-lg">
           <p>
             For the woman who is functioning. Who is, by most measures, doing
-            fine. Who has a version of herself she can see clearly and cannot
-            seem to stay inside of.
+            fine. Who has a version of herself she can <em>see</em> clearly and
+            cannot seem to <strong>stay inside of</strong>.
           </p>
           <p>
-            Not for fixing something broken. For returning to something that was
-            always there and got quiet.
+            Not for fixing something broken. For <em>returning</em> to
+            something that was always there and got quiet.
           </p>
         </Prose>
       </Section>

@@ -71,17 +71,20 @@ export default async function HomePage() {
           <div>
             <Eyebrow>Divine Feminine</Eyebrow>
             <h1 className="mt-6 text-3xl md:text-4xl">
-              She is not someone you become.
+              She is not someone you <em>become</em>.
               <br />
-              She is someone you return to.
+              She is someone you <strong>return to</strong>.
             </h1>
             <Prose className="mt-8 text-lg">
               <p>
-                There is a version of you who already knows what she wants, says
-                it out loud, and does not apologise for the wanting. You have met
-                her. You have just not been able to stay with her.
+                There is a version of you who <em>already</em> knows what she
+                wants, says it out loud, and does not apologise for the wanting.
+                You have met her. You have just not been able to{' '}
+                <em>stay</em> with her.
               </p>
-              <p>Seven days. One practice. A way back.</p>
+              <p>
+                Seven days. One practice. <strong>A way back.</strong>
+              </p>
             </Prose>
 
             <div className="mt-10 flex flex-wrap gap-4">
@@ -117,8 +120,8 @@ export default async function HomePage() {
         footnote={
           <>
             Not what was done to you. Not what you were handed. The part of the
-            pattern that belongs to you — because that is the part you can
-            reach, and the part that moves when you do.
+            pattern that <strong>belongs to you</strong> — because that is the
+            part you can reach, and the part that moves when you do.
           </>
         }
       />
@@ -160,8 +163,8 @@ export default async function HomePage() {
         <h2 className="mt-12 text-2xl">Four places it shows up</h2>
         <Prose className="mt-4">
           <p>
-            The pattern is never only in one room. It is the same woman making
-            the same choice, in four different lights.
+            The pattern is never only in one room. It is the <em>same woman</em>{' '}
+            making the <em>same choice</em>, in four different lights.
           </p>
         </Prose>
 
@@ -209,15 +212,15 @@ export default async function HomePage() {
             <Prose className="mt-2 text-sm">
               <p>
                 You will lose her. Everyone does. The practice that matters is
-                not staying — it is returning, and knowing exactly how. That is
-                the part you keep for good.
+                not staying — it is <strong>returning</strong>, and knowing
+                exactly how. That is the part you keep for good.
               </p>
             </Prose>
           </li>
         </ol>
 
         <PullQuote className="mt-16">
-          You are not starting over. You are coming back.
+          You are not starting over. You are <em>coming back</em>.
         </PullQuote>
       </Section>
 
@@ -228,12 +231,14 @@ export default async function HomePage() {
           <Prose className="mt-4">
             <p>
               Your journal is encrypted before it reaches our database. Not
-              hidden behind a permission setting — encrypted, so that nobody who
-              works here can read it, including the woman who built this.
+              hidden behind a permission setting — <em>encrypted</em>, so that
+              nobody who works here can read it, including the woman who built
+              this.
             </p>
             <p>
-              We can see that you wrote. We cannot see what you wrote. That is
-              on purpose, and it is not going to change.
+              We can see <em>that</em> you wrote. We cannot see{' '}
+              <em>what</em> you wrote. That is on purpose, and it is not going
+              to change.
             </p>
           </Prose>
           <Button variant="link" className="mt-4" asChild>
