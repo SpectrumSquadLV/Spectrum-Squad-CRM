@@ -81,3 +81,98 @@ jobs:
           name: test-logs
           path: test-logs/
           retention-days: 14
+
+  # The Divine Feminine app is a separate Next.js application in this
+  # repository with its own dependencies, database and checks. Nothing above
+  # touches it: the job over there runs `test-*.js` at the repository root, so
+  # a green tick on this workflow used to say nothing whatsoever about this
+  # application.
+  #
+  # That is not theoretical. Three deployments in a row failed on things a run
+  # of these scripts would have caught first - a migration that could not
+  # install on a database without Supabase's auth.uid(), and a TypeScript error
+  # in a script - and each one was found by reading deploy logs afterwards.
+  divine-feminine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: divine-feminine-academy
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: divine_feminine
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5433/divine_feminine
+      # A throwaway key for this run only. Nothing here outlives the job, and a
+      # real one would be a secret in a repository that does not need it.
+      JOURNAL_MASTER_KEY: dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleXRlc3Q=
+      PAYMENTS_PROVIDER: fake
+      CRON_SECRET: ci-only
+      NEXT_PUBLIC_SITE_URL: http://127.0.0.1:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: divine-feminine-academy/package-lock.json
+
+      # This application commits its lockfile (see its .gitignore), so installs
+      # here are reproducible and `npm ci` is the right command.
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # Against a bare postgres with no Supabase in sight, which is the whole
+      # point: that is what production turned out to be, and the migrations
+      # had never once been run against it.
+      - name: Apply migrations
+        run: npm run db:migrate
+
+      - name: Seed
+        run: npm run bootstrap
+
+      # Before the checks, because verify:noindex serves the built output - and
+      # because a build failure is the single most common way this breaks.
+      - name: Build
+        run: npm run build
+
+      - name: Run the checks
+        run: |
+          failed=()
+          for check in \
+            crypto pacing engine scoring certificates issuance permissions \
+            pricing webhooks fulfilment crm-privacy automation reminders \
+            rate-limit contrast db-url archetypes quiz sequences writing \
+            cohorts audience curriculum images noindex
+          do
+            echo "::group::verify:$check"
+            if npm run --silent "verify:$check"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::verify:$check failed"
+              failed+=("$check")
+            fi
+          done
+
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "failed: ${failed[*]}"
+            exit 1
+          fi
+          echo "all checks passed"

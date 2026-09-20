@@ -15,7 +15,7 @@
  */
 import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 
 process.env.JOURNAL_MASTER_KEY ??= randomBytes(32).toString('base64')
 
@@ -107,17 +107,80 @@ const enrollment = must(
   'could not enrol',
 )
 
-/** Find a seeded block by its type. */
+/**
+ * A block of this type to save against.
+ *
+ * Prefers a seeded one, and makes a scratch one in the first seeded lesson
+ * when the curriculum does not happen to contain that type.
+ *
+ * It used to throw instead, and that is how this whole file quietly stopped
+ * running: the ME VS HER rewrite replaced Day 2's belief_origin with
+ * protector_profile, and RETURN moved out of the curriculum into its own page,
+ * so the script died on its first save against a curriculum that was perfectly
+ * correct. What is under test here is the ENGINE - encryption, side effects,
+ * idempotency - and none of that should care which blocks a given week of
+ * content is made of.
+ */
 async function blockOfType(type: string) {
-  const [row] = await db
+  const [seeded] = await db
     .select({ block: lessonBlocks, lesson: lessons, module: modules })
     .from(lessonBlocks)
     .innerJoin(lessons, eq(lessons.id, lessonBlocks.lessonId))
     .innerJoin(modules, eq(modules.id, lessons.moduleId))
     .where(and(eq(modules.versionId, version.id), eq(lessonBlocks.type, type)))
     .limit(1)
-  if (!row) throw new Error(`no seeded block of type ${type}`)
-  return row
+
+  if (seeded) return seeded
+
+  const [host] = await db
+    .select({ lesson: lessons, module: modules })
+    .from(lessons)
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .where(eq(modules.versionId, version.id))
+    .limit(1)
+
+  if (!host) throw new Error('the programme has no lessons at all — seed it first')
+
+  const definition = getBlock(type)
+  if (!definition) throw new Error(`no registry entry for ${type}`)
+
+  /*
+   * Position is unique per lesson, so it comes from the database rather than
+   * from a counter. A counter resets every run while the blocks it made do
+   * not, so the second run collides with the first one's leftovers.
+   */
+  const [last] = await db
+    .select({ position: lessonBlocks.position })
+    .from(lessonBlocks)
+    .where(eq(lessonBlocks.lessonId, host.lesson.id))
+    .orderBy(desc(lessonBlocks.position))
+    .limit(1)
+
+  const [made] = await db
+    .insert(lessonBlocks)
+    .values({
+      lessonId: host.lesson.id,
+      type,
+      position: (last?.position ?? 0) + 1,
+      config: scratchConfig[type] ?? {},
+    })
+    .returning()
+
+  if (!made) throw new Error(`could not make a scratch ${type} block`)
+  console.log(`  note  ${type} is not in this curriculum — made one to test against`)
+
+  return { block: made, lesson: host.lesson, module: host.module }
+}
+
+/**
+ * Minimum valid config for the types this script makes for itself.
+ *
+ * Only the fields the config schema requires. The member UI is not rendered
+ * here; these blocks exist to be saved against.
+ */
+const scratchConfig: Record<string, Record<string, unknown>> = {
+  belief_origin: { prompt: 'Where did it come from?' },
+  return_practice: { prompt: 'What happened?' },
 }
 
 /**
