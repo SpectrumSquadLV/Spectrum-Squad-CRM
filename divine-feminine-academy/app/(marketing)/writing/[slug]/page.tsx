@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { notFound } from 'next/navigation'
+import { notFound, permanentRedirect } from 'next/navigation'
 import { db } from '@/db/client'
 import { Badge, Rule } from '@/design-system/primitives'
 import type { Area } from '@/design-system/primitives'
@@ -9,7 +9,7 @@ import { getPublishedArticle, relatedArticles } from '@/db/queries/writing'
 import { ArticleCard, articleDate, articleLength } from '@/features/writing/ArticleCard'
 import { Markdown } from '@/features/writing/Markdown'
 import { WritingOptIn } from '@/features/writing/WritingOptIn'
-import { excerpt, formatDuration } from '@/features/writing/markdown'
+import { excerpt } from '@/features/writing/markdown'
 import { siteUrl } from '@/lib/auth/env'
 
 export const dynamic = 'force-dynamic'
@@ -54,6 +54,17 @@ export default async function ArticlePage({
   const article = await getPublishedArticle(db, slug)
   if (!article) notFound()
 
+  /*
+   * An episode has ONE canonical URL, and it is under /podcast.
+   *
+   * Episodes lived here before the podcast had a section of its own, so links
+   * to /writing/<slug> are already out in the world - in show notes, in the
+   * archive, in somebody's saved tabs. A permanent redirect keeps every one of
+   * them working and tells a search engine which of the two addresses counts,
+   * rather than leaving the same episode indexed twice.
+   */
+  if (article.kind === 'episode') permanentRedirect(`/podcast/${article.slug}`)
+
   const related = await relatedArticles(db, article)
   const base = siteUrl().replace(/\/$/, '')
   const description =
@@ -69,7 +80,10 @@ export default async function ArticlePage({
    */
   const jsonLd = {
     '@context': 'https://schema.org',
-    '@type': article.kind === 'episode' ? 'PodcastEpisode' : 'Article',
+    // Always an Article: an episode never renders here any more, it is
+    // permanently redirected to /podcast/<slug> above, which marks itself up
+    // as a PodcastEpisode.
+    '@type': 'Article',
     headline: article.title,
     description,
     datePublished: article.publishedAt?.toISOString(),
@@ -126,26 +140,6 @@ export default async function ArticlePage({
             className="w-full rounded-xl border border-rule"
           />
         </figure>
-      )}
-
-      {article.kind === 'episode' && article.audioUrl && (
-        <div className="mt-10 rounded-xl border border-rule bg-alabaster p-5">
-          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-          <audio controls preload="none" src={article.audioUrl} className="w-full">
-            Your browser cannot play audio.{' '}
-            <a href={article.audioUrl}>Download the episode</a> instead.
-          </audio>
-          <p className="mt-3 text-2xs text-ink-muted">
-            {formatDuration(article.audioDurationSeconds) ?? 'Episode'} ·{' '}
-            <a
-              href={article.audioUrl}
-              className="underline underline-offset-4"
-              download
-            >
-              Download
-            </a>
-          </p>
-        </div>
       )}
 
       <Rule tone="gilt" className="my-12" />

@@ -4,6 +4,7 @@ import { listAllArticles } from '@/db/queries/writing'
 import { Button } from '@/design-system/primitives'
 import { StatusButton } from '@/features/admin/WritingForms'
 import { articleDate, articleLength } from '@/features/writing/ArticleCard'
+import { SyncButton } from '@/features/podcast/SyncButton'
 
 export const metadata = { title: 'Writing' }
 
@@ -27,9 +28,12 @@ export default async function AdminWritingPage() {
             piece dated in the future goes live by itself when that day comes.
           </p>
         </div>
-        <Button asChild size="sm">
-          <Link href="/admin/writing/new">Write something</Link>
-        </Button>
+        <div className="flex flex-wrap items-center gap-3">
+          <SyncButton />
+          <Button asChild size="sm">
+            <Link href="/admin/writing/new">Write something</Link>
+          </Button>
+        </div>
       </div>
 
       {pieces.length === 0 ? (

@@ -85,14 +85,29 @@ export function PhotoBand({
           {eyebrow}
         </p>
       )}
+      {/*
+        The type steps with the FRAME, not with the viewport.
+
+        These bands are 3:2, so the picture's height is two thirds of the
+        window's width and the region the words live in is half of that again.
+        Type sized off the viewport alone grows a step before the frame grows
+        enough to hold it, and the block quietly overruns its region and lands
+        on her - which is precisely what happened at 1280px when the hero
+        sub-line became "The love. The money. The success. The freedom. The
+        abundance.": 11.64:1 contrast, and sitting on her shoulder.
+
+        So the largest sizes wait for 2xl, where the frame is tall enough. 1280
+        and 1440 get a size down, which costs nothing anybody notices and fixes
+        the one thing the photography brief says never to do.
+      */}
       <h2
         className={cn(
           'mt-5 font-display leading-[0.95] tracking-[-0.03em] text-ink',
           // A column pinned beside her cannot carry the same size as one with
           // the whole width to itself.
           place === 'left'
-            ? 'text-[2.6rem] sm:text-5xl xl:text-6xl 2xl:text-7xl'
-            : 'text-[2.6rem] sm:text-6xl md:text-7xl xl:text-8xl',
+            ? 'text-[2.6rem] sm:text-5xl 2xl:text-6xl'
+            : 'text-[2.6rem] sm:text-6xl md:text-7xl 2xl:text-8xl',
         )}
       >
         {headline}
@@ -101,7 +116,7 @@ export function PhotoBand({
         <p
           className={cn(
             'measure mt-6 font-display leading-snug text-ink',
-            place === 'left' ? 'text-lg xl:text-xl' : 'text-lg md:text-2xl',
+            place === 'left' ? 'text-lg 2xl:text-xl' : 'text-lg md:text-xl 2xl:text-2xl',
           )}
         >
           {sub}

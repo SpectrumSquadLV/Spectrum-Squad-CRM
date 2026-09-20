@@ -190,7 +190,26 @@ console.log('\noversized and unreadable')
 
 console.log('\nthe round trip through Postgres')
 
-const slot = 'home-hero'
+/*
+ * A SCRATCH slot, which is the whole point of the name.
+ *
+ * This said 'home-hero' and it destroyed the home page. Everything below
+ * inserts, replaces and then DELETES every row for this slot - so against any
+ * database that actually has photographs in it, running the checks silently
+ * removed the hero photograph, and the site came back with an empty band
+ * where the first thing anybody sees is meant to be.
+ *
+ * It went unnoticed because CI runs against an empty database, where deleting
+ * the hero costs nothing. It cost something the moment the same command was
+ * run against a database with real pictures in it, which is exactly what a
+ * developer does locally and what anybody would eventually do in production.
+ *
+ * The slot column is free text with a unique index on (slot, variant) and no
+ * foreign key to the slot list, so a name that is not a real slot works
+ * identically and cannot collide with a photograph anybody uploaded. Nothing
+ * here may ever name a slot the site actually uses again.
+ */
+const slot = '__verify_scratch__'
 await db.delete(siteImages).where(eq(siteImages.slot, slot))
 
 await db.insert(siteImages).values({

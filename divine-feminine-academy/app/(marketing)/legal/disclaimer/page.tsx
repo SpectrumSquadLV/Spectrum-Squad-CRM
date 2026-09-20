@@ -1,6 +1,14 @@
 import type { Metadata } from 'next'
-import { Eyebrow, Placeholder, Prose, Section } from '@/design-system/patterns'
+import { Eyebrow, Prose, Section, StaffNote } from '@/design-system/patterns'
 import { CrisisResources } from '@/features/care/CrisisResources'
+
+/*
+ * Dynamic because this page carries a StaffNote, and a staff note has to read
+ * the session to know whether to render at all. Static would mean deciding
+ * that at build time, which is the same as deciding it for everybody.
+ */
+export const dynamic = 'force-dynamic'
+
 
 export const metadata: Metadata = {
   title: 'This is education, not therapy',
@@ -55,11 +63,7 @@ export default function DisclaimerPage() {
 
       <CrisisResources tone="full" className="mt-12" />
 
-      <Placeholder
-        label="Needs a lawyer"
-        note="not legal advice"
-        className="mt-12"
-      >
+      <StaffNote what="a lawyer's review of this disclaimer" className="mt-12">
         <Prose className="text-sm">
           <p>
             This page was written to be honest and readable, not to be legally
@@ -74,7 +78,7 @@ export default function DisclaimerPage() {
             policy should exist before the first woman signs up.
           </p>
         </Prose>
-      </Placeholder>
+      </StaffNote>
     </Section>
   )
 }

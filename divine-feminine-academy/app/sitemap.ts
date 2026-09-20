@@ -1,6 +1,8 @@
 import type { MetadataRoute } from 'next'
 import { db } from '@/db/client'
 import { listPublishedSlugs } from '@/db/queries/writing'
+import { listEpisodeSlugs } from '@/db/queries/podcast'
+import { listChallenges } from '@/db/queries/challenges'
 import { siteUrl } from '@/lib/auth/env'
 import { archetypeList } from '@/features/quiz/archetypes'
 
@@ -30,14 +32,17 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { path: '', priority: 1 },
     { path: '/quiz', priority: 0.9 },
     ...archetypeList.map((a) => ({ path: `/quiz/${a.slug}`, priority: 0.8 })),
-    { path: '/me-vs-her', priority: 0.9 },
-    { path: '/the-divine-feminine', priority: 0.8 },
+    // The destination, not the entry point: Divine Feminine outranks every
+    // challenge here because it is what the site is actually for.
+    { path: '/the-divine-feminine', priority: 0.95 },
+    { path: '/challenges', priority: 0.9 },
+    { path: '/podcast', priority: 0.9 },
+    { path: '/writing', priority: 0.8 },
     { path: '/programs', priority: 0.6 },
-    { path: '/writing', priority: 0.9 },
-    { path: '/listen', priority: 0.7 },
     { path: '/assessment', priority: 0.6 },
     { path: '/about', priority: 0.5 },
-    { path: '/stories', priority: 0.5 },
+    // /stories is deliberately absent. It is not published, and listing an
+    // unpublished page is how a crawler finds one.
     { path: '/legal/disclaimer', priority: 0.2 },
     { path: '/legal/privacy', priority: 0.2 },
     { path: '/legal/terms', priority: 0.2 },
@@ -53,13 +58,38 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
    */
   let written: MetadataRoute.Sitemap = []
   try {
-    const pieces = await listPublishedSlugs(db, now)
-    written = pieces.map((piece) => ({
-      url: `${base}/writing/${piece.slug}`,
-      lastModified: piece.updatedAt,
-      changeFrequency: 'monthly' as const,
-      priority: 0.7,
-    }))
+    /*
+     * Essays and episodes are fetched separately because they live at
+     * different addresses. Listing an episode under /writing/<slug> would put
+     * a permanent redirect in the sitemap, which is a crawl budget spent on
+     * being told to go somewhere else.
+     */
+    const [essays, episodes, challenges] = await Promise.all([
+      listPublishedSlugs(db, now, 'article'),
+      listEpisodeSlugs(now),
+      listChallenges(),
+    ])
+
+    written = [
+      ...essays.map((piece) => ({
+        url: `${base}/writing/${piece.slug}`,
+        lastModified: piece.updatedAt,
+        changeFrequency: 'monthly' as const,
+        priority: 0.7,
+      })),
+      ...episodes.map((episode) => ({
+        url: `${base}/podcast/${episode.slug}`,
+        lastModified: episode.updatedAt,
+        changeFrequency: 'monthly' as const,
+        priority: 0.7,
+      })),
+      ...challenges.map((challenge) => ({
+        url: `${base}/challenges/${challenge.slug}`,
+        lastModified: now,
+        changeFrequency: 'weekly' as const,
+        priority: 0.8,
+      })),
+    ]
   } catch {
     written = []
   }

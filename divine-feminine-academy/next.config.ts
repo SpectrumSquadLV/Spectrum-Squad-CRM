@@ -38,6 +38,23 @@ const nextConfig: NextConfig = {
     // Keeping server actions tight is part of that boundary.
     serverActions: { bodySizeLimit: '2mb' },
   },
+  /**
+   * Every URL that moved when the site was repositioned.
+   *
+   * Permanent, because they are: ME VS HER became one challenge among several
+   * and lives under /challenges, and the podcast outgrew being a filter on the
+   * writing index. Both addresses are in circulation - on social, in show
+   * notes, in bios - and a 404 on a link somebody shared is a reader lost for
+   * the sake of a tidy route tree.
+   */
+  async redirects() {
+    return [
+      { source: '/me-vs-her', destination: '/challenges/me-vs-her', permanent: true },
+      { source: '/listen', destination: '/podcast', permanent: true },
+      // The show's own name, typed in by somebody who heard it out loud.
+      { source: '/brown-girls-need-healing-too', destination: '/podcast', permanent: true },
+    ]
+  },
   async headers() {
     return [
       { source: '/:path*', headers: securityHeaders },

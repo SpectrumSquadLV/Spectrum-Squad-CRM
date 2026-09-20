@@ -7,13 +7,25 @@ import { Button } from '@/design-system/primitives'
 import { createClient } from '@/lib/auth/client'
 import { cn } from '@/lib/utils/cn'
 
+/*
+ * The ecosystem, in its own order.
+ *
+ * The Divine Feminine is first because it is the destination - everything
+ * else on this site is a way of arriving at it. Challenges come next because
+ * they are how a woman starts, and the podcast after that because it is how
+ * most of them meet Quiana at all.
+ *
+ * The quiz is NOT here any more. It was the second item for a while, which
+ * quietly made the site about a quiz; it is a line on the pages where it
+ * belongs instead. /stories is absent for a harder reason: it is unpublished,
+ * and a link in the header is how an unpublished page gets found.
+ */
 const links = [
-  { href: '/quiz', label: 'The quiz' },
-  { href: '/me-vs-her', label: 'ME VS HER' },
   { href: '/the-divine-feminine', label: 'The Divine Feminine' },
+  { href: '/challenges', label: 'Challenges' },
+  { href: '/podcast', label: 'Podcast' },
   { href: '/writing', label: 'Writing' },
   { href: '/about', label: 'About' },
-  { href: '/stories', label: 'Stories' },
 ]
 
 /**

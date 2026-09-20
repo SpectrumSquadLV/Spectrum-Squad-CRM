@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import { db } from '@/db/client'
-import { Eyebrow, Placeholder, Prose, Section } from '@/design-system/patterns'
+import { Eyebrow, Prose, Section, StaffNote } from '@/design-system/patterns'
 import { getPublishedAssessment } from '@/db/queries/assessments'
 import { AssessmentFlow, type FlowQuestion } from '@/features/assessment/AssessmentFlow'
 import { JoinForm } from '@/features/auth/JoinForm'
@@ -40,18 +40,14 @@ export default async function AssessmentPage() {
 
       {questions.length > 0 ? (
         <>
-          <Placeholder
-            label="Placeholder questions"
-            note="the real instrument is not written"
-            className="mt-10"
-          >
-            <p className="text-xs text-ink-soft">
+          <StaffNote what="the real assessment questions" className="mt-10">
+            <p>
               The engine, the scoring and the pre/post comparison are finished
               and tested. These particular questions are stand-ins so the flow
               can be used — they are not a validated instrument and should be
               replaced before launch.
             </p>
-          </Placeholder>
+          </StaffNote>
 
           <div className="mt-12">
             <AssessmentFlow slug={SLUG} questions={questions} />
@@ -59,15 +55,13 @@ export default async function AssessmentPage() {
         </>
       ) : (
         <>
-          <Placeholder
-            label="Not seeded"
-            note="run npm run seed:assessment"
-            className="mt-10"
-          >
-            <p className="text-xs text-ink-soft">
-              No published assessment was found for “{SLUG}”.
+          <StaffNote what="the assessment to be seeded" className="mt-10">
+            <p>
+              No published assessment was found for “{SLUG}”. Run
+              npm run seed:assessment. Until then this page collects emails
+              rather than showing a stranger that something is missing.
             </p>
-          </Placeholder>
+          </StaffNote>
 
           <div className="mt-12 max-w-md rounded-xl border border-rule bg-alabaster p-6 md:p-8">
             <h2 className="font-display text-xl">Tell me when it is ready</h2>

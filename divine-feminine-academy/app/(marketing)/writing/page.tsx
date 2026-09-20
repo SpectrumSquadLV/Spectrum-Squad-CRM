@@ -16,7 +16,10 @@ export const metadata: Metadata = {
 export const dynamic = 'force-dynamic'
 
 export default async function WritingIndex() {
-  const pieces = await listPublished(db, { limit: 30 })
+  // Essays only. Episodes were listed here when the podcast had nowhere else
+  // to live; it has /podcast now, and an episode appearing in both places
+  // splits the one thing each page is for.
+  const pieces = await listPublished(db, { kind: 'article', limit: 30 })
 
   return (
     <Section className="pt-14 md:pt-24 pb-24">

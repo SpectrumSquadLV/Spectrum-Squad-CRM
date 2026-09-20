@@ -58,7 +58,7 @@ async function serve(
 }
 
 /** Pages that are PRERENDERED are the ones the old approach could not reach. */
-const pages = ['/', '/me-vs-her', '/legal/privacy', '/stories', '/programs']
+const pages = ['/', '/challenges/me-vs-her', '/legal/privacy', '/podcast', '/programs']
 
 console.log('\nSITE_NOINDEX=1 — shut to crawlers')
 

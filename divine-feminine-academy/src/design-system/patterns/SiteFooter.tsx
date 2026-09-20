@@ -1,24 +1,34 @@
 import Link from 'next/link'
 import { Rule } from '@/design-system/primitives'
 
+/*
+ * The four columns are the four parts of the ecosystem, in the order a woman
+ * moves through them: she hears the podcast, she starts a challenge, she does
+ * the work. /stories is not listed anywhere - it is unpublished.
+ */
 const columns = [
   {
-    heading: 'Start',
+    heading: 'The work',
     links: [
-      { href: '/me-vs-her', label: 'ME VS HER' },
+      { href: '/the-divine-feminine', label: 'The Divine Feminine' },
+      { href: '/challenges', label: 'Challenges' },
+      { href: '/programs', label: 'Everything' },
+    ],
+  },
+  {
+    heading: 'Listen & read',
+    links: [
+      { href: '/podcast', label: 'Brown Girls Need Healing Too' },
+      { href: '/writing', label: 'Writing' },
       { href: '/quiz', label: 'Which version of you?' },
       { href: '/assessment', label: 'Free assessment' },
-      { href: '/the-divine-feminine', label: 'The Divine Feminine' },
-      { href: '/programs', label: 'All programs' },
     ],
   },
   {
     heading: 'About',
     links: [
-      { href: '/writing', label: 'Writing' },
-      { href: '/listen', label: 'Listen' },
-      { href: '/about', label: 'Who this is for' },
-      { href: '/stories', label: 'Stories' },
+      { href: '/about', label: 'Quiana' },
+      { href: '/login', label: 'Sign in' },
     ],
   },
   {
@@ -35,7 +45,7 @@ export function SiteFooter() {
   return (
     <footer className="mt-24 border-t border-rule bg-linen/50">
       <div className="mx-auto max-w-6xl px-5 py-14 md:px-8">
-        <div className="grid gap-10 sm:grid-cols-2 md:grid-cols-4">
+        <div className="grid gap-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
           <div>
             <p className="font-display text-lg leading-tight">
               Divine Feminine

@@ -1,15 +1,24 @@
 import { db } from '@/db/client'
 import { listPublished } from '@/db/queries/writing'
-import { excerpt, formatDuration, plainText } from '@/features/writing/markdown'
+import { excerpt } from '@/features/writing/markdown'
 import { siteUrl } from '@/lib/auth/env'
 
 /**
- * One feed for both.
+ * The writing feed. ESSAYS ONLY.
  *
- * An essay and an episode go in the same feed, and an episode additionally
- * carries an `<enclosure>` and the iTunes tags a podcast directory needs. Two
- * feeds would be two things to keep in step, and a reader who wants only audio
- * has `/listen`.
+ * It used to carry episodes too, with enclosures and iTunes tags, which was
+ * right when this site was the only place the podcast existed. It is not any
+ * more: Brown Girls Need Healing Too is hosted on RSS.com, and that feed is
+ * the one Apple and Spotify already have.
+ *
+ * Two feeds carrying the same audio is not a tidiness problem, it is a real
+ * one. A directory that finds both lists the show twice, splits the download
+ * numbers between them, and points half of her listeners at a feed she does
+ * not control the publishing schedule of. So this one stops pretending to be
+ * a podcast feed: no enclosures, no iTunes namespace, no audio, and episodes
+ * filtered out entirely.
+ *
+ * The podcast's feed is linked from /podcast and it is the RSS.com one.
  *
  * Everything is escaped by hand here, because this is a string of XML rather
  * than React. `escape` is applied to every single interpolated value below —
@@ -28,43 +37,35 @@ const escape = (value: string) =>
 
 export async function GET() {
   const base = siteUrl().replace(/\/$/, '')
-  const pieces = await listPublished(db, { limit: 50 })
+  // Essays only. An episode belongs to the RSS.com feed, and duplicating it
+  // here is how a show ends up listed twice in a directory.
+  const pieces = await listPublished(db, { kind: 'article', limit: 50 })
 
   const items = pieces
     .map((piece) => {
       const url = `${base}/writing/${piece.slug}`
       const description = piece.dek?.trim() || excerpt(piece.body, 300)
-      const duration = formatDuration(piece.audioDurationSeconds)
-
-      const enclosure =
-        piece.kind === 'episode' && piece.audioUrl
-          ? `\n      <enclosure url="${escape(piece.audioUrl)}" length="${piece.audioSizeBytes ?? 0}" type="audio/mpeg" />` +
-            (duration ? `\n      <itunes:duration>${escape(duration)}</itunes:duration>` : '') +
-            `\n      <itunes:episodeType>full</itunes:episodeType>`
-          : ''
 
       return `    <item>
       <title>${escape(piece.title)}</title>
       <link>${escape(url)}</link>
       <guid isPermaLink="true">${escape(url)}</guid>
       <pubDate>${(piece.publishedAt ?? piece.createdAt).toUTCString()}</pubDate>
+      ${piece.authorName ? `<dc:creator>${escape(piece.authorName)}</dc:creator>` : ''}
       <description>${escape(description)}</description>
-      ${piece.authorName ? `<itunes:author>${escape(piece.authorName)}</itunes:author>` : ''}
-      <itunes:summary>${escape(plainText(piece.body).slice(0, 3900))}</itunes:summary>${enclosure}
     </item>`
     })
     .join('\n')
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom">
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
     <title>Divine Feminine</title>
     <link>${escape(base)}/writing</link>
     <atom:link href="${escape(base)}/writing/rss.xml" rel="self" type="application/rss+xml" />
-    <description>Essays and episodes on the four rooms — Self, Love, Life and Wealth — and the versions of you that show up in them.</description>
+    <description>Essays on the four rooms — Self, Love, Life and Wealth — and the versions of you that show up in them.</description>
     <language>en</language>
     <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
-    <itunes:explicit>false</itunes:explicit>
 ${items}
   </channel>
 </rss>`

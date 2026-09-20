@@ -10,6 +10,7 @@ import {
 import { sendToContact } from '@/features/email/send'
 import { runArchetypeRule } from '@/features/quiz/sequence-send'
 import { announceNewWriting } from '@/features/writing/announce'
+import { syncFeed } from '@/features/podcast/sync'
 import { templates } from '@/features/email/templates'
 import { siteUrl } from '@/lib/auth/env'
 
@@ -109,6 +110,33 @@ export async function POST(request: Request) {
    */
   const swept = await sweepEventsForAutomation(db, now)
 
+  /*
+   * Pull the podcast feed BEFORE announcing anything.
+   *
+   * In this order an episode that went live on RSS.com half an hour ago is
+   * imported and then announced in the same invocation. The other way round
+   * it would sit unannounced for an hour, and if that hour crossed the
+   * announce job's 72-hour freshness window it would never be announced at
+   * all.
+   *
+   * The first sync imports the entire back catalogue. That is safe for the
+   * same reason: everything older than 72 hours is marked announced without
+   * being sent, so importing a hundred episodes cannot mail the list a
+   * hundred times.
+   *
+   * It is awaited on its own rather than in the Promise.all below, because
+   * the announce job has to see what it wrote.
+   */
+  let podcast
+  try {
+    podcast = await syncFeed(db, {})
+  } catch (error) {
+    // The show lives on somebody else's server. An outage there must not stop
+    // the day reminders, the nudges or the abandoned checkouts.
+    console.error('[cron] podcast sync failed', error)
+    podcast = { error: error instanceof Error ? error.message : 'sync failed' }
+  }
+
   const [automations, reminders, nudges, abandoned, writing] = await Promise.all([
     runDue(db, {
       send_email: (ctx) => sendEmailAction(ctx),
@@ -122,6 +150,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     ranAt: now.toISOString(),
     swept,
+    podcast,
     automations,
     reminders,
     nudges,

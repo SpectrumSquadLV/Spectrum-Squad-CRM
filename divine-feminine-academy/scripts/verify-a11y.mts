@@ -22,10 +22,11 @@ const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3000'
 /** Public pages, plus the style guide, which is reachable in development. */
 const PAGES = [
   '/',
-  '/me-vs-her',
   '/the-divine-feminine',
+  '/challenges',
+  '/challenges/me-vs-her',
+  '/podcast',
   '/about',
-  '/stories',
   '/programs',
   '/assessment',
   '/quiz',
@@ -35,7 +36,6 @@ const PAGES = [
   '/quiz/the-quiet-storm',
   '/unsubscribe/not-a-real-token',
   '/writing',
-  '/listen',
   '/writing/the-cost-of-being-the-capable-one',
   '/legal/privacy',
   '/legal/terms',

@@ -1,7 +1,6 @@
 import type { Metadata } from 'next'
 import { db } from '@/db/client'
-import { Eyebrow, Prose, Section } from '@/design-system/patterns'
-import { Placeholder } from '@/design-system/patterns'
+import { Eyebrow, Prose, Section, StaffNote } from '@/design-system/patterns'
 import { getPublishedAssessment } from '@/db/queries/assessments'
 import { QuizFlow, type FlowQuestion } from '@/features/quiz/QuizFlow'
 import { JoinForm } from '@/features/auth/JoinForm'
@@ -82,15 +81,13 @@ export default async function QuizPage() {
         </div>
       ) : (
         <>
-          <Placeholder
-            label="Not seeded"
-            note="run npm run seed:quiz"
-            className="mt-10"
-          >
-            <p className="text-xs text-ink-soft">
-              No published archetype quiz was found for “{QUIZ_SLUG}”.
+          <StaffNote what="the quiz to be seeded" className="mt-10">
+            <p>
+              No published archetype quiz was found for “{QUIZ_SLUG}”. Run
+              npm run seed:quiz. Until then this page collects emails rather
+              than showing a stranger that something is missing.
             </p>
-          </Placeholder>
+          </StaffNote>
 
           <div className="mt-12 max-w-md rounded-xl border border-rule bg-alabaster p-6 md:p-8">
             <h2 className="font-display text-xl">Tell me when it is ready</h2>

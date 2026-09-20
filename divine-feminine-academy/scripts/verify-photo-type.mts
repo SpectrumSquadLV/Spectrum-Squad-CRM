@@ -25,7 +25,7 @@ import { chromium } from 'playwright'
 import { existsSync, readdirSync } from 'node:fs'
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3000'
-const PATHS = (process.env.PATHS ?? '/,/me-vs-her,/the-divine-feminine,/about').split(',')
+const PATHS = (process.env.PATHS ?? '/,/challenges/me-vs-her,/the-divine-feminine,/about').split(',')
 
 /** Widths either side of every breakpoint this layout changes at. */
 const WIDTHS = [390, 768, 1024, 1280, 1440, 1920]

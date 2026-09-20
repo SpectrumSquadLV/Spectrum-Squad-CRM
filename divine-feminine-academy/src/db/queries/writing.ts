@@ -122,11 +122,12 @@ export async function getArticleById(
 export async function listPublishedSlugs(
   db: QueryContext['db'],
   now = new Date(),
+  kind?: 'article' | 'episode',
 ): Promise<{ slug: string; updatedAt: Date }[]> {
   const rows = await db
     .select({ slug: articles.slug, updatedAt: articles.updatedAt })
     .from(articles)
-    .where(isLive(now))
+    .where(kind ? and(isLive(now), eq(articles.kind, kind)) : isLive(now))
     .orderBy(desc(articles.publishedAt))
   return rows
 }

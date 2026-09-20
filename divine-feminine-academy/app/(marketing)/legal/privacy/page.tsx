@@ -1,6 +1,14 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { Eyebrow, Placeholder, Prose, Section } from '@/design-system/patterns'
+import { Eyebrow, Prose, Section, StaffNote } from '@/design-system/patterns'
+
+/*
+ * Dynamic because this page carries a StaffNote, and a staff note has to read
+ * the session to know whether to render at all. Static would mean deciding
+ * that at build time, which is the same as deciding it for everybody.
+ */
+export const dynamic = 'force-dynamic'
+
 
 export const metadata: Metadata = {
   title: 'Privacy',
@@ -72,7 +80,7 @@ export default function PrivacyPage() {
         </p>
       </Prose>
 
-      <Placeholder label="Needs a lawyer" note="not legal advice" className="mt-12">
+      <StaffNote what="a lawyer's review of this policy" className="mt-12">
         <Prose className="text-sm">
           <p>
             This describes what the system actually does, accurately. It is not
@@ -82,7 +90,7 @@ export default function PrivacyPage() {
             address for data requests.
           </p>
         </Prose>
-      </Placeholder>
+      </StaffNote>
 
       <Prose className="mt-12 text-sm">
         <p>
