@@ -4,6 +4,7 @@ import { db } from '@/db/client'
 import { runDue, sweepEventsForAutomation } from '@/features/automation/runner'
 import {
   sendAbandonedCheckouts,
+  sendAcademyInvitations,
   sendDayReminders,
   sendStallNudges,
 } from '@/features/automation/jobs'
@@ -137,13 +138,15 @@ export async function POST(request: Request) {
     podcast = { error: error instanceof Error ? error.message : 'sync failed' }
   }
 
-  const [automations, reminders, nudges, abandoned, writing] = await Promise.all([
+  const [automations, reminders, nudges, abandoned, invitations, writing] =
+    await Promise.all([
     runDue(db, {
       send_email: (ctx) => sendEmailAction(ctx),
     }, now),
     sendDayReminders(db, url, now),
     sendStallNudges(db, url, now),
     sendAbandonedCheckouts(db, url, now),
+    sendAcademyInvitations(db, url, now),
     announceNewWriting(db, url, now),
   ])
 
@@ -155,6 +158,7 @@ export async function POST(request: Request) {
     reminders,
     nudges,
     abandoned,
+    invitations,
     writing,
   })
 }

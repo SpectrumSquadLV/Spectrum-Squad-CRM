@@ -39,32 +39,75 @@ export default async function DayDonePage({
       <Eyebrow>{finished ? 'Seven days' : `Day ${dayNumber}`}</Eyebrow>
 
       {finished ? (
+        /*
+         * Screen 16, and it is its own screen on purpose.
+         *
+         * The curriculum is explicit that the invitation never sits inside
+         * the final close. FINAL CLOSE ends with "I am worthy of everything I
+         * desire" — putting an offer in the same breath would turn the last
+         * line of the week into a setup for a pitch.
+         */
         <>
-          <h1 className="mt-4 text-3xl">You finished.</h1>
-          <Prose className="mt-6">
+          <h1 className="mt-4 font-display text-3xl leading-tight tracking-tight md:text-4xl">
+            YOU FOUND HER.
+            <br />
+            NOW LET&rsquo;S BUILD A LIFE THAT LOOKS LIKE HER.
+          </h1>
+
+          <Prose className="mt-8">
+            <p>ME VS. HER taught you how to recognize the moment.</p>
             <p>
-              Your HER Code is yours now, and so is everything else you wrote.
-              None of it goes away when the week does.
+              The moment ME shows up.
+              <br />
+              The moment you pause.
+              <br />
+              The moment you realize you have a choice.
+              <br />
+              The moment you choose HER.
+            </p>
+            <p>But there&rsquo;s more underneath it.</p>
+            <p>Why does ME show up in your relationships?</p>
+            <p>Your money?</p>
+            <p>Your success?</p>
+            <p>The way you see yourself?</p>
+            <p>
+              What have you learned to believe about who you are, what
+              you&rsquo;re worthy of, and what&rsquo;s possible for you?
+            </p>
+            <p>And what changes when those beliefs change?</p>
+            <p>That&rsquo;s the work we do inside the Divine Feminine Academy.</p>
+            <p>ME VS. HER was never about creating a new woman.</p>
+            <p>Neither is the Academy.</p>
+            <p>
+              It&rsquo;s about removing everything that has convinced you that
+              you aren&rsquo;t already her.
+            </p>
+            <p>You found HER.</p>
+            <p>
+              Now let&rsquo;s uncover what&rsquo;s been standing between HER and
+              the life she actually desires.
             </p>
           </Prose>
-          <div className="mt-10 flex flex-wrap gap-4">
+
+          <div className="mt-10">
             <Button size="lg" asChild>
-              <Link href="/my-academy/her/code">See your HER Code</Link>
+              <Link href="/academy">ENTER THE DIVINE FEMININE ACADEMY</Link>
             </Button>
-            <Button size="lg" variant="secondary" asChild>
-              <Link href="/my-academy">Back to your practice</Link>
-            </Button>
+            <p className="mt-4 text-2xs text-ink-muted">
+              Your next chapter goes deeper.
+            </p>
           </div>
+
           <Rule tone="gilt" className="my-14" />
-          <h2 className="text-xl">What comes next</h2>
-          <Prose className="mt-3 text-sm">
+
+          <Prose className="text-sm">
             <p>
-              The Divine Feminine takes this deeper, across all four areas. It reads
-              from everything you just built rather than starting you over.
+              Everything you wrote this week is still yours, and ME VS. HER is
+              on your home screen from now on — bring it any decision.
             </p>
           </Prose>
-          <Button variant="link" className="mt-3" asChild>
-            <Link href="/the-divine-feminine">Read about the Divine Feminine</Link>
+          <Button variant="secondary" className="mt-6" asChild>
+            <Link href="/my-academy">Back to my academy</Link>
           </Button>
         </>
       ) : (

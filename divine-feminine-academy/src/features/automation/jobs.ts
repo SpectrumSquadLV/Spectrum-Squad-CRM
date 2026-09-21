@@ -3,6 +3,7 @@ import 'server-only'
 import { and, eq, isNull, lt, sql } from 'drizzle-orm'
 import type { Db } from '@/db/client'
 import {
+  blockResponses,
   cohorts,
   contacts,
   enrollments,
@@ -16,7 +17,12 @@ import {
 } from '@/db/schema'
 import { computeUnlockState, safeTimeZone, type Pacing } from '@/features/challenge/pacing'
 import { sendToContact } from '@/features/email/send'
-import { abandonedCheckout, dayReminder, nudge } from '@/features/email/templates'
+import {
+  abandonedCheckout,
+  academyInvitation,
+  dayReminder,
+  nudge,
+} from '@/features/email/templates'
 
 /**
  * The scheduled jobs.
@@ -254,6 +260,123 @@ export async function sendStallNudges(
       kind: 'lifecycle',
       templateSlug: 'nudge',
       idempotencyKey: `nudge:${row.enrollment.id}:${row.enrollment.currentDay}`,
+    })
+
+    if (outcome.sent) summary.sent++
+    else summary.skipped++
+  }
+
+  return summary
+}
+
+/**
+ * The day after Day 7: the Academy invitation.
+ *
+ * Sent once, the morning after she finishes, in her own timezone. Three
+ * things decide whether it goes at all:
+ *
+ *  - She has to have FINISHED. Not reached Day 7 - finished it.
+ *  - It has to be the next day where SHE is, not where the server is.
+ *  - She must not already be in the Academy. Selling a woman something she
+ *    bought yesterday is the fastest way to make her regret buying it.
+ *
+ * The opening line depends on who she chose on Day 7, and nothing else does.
+ * A woman who consciously chose ME was told that was allowed; an email that
+ * congratulated her for choosing HER would take that back.
+ */
+export async function sendAcademyInvitations(
+  db: Db,
+  siteUrl: string,
+  now = new Date(),
+): Promise<JobSummary> {
+  const rows = await db
+    .select({
+      enrollment: enrollments,
+      contact: contacts,
+      program: programs,
+    })
+    .from(enrollments)
+    .innerJoin(programs, eq(programs.id, enrollments.programId))
+    .innerJoin(contacts, eq(contacts.id, enrollments.contactId))
+    .where(
+      and(
+        eq(programs.slug, 'me-vs-her'),
+        eq(enrollments.status, 'completed'),
+        isNull(contacts.archivedAt),
+      ),
+    )
+
+  const summary: JobSummary = { considered: rows.length, sent: 0, skipped: 0 }
+
+  for (const row of rows) {
+    const finishedAt = row.enrollment.completedAt ?? row.enrollment.updatedAt
+    const tz = safeTimeZone(row.enrollment.timezoneAtStart)
+
+    // The next day where she is, not where the server is.
+    if (localDateKey(now, tz) === localDateKey(finishedAt, tz)) {
+      summary.skipped++
+      continue
+    }
+    // And in the morning, not at whatever hour the cron happens to run.
+    const hour = localHour(now, tz)
+    if (hour < 7 || hour > 11) {
+      summary.skipped++
+      continue
+    }
+
+    /*
+     * Already in the Academy? Then this email is not for her.
+     *
+     * Any active enrollment in a programme that is not the challenge counts:
+     * she is already inside, and the invitation would read as a company that
+     * does not know who its own customers are.
+     */
+    const [enrolledElsewhere] = await db
+      .select({ id: enrollments.id })
+      .from(enrollments)
+      .innerJoin(programs, eq(programs.id, enrollments.programId))
+      .where(
+        and(
+          eq(enrollments.contactId, row.contact.id),
+          sql`${programs.slug} <> 'me-vs-her'`,
+        ),
+      )
+      .limit(1)
+
+    if (enrolledElsewhere) {
+      summary.skipped++
+      continue
+    }
+
+    /*
+     * Who she chose on Day 7. Read from the block response rather than from
+     * her_choices, because a woman who chose ME has no row there and the
+     * absence of a row must not be mistaken for "she never finished".
+     */
+    const responses = await db
+      .select({ response: blockResponses.response })
+      .from(blockResponses)
+      .where(eq(blockResponses.enrollmentId, row.enrollment.id))
+
+    const choseHer = responses.some((r) => {
+      const value = r.response as { chosen?: unknown } | null
+      return value?.chosen === 'her'
+    })
+
+    const rendered = academyInvitation({
+      firstName: row.contact.firstName,
+      choseHer,
+      siteUrl,
+    })
+
+    const outcome = await sendToContact({
+      db,
+      contactId: row.contact.id,
+      rendered,
+      kind: 'lifecycle',
+      templateSlug: 'academy-invitation',
+      // Once per enrollment, ever.
+      idempotencyKey: `academy-invitation:${row.enrollment.id}`,
     })
 
     if (outcome.sent) summary.sent++
