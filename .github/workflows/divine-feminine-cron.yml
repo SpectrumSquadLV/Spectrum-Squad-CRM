@@ -13,7 +13,17 @@
 # Railway so a Railway problem cannot take it down with the site, and every
 # run is visible in the Actions tab with the response body in the log.
 #
-# TWO THINGS TO KNOW ABOUT IT.
+# IT ONLY RUNS ONCE THIS IS ON THE DEFAULT BRANCH.
+#
+# GitHub registers `schedule` and `workflow_dispatch` from the default branch
+# only. A workflow sitting on a feature branch is not scheduled, does not
+# appear in the Actions tab, and cannot be triggered by hand - the API returns
+# 404 for it. So until this file is merged to main there is no scheduler at
+# all, and adding the repository secret early changes nothing.
+#
+# The order is: merge, then add the secret, then run it once by hand.
+#
+# TWO OTHER THINGS TO KNOW ABOUT IT.
 #
 # GitHub's schedule is best effort. A run can land five or fifteen minutes
 # late when the shared runners are busy, and can occasionally be skipped.

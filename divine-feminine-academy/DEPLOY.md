@@ -189,15 +189,22 @@ a Bearer token automatically.
 **Railway:** no built-in scheduler, and this is now handled by GitHub Actions
 instead — `.github/workflows/divine-feminine-cron.yml`, hourly at minute 17.
 
-It needs one thing set by hand, once: a repository secret named
-`DIVINE_FEMININE_CRON_SECRET`, under Settings → Secrets and variables →
-Actions, whose value is the `CRON_SECRET` variable on the
-`divine-feminine-web` service in Railway. Until it is set, every run fails
-loudly with a message saying exactly that, which is the right way round —
-a scheduler that silently does nothing is the failure this replaced.
+**Order matters, and the first step is easy to miss.**
 
-Run it by hand from the Actions tab any time (`workflow_dispatch`); that is
-also how to trigger the first podcast sync without waiting for the hour.
+1. **Merge the workflow to the default branch.** GitHub registers `schedule`
+   and `workflow_dispatch` from the default branch only. On a feature branch
+   the workflow is not scheduled, does not appear in the Actions tab, and
+   cannot be run by hand — the API returns 404 for it. Until it is on `main`
+   there is no scheduler at all.
+2. **Add the repository secret.** `DIVINE_FEMININE_CRON_SECRET`, under
+   Settings → Secrets and variables → Actions, whose value is the
+   `CRON_SECRET` variable on the `divine-feminine-web` service in Railway.
+   Until it is set, every run fails loudly with a message saying exactly
+   that, which is the right way round — a scheduler that silently does
+   nothing is the failure this replaced.
+3. **Run it once by hand** from the Actions tab (`workflow_dispatch`). That
+   triggers the first podcast sync without waiting for the hour, and confirms
+   the secret before an unattended run depends on it.
 
 **A Railway cron service was tried first and did not work.** The container
 started on schedule and produced no output, no request and no error — the job
