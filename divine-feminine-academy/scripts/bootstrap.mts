@@ -68,7 +68,28 @@ interface Step {
 const steps: Step[] = [
   {
     name: 'ME VS HER and the CRM stages',
-    existing: `select 1 from programs where slug = 'me-vs-her' limit 1`,
+    /*
+     * Asks whether the APPROVED curriculum is published, not merely whether
+     * a programme row exists.
+     *
+     * "Does me-vs-her exist" was the check, and it was the wrong question the
+     * moment the curriculum changed: the programme had existed since the
+     * placeholder days, so every deploy skipped this step and the real seven
+     * days would never have reached production. Nothing would have looked
+     * broken - the site would simply have gone on serving MEET YOUR PROTECTOR
+     * to women who were promised SEE ME.
+     *
+     * Day 1's title is the marker. Re-seeding publishes a NEW version and
+     * leaves anybody mid-challenge on the one she started, so this is safe to
+     * trip.
+     */
+    existing: `
+      select 1
+      from modules m
+      join program_versions pv on pv.id = m.version_id
+      join programs p on p.id = pv.program_id
+      where p.slug = 'me-vs-her' and m.title = 'SEE ME'
+      limit 1`,
     script: 'seed:challenge',
   },
   {
@@ -84,7 +105,22 @@ const steps: Step[] = [
   },
   {
     name: 'the archetype quiz',
-    existing: `select 1 from assessments where slug = 'which-version' limit 1`,
+    /*
+     * Same problem, same shape. The quiz has existed since it was built, so
+     * "does it exist" would have skipped the two money questions that make
+     * MONEY a reachable area at all - and the re-audited area weights with
+     * them. A published version with fewer than fourteen questions is the
+     * old instrument.
+     */
+    existing: `
+      select 1
+      from assessment_questions q
+      join assessment_versions v on v.id = q.version_id
+      join assessments a on a.id = v.assessment_id
+      where a.slug = 'which-version'
+      group by v.id
+      having count(*) >= 14
+      limit 1`,
     script: 'seed:quiz',
   },
   {
