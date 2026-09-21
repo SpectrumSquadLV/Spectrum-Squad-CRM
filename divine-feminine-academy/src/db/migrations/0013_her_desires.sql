@@ -33,3 +33,26 @@ ALTER TABLE "her_desires" ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "her_desires_owner_all" ON "her_desires"
   FOR ALL USING (contact_id = public.current_contact_id())
   WITH CHECK (contact_id = public.current_contact_id());
+
+-- Day 2: where ME learned it, linked to the pattern Day 1 named.
+--
+-- Encrypted with her own key, unlike the behaviour columns beside them. The
+-- earliest time she remembers feeling this way, and what she needed and did
+-- not receive, are the heaviest sentences the challenge asks for; her HER
+-- page shows behaviours, never these.
+ALTER TABLE "her_patterns"
+  ADD COLUMN IF NOT EXISTS "origin_memory_encrypted" text,
+  ADD COLUMN IF NOT EXISTS "unmet_need_encrypted" text;
+
+-- The mirror, as the curriculum now runs it.
+--
+-- ONE MORE MINUTE adds a minute and asks again, so "how long did she stay"
+-- and "how many times did she choose to stay longer" are different facts.
+-- The second is the more encouraging one: a woman who could not hold thirty
+-- seconds on Day 1 and extends twice on Day 5 has a measurable week.
+--
+-- stopped_early records the quiet way out. It exists so that leaving is a
+-- recorded, ordinary thing rather than a gap in the data.
+ALTER TABLE "mirror_sessions"
+  ADD COLUMN IF NOT EXISTS "extensions" integer DEFAULT 0 NOT NULL,
+  ADD COLUMN IF NOT EXISTS "stopped_early" boolean DEFAULT false NOT NULL;

@@ -238,6 +238,9 @@ async function main() {
       daysCompleted: 6,
       journalEntryCount: 8,
       journalWordCount: 1400,
+      desires: [],
+      behaviorTags: [],
+      unmetNeed: null,
     }
 
     const s = suggestStatements(evidence, ['a generic one'])

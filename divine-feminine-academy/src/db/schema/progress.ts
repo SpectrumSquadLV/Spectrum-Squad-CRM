@@ -125,6 +125,18 @@ export const herPatterns = pgTable(
     currentTags: text('current_tags').array(),
     herResponse: text('her_response'),
     herTags: text('her_tags').array(),
+    /**
+     * Day 2, where ME learned it. Ciphertext, journal-grade.
+     *
+     * The columns above are plaintext because they are behaviours - "I go
+     * quiet", "when nobody notices" - and she sees them on her own HER page.
+     * These two are not behaviours. They are the earliest time she remembers
+     * feeling this way and what she needed and did not receive, which is the
+     * heaviest thing the challenge asks for, so they are encrypted with her
+     * own key like a journal body and no staff surface can read them.
+     */
+    originMemoryEncrypted: text('origin_memory_encrypted'),
+    unmetNeedEncrypted: text('unmet_need_encrypted'),
     sourceEnrollmentId: uuid('source_enrollment_id').references(
       () => enrollments.id,
     ),
@@ -320,6 +332,16 @@ export const mirrorSessions = pgTable(
     intention: text('intention'),
     secondsAsked: integer('seconds_asked').notNull().default(60),
     secondsCompleted: integer('seconds_completed').notNull().default(0),
+    /**
+     * How many times she chose ONE MORE MINUTE.
+     *
+     * The most quietly encouraging number in the product. A woman who could
+     * not hold thirty seconds on Day 1 and extends twice on Day 5 has a
+     * measurable week, and it is measured in something other than compliance.
+     */
+    extensions: integer('extensions').notNull().default(0),
+    /** True when she used "I need to stop". Never treated as a failure. */
+    stoppedEarly: boolean('stopped_early').notNull().default(false),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     ...timestamps,
   },

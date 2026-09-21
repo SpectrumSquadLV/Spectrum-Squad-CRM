@@ -59,6 +59,29 @@ export function DayRunner({
   const block = blocks[index]
   const isLast = index === blocks.length - 1
 
+  /**
+   * What she has written TODAY, by the name each block saved under.
+   *
+   * Built from the runner's own state rather than the database, so a screen
+   * can quote the previous screen before anything has been saved. This is the
+   * mechanism behind every within-day callback in the curriculum: Day 1
+   * reading her trigger back before asking what ME did, and Day 7 keeping one
+   * decision on screen from Screen 4 through Screen 11.
+   */
+  const today: Record<string, string> = {}
+  for (const b of blocks) {
+    const name = (b.config as { saveAs?: unknown } | null)?.saveAs
+    if (typeof name !== 'string' || name === '') continue
+    const answer = responses[b.id]
+    const text =
+      typeof answer === 'string'
+        ? answer
+        : typeof (answer as { text?: unknown })?.text === 'string'
+          ? ((answer as { text: string }).text)
+          : ''
+    if (text.trim() !== '') today[name] = text.trim()
+  }
+
   const setValue = useCallback((blockId: string, value: unknown) => {
     setResponses((prev) => ({ ...prev, [blockId]: value }))
     dirty.current.add(blockId)
@@ -179,6 +202,7 @@ export function DayRunner({
           onChange={(v) => setValue(block.id, v)}
           disabled={saving || pending}
           context={evidence}
+          today={today}
         />
       </div>
 

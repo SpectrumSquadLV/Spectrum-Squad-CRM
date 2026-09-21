@@ -8,6 +8,17 @@ import { z } from 'zod'
  */
 export const configSchema = z.object({
   prompt: z.string(),
+  /**
+   * The name later screens on the SAME DAY quote this answer by.
+   *
+   * Day 1 asks what happened and then reads it back before asking what ME
+   * did; Day 7 keeps one decision on screen across eight screens. Both work
+   * because the answer has a name.
+   */
+  saveAs: z.string().optional(),
+  /** Her own words from an earlier screen today, shown above the prompt. */
+  showsEarlier: z.string().optional(),
+  showsEarlierLabel: z.string().default(''),
   helper: z.string().optional(),
   placeholder: z.string().optional(),
   minWords: z.number().int().nonnegative().default(0),

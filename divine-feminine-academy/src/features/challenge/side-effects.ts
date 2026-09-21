@@ -256,6 +256,8 @@ async function writeMirrorSession(input: EffectInput) {
     // Never less than what she actually did, whatever the block reported.
     secondsAsked: Math.max(secondsCompleted, Number(response.secondsAsked) || secondsCompleted),
     secondsCompleted,
+    extensions: Math.max(0, Math.round(Number(response.extensions) || 0)),
+    stoppedEarly: response.stoppedEarly === true,
     completedAt: completed ? new Date() : null,
     updatedAt: new Date(),
   }

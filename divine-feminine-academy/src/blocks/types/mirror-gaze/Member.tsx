@@ -1,143 +1,215 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import { Button, Field, Textarea } from '@/design-system/primitives'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Button } from '@/design-system/primitives'
+import { cn } from '@/lib/utils/cn'
 import type { BlockMemberProps } from '../../contract'
 import type { Config, Response } from './schema'
 
 /**
- * A real timer, and an honest one.
+ * Silence, and an honest clock.
  *
- * It records how long she ACTUALLY stayed, not whether she pressed a button.
- * Stopping at forty seconds is not a failure to be hidden - it is the most
- * interesting thing she could tell us, and on a later day she gets to see it
- * change.
+ * Nothing is on this screen while she looks. No intention held up, no
+ * affirmation, no encouragement at ninety seconds. The setup copy is its own
+ * screen before this one and it has already done its work; a woman looking
+ * into her own eyes does not need a product talking to her at the same time.
  *
- * No countdown numbers on screen while she looks. A woman watching a clock is
- * not looking at herself. The ring fills, and that is all.
+ * The countdown IS shown, which is a reversal of how this block used to work.
+ * The earlier version hid the numbers on the theory that a woman watching a
+ * clock is not looking at herself. In practice, not knowing how long is left
+ * is its own kind of pressure - she keeps checking - and the curriculum asks
+ * for a large, calm timer. So: large, calm, and quiet.
+ *
+ * What is recorded is how long she ACTUALLY stayed. Stopping at forty seconds
+ * is not a failure to be hidden; it is the most interesting thing she could
+ * tell us, and on a later day she gets to watch it change.
  */
+function mmss(total: number): string {
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+/** A soft, short tone. Not a notification sound. */
+function chime() {
+  try {
+    const Ctor =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext
+    if (!Ctor) return
+    const ctx = new Ctor()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.value = 528
+    // Fade in and out, so it arrives rather than interrupts.
+    gain.gain.setValueAtTime(0, ctx.currentTime)
+    gain.gain.linearRampToValueAtTime(0.09, ctx.currentTime + 0.12)
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 2.2)
+    osc.connect(gain).connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 2.3)
+    osc.onended = () => void ctx.close()
+  } catch {
+    // No audio is not a broken mirror. The buttons appear either way.
+  }
+}
+
 export function MirrorGazeMember({
-  blockId,
   config,
   value,
   onChange,
   disabled,
 }: BlockMemberProps<Config, Response>) {
-  const target = config.seconds
+  const [target, setTarget] = useState(config.seconds)
   const [elapsed, setElapsed] = useState(value?.secondsCompleted ?? 0)
   const [running, setRunning] = useState(false)
-  const started = useRef<number | null>(null)
+  /** True between the chime and whatever she chooses next. */
+  const [atRest, setAtRest] = useState(value?.completed ?? false)
+  const [extensions, setExtensions] = useState(value?.extensions ?? 0)
 
-  const done = value?.completed ?? false
+  const started = useRef<number | null>(null)
+  const base = useRef(0)
+
+  const save = useCallback(
+    (seconds: number, completed: boolean, stoppedEarly: boolean, ext: number) =>
+      onChange({
+        secondsCompleted: seconds,
+        completed,
+        extensions: ext,
+        stoppedEarly,
+      }),
+    [onChange],
+  )
 
   useEffect(() => {
     if (!running) return
     const id = window.setInterval(() => {
       if (started.current === null) return
-      const next = Math.min(
-        target,
-        Math.round((Date.now() - started.current) / 1000),
-      )
-      setElapsed(next)
+      const next =
+        base.current + Math.round((Date.now() - started.current) / 1000)
       if (next >= target) {
+        setElapsed(target)
         setRunning(false)
-        onChange({ secondsCompleted: next, completed: true, after: value?.after })
+        setAtRest(true)
+        chime()
+        save(target, true, false, extensions)
+      } else {
+        setElapsed(next)
       }
-    }, 200)
+    }, 250)
     return () => window.clearInterval(id)
-  }, [running, target, onChange, value?.after])
+  }, [running, target, extensions, save])
+
+  const begin = () => {
+    base.current = 0
+    started.current = Date.now()
+    setElapsed(0)
+    setAtRest(false)
+    setRunning(true)
+  }
 
   const stop = () => {
     setRunning(false)
     // Recorded even though she stopped early. Especially because she did.
-    onChange({ secondsCompleted: elapsed, completed: elapsed >= target, after: value?.after })
+    save(elapsed, false, true, extensions)
   }
 
-  const progress = target > 0 ? Math.min(1, elapsed / target) : 0
+  const oneMoreMinute = () => {
+    const next = extensions + 1
+    setExtensions(next)
+    base.current = elapsed
+    started.current = Date.now()
+    setTarget(elapsed + config.extendSeconds)
+    setAtRest(false)
+    setRunning(true)
+  }
+
+  const remaining = Math.max(0, target - elapsed)
+  const open = config.mood === 'open'
 
   return (
-    <div className="measure">
-      <p className="text-2xs uppercase tracking-[0.2em] text-clay-deep">
-        The mirror
-      </p>
-      <h2 className="mt-4 font-display text-2xl leading-snug md:text-3xl">
-        {config.intention}
-      </h2>
-      {config.helper && (
-        <p className="mt-3 text-sm text-ink-muted">{config.helper}</p>
+    <div
+      className={cn(
+        'measure flex min-h-[26rem] flex-col items-center justify-center text-center',
+        open && 'min-h-[30rem]',
+      )}
+    >
+      {!running && !atRest && (
+        <>
+          {config.intention && (
+            <p className="mb-10 font-display text-xl leading-snug text-ink-soft">
+              {config.intention}
+            </p>
+          )}
+          <Button type="button" size="lg" disabled={disabled} onClick={begin}>
+            {elapsed > 0 ? 'Go back to it' : 'Start'}
+          </Button>
+          {elapsed > 0 && (
+            <p className="mt-5 text-2xs text-ink-muted">
+              You stayed {mmss(elapsed)} last time. That is worth knowing, and
+              it is not a failure.
+            </p>
+          )}
+        </>
       )}
 
-      <div className="mt-10 flex flex-col items-center">
-        <div
-          className="relative flex h-40 w-40 items-center justify-center rounded-full border border-rule"
-          style={{
-            background: `conic-gradient(var(--color-clay) ${progress * 360}deg, transparent 0deg)`,
-          }}
-          role="img"
-          aria-label={
-            done
-              ? 'The practice is complete.'
-              : running
-                ? 'Looking. The ring fills as time passes.'
-                : 'Not started.'
-          }
-        >
-          <div className="flex h-[8.5rem] w-[8.5rem] items-center justify-center rounded-full bg-bone text-center">
-            <span className="px-4 font-display text-sm leading-snug text-ink-soft">
-              {done ? 'You stayed.' : running ? 'Keep looking.' : 'Find your eyes.'}
-            </span>
-          </div>
-        </div>
+      {running && (
+        <>
+          {/*
+            The only thing on the screen. Tabular figures so the digits do not
+            shift as they count, which is its own small distraction.
+          */}
+          <p
+            className={cn(
+              'font-display tabular-nums leading-none tracking-tight',
+              open ? 'text-7xl text-clay-deep md:text-8xl' : 'text-6xl md:text-7xl',
+            )}
+            role="timer"
+            aria-live="off"
+          >
+            {mmss(remaining)}
+          </p>
 
-        <div className="mt-8 flex gap-3">
-          {!running && !done && (
+          {/*
+            Always visible, never emphasised. A woman who needs to stop should
+            not have to hunt for the way out, and should not feel watched
+            taking it.
+          */}
+          <button
+            type="button"
+            onClick={stop}
+            className="mt-16 min-h-11 px-4 text-2xs text-ink-muted underline underline-offset-4 hover:text-ink"
+          >
+            I need to stop
+          </button>
+        </>
+      )}
+
+      {atRest && (
+        <>
+          <p className="font-display text-2xl leading-snug">You stayed.</p>
+          <div className="mt-10 flex flex-col gap-3 sm:flex-row">
             <Button
               type="button"
               size="lg"
               disabled={disabled}
-              onClick={() => {
-                started.current = Date.now() - elapsed * 1000
-                setRunning(true)
-              }}
+              onClick={() => save(elapsed, true, false, extensions)}
             >
-              {elapsed > 0 ? 'Go back to it' : 'Begin'}
+              I&rsquo;M COMPLETE
             </Button>
-          )}
-          {running && (
-            <Button type="button" variant="quiet" size="lg" onClick={stop}>
-              Stop
+            <Button
+              type="button"
+              variant="secondary"
+              size="lg"
+              disabled={disabled}
+              onClick={oneMoreMinute}
+            >
+              ONE MORE MINUTE
             </Button>
-          )}
-        </div>
-
-        {!done && elapsed > 0 && !running && (
-          <p className="mt-4 text-2xs text-ink-muted">
-            You stayed {elapsed} second{elapsed === 1 ? '' : 's'}. That is worth
-            knowing, and it is not a failure.
-          </p>
-        )}
-      </div>
-
-      {config.askAfter && (done || elapsed > 0) && (
-        <Field
-          label={config.afterPrompt}
-          htmlFor={`${blockId}-after`}
-          className="mt-10"
-        >
-          <Textarea
-            id={`${blockId}-after`}
-            value={value?.after ?? ''}
-            onChange={(e) =>
-              onChange({
-                secondsCompleted: elapsed,
-                completed: done || elapsed >= target,
-                after: e.target.value,
-              })
-            }
-            disabled={disabled}
-            rows={4}
-          />
-        </Field>
+          </div>
+        </>
       )}
     </div>
   )
