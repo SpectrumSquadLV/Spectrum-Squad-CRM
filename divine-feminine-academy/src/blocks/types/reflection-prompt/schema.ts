@@ -23,6 +23,14 @@ export const configSchema = z.object({
   placeholder: z.string().optional(),
   minWords: z.number().int().nonnegative().default(0),
   alsoSaveToJournal: z.boolean().default(true),
+  /**
+   * Day 2 only: a way out that is not quitting.
+   *
+   * The heaviest day in the challenge asks where ME learned it, and a woman
+   * who needs to stop halfway through that should be able to, with her
+   * writing kept, without it reading as failure.
+   */
+  allowStopForToday: z.boolean().default(false),
 })
 
 export const responseSchema = z.object({ text: z.string() })

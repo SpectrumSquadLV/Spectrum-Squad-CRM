@@ -14,6 +14,8 @@ export const configSchema = z.object({
   helper: z.string().optional(),
   /** After she has finished with one, offer another. Day 4 does. */
   allowAnother: z.boolean().default(true),
+  /** The name later screens on the same day quote this answer by. */
+  saveAs: z.string().optional(),
 })
 
 export const responseSchema = z.object({

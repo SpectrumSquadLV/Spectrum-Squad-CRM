@@ -19,9 +19,25 @@ export function ChoiceCaptureMember({
   value,
   onChange,
   disabled,
+  today,
 }: BlockMemberProps<Config, Response>) {
   const chosen = value?.chosen ?? null
   const confirmed = value?.confirmed ?? false
+
+  /*
+   * The decision this choice is about, carried into her HER profile.
+   *
+   * `herResponse` is only ever set when she chose HER: "You've chosen HER n
+   * times" counts HER, and the side effect writes nothing without it. A
+   * woman who consciously chooses ME has her answer recorded on the block
+   * like every other answer, and her counter stays honest.
+   */
+  const carry = (who: 'me' | 'her' | null) => ({
+    situation: (today?.[config.decisionFrom] ?? '').trim(),
+    oldResponse: (today?.[config.meWouldFrom] ?? '').trim(),
+    herResponse:
+      who === 'her' ? (today?.[config.herWouldFrom] ?? '').trim() : '',
+  })
 
   // She tapped ME and has not yet said whether she means it.
   const [reconsidering, setReconsidering] = useState(
@@ -30,12 +46,22 @@ export function ChoiceCaptureMember({
 
   const choose = (who: 'me' | 'her') => {
     if (who === 'her') {
-      onChange({ chosen: 'her', confirmed: true, chosenAt: new Date().toISOString() })
+      onChange({
+        chosen: 'her',
+        confirmed: true,
+        chosenAt: new Date().toISOString(),
+        ...carry('her'),
+      })
       setReconsidering(false)
       return
     }
     // ME is never confirmed on the first tap. She gets one more look first.
-    onChange({ chosen: 'me', confirmed: false, chosenAt: new Date().toISOString() })
+    onChange({
+      chosen: 'me',
+      confirmed: false,
+      chosenAt: new Date().toISOString(),
+      ...carry('me'),
+    })
     setReconsidering(true)
   }
 
@@ -84,7 +110,7 @@ export function ChoiceCaptureMember({
               disabled={disabled}
               onClick={() => {
                 // Back to two equal buttons, with nothing chosen.
-                onChange({ chosen: null, confirmed: false })
+                onChange({ chosen: null, confirmed: false, ...carry(null) })
                 setReconsidering(false)
               }}
             >
@@ -99,6 +125,7 @@ export function ChoiceCaptureMember({
                   chosen: 'me',
                   confirmed: true,
                   chosenAt: value?.chosenAt ?? new Date().toISOString(),
+                  ...carry('me'),
                 })
                 setReconsidering(false)
               }}

@@ -1,5 +1,6 @@
 'use client'
 
+import { areaLabels } from '@/features/assessment/scoring'
 import type { BlockMemberProps } from '../../contract'
 import type { Config } from './schema'
 
@@ -24,6 +25,12 @@ export function CallbackMember({
           .map((p) => p.herResponse ?? '')
           .filter((s) => s.trim() !== ''),
       )
+    } else if (config.facet === 'desires') {
+      lines.push(
+        ...context.desires
+          .map((d) => `${areaLabels[d.area]} — ${d.text}`)
+          .filter((s) => s.trim() !== ''),
+      )
     } else {
       lines.push(
         ...context.choices
@@ -41,21 +48,43 @@ export function CallbackMember({
     ) : null
   }
 
+  const list = (
+    <ul className="mt-5 space-y-4">
+      {lines.slice(0, 5).map((line, i) => (
+        <li
+          key={i}
+          className="border-l-2 border-gilt pl-5 font-display text-lg leading-snug"
+        >
+          {line}
+        </li>
+      ))}
+    </ul>
+  )
+
+  /*
+   * Collapsed, when the screen has its own job to do.
+   *
+   * Day 6 asks for ONE small choice, and four paragraphs of everything she
+   * wants would swamp that. A native <details> so it works without
+   * JavaScript, opens to the keyboard, and is announced properly.
+   */
+  if (config.collapsed) {
+    return (
+      <details className="measure rounded-xl border border-rule bg-alabaster p-6 md:p-8">
+        <summary className="min-h-11 cursor-pointer list-none text-2xs uppercase tracking-[0.2em] text-clay-deep marker:content-['']">
+          {config.heading}
+        </summary>
+        {list}
+      </details>
+    )
+  }
+
   return (
     <aside className="measure rounded-xl border border-rule bg-alabaster p-6 md:p-8">
       <p className="text-2xs uppercase tracking-[0.2em] text-clay-deep">
         {config.heading}
       </p>
-      <ul className="mt-5 space-y-4">
-        {lines.slice(0, 5).map((line, i) => (
-          <li
-            key={i}
-            className="border-l-2 border-gilt pl-5 font-display text-lg leading-snug"
-          >
-            {line}
-          </li>
-        ))}
-      </ul>
+      {list}
     </aside>
   )
 }

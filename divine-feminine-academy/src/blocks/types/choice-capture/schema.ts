@@ -25,6 +25,19 @@ export const configSchema = z.object({
   lookAgainLabel: z.string().default('Look at both again'),
   /** And the one that continues with ME, without argument. */
   continueWithMeLabel: z.string().default('Continue with ME'),
+  /** The name later screens on the same day quote this answer by. */
+  saveAs: z.string().optional(),
+  /**
+   * The earlier answers this choice is ABOUT.
+   *
+   * "You've chosen HER n times" is the metric the whole platform is built
+   * around, and a row that records only the word "her" cannot tell her what
+   * she chose or when it mattered. So the decision and both answers travel
+   * with the choice into her HER profile.
+   */
+  decisionFrom: z.string().default('decision'),
+  meWouldFrom: z.string().default('me_would'),
+  herWouldFrom: z.string().default('her_would'),
 })
 
 export const responseSchema = z.object({
@@ -39,6 +52,10 @@ export const responseSchema = z.object({
    */
   confirmed: z.boolean().default(false),
   chosenAt: z.string().optional(),
+  /** Carried for her HER profile. See `decisionFrom` above. */
+  situation: z.string().default(''),
+  oldResponse: z.string().default(''),
+  herResponse: z.string().default(''),
 })
 
 export type Config = z.infer<typeof configSchema>

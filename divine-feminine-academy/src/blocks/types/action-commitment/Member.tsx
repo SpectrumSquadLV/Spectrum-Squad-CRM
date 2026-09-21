@@ -1,6 +1,6 @@
 'use client'
 
-import { Field, Input } from '@/design-system/primitives'
+import { Button, Field, Input } from '@/design-system/primitives'
 import { cn } from '@/lib/utils/cn'
 import type { BlockMemberProps } from '../../contract'
 import type { Config, Response } from './schema'
@@ -13,9 +13,62 @@ export function ActionCommitmentMember({
   value,
   onChange,
   disabled,
+  today,
 }: BlockMemberProps<Config, Response>) {
   const current = value ?? empty
   const set = (patch: Partial<Response>) => onChange({ ...current, ...patch })
+
+  /*
+   * The echoed shape: she wrote it one screen ago, and this is the moment she
+   * commits to it. Her own sentence, set large, and one button.
+   */
+  if (config.echoesFrom) {
+    const echoed = (today?.[config.echoesFrom] ?? '').trim()
+    const committed = Boolean(current.confirmedAt)
+
+    return (
+      <div className="measure">
+        <p className="text-2xs uppercase tracking-[0.2em] text-clay-deep">
+          {config.prompt}
+        </p>
+
+        {echoed ? (
+          <p className="mt-6 whitespace-pre-line font-display text-2xl leading-snug text-ink md:text-3xl">
+            {echoed}
+          </p>
+        ) : (
+          <p className="mt-6 text-sm text-ink-muted">
+            Write your choice on the screen before this one first.
+          </p>
+        )}
+
+        {echoed && (
+          <div className="mt-10">
+            <Button
+              type="button"
+              size="lg"
+              disabled={disabled}
+              onClick={() =>
+                onChange({
+                  action: echoed,
+                  when: '',
+                  done: true,
+                  confirmedAt: current.confirmedAt ?? new Date().toISOString(),
+                })
+              }
+            >
+              {config.confirmLabel}
+            </Button>
+            {committed && (
+              <p className="mt-4 text-2xs text-ink-muted">
+                That is enough. Nothing to prove and nothing to upload.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="measure">

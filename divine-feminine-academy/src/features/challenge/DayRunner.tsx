@@ -73,12 +73,24 @@ export function DayRunner({
     const name = (b.config as { saveAs?: unknown } | null)?.saveAs
     if (typeof name !== 'string' || name === '') continue
     const answer = responses[b.id]
+    /*
+     * The answer a later screen wants is not always a `text` field: Day 4
+     * quotes the AREA she picked, Day 6 the action she committed to, and Day
+     * 7's card the side she chose. Each block keeps its own response shape,
+     * so the name is resolved against the handful of fields that can carry a
+     * quotable answer rather than by special-casing block types here.
+     */
     const text =
       typeof answer === 'string'
         ? answer
-        : typeof (answer as { text?: unknown })?.text === 'string'
-          ? ((answer as { text: string }).text)
-          : ''
+        : ((): string => {
+            const o = answer as Record<string, unknown> | null | undefined
+            for (const key of ['text', 'area', 'action', 'chosen']) {
+              const v = o?.[key]
+              if (typeof v === 'string' && v.trim() !== '') return v
+            }
+            return ''
+          })()
     if (text.trim() !== '') today[name] = text.trim()
   }
 
