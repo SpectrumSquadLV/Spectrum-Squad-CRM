@@ -39,7 +39,7 @@ export interface BlockDefinition<
   writesTo?: Array<
     | 'her_patterns'
     | 'her_choices'
-    | 'return_sessions'
+    | 'her_desires'
     | 'her_codes'
     | 'journal_entries'
     | 'mirror_sessions'
@@ -71,7 +71,6 @@ export interface HerEvidence {
     herResponse: string | null
     area: string | null
   }>
-  returnCount: number
   daysCompleted: number
   journalEntryCount: number
   journalWordCount: number

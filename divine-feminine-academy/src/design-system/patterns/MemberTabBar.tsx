@@ -8,8 +8,9 @@ import { cn } from '@/lib/utils/cn'
 /**
  * Four tabs, not seven.
  *
- * RETURN is deliberately NOT a tab - it gets its own persistent, quiet
- * affordance so it is one tap from anywhere. She will need it on a bad day.
+ * There is no RETURN tab, and no RETURN anywhere else either: ME VS. HER is
+ * the only framework in the product now, and a second one sitting beside it
+ * asked a woman to remember two things on the day she can least afford to.
  */
 const tabs = [
   { href: '/my-practice', label: 'Practice', icon: Compass, exact: true },

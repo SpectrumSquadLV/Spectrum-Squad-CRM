@@ -7,10 +7,10 @@ import {
   contactEncryptionKeys,
   herChoices,
   herCodes,
+  herDesires,
   herPatterns,
   journalEntries,
   mirrorSessions,
-  returnSessions,
 } from '@/db/schema'
 import {
   countWords,
@@ -136,55 +136,6 @@ async function writeHerChoice(input: EffectInput) {
         updatedAt: values.updatedAt,
       },
     })
-}
-
-/** Day 5, and every bad day after it. */
-async function writeReturnSession(input: EffectInput) {
-  const { db, contactId, response } = input
-  if (!asString(response.whatHappened) && !asString(response.feeling)) return
-
-  const action = asString(response.actionChosen)
-  const allowed = [
-    'dance', 'create', 'move', 'music', 'nature',
-    'play', 'rest', 'connect', 'journal', 'custom',
-  ] as const
-  type Action = (typeof allowed)[number]
-  const actionChosen = (allowed as readonly string[]).includes(action)
-    ? (action as Action)
-    : null
-
-  // A RETURN session is a log entry, not a record to edit. But re-saving the
-  // same block within one day is her still writing, not a second bad moment,
-  // so the most recent session from this enrollment is updated instead.
-  const [recent] = await db
-    .select({ id: returnSessions.id, occurredAt: returnSessions.occurredAt })
-    .from(returnSessions)
-    .where(eq(returnSessions.contactId, contactId))
-    .orderBy(desc(returnSessions.occurredAt))
-    .limit(1)
-
-  const withinSameSitting =
-    recent && Date.now() - recent.occurredAt.getTime() < 6 * 60 * 60 * 1000
-
-  const fields = {
-    contactId,
-    whatHappened: asString(response.whatHappened) || null,
-    feeling: asString(response.feeling) || null,
-    meaningMade: asString(response.meaningMade) || null,
-    isItTrue: asString(response.isItTrue) || null,
-    whatINeed: asString(response.whatINeed) || null,
-    actionChosen,
-    customAction: asString(response.customAction) || null,
-  }
-
-  if (withinSameSitting && recent) {
-    await db
-      .update(returnSessions)
-      .set({ ...fields, updatedAt: new Date() })
-      .where(eq(returnSessions.id, recent.id))
-  } else {
-    await db.insert(returnSessions).values(fields)
-  }
 }
 
 /** Day 7: the HER Code, and the share token behind the growth loop. */
@@ -351,12 +302,70 @@ async function writeMeRetirement(input: EffectInput) {
   })
 }
 
+/**
+ * Day 5: what she allows herself to want, one row per area.
+ *
+ * The four answers arrive together from `her_reveal`, keyed by area. Each is
+ * encrypted with her own key before it touches the table, exactly like a
+ * journal body, because this is the most tender thing she writes all week.
+ *
+ * Idempotent on (contact, enrollment, area): re-reading Day 5 and changing a
+ * sentence updates that area rather than leaving two versions of what she
+ * wants.
+ */
+async function writeHerDesires(input: EffectInput) {
+  const { db, contactId, enrollmentId, blockId, response } = input
+
+  const desires = (response.desires ?? {}) as Record<string, unknown>
+  const dataKey = await contactDataKey(db, contactId)
+
+  for (const area of ['herself', 'relationships', 'money', 'success'] as const) {
+    const text = asString(desires[area]).trim()
+    // An area she left blank is not an answer to store, and clearing one she
+    // wrote earlier should remove it rather than leave a stale sentence.
+    if (!text) {
+      await db
+        .delete(herDesires)
+        .where(
+          and(
+            eq(herDesires.contactId, contactId),
+            eq(herDesires.sourceEnrollmentId, enrollmentId),
+            eq(herDesires.area, area),
+          ),
+        )
+      continue
+    }
+
+    await db
+      .insert(herDesires)
+      .values({
+        contactId,
+        area,
+        textEncrypted: encryptEntry(text, dataKey),
+        sourceEnrollmentId: enrollmentId,
+        sourceBlockId: blockId,
+      })
+      .onConflictDoUpdate({
+        target: [
+          herDesires.contactId,
+          herDesires.sourceEnrollmentId,
+          herDesires.area,
+        ],
+        set: {
+          textEncrypted: encryptEntry(text, dataKey),
+          sourceBlockId: blockId,
+          updatedAt: new Date(),
+        },
+      })
+  }
+}
+
 const handlers = {
   her_patterns: writeHerPattern,
   mirror_sessions: writeMirrorSession,
   me_retirement: writeMeRetirement,
   her_choices: writeHerChoice,
-  return_sessions: writeReturnSession,
+  her_desires: writeHerDesires,
   her_codes: writeHerCode,
   journal_entries: writeJournalEntry,
 } as const

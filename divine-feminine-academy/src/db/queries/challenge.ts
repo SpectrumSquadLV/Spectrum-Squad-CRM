@@ -15,7 +15,6 @@ import {
   modules,
   programVersions,
   programs,
-  returnSessions,
 } from '../schema'
 import type { HerEvidence } from '@/blocks/contract'
 import { isSensitiveType } from '@/blocks/registry'
@@ -312,11 +311,6 @@ export async function getHerEvidence(
     .from(herChoices)
     .where(eq(herChoices.contactId, contactId))
 
-  const [returnAgg] = await db
-    .select({ n: sql<number>`count(*)` })
-    .from(returnSessions)
-    .where(eq(returnSessions.contactId, contactId))
-
   const [journalAgg] = await db
     .select({
       n: sql<number>`count(*)`,
@@ -342,7 +336,6 @@ export async function getHerEvidence(
     patterns,
     choiceCount: Number(choiceAgg?.n ?? 0),
     choices,
-    returnCount: Number(returnAgg?.n ?? 0),
     daysCompleted: Number(completedAgg?.n ?? 0),
     journalEntryCount: Number(journalAgg?.n ?? 0),
     journalWordCount: Number(journalAgg?.words ?? 0),

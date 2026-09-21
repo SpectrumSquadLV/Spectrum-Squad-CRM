@@ -220,6 +220,53 @@ export const returnSessions = pgTable(
   (t) => [index('return_sessions_contact_idx').on(t.contactId, t.occurredAt)],
 )
 
+/**
+ * What she allows herself to want, one row per area.
+ *
+ * Day 5 is the first day HER appears, and these four answers ARE her: not a
+ * plan, not a goal, and explicitly not filtered through what is realistic.
+ * They are read back to her on the same day as THIS IS HER, offered again on
+ * Day 6 while she chooses one small thing, and available on Day 7 while she
+ * looks at a real decision through HER.
+ *
+ * Kept in their own table rather than left in block_responses because they
+ * outlive the challenge. Every later program, and the Academy, reads from
+ * here; a woman should never be asked what she wants twice.
+ *
+ * Encrypted, like the journal. These are the most tender sentences in the
+ * product - a woman writing down what she actually wants, having spent four
+ * days learning why she stopped. Nobody but her reads them.
+ */
+export const herDesires = pgTable(
+  'her_desires',
+  {
+    id: primaryId(),
+    contactId: uuid('contact_id')
+      .notNull()
+      .references(() => contacts.id, { onDelete: 'cascade' }),
+    area: areaEnum('area').notNull(),
+    /** Ciphertext. Her key, wrapped by the master key. Never plaintext. */
+    textEncrypted: text('text_encrypted').notNull(),
+    sourceEnrollmentId: uuid('source_enrollment_id').references(
+      () => enrollments.id,
+    ),
+    /** Re-saving Day 5 updates her answer rather than adding a second one. */
+    sourceBlockId: uuid('source_block_id').references(() => lessonBlocks.id, {
+      onDelete: 'set null',
+    }),
+    ...timestamps,
+  },
+  (t) => [
+    index('her_desires_contact_idx').on(t.contactId),
+    // One desire per area per enrollment: Day 5 asks each question once.
+    uniqueIndex('her_desires_area_key').on(
+      t.contactId,
+      t.sourceEnrollmentId,
+      t.area,
+    ),
+  ],
+)
+
 /** The growth loop. Built on Day 7, designed to be screenshot and shared. */
 export const herCodes = pgTable(
   'her_codes',

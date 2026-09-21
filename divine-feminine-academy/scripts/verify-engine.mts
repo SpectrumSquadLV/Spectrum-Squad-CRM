@@ -31,7 +31,7 @@ const {
   herCodes,
   herPatterns,
   journalEntries,
-  returnSessions,
+  herDesires,
 } = await import('../src/db/schema/progress')
 const { getBlock } = await import('../src/blocks/registry')
 const { runSideEffects, contactDataKey } = await import(
@@ -358,21 +358,58 @@ await check('re-saving Day 6 does not double-count', async () => {
   assert.equal(rows[0]!.herResponse, 'I said no, and did not explain')
 })
 
-await check('Day 5 writes a RETURN session', async () => {
-  await save('return_practice', {
-    whatHappened: 'A message I did not get back',
-    feeling: 'small',
-    meaningMade: 'that I am forgettable',
-    isItTrue: 'no',
-    whatINeed: 'air',
-    actionChosen: 'nature',
+await check('Day 5 writes one desire per area, encrypted', async () => {
+  await save('her_reveal', {
+    desires: {
+      herself: 'A woman who does not explain herself',
+      relationships: 'Someone who stays without being managed',
+      money: 'Enough that a bill is not an event',
+      success: 'Work that does not need my exhaustion',
+    },
   })
   const rows = await db
     .select()
-    .from(returnSessions)
-    .where(eq(returnSessions.contactId, contact.id))
-  assert.equal(rows.length, 1)
-  assert.equal(rows[0]!.actionChosen, 'nature')
+    .from(herDesires)
+    .where(eq(herDesires.contactId, contact.id))
+  assert.equal(rows.length, 4)
+  // What she wants is never stored in the clear.
+  for (const row of rows) {
+    assert.ok(!row.textEncrypted.includes('explain'))
+    assert.ok(!row.textEncrypted.includes('exhaustion'))
+  }
+})
+
+await check('re-reading Day 5 updates a desire instead of duplicating it', async () => {
+  await save('her_reveal', {
+    desires: {
+      herself: 'A woman who does not explain herself',
+      relationships: 'Someone who stays without being managed',
+      money: 'Enough that money is boring',
+      success: 'Work that does not need my exhaustion',
+    },
+  })
+  const rows = await db
+    .select()
+    .from(herDesires)
+    .where(eq(herDesires.contactId, contact.id))
+  assert.equal(rows.length, 4)
+})
+
+await check('clearing an area removes it rather than leaving a stale want', async () => {
+  await save('her_reveal', {
+    desires: {
+      herself: 'A woman who does not explain herself',
+      relationships: '',
+      money: 'Enough that money is boring',
+      success: 'Work that does not need my exhaustion',
+    },
+  })
+  const rows = await db
+    .select()
+    .from(herDesires)
+    .where(eq(herDesires.contactId, contact.id))
+  assert.equal(rows.length, 3)
+  assert.ok(!rows.some((r) => r.area === 'relationships'))
 })
 
 await check('Day 7 writes a HER Code with a share token', async () => {

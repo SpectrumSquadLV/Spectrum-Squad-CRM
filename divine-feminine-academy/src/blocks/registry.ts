@@ -20,7 +20,6 @@ import { herCodeBuilder } from './types/her-code-builder'
 import { journalPrompt } from './types/journal-prompt'
 import { milestone } from './types/milestone'
 import { reflectionPrompt } from './types/reflection-prompt'
-import { returnPractice } from './types/return-practice'
 import { richText } from './types/rich-text'
 import { validationAudit } from './types/validation-audit'
 import { video } from './types/video'
@@ -65,7 +64,6 @@ const definitions: AnyBlockDefinition[] = [
   beliefOrigin,
   validationAudit,
   behaviorCommitment,
-  returnPractice,
   myPart,
   // General purpose
   reflectionPrompt,

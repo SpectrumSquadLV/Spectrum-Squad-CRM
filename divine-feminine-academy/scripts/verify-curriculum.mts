@@ -235,7 +235,6 @@ async function main() {
       ],
       choiceCount: 3,
       choices: [{ situation: 'at work', herResponse: 'I asked for the thing', area: 'money' }],
-      returnCount: 1,
       daysCompleted: 6,
       journalEntryCount: 8,
       journalWordCount: 1400,
