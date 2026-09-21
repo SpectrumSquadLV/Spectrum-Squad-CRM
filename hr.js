@@ -3402,9 +3402,49 @@ module.exports = function initHr(ctx) {
         const grouped = groupVerifiedSessions(fetched.rows || [], cfg);
         const { byStaff, names, scanned, unverified, noStaff } = grouped;
 
-        const preview = [];
+        // Resolve each Rethink staff id to a person, then MERGE the ones that
+        // turn out to be the same person.
+        //
+        // Rethink can hold several staff records for one human -- a re-hire, or
+        // a second record made when somebody's role changed -- and grouping
+        // strictly by staff id put one person on three separate timecards, two
+        // of them attached to nobody. Payroll cannot use that.
+        //
+        // Matching falls back to the name when the id is not linked, which is
+        // what the payroll-export route has always done; doing it one way here
+        // and another way there is how the same person ends up counted twice.
+        // A name match is reported as such, because it is a weaker claim than
+        // an id match and the preview is where somebody can catch it.
+        const merged = new Map();
         for (const [staffId, entries] of byStaff) {
-          const staff = await dbGet("SELECT id, name, email FROM hr_employees WHERE rethink_id = ?", [staffId]);
+          let staff = await dbGet("SELECT id, name, email FROM hr_employees WHERE rethink_id = ?", [staffId]);
+          let matchedBy = staff ? "rethink_id" : null;
+          const hint = names.get(staffId);
+          if (!staff && hint) {
+            // Prefer somebody still on the books when a name appears twice.
+            staff = await dbGet(
+              `SELECT id, name, email FROM hr_employees WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                ORDER BY (COALESCE(status,'active') = 'terminated'), id LIMIT 1`,
+              [hint]
+            ).catch(() => null);
+            if (staff) matchedBy = "name";
+          }
+          // Unmatched ids still merge on the name they came with, so one person
+          // Rethink has split in two does not arrive here as two strangers.
+          const key = staff ? `emp:${staff.id}` : `name:${String(hint || "").trim().toLowerCase() || `rt:${staffId}`}`;
+          const bucket = merged.get(key) || { staff, matchedBy, hint, staffIds: [], entries: [] };
+          if (!bucket.staff && staff) { bucket.staff = staff; bucket.matchedBy = matchedBy; }
+          bucket.staffIds.push(staffId);
+          bucket.entries.push(...entries);
+          merged.set(key, bucket);
+        }
+
+        const preview = [];
+        for (const bucket of merged.values()) {
+          const staffIds = bucket.staffIds;
+          const staffId = staffIds[0];
+          const staff = bucket.staff;
+          const entries = bucket.entries.sort((a, c) => String(a.date).localeCompare(String(c.date)));
           const t = timecardTotals(entries);
           let timecardId = null, replaced = false, locked = false, overlaps = false;
           if (staff) {
@@ -3414,7 +3454,7 @@ module.exports = function initHr(ctx) {
               pay_period_start: from,
               pay_period_end: to,
               entries,
-              raw: { rethink_id: staffId, total_hours: t.total_hours, sessions: entries.length },
+              raw: { rethink_id: staffId, rethink_ids: staffIds, total_hours: t.total_hours, sessions: entries.length },
             }, actor);
             timecardId = r.id;
             replaced = r.replaced;
@@ -3431,8 +3471,12 @@ module.exports = function initHr(ctx) {
             overlaps = others.some((o) => periodsOverlap(from, to, o.pay_period_start, o.pay_period_end));
           }
           preview.push({
-            name: staff ? staff.name : (names.get(staffId) || `Rethink staff #${staffId}`),
+            name: staff ? staff.name : (bucket.hint || `Rethink staff #${staffId}`),
             rethink_id: staffId,
+            rethink_ids: staffIds,
+            // More than one Rethink staff record turned out to be this person.
+            merged_records: staffIds.length > 1 ? staffIds.length : 0,
+            matched_by: bucket.matchedBy,
             total_hours: t.total_hours,
             billable_hours: t.billable_hours,
             non_billable_hours: t.non_billable_hours,
@@ -3472,6 +3516,11 @@ module.exports = function initHr(ctx) {
           sessions_without_staff: noStaff,
           truncated: !!fetched.truncated,
           rebuilt: preview.filter((p) => p.replaced).length,
+          // People Rethink holds more than one staff record for, and people
+          // matched on their name rather than a linked id. Both are worth a
+          // glance before anything is sent.
+          merged: preview.filter((p) => p.merged_records).map((p) => ({ name: p.name, records: p.merged_records })),
+          matched_by_name: preview.filter((p) => p.matched_by === "name").map((p) => p.name),
           // Already has another timecard covering these dates, from the other
           // import route. Named, never merged.
           overlapping: preview.filter((p) => p.overlaps).map((p) => p.name),

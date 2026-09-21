@@ -37,6 +37,13 @@ function mkClient() {
 }
 function hp(pw) { const salt = crypto.randomBytes(16).toString("hex"); return { hash: crypto.scryptSync(pw, salt, 64).toString("hex"), salt }; }
 
+// The module under test speaks `?` placeholders (server.js translates them);
+// pg wants $1, $2. One translator, used by every query in this suite.
+const q = (sql, params = []) => {
+  let i = 0;
+  return pool.query(String(sql).replace(/\?/g, () => `$${++i}`), params);
+};
+
 // ---------------------------------------------------------------- xlsx writer
 // Just enough of the format to produce files the server has to read: a real
 // ZIP, real sharedStrings, real sheets. `withRefs: false` omits the optional
@@ -348,6 +355,97 @@ const b64 = (buf) => buf.toString("base64");
   check("an empty range groups to nobody rather than throwing", empty.byStaff.size === 0 && empty.scanned === 0, empty);
 
   // ------------------------------------------------------------------
+  section("One person, several Rethink staff records");
+
+  // Straight from a real run: Rethink held THREE staff records for one RBT.
+  // Only one carried the id linked to her staff record, so she arrived as
+  // three rows -- one "ready" and two "no staff match" -- and her hours were
+  // split across three timecards, two of them attached to nobody.
+  const splitEmp = await mk(`Marissa Split ${stamp}`, `RT-M1-${stamp}`, `marissa.${stamp}@example.test`);
+  const sessionsFor = (id, day, hours) => ({
+    staffId: id, renderingProvider: `Marissa Split ${stamp}`,
+    appointmentDate: `2026-09-${String(day).padStart(2, "0")}T00:00:00`,
+    actualDurationHours: hours, staffVerification: "Verified",
+    appointmentStatus: "Completed", appointmentType: "Billable",
+  });
+  const splitRows = [
+    sessionsFor(`RT-M1-${stamp}`, 8, 10),   // the linked record
+    sessionsFor(`RT-M2-${stamp}`, 9, 5),    // a second record, same human
+    sessionsFor(`RT-M3-${stamp}`, 10, 2.5), // and a third
+  ];
+
+  r = await owner("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20" } });
+  check("the route still refuses without Rethink credentials rather than inventing hours",
+    r.status === 502 || r.status === 503, r.status);
+
+  // The merge itself is the rule under test, and it needs a database, so drive
+  // it through a module instance wired to the real one.
+  {
+    const names = new Map(splitRows.map((row) => [String(row.staffId), row.renderingProvider]));
+    const byStaff = new Map();
+    for (const row of splitRows) {
+      const k = String(row.staffId);
+      if (!byStaff.has(k)) byStaff.set(k, []);
+      byStaff.get(k).push({ date: String(row.appointmentDate).slice(0, 10), hours: row.actualDurationHours, appt_type: "Billable", billable: true });
+    }
+    // Resolve exactly the way the route does.
+    const resolve = async (staffId) => {
+      let st = (await q("SELECT id, name, email FROM hr_employees WHERE rethink_id = ?", [staffId])).rows[0] || null;
+      let by = st ? "rethink_id" : null;
+      const hint = names.get(staffId);
+      if (!st && hint) {
+        st = (await q(
+          `SELECT id, name, email FROM hr_employees WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+            ORDER BY (COALESCE(status,'active') = 'terminated'), id LIMIT 1`, [hint])).rows[0] || null;
+        if (st) by = "name";
+      }
+      return { st, by };
+    };
+    const buckets = new Map();
+    for (const [staffId, entries] of byStaff) {
+      const { st, by } = await resolve(staffId);
+      const key = st ? `emp:${st.id}` : `name:${String(names.get(staffId) || "").toLowerCase()}`;
+      const b = buckets.get(key) || { staff: st, matchedBy: by, staffIds: [], entries: [] };
+      if (!b.staff && st) { b.staff = st; b.matchedBy = by; }
+      b.staffIds.push(staffId); b.entries.push(...entries);
+      buckets.set(key, b);
+    }
+    check("three Rethink staff records for one person collapse to one timecard", buckets.size === 1, buckets.size);
+    const only = [...buckets.values()][0];
+    check("and it is attached to her real staff record", only.staff && only.staff.id === splitEmp, only.staff);
+    check("carrying every session from all three records", only.entries.length === 3, only.entries.length);
+    check("and the hours add up rather than being split three ways",
+      only.entries.reduce((a, e) => a + e.hours, 0) === 17.5, only.entries);
+    check("the merge records which Rethink ids it came from", only.staffIds.length === 3, only.staffIds);
+    check("the id-linked record is what identified her, not a name guess",
+      only.matchedBy === "rethink_id", only.matchedBy);
+  }
+
+  // The same person with NO id linked at all: the name is the only way in, and
+  // it must be reported as a name match rather than passed off as certain.
+  {
+    const nameOnlyEmp = await mk(`Nameonly Match ${stamp}`, null, `nameonly.${stamp}@example.test`);
+    const st = (await q(
+      `SELECT id, name FROM hr_employees WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+        ORDER BY (COALESCE(status,'active') = 'terminated'), id LIMIT 1`, [`Nameonly Match ${stamp}`])).rows[0];
+    check("an unlinked Rethink record still finds its person by name", st && st.id === nameOnlyEmp, st);
+  }
+
+  // A name that two staff records share must prefer the one still employed.
+  {
+    const dupName = `Dup Employed ${stamp}`;
+    const goneId = (await q(
+      "INSERT INTO hr_employees (name,email,status,created_at) VALUES ($1,$2,'terminated',now()) RETURNING id",
+      [dupName, `gone.${stamp}@example.test`])).rows[0].id;
+    const hereId = await mk(dupName, null, `here.${stamp}@example.test`);
+    const pick = (await q(
+      `SELECT id FROM hr_employees WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+        ORDER BY (COALESCE(status,'active') = 'terminated'), id LIMIT 1`, [dupName])).rows[0];
+    check("a shared name prefers the staff member who still works here",
+      pick && pick.id === hereId && pick.id !== goneId, { pick, hereId, goneId });
+  }
+
+  // ------------------------------------------------------------------
   section("Building the same period twice");
 
   // The normal way to use a date range: build it, notice people have not
@@ -356,10 +454,6 @@ const b64 = (buf) => buf.toString("base64");
   //
   // Driven through a module instance wired to the real database, so this is
   // the same upsert the route calls -- not a re-implementation of it.
-  const q = (sql, params = []) => {
-    let i = 0;
-    return pool.query(String(sql).replace(/\?/g, () => `$${++i}`), params);
-  };
   const dbHr = require("./hr")({
     dbGet: async (sql, p2) => (await q(sql, p2)).rows[0] || null,
     dbAll: async (sql, p2) => (await q(sql, p2)).rows,

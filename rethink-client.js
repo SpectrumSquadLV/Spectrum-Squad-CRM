@@ -451,12 +451,29 @@ function schemaOf(row, prefix = "", depth = 0) {
   return out;
 }
 
+// The integer counters a paged envelope carries about ITSELF -- how many rows
+// exist, which page this is, how big a page is. Numbers only, and only from
+// the envelope: nothing here can reach a record. Used to tell "Rethink has
+// none" from "Rethink has many and we asked wrongly" when a result comes back
+// empty.
+const ENVELOPE_COUNT_KEYS = ["totalCount", "count", "totalPages", "currentPage", "pageSize", "total", "recordCount"];
+function envelopeCounters(payload) {
+  const out = {};
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return out;
+  for (const k of ENVELOPE_COUNT_KEYS) {
+    const v = payload[k];
+    if (typeof v === "number" && isFinite(v)) out[k] = v;
+  }
+  return out;
+}
+
 async function dwhGetAllPages(path, params, opts = {}) {
   const pageSize = Number(opts.pageSize || 500);
   const maxPages = Number(opts.maxPages || 200);
   const rows = [];
   let page = 1;
   let truncated = false;
+  let counters = {};
 
   for (; page <= maxPages; page++) {
     const payload = await dwhGet(path, { ...params, PageSize: pageSize, Page: page }, opts);
@@ -472,10 +489,21 @@ async function dwhGetAllPages(path, params, opts = {}) {
         // An empty result is itself a finding -- record the envelope shape and
         // the query that produced it, so a zero-row response can be told apart
         // from a wrong filter.
+        //
+        // The envelope's own COUNTERS go in too, and they are the decisive
+        // bit: "totalCount=0" means Rethink is saying it has nothing matching
+        // this query, while "totalCount=1240" alongside an empty result array
+        // means it has plenty and we asked for them wrongly. Without the
+        // values, an empty 200 could be either and there was no way to tell
+        // them apart from the outside. Counts are structural -- they are
+        // integers about how many rows exist, never a row.
+        counters = envelopeCounters(payload);
         log("schema", {
           endpoint: path, source: "empty_result", rows: 0,
           envelope_keys: (payload && typeof payload === "object" && !Array.isArray(payload))
             ? Object.keys(payload).sort().join(",") : Array.isArray(payload) ? "(bare array)" : typeof payload,
+          envelope_counts: Object.keys(counters).length
+            ? Object.entries(counters).map(([k, v]) => `${k}=${v}`).join(" ") : "(none)",
           params_sent: Object.keys(params || {}).sort().join(",") || "(none)",
         });
       }
@@ -489,10 +517,11 @@ async function dwhGetAllPages(path, params, opts = {}) {
   }
 
   log("dwh_fetch_complete", { endpoint: path, pages: Math.min(page, maxPages), rows: rows.length, truncated });
-  return { rows, pages: Math.min(page, maxPages), truncated };
+  return { rows, pages: Math.min(page, maxPages), truncated, counters };
 }
 
 module.exports = {
+  envelopeCounters,
   configured,
   configState,
   malformedCredentialNames,
