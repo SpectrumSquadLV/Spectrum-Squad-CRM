@@ -15,6 +15,6 @@ export default async function TodayPage() {
   const ctx = await getQueryContext()
   const state = await getChallengeState(ctx, actor.contactId, PROGRAM)
 
-  if (!state) redirect('/my-practice')
-  redirect(`/my-practice/${PROGRAM}/day/${state.unlock.currentDay}`)
+  if (!state) redirect('/my-academy')
+  redirect(`/my-academy/${PROGRAM}/day/${state.unlock.currentDay}`)
 }

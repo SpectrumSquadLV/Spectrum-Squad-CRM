@@ -62,7 +62,7 @@ export default async function JournalPage() {
             {entries.map((e) => (
               <li key={e.id}>
                 <a
-                  href={`/my-practice/journal/${e.id}`}
+                  href={`/my-academy/journal/${e.id}`}
                   className="flex min-h-16 flex-col justify-center gap-1 py-4"
                 >
                   <div className="flex items-baseline justify-between gap-4">

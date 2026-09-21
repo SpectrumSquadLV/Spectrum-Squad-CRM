@@ -13,10 +13,10 @@ import { cn } from '@/lib/utils/cn'
  * asked a woman to remember two things on the day she can least afford to.
  */
 const tabs = [
-  { href: '/my-practice', label: 'Practice', icon: Compass, exact: true },
-  { href: '/my-practice/today', label: 'Today', icon: Sunrise },
-  { href: '/my-practice/her', label: 'HER', icon: Heart },
-  { href: '/my-practice/journal', label: 'Journal', icon: BookOpen },
+  { href: '/my-academy', label: 'Academy', icon: Compass, exact: true },
+  { href: '/my-academy/today', label: 'Today', icon: Sunrise },
+  { href: '/my-academy/her', label: 'HER', icon: Heart },
+  { href: '/my-academy/journal', label: 'Journal', icon: BookOpen },
 ]
 
 export function MemberTabBar() {

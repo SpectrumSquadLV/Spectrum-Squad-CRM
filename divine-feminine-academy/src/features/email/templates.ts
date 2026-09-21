@@ -72,7 +72,7 @@ ${body}${button}
 <p style="margin:8px 0 0;font-size:12px;color:#a0948c">${
   unsubscribeUrl
     ? `<a href="${escapeHtml(unsubscribeUrl)}" style="color:#a0948c">Unsubscribe</a>`
-    : `<a href="${escapeHtml(siteUrl)}/my-practice/account" style="color:#a0948c">Change what we send you</a>`
+    : `<a href="${escapeHtml(siteUrl)}/my-academy/account" style="color:#a0948c">Change what we send you</a>`
 }</p>
 </td></tr></table></body></html>`
 }
@@ -98,7 +98,7 @@ function plain({
   parts.push(
     unsubscribeUrl
       ? `Unsubscribe: ${unsubscribeUrl}`
-      : `Change what we send you: ${siteUrl}/my-practice/account`,
+      : `Change what we send you: ${siteUrl}/my-academy/account`,
   )
   return parts.join('\n')
 }
@@ -117,7 +117,7 @@ export function dayReminder(input: {
 }): RenderedEmail {
   const cta = {
     label: `Open Day ${input.dayNumber}`,
-    url: `${input.siteUrl}/my-practice/${input.programSlug}/day/${input.dayNumber}`,
+    url: `${input.siteUrl}/my-academy/${input.programSlug}/day/${input.dayNumber}`,
   }
 
   const content = {
@@ -148,7 +148,7 @@ export function nudge(input: {
 }): RenderedEmail {
   const cta = {
     label: `Pick up at Day ${input.dayNumber}`,
-    url: `${input.siteUrl}/my-practice/${input.programSlug}/day/${input.dayNumber}`,
+    url: `${input.siteUrl}/my-academy/${input.programSlug}/day/${input.dayNumber}`,
   }
 
   const content = {
@@ -176,7 +176,7 @@ export function challengeComplete(input: {
   choiceCount: number
   siteUrl: string
 }): RenderedEmail {
-  const cta = { label: 'See your HER Code', url: `${input.siteUrl}/my-practice/her/code` }
+  const cta = { label: 'See your HER Code', url: `${input.siteUrl}/my-academy/her/code` }
 
   const content = {
     preview: 'Seven days. Look at what you did.',
@@ -234,7 +234,7 @@ export function orderReceipt(input: {
   refundWindowDays: number
   siteUrl: string
 }): RenderedEmail {
-  const cta = { label: 'Go to your practice', url: `${input.siteUrl}/my-practice` }
+  const cta = { label: 'Go to your practice', url: `${input.siteUrl}/my-academy` }
 
   const content = {
     preview: `Your receipt for ${input.programTitle}`,

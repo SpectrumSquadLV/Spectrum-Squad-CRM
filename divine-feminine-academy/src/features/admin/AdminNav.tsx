@@ -61,7 +61,7 @@ export function AdminNav({ canManageRoles }: { canManageRoles: boolean }) {
         </nav>
 
         <Link
-          href="/my-practice"
+          href="/my-academy"
           className="ml-auto inline-flex min-h-9 items-center text-2xs text-ink-muted hover:text-ink"
         >
           Leave admin

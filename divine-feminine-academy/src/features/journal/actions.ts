@@ -40,6 +40,6 @@ export async function writeEntry(
     source: 'free_write',
   })
 
-  revalidatePath('/my-practice/journal')
+  revalidatePath('/my-academy/journal')
   return { ok: true }
 }

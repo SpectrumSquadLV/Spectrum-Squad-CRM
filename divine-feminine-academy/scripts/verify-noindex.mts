@@ -89,7 +89,7 @@ const open = await serve(4312, { SITE_NOINDEX: '' })
 try {
   const robots = await (await fetch('http://127.0.0.1:4312/robots.txt')).text()
   check('robots.txt allows the public site', robots.includes('Allow: /'))
-  check('and still hides the private paths', robots.includes('/quiz/result') && robots.includes('/my-practice'))
+  check('and still hides the private paths', robots.includes('/quiz/result') && robots.includes('/my-academy'))
   check('and points at a sitemap', robots.toLowerCase().includes('sitemap'))
 
   const sitemap = await (await fetch('http://127.0.0.1:4312/sitemap.xml')).text()

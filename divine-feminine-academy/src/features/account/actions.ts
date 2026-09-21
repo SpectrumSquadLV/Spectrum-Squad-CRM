@@ -80,6 +80,6 @@ export async function updateAccount(
     entityId: actor.contactId,
   })
 
-  revalidatePath('/my-practice/account')
+  revalidatePath('/my-academy/account')
   return { ok: true }
 }

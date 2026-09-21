@@ -48,7 +48,7 @@ export default function robots(): MetadataRoute.Robots {
       allow: '/',
       disallow: [
         '/admin',
-        '/my-practice',
+        '/my-academy',
         '/api',
         '/auth',
         '/quiz/result',

@@ -74,8 +74,8 @@ await check('a reminder carries the day, the title and a working link', () => {
   })
   assert.match(email.subject, /Day 3 of 7/)
   assert.match(email.html, /Whose approval/)
-  assert.match(email.html, /my-practice\/me-vs-her\/day\/3/)
-  assert.match(email.text, /my-practice\/me-vs-her\/day\/3/)
+  assert.match(email.html, /my-academy\/me-vs-her\/day\/3/)
+  assert.match(email.text, /my-academy\/me-vs-her\/day\/3/)
 })
 
 await check('every template has a text part, not just HTML', () => {

@@ -25,7 +25,7 @@ export default async function DayDonePage({
 
   const ctx = await getQueryContext()
   const state = await getChallengeState(ctx, actor.contactId, programSlug)
-  if (!state) redirect('/my-practice')
+  if (!state) redirect('/my-academy')
 
   const finished = state.unlock.isComplete
   const opensAt = nextUnlockAt(new Date(), state.enrollment.timezoneAtStart)
@@ -49,10 +49,10 @@ export default async function DayDonePage({
           </Prose>
           <div className="mt-10 flex flex-wrap gap-4">
             <Button size="lg" asChild>
-              <Link href="/my-practice/her/code">See your HER Code</Link>
+              <Link href="/my-academy/her/code">See your HER Code</Link>
             </Button>
             <Button size="lg" variant="secondary" asChild>
-              <Link href="/my-practice">Back to your practice</Link>
+              <Link href="/my-academy">Back to your practice</Link>
             </Button>
           </div>
           <Rule tone="gilt" className="my-14" />
@@ -77,7 +77,7 @@ export default async function DayDonePage({
             </p>
           </Prose>
           <Button size="lg" className="mt-10" asChild>
-            <Link href="/my-practice">Back to your practice</Link>
+            <Link href="/my-academy">Back to your practice</Link>
           </Button>
         </>
       )}

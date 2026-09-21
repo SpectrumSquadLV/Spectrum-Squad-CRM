@@ -233,7 +233,7 @@ export async function completeDay(
     }
   }
 
-  revalidatePath('/my-practice', 'layout')
+  revalidatePath('/my-academy', 'layout')
   return { ok: true }
 }
 
@@ -289,6 +289,6 @@ export async function enroll(programSlug: string): Promise<SaveState> {
     metadata: { programSlug, days: Number(dayCount?.n ?? 0) },
   })
 
-  revalidatePath('/my-practice', 'layout')
+  revalidatePath('/my-academy', 'layout')
   return { ok: true }
 }

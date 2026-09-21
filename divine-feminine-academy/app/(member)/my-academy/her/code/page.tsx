@@ -40,7 +40,7 @@ export default async function HerCodePage() {
           </CardBody>
         </Card>
         <Button className="mt-8" asChild>
-          <Link href="/my-practice">Back to your practice</Link>
+          <Link href="/my-academy">Back to your practice</Link>
         </Button>
       </div>
     )

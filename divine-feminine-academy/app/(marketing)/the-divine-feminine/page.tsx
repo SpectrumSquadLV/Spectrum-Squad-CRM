@@ -360,7 +360,7 @@ export default async function DivineFemininePage() {
               <JoinForm
                 className="mt-6"
                 source="the-divine-feminine"
-                next="/my-practice"
+                next="/my-academy"
                 submitLabel="Put me on the list"
               />
             </>
