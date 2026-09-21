@@ -23,6 +23,7 @@ import { unwrapContactKey, decryptEntry } from '@/lib/crypto/journal'
 import { contactEncryptionKeys } from '../schema'
 import { areas as allAreas, type Area } from '@/features/assessment/scoring'
 import { computeUnlockState, type Pacing } from '@/features/challenge/pacing'
+import { isStaff } from '@/lib/permissions/actor'
 import { policy, require_ } from '@/lib/permissions/policy'
 import type { QueryContext } from './_context'
 
@@ -115,6 +116,8 @@ export async function getStateForEnrollment(
     ),
     durationDays,
     allowEarlyUnlock: program.allowEarlyUnlock,
+    // Staff walking their own enrollment for QA. Never a client.
+    unlockAllForQa: isStaff(ctx.actor),
     highestCompletedDay: completed,
     cohortStartsAt: cohort?.startsAt ?? null,
   })
@@ -180,6 +183,8 @@ export async function getChallengeState(
     ),
     durationDays,
     allowEarlyUnlock: program.allowEarlyUnlock,
+    // Staff walking their own enrollment for QA. Never a client.
+    unlockAllForQa: isStaff(ctx.actor),
     highestCompletedDay: completed,
     cohortStartsAt: cohort?.startsAt ?? null,
   })

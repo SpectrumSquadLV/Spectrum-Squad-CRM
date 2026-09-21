@@ -50,6 +50,19 @@ export interface UnlockInput {
   durationDays: number
   /** Whether a woman may open the next day before it drips. */
   allowEarlyUnlock: boolean
+  /**
+   * QA only: open every day at once, for this ONE person.
+   *
+   * Set from the actor, never from the programme, and only ever true for
+   * staff. It bypasses the 24-hour release timing and NOTHING else - every
+   * other production behaviour is identical, because a test that skips the
+   * database writes, the callbacks, the mirror timers or the Day 7 logic is a
+   * test of something nobody will ever use.
+   *
+   * It is a per-request flag rather than a row on her enrollment precisely so
+   * it cannot leak: there is nothing to accidentally set on a real client.
+   */
+  unlockAllForQa?: boolean
   /** Highest day she has actually finished. 0 before she starts. */
   highestCompletedDay: number
   /** For cohort and date_based programs. */
@@ -86,6 +99,7 @@ export function computeUnlockState(input: UnlockInput): UnlockState {
     allowEarlyUnlock,
     highestCompletedDay,
     cohortStartsAt,
+    unlockAllForQa = false,
   } = input
 
   const timeZone = safeTimeZone(input.timeZone)
@@ -93,7 +107,7 @@ export function computeUnlockState(input: UnlockInput): UnlockState {
 
   let unlockedThrough: number
 
-  if (pacing === 'immediate' || allowEarlyUnlock) {
+  if (pacing === 'immediate' || allowEarlyUnlock || unlockAllForQa) {
     // She may move as fast as she likes.
     unlockedThrough = durationDays
   } else if (pacing === 'cohort' || pacing === 'date_based') {

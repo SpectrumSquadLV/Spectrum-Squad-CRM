@@ -20,6 +20,7 @@
  *
  * Run: npm run verify:me-vs-her
  */
+import { computeUnlockState } from '../src/features/challenge/pacing'
 import { days } from '../src/features/challenge/curriculum'
 import { getBlock } from '../src/blocks/registry'
 
@@ -273,6 +274,43 @@ check(
       readsFrom: Record<string, string>
     }).readsFrom,
   ).length === 4,
+)
+
+console.log('\ntest mode bypasses the clock and nothing else')
+
+/*
+ * The QA flag is the one piece of this that could hurt a real woman, so it is
+ * checked from both directions: it must open every day for staff, and it must
+ * be impossible for it to be on for anybody else.
+ */
+const base = {
+  pacing: 'drip' as const,
+  startedAt: new Date('2026-03-01T09:00:00Z'),
+  now: new Date('2026-03-01T10:00:00Z'),
+  timeZone: 'America/Los_Angeles',
+  durationDays: 7,
+  allowEarlyUnlock: false,
+  highestCompletedDay: 0,
+}
+
+const client = computeUnlockState(base)
+const qa = computeUnlockState({ ...base, unlockAllForQa: true })
+
+check('a real client on day one can open exactly one day', client.unlockedThrough === 1, String(client.unlockedThrough))
+check('QA can open all seven immediately', qa.unlockedThrough === 7, String(qa.unlockedThrough))
+check('the flag defaults to off when nobody sets it', computeUnlockState(base).unlockedThrough === 1)
+check(
+  'QA still has to finish the days to be complete',
+  qa.isComplete === false,
+)
+check(
+  'and completion still comes from finishing, not from unlocking',
+  computeUnlockState({ ...base, unlockAllForQa: true, highestCompletedDay: 7 })
+    .isComplete === true,
+)
+check(
+  'the flag never shortens the programme',
+  qa.unlockedThrough === base.durationDays,
 )
 
 console.log(
