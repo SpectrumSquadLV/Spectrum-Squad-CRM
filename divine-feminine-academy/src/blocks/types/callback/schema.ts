@@ -10,7 +10,14 @@ import { z } from 'zod'
  * It shows nothing new. That is the point — a woman on Day 5 reading the
  * sentence she wrote on Day 1 is having an experience no PDF can give her.
  */
-export const FACETS = ['trigger', 'me_response', 'her_response', 'choices'] as const
+export const FACETS = [
+  'trigger',
+  'me_response',
+  'her_response',
+  'choices',
+  /** Her four Day 5 desires. Day 6 reads them back before she chooses. */
+  'desires',
+] as const
 
 export const configSchema = z.object({
   /** Which part of her week to read back. */
@@ -18,6 +25,12 @@ export const configSchema = z.object({
   heading: z.string().default('You wrote this earlier'),
   /** Shown when she has nothing yet — a first-time taker, or a skipped day. */
   emptyText: z.string().default(''),
+  /**
+   * Day 6 shows her desires collapsed, because the screen's job is ONE small
+   * choice and four paragraphs of what she wants would swamp it. She taps to
+   * open them.
+   */
+  collapsed: z.boolean().default(false),
 })
 
 export type Config = z.infer<typeof configSchema>

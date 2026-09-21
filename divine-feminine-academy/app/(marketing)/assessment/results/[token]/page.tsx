@@ -6,6 +6,7 @@ import { Badge, Button, Rule } from '@/design-system/primitives'
 import type { Area } from '@/design-system/primitives'
 import { Eyebrow, Prose, Section } from '@/design-system/patterns'
 import { getAttemptByToken, getPriorAttempt } from '@/db/queries/assessments'
+import { areaLabels } from '@/features/assessment/scoring'
 
 export const metadata: Metadata = {
   title: 'Your result',
@@ -13,14 +14,10 @@ export const metadata: Metadata = {
 }
 
 const isArea = (v: string): v is Area =>
-  v === 'self' || v === 'love' || v === 'life' || v === 'wealth'
+  v === 'herself' || v === 'relationships' || v === 'success' || v === 'money'
 
-const labels: Record<Area, string> = {
-  self: 'Self',
-  love: 'Love',
-  life: 'Life',
-  wealth: 'Wealth',
-}
+/* Labels come from the scoring module so no surface can drift from it. */
+const labels = areaLabels
 
 /**
  * Her result, opened from a link in her inbox.

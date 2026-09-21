@@ -87,7 +87,7 @@ const schema = z.object({
   publishedAt: z.string().trim().optional(),
 })
 
-const AREAS = new Set(['self', 'love', 'life', 'wealth'])
+const AREAS = new Set(['herself', 'relationships', 'success', 'money'])
 
 function readForm(formData: FormData) {
   return schema.safeParse({
@@ -167,7 +167,7 @@ export async function saveArticle(
     authorName: input.authorName,
     heroImageUrl: input.heroImageUrl,
     heroImageAlt: input.heroImageAlt,
-    area: (input.area ?? null) as 'self' | 'love' | 'life' | 'wealth' | null,
+    area: (input.area ?? null) as 'herself' | 'relationships' | 'success' | 'money' | null,
     archetype: input.archetype,
     audioUrl: input.audioUrl,
     audioDurationSeconds: input.audioDurationSeconds,

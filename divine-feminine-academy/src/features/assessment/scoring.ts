@@ -10,8 +10,31 @@
  * picture.
  */
 
-export type Area = 'self' | 'love' | 'life' | 'wealth'
-export const areas: Area[] = ['self', 'love', 'life', 'wealth']
+export type Area = 'herself' | 'relationships' | 'money' | 'success'
+export const areas: Area[] = ['herself', 'relationships', 'money', 'success']
+
+/**
+ * The four areas, as a woman reads them.
+ *
+ * These names are the curriculum's, not the database's, and they are the only
+ * ones that should ever reach a screen. They live here, beside the type, so
+ * that adding an area cannot silently leave a surface rendering a raw enum
+ * value.
+ */
+export const areaLabels: Record<Area, string> = {
+  herself: 'Herself',
+  relationships: 'Relationships',
+  money: 'Money',
+  success: 'Success',
+}
+
+/** The same four, addressed to her rather than about her. */
+export const areaLabelsSecondPerson: Record<Area, string> = {
+  herself: 'Yourself',
+  relationships: 'Relationships',
+  money: 'Money',
+  success: 'Success',
+}
 
 export type QuestionType = 'likert' | 'multiple_choice' | 'open'
 

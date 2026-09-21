@@ -64,7 +64,7 @@ export async function createEntry(
     contactId: string
     title?: string
     body: string
-    area?: 'self' | 'love' | 'life' | 'wealth'
+    area?: 'herself' | 'relationships' | 'success' | 'money'
     source?: 'free_write' | 'lesson_prompt' | 'return_practice' | 'her_choice'
     programId?: string
     lessonId?: string

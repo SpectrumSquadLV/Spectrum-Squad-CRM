@@ -7,7 +7,7 @@ import type { Area } from '@/design-system/primitives'
 import { useState } from 'react'
 import { type JournalState, writeEntry } from './actions'
 
-const areas: Area[] = ['self', 'love', 'life', 'wealth']
+const areas: Area[] = ['herself', 'relationships', 'success', 'money']
 
 function Submit() {
   const { pending } = useFormStatus()

@@ -166,7 +166,7 @@ export default async function ChallengePage({
               <JoinForm
                 className="mt-6"
                 source={`challenge:${slug}`}
-                next="/my-practice"
+                next="/my-academy"
                 submitLabel="Put me on the list"
               />
               <StaffNote what={`a price for ${challenge.title}`} className="mt-6">

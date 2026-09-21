@@ -7,6 +7,7 @@ import {
   contacts,
   enrollments,
   herChoices,
+  herDesires,
   herPatterns,
   journalEntries,
   lessonBlocks,
@@ -15,13 +16,14 @@ import {
   modules,
   programVersions,
   programs,
-  returnSessions,
 } from '../schema'
 import type { HerEvidence } from '@/blocks/contract'
 import { isSensitiveType } from '@/blocks/registry'
 import { unwrapContactKey, decryptEntry } from '@/lib/crypto/journal'
 import { contactEncryptionKeys } from '../schema'
+import { areas as allAreas, type Area } from '@/features/assessment/scoring'
 import { computeUnlockState, type Pacing } from '@/features/challenge/pacing'
+import { isStaff } from '@/lib/permissions/actor'
 import { policy, require_ } from '@/lib/permissions/policy'
 import type { QueryContext } from './_context'
 
@@ -114,6 +116,8 @@ export async function getStateForEnrollment(
     ),
     durationDays,
     allowEarlyUnlock: program.allowEarlyUnlock,
+    // Staff walking their own enrollment for QA. Never a client.
+    unlockAllForQa: isStaff(ctx.actor),
     highestCompletedDay: completed,
     cohortStartsAt: cohort?.startsAt ?? null,
   })
@@ -179,6 +183,8 @@ export async function getChallengeState(
     ),
     durationDays,
     allowEarlyUnlock: program.allowEarlyUnlock,
+    // Staff walking their own enrollment for QA. Never a client.
+    unlockAllForQa: isStaff(ctx.actor),
     highestCompletedDay: completed,
     cohortStartsAt: cohort?.startsAt ?? null,
   })
@@ -312,11 +318,6 @@ export async function getHerEvidence(
     .from(herChoices)
     .where(eq(herChoices.contactId, contactId))
 
-  const [returnAgg] = await db
-    .select({ n: sql<number>`count(*)` })
-    .from(returnSessions)
-    .where(eq(returnSessions.contactId, contactId))
-
   const [journalAgg] = await db
     .select({
       n: sql<number>`count(*)`,
@@ -338,14 +339,94 @@ export async function getHerEvidence(
       ),
     )
 
+  /*
+   * What she wants, and what she learned about ME - the two things the back
+   * half of the challenge keeps handing back to her.
+   *
+   * Decrypted with her own key, which is only ever available on her own
+   * request: the policy check above is the same one that guards her journal,
+   * and nothing here is reachable from a staff surface.
+   */
+  const desireRows = await db
+    .select({ area: herDesires.area, textEncrypted: herDesires.textEncrypted })
+    .from(herDesires)
+    .where(eq(herDesires.contactId, contactId))
+
+  let desires: Array<{ area: Area; text: string }> = []
+  let behaviorTags: string[] = []
+  let unmetNeed: string | null = null
+
+  if (desireRows.length > 0) {
+    const [keyRow] = await db
+      .select({ wrappedKey: contactEncryptionKeys.wrappedKey })
+      .from(contactEncryptionKeys)
+      .where(eq(contactEncryptionKeys.contactId, contactId))
+      .limit(1)
+
+    if (keyRow) {
+      const dataKey = unwrapContactKey(keyRow.wrappedKey)
+      const byArea = new Map<Area, string>()
+      for (const row of desireRows) {
+        if (!row.area) continue
+        try {
+          byArea.set(row.area, decryptEntry(row.textEncrypted, dataKey))
+        } catch {
+          // A desire that will not open is gone for good, which is what
+          // deleting an account does on purpose. Skip rather than fail the
+          // whole day.
+        }
+      }
+      desires = allAreas
+        .filter((area) => byArea.has(area))
+        .map((area) => ({ area, text: byArea.get(area)! }))
+    }
+  }
+
+  // Day 1's tags in "you" form, and Day 2's unmet need. Both hang off the
+  // pattern row Day 1 created, so one query serves both.
+  const [firstPattern] = await db
+    .select({
+      herTags: herPatterns.herTags,
+      currentTags: herPatterns.currentTags,
+      unmetNeedEncrypted: herPatterns.unmetNeedEncrypted,
+    })
+    .from(herPatterns)
+    .where(eq(herPatterns.contactId, contactId))
+    .orderBy(asc(herPatterns.createdAt))
+    .limit(1)
+
+  behaviorTags = firstPattern?.herTags ?? firstPattern?.currentTags ?? []
+
+  if (firstPattern?.unmetNeedEncrypted) {
+    const [keyRow] = await db
+      .select({ wrappedKey: contactEncryptionKeys.wrappedKey })
+      .from(contactEncryptionKeys)
+      .where(eq(contactEncryptionKeys.contactId, contactId))
+      .limit(1)
+    if (keyRow) {
+      try {
+        unmetNeed = decryptEntry(
+          firstPattern.unmetNeedEncrypted,
+          unwrapContactKey(keyRow.wrappedKey),
+        )
+      } catch {
+        // Same posture as everywhere else her key is used: a value that will
+        // not open is skipped, and Day 3's statement falls back to a blank she
+        // fills herself rather than the day failing to render.
+      }
+    }
+  }
+
   return {
     patterns,
     choiceCount: Number(choiceAgg?.n ?? 0),
     choices,
-    returnCount: Number(returnAgg?.n ?? 0),
     daysCompleted: Number(completedAgg?.n ?? 0),
     journalEntryCount: Number(journalAgg?.n ?? 0),
     journalWordCount: Number(journalAgg?.words ?? 0),
+    desires,
+    behaviorTags,
+    unmetNeed,
   }
 }
 

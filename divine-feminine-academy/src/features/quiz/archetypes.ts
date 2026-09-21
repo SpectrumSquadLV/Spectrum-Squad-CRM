@@ -146,7 +146,7 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     theReturn: 'Let one thing be done badly by someone else. Don’t fix it.',
     firstStep:
       'Find one thing you’re carrying that was never yours. Today, say one sentence out loud: “I need help with this.” Don’t explain it. Don’t soften it. Don’t add “but it’s fine”.',
-    area: 'self',
+    area: 'herself',
     shareLine:
       'I got The Commander — the version of me who handles everything and asks for nothing.',
   },
@@ -178,7 +178,7 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
       'Stay in one uncomfortable conversation past the moment you want to go.',
     firstStep:
       'Name the thing you’re currently halfway out of. Don’t decide anything about it. Write one honest sentence about what you’d lose if you left, and let it be true for ten minutes.',
-    area: 'life',
+    area: 'success',
     shareLine:
       'I got The Escape Artist — the version of me who leaves before she can be left.',
   },
@@ -221,7 +221,7 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
     theReturn: 'Do it at sixty per cent ready, where somebody can see.',
     firstStep:
       'Pick the smallest version of the thing you’ve been almost-doing. Set a timer for ten minutes. Do it badly on purpose and finish before the timer does.',
-    area: 'wealth',
+    area: 'money',
     shareLine:
       'I got The Watcher — the version of me who’s always almost ready.',
   },
@@ -253,7 +253,7 @@ export const archetypes: Record<ProtectiveMode, Archetype> = {
       'Say the want out loud, plainly, before it turns into a grudge.',
     firstStep:
       'Find one thing you’re quietly angry about. Write the sentence you actually mean, starting with “I wanted”. You don’t have to send it. You have to admit it.',
-    area: 'love',
+    area: 'relationships',
     shareLine:
       'I got The Quiet Storm — the version of me who says she’s fine and keeps the receipts.',
   },
@@ -376,7 +376,34 @@ export function scoreArchetypes(
 ): ArchetypeResult {
   const byId = new Map(answers.map((a) => [a.questionId, a.value]))
   const points = emptyTallies()
-  const areaPoints: Record<Area, number> = { self: 0, love: 0, life: 0, wealth: 0 }
+  const areaPoints: Record<Area, number> = {
+    herself: 0,
+    relationships: 0,
+    money: 0,
+    success: 0,
+  }
+  /**
+   * The most each area could have scored on the questions she actually
+   * answered.
+   *
+   * Raw points cannot be compared across areas, because the areas are not
+   * equally represented: thirteen of the fourteen questions can say something
+   * about how she treats herself, and five can say anything about money. Left
+   * raw, `herself` collected spillover from nearly every answer and money
+   * could not be the loudest area for ANY set of answers - it topped out at
+   * twelve points against fifteen. A woman whose money is the thing keeping
+   * her awake would have been shown a bar about herself instead.
+   *
+   * So each area is scored against its own ceiling: of everything this quiz
+   * could have detected about her money, how much did she light up? That is
+   * comparable across areas no matter how many questions carry each one.
+   */
+  const areaAvailable: Record<Area, number> = {
+    herself: 0,
+    relationships: 0,
+    money: 0,
+    success: 0,
+  }
 
   /**
    * The two tie-breakers that mean something.
@@ -440,6 +467,20 @@ export function scoreArchetypes(
       }
       areaPoints[area as Area] += weight
     }
+
+    // The ceiling for THIS question: the loudest any option could have been
+    // about each area. Counted per question she answered, so skipping a
+    // question never counts against the area it would have measured.
+    for (const area of allAreas) {
+      let most = 0
+      for (const option of question.config.options ?? []) {
+        const weight = (option.areas ?? {})[area]
+        if (typeof weight === 'number' && Number.isFinite(weight) && weight > most) {
+          most = weight
+        }
+      }
+      areaAvailable[area] += most
+    }
   }
 
   const total = modes.reduce((sum, m) => sum + points[m], 0)
@@ -451,10 +492,26 @@ export function scoreArchetypes(
     share: total > 0 ? Math.round((points[mode] / total) * 100) : 0,
   }))
 
+  /** 0-1 per area: her points over what that area could have scored. */
+  const intensity: Record<Area, number> = {
+    herself: 0,
+    relationships: 0,
+    money: 0,
+    success: 0,
+  }
+  for (const area of allAreas) {
+    intensity[area] =
+      areaAvailable[area] > 0 ? areaPoints[area] / areaAvailable[area] : 0
+  }
+  const intensityTotal = allAreas.reduce((sum, a) => sum + intensity[a], 0)
+
   const areaTallies: AreaTally[] = allAreas.map((area) => ({
     area,
     points: areaPoints[area],
-    share: areaTotal > 0 ? Math.round((areaPoints[area] / areaTotal) * 100) : 0,
+    share:
+      intensityTotal > 0
+        ? Math.round((intensity[area] / intensityTotal) * 100)
+        : 0,
   }))
 
   /*
@@ -483,6 +540,10 @@ export function scoreArchetypes(
   const loudest =
     areaTotal > 0
       ? [...areaTallies].sort((a, b) => {
+          if (intensity[b.area] !== intensity[a.area]) {
+            return intensity[b.area] - intensity[a.area]
+          }
+          // Then raw points, then declaration order, so this cannot fail.
           if (b.points !== a.points) return b.points - a.points
           return allAreas.indexOf(a.area) - allAreas.indexOf(b.area)
         })[0]!.area

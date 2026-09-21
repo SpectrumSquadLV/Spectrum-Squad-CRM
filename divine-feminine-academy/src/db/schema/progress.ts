@@ -125,6 +125,18 @@ export const herPatterns = pgTable(
     currentTags: text('current_tags').array(),
     herResponse: text('her_response'),
     herTags: text('her_tags').array(),
+    /**
+     * Day 2, where ME learned it. Ciphertext, journal-grade.
+     *
+     * The columns above are plaintext because they are behaviours - "I go
+     * quiet", "when nobody notices" - and she sees them on her own HER page.
+     * These two are not behaviours. They are the earliest time she remembers
+     * feeling this way and what she needed and did not receive, which is the
+     * heaviest thing the challenge asks for, so they are encrypted with her
+     * own key like a journal body and no staff surface can read them.
+     */
+    originMemoryEncrypted: text('origin_memory_encrypted'),
+    unmetNeedEncrypted: text('unmet_need_encrypted'),
     sourceEnrollmentId: uuid('source_enrollment_id').references(
       () => enrollments.id,
     ),
@@ -220,6 +232,53 @@ export const returnSessions = pgTable(
   (t) => [index('return_sessions_contact_idx').on(t.contactId, t.occurredAt)],
 )
 
+/**
+ * What she allows herself to want, one row per area.
+ *
+ * Day 5 is the first day HER appears, and these four answers ARE her: not a
+ * plan, not a goal, and explicitly not filtered through what is realistic.
+ * They are read back to her on the same day as THIS IS HER, offered again on
+ * Day 6 while she chooses one small thing, and available on Day 7 while she
+ * looks at a real decision through HER.
+ *
+ * Kept in their own table rather than left in block_responses because they
+ * outlive the challenge. Every later program, and the Academy, reads from
+ * here; a woman should never be asked what she wants twice.
+ *
+ * Encrypted, like the journal. These are the most tender sentences in the
+ * product - a woman writing down what she actually wants, having spent four
+ * days learning why she stopped. Nobody but her reads them.
+ */
+export const herDesires = pgTable(
+  'her_desires',
+  {
+    id: primaryId(),
+    contactId: uuid('contact_id')
+      .notNull()
+      .references(() => contacts.id, { onDelete: 'cascade' }),
+    area: areaEnum('area').notNull(),
+    /** Ciphertext. Her key, wrapped by the master key. Never plaintext. */
+    textEncrypted: text('text_encrypted').notNull(),
+    sourceEnrollmentId: uuid('source_enrollment_id').references(
+      () => enrollments.id,
+    ),
+    /** Re-saving Day 5 updates her answer rather than adding a second one. */
+    sourceBlockId: uuid('source_block_id').references(() => lessonBlocks.id, {
+      onDelete: 'set null',
+    }),
+    ...timestamps,
+  },
+  (t) => [
+    index('her_desires_contact_idx').on(t.contactId),
+    // One desire per area per enrollment: Day 5 asks each question once.
+    uniqueIndex('her_desires_area_key').on(
+      t.contactId,
+      t.sourceEnrollmentId,
+      t.area,
+    ),
+  ],
+)
+
 /** The growth loop. Built on Day 7, designed to be screenshot and shared. */
 export const herCodes = pgTable(
   'her_codes',
@@ -273,6 +332,16 @@ export const mirrorSessions = pgTable(
     intention: text('intention'),
     secondsAsked: integer('seconds_asked').notNull().default(60),
     secondsCompleted: integer('seconds_completed').notNull().default(0),
+    /**
+     * How many times she chose ONE MORE MINUTE.
+     *
+     * The most quietly encouraging number in the product. A woman who could
+     * not hold thirty seconds on Day 1 and extends twice on Day 5 has a
+     * measurable week, and it is measured in something other than compliance.
+     */
+    extensions: integer('extensions').notNull().default(0),
+    /** True when she used "I need to stop". Never treated as a failure. */
+    stoppedEarly: boolean('stopped_early').notNull().default(false),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     ...timestamps,
   },

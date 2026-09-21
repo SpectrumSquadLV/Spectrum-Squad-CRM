@@ -21,7 +21,7 @@ const configSchema = z.object({
 type Config = z.infer<typeof configSchema>
 
 const isArea = (v: string | null): v is Area =>
-  v === 'self' || v === 'love' || v === 'life' || v === 'wealth'
+  v === 'herself' || v === 'relationships' || v === 'success' || v === 'money'
 
 function EvidenceReviewMember({
   config,

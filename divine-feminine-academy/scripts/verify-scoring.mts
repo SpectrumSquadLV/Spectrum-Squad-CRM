@@ -37,32 +37,32 @@ const likert = (
 console.log('normalising:')
 
 check('a likert answer maps onto 0-100', () => {
-  const q = likert('q', 'self')
+  const q = likert('q', 'herself')
   assert.equal(normaliseAnswer(q, 1), 0)
   assert.equal(normaliseAnswer(q, 3), 0.5)
   assert.equal(normaliseAnswer(q, 5), 1)
 })
 
 check('a REVERSE-scored question inverts', () => {
-  const q = likert('q', 'self', true)
+  const q = likert('q', 'herself', true)
   assert.equal(normaliseAnswer(q, 1), 1)
   assert.equal(normaliseAnswer(q, 5), 0)
 })
 
 check('an open question never scores', () => {
-  const q: ScorableQuestion = { id: 'q', type: 'open', area: 'self', config: {} }
+  const q: ScorableQuestion = { id: 'q', type: 'open', area: 'herself', config: {} }
   assert.equal(normaliseAnswer(q, 'a long honest answer'), null)
 })
 
 check('an unanswered question scores null, not zero', () => {
-  const q = likert('q', 'self')
+  const q = likert('q', 'herself')
   assert.equal(normaliseAnswer(q, undefined), null)
   assert.equal(normaliseAnswer(q, ''), null)
   assert.equal(normaliseAnswer(q, null), null)
 })
 
 check('an out-of-range answer is clamped, not discarded', () => {
-  const q = likert('q', 'self')
+  const q = likert('q', 'herself')
   assert.equal(normaliseAnswer(q, 9), 1)
   assert.equal(normaliseAnswer(q, -4), 0)
 })
@@ -71,7 +71,7 @@ check('multiple choice scores from its options', () => {
   const q: ScorableQuestion = {
     id: 'q',
     type: 'multiple_choice',
-    area: 'love',
+    area: 'relationships',
     config: {
       options: [
         { value: 'never', score: 0 },
@@ -89,11 +89,11 @@ check('multiple choice scores from its options', () => {
 console.log('\nscoring a whole assessment:')
 
 const questions: ScorableQuestion[] = [
-  likert('s1', 'self'),
-  likert('s2', 'self', true),
-  likert('l1', 'love'),
-  likert('w1', 'wealth'),
-  { id: 'o1', type: 'open', area: 'life', config: {} },
+  likert('s1', 'herself'),
+  likert('s2', 'herself', true),
+  likert('l1', 'relationships'),
+  likert('w1', 'money'),
+  { id: 'o1', type: 'open', area: 'success', config: {} },
 ]
 
 check('areas score independently', () => {
@@ -103,16 +103,16 @@ check('areas score independently', () => {
     { questionId: 'l1', value: 3 },
     { questionId: 'w1', value: 1 },
   ])
-  const self = result.byArea.find((a) => a.area === 'self')!
+  const self = result.byArea.find((a) => a.area === 'herself')!
   assert.equal(self.score, 100, 'reverse-scored 1 should read as high')
-  assert.equal(result.byArea.find((a) => a.area === 'love')!.score, 50)
-  assert.equal(result.byArea.find((a) => a.area === 'wealth')!.score, 0)
+  assert.equal(result.byArea.find((a) => a.area === 'relationships')!.score, 50)
+  assert.equal(result.byArea.find((a) => a.area === 'money')!.score, 0)
 })
 
 check('an area she answered nothing in reads null, not zero', () => {
   const result = scoreAssessment(questions, [{ questionId: 's1', value: 5 }])
-  assert.equal(result.byArea.find((a) => a.area === 'life')!.score, null)
-  assert.equal(result.byArea.find((a) => a.area === 'love')!.score, null)
+  assert.equal(result.byArea.find((a) => a.area === 'success')!.score, null)
+  assert.equal(result.byArea.find((a) => a.area === 'relationships')!.score, null)
 })
 
 check('open questions are excluded from the scorable count', () => {
@@ -137,7 +137,7 @@ check('the loudest area is her lowest score', () => {
     { questionId: 'l1', value: 4 },
     { questionId: 'w1', value: 1 },
   ])
-  assert.equal(loudestArea(result), 'wealth')
+  assert.equal(loudestArea(result), 'money')
 })
 
 check('with nothing answered there is no loudest area', () => {
@@ -156,8 +156,8 @@ check('the comparison reports change in points', () => {
     { questionId: 'w1', value: 4 },
   ])
   const diff = compare(pre, post)
-  assert.equal(diff.byArea.find((a) => a.area === 'self')!.delta, 50)
-  assert.equal(diff.byArea.find((a) => a.area === 'wealth')!.delta, 75)
+  assert.equal(diff.byArea.find((a) => a.area === 'herself')!.delta, 50)
+  assert.equal(diff.byArea.find((a) => a.area === 'money')!.delta, 75)
   assert.equal(diff.overall.delta, 62)
 })
 
@@ -168,8 +168,8 @@ check('an area missing from either side has no delta, not a fake zero', () => {
     { questionId: 'l1', value: 5 },
   ])
   const diff = compare(pre, post)
-  assert.equal(diff.byArea.find((a) => a.area === 'love')!.delta, null)
-  assert.equal(diff.byArea.find((a) => a.area === 'life')!.delta, null)
+  assert.equal(diff.byArea.find((a) => a.area === 'relationships')!.delta, null)
+  assert.equal(diff.byArea.find((a) => a.area === 'success')!.delta, null)
 })
 
 console.log(`\nscoring: all ${passed} checks passed`)

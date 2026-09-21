@@ -15,6 +15,7 @@
  *
  * Run: npm run verify:archetypes
  */
+import { areas as allAreas } from '../src/features/assessment/scoring'
 import {
   archetypeBySlug,
   archetypeList,
@@ -310,7 +311,40 @@ const loaded: QuizQuestion[] = quizQuestions.map((question, i) => ({
   config: { options: question.options },
 }))
 
-check('twelve questions', quizQuestions.length === 12)
+check('at least twelve questions', quizQuestions.length >= 12)
+
+/*
+ * Every AREA must be reachable too, for exactly the reason every archetype
+ * must be: an area no answer can make loudest is a bar she can never see.
+ *
+ * This check is here because the instrument failed it. When the four areas
+ * were renamed to HERSELF / RELATIONSHIPS / MONEY / SUCCESS, the old `wealth`
+ * split into money and success and left money with one question out of
+ * twelve - so money could not win for any set of answers at all. Two money
+ * questions and scoring each area against its own ceiling fixed it, and this
+ * check is what stops it coming back.
+ */
+for (const target of allAreas) {
+  const answers = loaded.map((q) => {
+    const best = [...(q.config.options ?? [])].sort((a, b) => {
+      const av = (a.areas ?? {})[target] ?? 0
+      const bv = (b.areas ?? {})[target] ?? 0
+      if (bv !== av) return bv - av
+      const other = (o: typeof a) =>
+        Object.entries(o.areas ?? {})
+          .filter(([k]) => k !== target)
+          .reduce((sum, [, v]) => sum + v, 0)
+      return other(a) - other(b)
+    })[0]!
+    return { questionId: q.id, value: best.value }
+  })
+  const result = scoreArchetypes(loaded, answers)
+  check(
+    `${target} is reachable as the loudest area`,
+    result.loudest === target,
+    String(result.loudest),
+  )
+}
 check('every question has four options', quizQuestions.every((x) => x.options.length === 4))
 check(
   'every option carries at least one weight',

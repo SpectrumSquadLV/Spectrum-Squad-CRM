@@ -1,7 +1,9 @@
 import type { AnyBlockDefinition } from './contract'
 import { actionCommitment } from './types/action-commitment'
+import { areaPicker } from './types/area-picker'
 import { beliefReview } from './types/belief-review'
 import { callback } from './types/callback'
+import { choiceCapture } from './types/choice-capture'
 import { celebration } from './types/celebration'
 import { emotionTrail } from './types/emotion-trail'
 import { manifestationLoop } from './types/manifestation-loop'
@@ -16,11 +18,15 @@ import { beliefOrigin } from './types/belief-origin'
 import { dualColumnExercise } from './types/dual-column-exercise'
 import { evidenceReview } from './types/evidence-review'
 import { herChoiceCapture } from './types/her-choice-capture'
+import { herReveal } from './types/her-reveal'
+import { meVsHerCard } from './types/me-vs-her-card'
+import { meVsHerCompare } from './types/me-vs-her-compare'
+import { patternSelect } from './types/pattern-select'
+import { statementFill } from './types/statement-fill'
 import { herCodeBuilder } from './types/her-code-builder'
 import { journalPrompt } from './types/journal-prompt'
 import { milestone } from './types/milestone'
 import { reflectionPrompt } from './types/reflection-prompt'
-import { returnPractice } from './types/return-practice'
 import { richText } from './types/rich-text'
 import { validationAudit } from './types/validation-audit'
 import { video } from './types/video'
@@ -47,25 +53,39 @@ const definitions: AnyBlockDefinition[] = [
   video,
   milestone,
   // ME VS HER — the seven days
-  mirrorGaze, // Days 1-6, daily, one intention each
-  mePortrait, // Day 1 - MEET ME
-  protectorProfile, // Day 2 - MEET YOUR PROTECTOR
-  emotionTrail, // Day 3 - FOLLOW THE EMOTION
-  beliefReview, // Day 4 - REVIEW THE BELIEF
-  manifestationLoop, // Day 5 - THE PROBLEM IS YOU
-  celebration, // Day 5 - her power, in her own numbers
-  dualColumnExercise, // Day 6 - ME | HER
-  herChoiceCapture, // Day 6 - I CHOSE HER
-  mirrorDeclaration, // Day 7 - spoken, as HER
-  meRetirement, // Day 7 - understood, loved, thanked, released
-  evidenceReview, // Day 7 - her week, read back
-  herCodeBuilder, // Day 7 - her code
+  mirrorGaze, // Days 1-6. Silent. Never Day 7.
+  patternSelect, // Day 1 - WHICH ONES FEEL LIKE ME? and Day 4
+  statementFill, // Day 3 - ME, I see you
+  areaPicker, // Day 4 - HERSELF / RELATIONSHIPS / MONEY / SUCCESS
+  herReveal, // Day 5 - THIS IS HER
+  meVsHerCompare, // Day 7 - the biggest visual moment
+  choiceCapture, // Day 7 - WHO ARE YOU CHOOSING?
+  meVsHerCard, // Day 7 - the card she takes with her
   callback, // any day after the first
-  // Available in the palette, not seeded into a day
+  /*
+   * Available in the palette, NOT seeded into ME VS. HER.
+   *
+   * These teach Academy content - beliefs, subconscious programming, the
+   * manifestation loop, the retirement ceremony - and the challenge is
+   * explicitly scoped out of all of it. ME VS. HER creates awareness and the
+   * first identity shift; naming a belief is the next product, not this one.
+   * They stay registered because the Academy is built from the same engine.
+   */
+  mePortrait,
+  protectorProfile,
+  emotionTrail,
+  beliefReview,
+  manifestationLoop,
+  celebration,
+  dualColumnExercise,
+  herChoiceCapture,
+  mirrorDeclaration,
+  meRetirement,
+  evidenceReview,
+  herCodeBuilder,
   beliefOrigin,
   validationAudit,
   behaviorCommitment,
-  returnPractice,
   myPart,
   // General purpose
   reflectionPrompt,

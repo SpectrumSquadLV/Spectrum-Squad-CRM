@@ -59,6 +59,41 @@ export function DayRunner({
   const block = blocks[index]
   const isLast = index === blocks.length - 1
 
+  /**
+   * What she has written TODAY, by the name each block saved under.
+   *
+   * Built from the runner's own state rather than the database, so a screen
+   * can quote the previous screen before anything has been saved. This is the
+   * mechanism behind every within-day callback in the curriculum: Day 1
+   * reading her trigger back before asking what ME did, and Day 7 keeping one
+   * decision on screen from Screen 4 through Screen 11.
+   */
+  const today: Record<string, string> = {}
+  for (const b of blocks) {
+    const name = (b.config as { saveAs?: unknown } | null)?.saveAs
+    if (typeof name !== 'string' || name === '') continue
+    const answer = responses[b.id]
+    /*
+     * The answer a later screen wants is not always a `text` field: Day 4
+     * quotes the AREA she picked, Day 6 the action she committed to, and Day
+     * 7's card the side she chose. Each block keeps its own response shape,
+     * so the name is resolved against the handful of fields that can carry a
+     * quotable answer rather than by special-casing block types here.
+     */
+    const text =
+      typeof answer === 'string'
+        ? answer
+        : ((): string => {
+            const o = answer as Record<string, unknown> | null | undefined
+            for (const key of ['text', 'area', 'action', 'chosen']) {
+              const v = o?.[key]
+              if (typeof v === 'string' && v.trim() !== '') return v
+            }
+            return ''
+          })()
+    if (text.trim() !== '') today[name] = text.trim()
+  }
+
   const setValue = useCallback((blockId: string, value: unknown) => {
     setResponses((prev) => ({ ...prev, [blockId]: value }))
     dirty.current.add(blockId)
@@ -114,7 +149,7 @@ export function DayRunner({
         setError(result.error)
         return
       }
-      router.push(`/my-practice/${programSlug}/day/${dayNumber}/done`)
+      router.push(`/my-academy/${programSlug}/day/${dayNumber}/done`)
     })
   }
 
@@ -146,7 +181,7 @@ export function DayRunner({
           )}
         </div>
         <Link
-          href="/my-practice"
+          href="/my-academy"
           className="shrink-0 text-2xs text-ink-muted hover:text-ink"
         >
           Save and leave
@@ -179,6 +214,7 @@ export function DayRunner({
           onChange={(v) => setValue(block.id, v)}
           disabled={saving || pending}
           context={evidence}
+          today={today}
         />
       </div>
 

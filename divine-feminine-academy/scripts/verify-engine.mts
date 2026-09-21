@@ -15,7 +15,7 @@
  */
 import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 
 process.env.JOURNAL_MASTER_KEY ??= randomBytes(32).toString('base64')
 
@@ -31,7 +31,7 @@ const {
   herCodes,
   herPatterns,
   journalEntries,
-  returnSessions,
+  herDesires,
 } = await import('../src/db/schema/progress')
 const { getBlock } = await import('../src/blocks/registry')
 const { runSideEffects, contactDataKey } = await import(
@@ -167,6 +167,11 @@ async function blockOfType(type: string) {
     .returning()
 
   if (!made) throw new Error(`could not make a scratch ${type} block`)
+  // Removed in teardown. Without that, every run of this script permanently
+  // added another block to the real Day 1 of the real programme - and the
+  // curriculum check, which asks what is actually seeded, started reporting
+  // Academy content on a day that has none.
+  scratchBlockIds.push(made.id)
   console.log(`  note  ${type} is not in this curriculum — made one to test against`)
 
   return { block: made, lesson: host.lesson, module: host.module }
@@ -178,6 +183,9 @@ async function blockOfType(type: string) {
  * Only the fields the config schema requires. The member UI is not rendered
  * here; these blocks exist to be saved against.
  */
+/** Blocks this run invented, deleted in teardown. */
+const scratchBlockIds: string[] = []
+
 const scratchConfig: Record<string, Record<string, unknown>> = {
   belief_origin: { prompt: 'Where did it come from?' },
   return_practice: { prompt: 'What happened?' },
@@ -332,7 +340,7 @@ await check('Day 6 increments the core metric', async () => {
     situation: 'She asked me to cover her shift again',
     oldResponse: 'I would have said yes',
     herResponse: 'I said no',
-    area: 'life',
+    area: 'success',
   })
   const rows = await db
     .select()
@@ -340,7 +348,7 @@ await check('Day 6 increments the core metric', async () => {
     .where(eq(herChoices.contactId, contact.id))
   assert.equal(rows.length, 1)
   assert.equal(rows[0]!.herResponse, 'I said no')
-  assert.equal(rows[0]!.area, 'life')
+  assert.equal(rows[0]!.area, 'success')
 })
 
 await check('re-saving Day 6 does not double-count', async () => {
@@ -348,7 +356,7 @@ await check('re-saving Day 6 does not double-count', async () => {
     situation: 'She asked me to cover her shift again',
     oldResponse: 'I would have said yes',
     herResponse: 'I said no, and did not explain',
-    area: 'life',
+    area: 'success',
   })
   const rows = await db
     .select()
@@ -358,21 +366,58 @@ await check('re-saving Day 6 does not double-count', async () => {
   assert.equal(rows[0]!.herResponse, 'I said no, and did not explain')
 })
 
-await check('Day 5 writes a RETURN session', async () => {
-  await save('return_practice', {
-    whatHappened: 'A message I did not get back',
-    feeling: 'small',
-    meaningMade: 'that I am forgettable',
-    isItTrue: 'no',
-    whatINeed: 'air',
-    actionChosen: 'nature',
+await check('Day 5 writes one desire per area, encrypted', async () => {
+  await save('her_reveal', {
+    desires: {
+      herself: 'A woman who does not explain herself',
+      relationships: 'Someone who stays without being managed',
+      money: 'Enough that a bill is not an event',
+      success: 'Work that does not need my exhaustion',
+    },
   })
   const rows = await db
     .select()
-    .from(returnSessions)
-    .where(eq(returnSessions.contactId, contact.id))
-  assert.equal(rows.length, 1)
-  assert.equal(rows[0]!.actionChosen, 'nature')
+    .from(herDesires)
+    .where(eq(herDesires.contactId, contact.id))
+  assert.equal(rows.length, 4)
+  // What she wants is never stored in the clear.
+  for (const row of rows) {
+    assert.ok(!row.textEncrypted.includes('explain'))
+    assert.ok(!row.textEncrypted.includes('exhaustion'))
+  }
+})
+
+await check('re-reading Day 5 updates a desire instead of duplicating it', async () => {
+  await save('her_reveal', {
+    desires: {
+      herself: 'A woman who does not explain herself',
+      relationships: 'Someone who stays without being managed',
+      money: 'Enough that money is boring',
+      success: 'Work that does not need my exhaustion',
+    },
+  })
+  const rows = await db
+    .select()
+    .from(herDesires)
+    .where(eq(herDesires.contactId, contact.id))
+  assert.equal(rows.length, 4)
+})
+
+await check('clearing an area removes it rather than leaving a stale want', async () => {
+  await save('her_reveal', {
+    desires: {
+      herself: 'A woman who does not explain herself',
+      relationships: '',
+      money: 'Enough that money is boring',
+      success: 'Work that does not need my exhaustion',
+    },
+  })
+  const rows = await db
+    .select()
+    .from(herDesires)
+    .where(eq(herDesires.contactId, contact.id))
+  assert.equal(rows.length, 3)
+  assert.ok(!rows.some((r) => r.area === 'relationships'))
 })
 
 await check('Day 7 writes a HER Code with a share token', async () => {
@@ -418,6 +463,19 @@ await check('every registry definition survives being read on the server', async
 
 // -------------------------------------------------------------- teardown ---
 await db.delete(contacts).where(eq(contacts.id, contact.id))
+
+/*
+ * And the scratch blocks, which used to be left behind forever.
+ *
+ * This script tests block types the curriculum does not use, so it invents
+ * one of each against the first lesson of the real programme. It never
+ * removed them, so each run left four more blocks on Day 1 - which is how a
+ * check asserting "no Academy content in the challenge" came to fail against
+ * a challenge that has none.
+ */
+if (scratchBlockIds.length > 0) {
+  await db.delete(lessonBlocks).where(inArray(lessonBlocks.id, scratchBlockIds))
+}
 
 console.log(`\nengine: all ${passed} checks passed`)
 process.exit(0)

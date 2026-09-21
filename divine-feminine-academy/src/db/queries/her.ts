@@ -4,10 +4,13 @@ import { and, desc, eq, isNull, sql } from 'drizzle-orm'
 import {
   herChoices,
   herCodes,
+  herDesires,
   herPatterns,
   journalEntries,
-  returnSessions,
 } from '../schema'
+import { contactDataKey } from '@/features/challenge/side-effects'
+import { decryptEntry } from '@/lib/crypto/journal'
+import { areas as allAreas, type Area } from '@/features/assessment/scoring'
 import { policy, require_ } from '@/lib/permissions/policy'
 import type { QueryContext } from './_context'
 
@@ -22,6 +25,42 @@ export async function listPatterns(
     .from(herPatterns)
     .where(and(eq(herPatterns.contactId, contactId), isNull(herPatterns.retiredAt)))
     .orderBy(desc(herPatterns.createdAt))
+}
+
+/**
+ * What she allowed herself to want, by area.
+ *
+ * Written on Day 5 and read back on Days 5, 6 and 7 - and after that by the
+ * Academy. Decrypted here with her own key, which means this query only ever
+ * runs for her: the policy check is the same one that guards her journal, and
+ * there is no staff path to these sentences at all.
+ *
+ * Returns the areas in the curriculum's order, not the order she wrote them,
+ * so THIS IS HER reads the same way every time she opens it.
+ */
+export async function listDesires(
+  { db, actor }: QueryContext,
+  contactId: string,
+): Promise<Array<{ area: Area; text: string }>> {
+  require_(policy.herProfile.read(actor, contactId))
+
+  const rows = await db
+    .select({ area: herDesires.area, textEncrypted: herDesires.textEncrypted })
+    .from(herDesires)
+    .where(eq(herDesires.contactId, contactId))
+
+  if (rows.length === 0) return []
+
+  const dataKey = await contactDataKey(db, contactId)
+  const byArea = new Map<Area, string>()
+  for (const row of rows) {
+    if (!row.area) continue
+    byArea.set(row.area, decryptEntry(row.textEncrypted, dataKey))
+  }
+
+  return allAreas
+    .filter((area) => byArea.has(area))
+    .map((area) => ({ area, text: byArea.get(area)! }))
 }
 
 /** Every time she chose HER, newest first. */
@@ -60,20 +99,6 @@ export async function choiceSummary(
     total: Number(total?.n ?? 0),
     byArea: byArea.map((r) => ({ area: r.area, count: Number(r.n) })),
   }
-}
-
-export async function listReturnSessions(
-  { db, actor }: QueryContext,
-  contactId: string,
-  limit = 50,
-) {
-  require_(policy.herProfile.read(actor, contactId))
-  return db
-    .select()
-    .from(returnSessions)
-    .where(eq(returnSessions.contactId, contactId))
-    .orderBy(desc(returnSessions.occurredAt))
-    .limit(limit)
 }
 
 export async function getHerCode(

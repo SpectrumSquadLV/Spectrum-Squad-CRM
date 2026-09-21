@@ -45,10 +45,10 @@
      Each is rendered as 12px TEXT inside a badge on a 5% wash of itself, so
      each must clear 4.5:1 there - not the 3:1 that applies to a non-text
      mark. `npm run verify:contrast` enforces it. */
-  --color-area-self: #5a6b66;
-  --color-area-love: #96544b;
-  --color-area-life: #7d6130;
-  --color-area-wealth: #565a75;
+  --color-area-herself: #5a6b66;
+  --color-area-relationships: #96544b;
+  --color-area-success: #7d6130;
+  --color-area-money: #565a75;
 
   /* --- Feedback ---------------------------------------------------------- */
   --color-positive: #4f6f52;

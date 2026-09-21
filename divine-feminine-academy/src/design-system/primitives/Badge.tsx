@@ -1,14 +1,15 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils/cn'
 
-export type Area = 'self' | 'love' | 'life' | 'wealth'
+export type Area = 'herself' | 'relationships' | 'success' | 'money'
 
 /** Area marks are thin and small. Never a filled card. */
 const areaTone: Record<Area, string> = {
-  self: 'text-area-self border-area-self/40 bg-area-self/5',
-  love: 'text-area-love border-area-love/40 bg-area-love/5',
-  life: 'text-area-life border-area-life/40 bg-area-life/5',
-  wealth: 'text-area-wealth border-area-wealth/40 bg-area-wealth/5',
+  herself: 'text-area-herself border-area-herself/40 bg-area-herself/5',
+  relationships:
+    'text-area-relationships border-area-relationships/40 bg-area-relationships/5',
+  money: 'text-area-money border-area-money/40 bg-area-money/5',
+  success: 'text-area-success border-area-success/40 bg-area-success/5',
 }
 
 export function Badge({

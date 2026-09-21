@@ -115,7 +115,7 @@ export function SiteHeader() {
         <div className="hidden md:block">
           {(accountsOn || signedIn) && (
             <Button size="sm" variant={signedIn ? 'secondary' : 'primary'} asChild>
-              <Link href={signedIn ? '/my-practice' : '/login'}>
+              <Link href={signedIn ? '/my-academy' : '/login'}>
                 {signedIn ? 'My practice' : 'Sign in'}
               </Link>
             </Button>
@@ -174,7 +174,7 @@ export function SiteHeader() {
           </ul>
           {(accountsOn || signedIn) && (
             <Button className="mt-4 w-full" asChild>
-              <Link href={signedIn ? '/my-practice' : '/login'} onClick={() => setOpen(false)}>
+              <Link href={signedIn ? '/my-academy' : '/login'} onClick={() => setOpen(false)}>
                 {signedIn ? 'My practice' : 'Sign in'}
               </Link>
             </Button>

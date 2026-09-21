@@ -68,7 +68,7 @@ export default async function AssessmentPage() {
             <JoinForm
               className="mt-6"
               source="assessment-waitlist"
-              next="/my-practice"
+              next="/my-academy"
               submitLabel="Keep me posted"
             />
           </div>

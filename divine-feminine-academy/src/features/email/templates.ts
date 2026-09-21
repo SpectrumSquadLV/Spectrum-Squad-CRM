@@ -72,7 +72,7 @@ ${body}${button}
 <p style="margin:8px 0 0;font-size:12px;color:#a0948c">${
   unsubscribeUrl
     ? `<a href="${escapeHtml(unsubscribeUrl)}" style="color:#a0948c">Unsubscribe</a>`
-    : `<a href="${escapeHtml(siteUrl)}/my-practice/account" style="color:#a0948c">Change what we send you</a>`
+    : `<a href="${escapeHtml(siteUrl)}/my-academy/account" style="color:#a0948c">Change what we send you</a>`
 }</p>
 </td></tr></table></body></html>`
 }
@@ -98,7 +98,7 @@ function plain({
   parts.push(
     unsubscribeUrl
       ? `Unsubscribe: ${unsubscribeUrl}`
-      : `Change what we send you: ${siteUrl}/my-practice/account`,
+      : `Change what we send you: ${siteUrl}/my-academy/account`,
   )
   return parts.join('\n')
 }
@@ -117,7 +117,7 @@ export function dayReminder(input: {
 }): RenderedEmail {
   const cta = {
     label: `Open Day ${input.dayNumber}`,
-    url: `${input.siteUrl}/my-practice/${input.programSlug}/day/${input.dayNumber}`,
+    url: `${input.siteUrl}/my-academy/${input.programSlug}/day/${input.dayNumber}`,
   }
 
   const content = {
@@ -148,7 +148,7 @@ export function nudge(input: {
 }): RenderedEmail {
   const cta = {
     label: `Pick up at Day ${input.dayNumber}`,
-    url: `${input.siteUrl}/my-practice/${input.programSlug}/day/${input.dayNumber}`,
+    url: `${input.siteUrl}/my-academy/${input.programSlug}/day/${input.dayNumber}`,
   }
 
   const content = {
@@ -171,29 +171,72 @@ export function nudge(input: {
 }
 
 /** She finished. */
-export function challengeComplete(input: {
+/**
+ * The day after Day 7.
+ *
+ * Sent in her timezone, once, and skipped entirely if she has already
+ * enrolled in the Academy — nobody should be sold something they just bought.
+ *
+ * The opening line is conditional on who she chose, and everything after it
+ * is identical. That is not a personalisation trick: Day 7 lets her
+ * consciously choose ME and tells her that is allowed, so an email that
+ * opened "Yesterday, you chose HER" for a woman who chose ME would contradict
+ * the product to her face, on the one subject where being contradicted would
+ * cost her the most.
+ */
+export function academyInvitation(input: {
   firstName: string | null
-  choiceCount: number
+  /** From Day 7's choice_capture. Decides only the opening line. */
+  choseHer: boolean
   siteUrl: string
 }): RenderedEmail {
-  const cta = { label: 'See your HER Code', url: `${input.siteUrl}/my-practice/her/code` }
+  const cta = {
+    label: 'ENTER THE DIVINE FEMININE ACADEMY',
+    url: `${input.siteUrl}/academy`,
+  }
+
+  const opening = input.choseHer
+    ? 'Yesterday, you chose HER.'
+    : 'Yesterday, you finished ME VS. HER.'
 
   const content = {
-    preview: 'Seven days. Look at what you did.',
-    heading: 'You finished.',
+    preview: 'ME is going to show up again. Now you know what to do.',
+    heading: 'You found HER. Now what?',
     paragraphs: [
-      `${firstNameOr(input.firstName)}, that is seven days.`,
-      input.choiceCount > 0
-        ? `You chose her ${input.choiceCount} time${input.choiceCount === 1 ? '' : 's'}, and wrote all of it down.`
-        : 'Everything you wrote is still in your account, and stays there.',
-      'Your HER Code is yours to keep, and yours to share if you want to.',
+      opening,
+      'But today is where this actually matters.',
+      'Because life is going to keep happening.',
+      'Someone is going to trigger you.',
+      "Something isn't going to go according to plan.",
+      'You’re going to want something that scares you.',
+      'ME is going to show up again.',
+      'And now you know what to do.',
+      'Why am I doing this?',
+      'What does ME want to do?',
+      'What would HER do?',
+      'Who am I choosing?',
+      "But here's the part we intentionally didn't go deeply into during ME VS. HER:",
+      'Why does ME keep showing up in the first place?',
+      'Why do the same patterns appear in your relationships, your money, your success, and the way you see yourself?',
+      'What have you accepted as true about yourself without ever stopping to question whether it was actually true?',
+      'And how much of your life has been created from those beliefs?',
+      "That's where the Divine Feminine Academy begins.",
+      "We're going deeper than recognizing the pattern.",
+      "We're going underneath it.",
+      "We're uncovering the stories and beliefs you've carried, looking at how they've shaped what you've accepted, chosen, pursued, avoided, and created — and beginning the work of changing them.",
+      'Not so you can become HER.',
+      "Because if ME VS. HER taught you anything, I hope it's this:",
+      'She was already there.',
+      'The work now is learning how to let HER lead in every area of your life.',
+      'You are worthy of everything you desire.',
+      "Let's build from there.",
     ],
     cta,
     siteUrl: input.siteUrl,
   }
 
   return {
-    subject: 'You finished the seven days',
+    subject: 'You found HER. Now what?',
     html: layout(content),
     text: plain(content),
   }
@@ -234,7 +277,7 @@ export function orderReceipt(input: {
   refundWindowDays: number
   siteUrl: string
 }): RenderedEmail {
-  const cta = { label: 'Go to your practice', url: `${input.siteUrl}/my-practice` }
+  const cta = { label: 'Go to your practice', url: `${input.siteUrl}/my-academy` }
 
   const content = {
     preview: `Your receipt for ${input.programTitle}`,
@@ -375,7 +418,7 @@ export function newWriting(input: {
 export const templates = {
   dayReminder,
   nudge,
-  challengeComplete,
+  academyInvitation,
   abandonedCheckout,
   orderReceipt,
   certificateIssued,

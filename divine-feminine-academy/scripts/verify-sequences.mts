@@ -229,7 +229,7 @@ console.log('\nrendering')
   check('the unsubscribe link is in the text part', rendered.text.includes('/unsubscribe/'))
   check(
     'it does not fall back to the account page',
-    !rendered.html.includes('/my-practice/account'),
+    !rendered.html.includes('/my-academy/account'),
   )
   check('the cta became a full url', rendered.html.includes(`${SITE}/quiz/the-quiet-storm`))
 

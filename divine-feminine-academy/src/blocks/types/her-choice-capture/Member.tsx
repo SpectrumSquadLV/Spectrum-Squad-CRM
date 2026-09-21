@@ -5,7 +5,7 @@ import type { Area } from '@/design-system/primitives'
 import type { BlockMemberProps } from '../../contract'
 import type { Config, Response } from './schema'
 
-const areas: Area[] = ['self', 'love', 'life', 'wealth']
+const areas: Area[] = ['herself', 'relationships', 'success', 'money']
 const empty: Response = { situation: '', oldResponse: '', herResponse: '' }
 
 export function HerChoiceCaptureMember({

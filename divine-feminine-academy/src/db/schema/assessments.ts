@@ -130,7 +130,7 @@ export const assessmentResults = pgTable(
       .references(() => assessmentAttempts.id, { onDelete: 'cascade' }),
     overallScore: integer('overall_score'),
     /**
-     * For a `scored` assessment: { self: n, love: n, life: n, wealth: n }.
+     * For a `scored` assessment: { herself: n, relationships: n, money: n, success: n }.
      * For an `archetype` quiz: the share each mode took, 0-100.
      */
     categoryScores: jsonb('category_scores').notNull().default({}),

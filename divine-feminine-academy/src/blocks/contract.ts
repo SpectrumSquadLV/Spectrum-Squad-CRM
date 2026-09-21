@@ -1,5 +1,6 @@
 import type { FunctionComponent } from 'react'
 import type { z } from 'zod'
+import type { Area } from '@/features/assessment/scoring'
 
 /**
  * A block definition.
@@ -39,7 +40,7 @@ export interface BlockDefinition<
   writesTo?: Array<
     | 'her_patterns'
     | 'her_choices'
-    | 'return_sessions'
+    | 'her_desires'
     | 'her_codes'
     | 'journal_entries'
     | 'mirror_sessions'
@@ -56,6 +57,19 @@ export interface BlockMemberProps<Config, Response> {
   disabled?: boolean
   /** Server-resolved data, for blocks that declare `resolvesContext`. */
   context?: HerEvidence
+  /**
+   * What she has already written TODAY, by the name each block saved under.
+   *
+   * The whole curriculum is built on one day being visibly aware of the last
+   * screen: Day 1 reads her trigger back before asking what ME did, and Day 7
+   * keeps ONE decision on screen across eight screens while she answers it
+   * first as ME and then as HER. Without this a woman retypes her own
+   * decision, and the day stops feeling like it is paying attention.
+   *
+   * Same-day only, and it lives in the runner's memory rather than the
+   * database, so it is available before she has saved anything.
+   */
+  today?: Record<string, string>
 }
 
 /** What Day 7 reads back to her: her own week, in her own words. */
@@ -71,10 +85,25 @@ export interface HerEvidence {
     herResponse: string | null
     area: string | null
   }>
-  returnCount: number
   daysCompleted: number
   journalEntryCount: number
   journalWordCount: number
+  /**
+   * What she allowed herself to want on Day 5, by area.
+   *
+   * Day 6 offers these back while she chooses one small thing, and Day 7 has
+   * them available while she looks at a real decision through HER.
+   */
+  desires: Array<{ area: Area; text: string }>
+  /**
+   * Day 1's tags, in the second person: "prove yourself", "overthink".
+   *
+   * Day 3's statement reads "You learned to ___", so the tags are stored in
+   * both forms and this is the one a sentence can actually use.
+   */
+  behaviorTags: string[]
+  /** Day 2: what she needed and did not receive. Day 3's statement uses it. */
+  unmetNeed: string | null
 }
 
 /**

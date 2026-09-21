@@ -17,6 +17,7 @@ export function BlockRenderer({
   onChange,
   disabled,
   context,
+  today,
 }: {
   blockId: string
   type: string
@@ -25,6 +26,7 @@ export function BlockRenderer({
   onChange: (value: unknown) => void
   disabled?: boolean
   context?: HerEvidence
+  today?: Record<string, string>
 }) {
   const definition = getBlock(type)
 
@@ -62,6 +64,7 @@ export function BlockRenderer({
       onChange={onChange}
       disabled={disabled}
       context={context}
+      today={today}
     />
   )
 }

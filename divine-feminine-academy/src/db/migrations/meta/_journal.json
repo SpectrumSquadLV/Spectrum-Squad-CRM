@@ -85,6 +85,20 @@
       "when": 1789931909606,
       "tag": "0011_podcast_feed",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789931909607,
+      "tag": "0012_official_life_areas",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789931909608,
+      "tag": "0013_her_desires",
+      "breakpoints": true
     }
   ]
 }

@@ -16,7 +16,7 @@ export const responseSchema = z.object({
   oldResponse: z.string(),
   herResponse: z.string().min(1),
   reflection: z.string().optional(),
-  area: z.enum(['self', 'love', 'life', 'wealth']).optional(),
+  area: z.enum(['herself', 'relationships', 'success', 'money']).optional(),
 })
 
 export type Config = z.infer<typeof configSchema>

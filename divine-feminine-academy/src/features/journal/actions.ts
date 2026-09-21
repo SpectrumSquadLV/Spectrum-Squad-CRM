@@ -10,7 +10,7 @@ export type JournalState = { ok?: boolean; error?: string }
 const schema = z.object({
   title: z.string().trim().max(200).optional(),
   body: z.string().trim().min(1, 'Write something first.').max(100_000),
-  area: z.enum(['self', 'love', 'life', 'wealth']).optional(),
+  area: z.enum(['herself', 'relationships', 'success', 'money']).optional(),
 })
 
 export async function writeEntry(
@@ -40,6 +40,6 @@ export async function writeEntry(
     source: 'free_write',
   })
 
-  revalidatePath('/my-practice/journal')
+  revalidatePath('/my-academy/journal')
   return { ok: true }
 }

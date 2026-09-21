@@ -44,24 +44,30 @@ function check(name: string, condition: boolean, detail?: string) {
 }
 
 const EXPECTED_DAYS = [
-  'MEET ME',
-  'MEET YOUR PROTECTOR',
-  'FOLLOW THE EMOTION',
-  'REVIEW THE BELIEF',
-  'THE PROBLEM IS YOU',
-  'ME VS HER',
-  'REST — LET HER LEAD',
+  'SEE ME',
+  'UNDERSTAND ME',
+  'LOVE ME',
+  'RECOGNIZE WHAT ME HAS BEEN CREATING',
+  'MEET HER',
+  'CHOOSE HER',
+  'ME VS. HER',
 ]
 
-/** Anything that asks her for something painful must be encrypted. */
+/**
+ * Anything that asks her for something painful must be encrypted.
+ *
+ * These are the blocks the SEEDED challenge uses. The Academy-only ones are
+ * checked in their own right elsewhere; what matters here is that nothing a
+ * woman fills in during these seven days reaches Postgres in the clear.
+ */
 const MUST_BE_SENSITIVE = [
-  'protector_profile',
-  'emotion_trail',
-  'belief_review',
-  'manifestation_loop',
-  'my_part',
-  'me_retirement',
-  'mirror_declaration',
+  'reflection_prompt',
+  'pattern_select',
+  'statement_fill',
+  'her_reveal',
+  'choice_capture',
+  'me_vs_her_card',
+  'action_commitment',
   'mirror_gaze',
 ]
 
@@ -70,16 +76,15 @@ const stamp = Date.now()
 async function main() {
   console.log('\nthe registry')
 
-  check('every ME VS HER block type is registered', [
+  check('every ME VS. HER block type is registered', [
     'mirror_gaze',
-    'me_portrait',
-    'protector_profile',
-    'emotion_trail',
-    'belief_review',
-    'manifestation_loop',
-    'celebration',
-    'mirror_declaration',
-    'me_retirement',
+    'pattern_select',
+    'statement_fill',
+    'area_picker',
+    'her_reveal',
+    'me_vs_her_compare',
+    'choice_capture',
+    'me_vs_her_card',
     'callback',
   ].every((t) => Boolean(getBlock(t))))
 
@@ -94,14 +99,13 @@ async function main() {
   check(
     'the blocks that read her week declare it',
     getBlock('callback')?.resolvesContext === 'her_evidence' &&
-      getBlock('celebration')?.resolvesContext === 'her_evidence' &&
-      getBlock('mirror_declaration')?.resolvesContext === 'her_evidence',
+      getBlock('celebration')?.resolvesContext === 'her_evidence',
   )
 
   check(
-    'the mirror records seconds, the retirement retires',
+    'the mirror records seconds, and Day 5 records what she wants',
     getBlock('mirror_gaze')?.writesTo?.includes('mirror_sessions') === true &&
-      getBlock('me_retirement')?.writesTo?.includes('me_retirement') === true,
+      getBlock('her_reveal')?.writesTo?.includes('her_desires') === true,
   )
 
   console.log('\nthe seven days')
@@ -171,30 +175,60 @@ async function main() {
     !(byDay.get(7) ?? []).includes('mirror_gaze'),
     (byDay.get(7) ?? []).join(', '),
   )
-  check('day 7 has the spoken declaration instead', (byDay.get(7) ?? []).includes('mirror_declaration'))
-  check('day 7 retires ME', (byDay.get(7) ?? []).includes('me_retirement'))
-  check('day 7 reads her week back', (byDay.get(7) ?? []).includes('evidence_review'))
   check(
-    'day 7 digs for nothing new',
-    !(byDay.get(7) ?? []).some((t) =>
-      ['emotion_trail', 'belief_review', 'manifestation_loop', 'protector_profile'].includes(t),
-    ),
-    (byDay.get(7) ?? []).join(', '),
+    'day 7 is the comparison and the choice',
+    (byDay.get(7) ?? []).includes('me_vs_her_compare') &&
+      (byDay.get(7) ?? []).includes('choice_capture'),
   )
+  check('day 7 ends in the card', (byDay.get(7) ?? []).includes('me_vs_her_card'))
+
+  /*
+   * The scope guard, asserted against the DATABASE rather than the source.
+   *
+   * No belief is named anywhere in ME VS. HER, and the retirement ceremony
+   * belongs to the version of Day 7 that no longer exists. These block types
+   * stay in the registry because the Academy is built from the same engine —
+   * this is what stops one of them being dropped back into the challenge.
+   */
+  const ACADEMY_ONLY = [
+    'emotion_trail',
+    'belief_review',
+    'belief_origin',
+    'manifestation_loop',
+    'protector_profile',
+    'me_portrait',
+    'me_retirement',
+    'mirror_declaration',
+    'evidence_review',
+    'her_code_builder',
+    'return_practice',
+  ]
+  for (let day = 1; day <= 7; day++) {
+    check(
+      `day ${day} teaches no Academy content`,
+      !(byDay.get(day) ?? []).some((t) => ACADEMY_ONLY.includes(t)),
+      (byDay.get(day) ?? []).filter((t) => ACADEMY_ONLY.includes(t)).join(', '),
+    )
+  }
 
   console.log('\nthe days in order')
 
-  check('day 1 meets ME', (byDay.get(1) ?? []).includes('me_portrait'))
-  check('day 2 meets the protector', (byDay.get(2) ?? []).includes('protector_profile'))
-  check('day 3 follows the emotion', (byDay.get(3) ?? []).includes('emotion_trail'))
-  check('day 4 reviews the belief', (byDay.get(4) ?? []).includes('belief_review'))
-  check('day 5 walks the loop', (byDay.get(5) ?? []).includes('manifestation_loop'))
-  check('day 5 ends in celebration', (byDay.get(5) ?? []).includes('celebration'))
-  check('day 6 is the signature exercise', (byDay.get(6) ?? []).includes('dual_column_exercise'))
-  check('day 6 records an I CHOSE HER', (byDay.get(6) ?? []).includes('her_choice_capture'))
+  check('day 1 taps the behaviours', (byDay.get(1) ?? []).includes('pattern_select'))
   check(
-    'the loop is on day 5, not day 4',
-    !(byDay.get(4) ?? []).includes('manifestation_loop'),
+    'day 2 asks only its two questions',
+    (byDay.get(2) ?? []).filter((t) => t === 'reflection_prompt').length === 2,
+    (byDay.get(2) ?? []).join(', '),
+  )
+  check('day 3 ends in the statement', (byDay.get(3) ?? []).includes('statement_fill'))
+  check('day 4 picks an area', (byDay.get(4) ?? []).includes('area_picker'))
+  check('day 5 shows her HER', (byDay.get(5) ?? []).includes('her_reveal'))
+  check(
+    'day 6 commits to one choice',
+    (byDay.get(6) ?? []).includes('action_commitment'),
+  )
+  check(
+    'HER is not revealed before day 5',
+    ![1, 2, 3, 4].some((d) => (byDay.get(d) ?? []).includes('her_reveal')),
   )
 
   console.log('\nduty of care')
@@ -234,11 +268,13 @@ async function main() {
         { triggerText: 'being criticised', currentResponse: 'I defend', herResponse: 'I listen first' },
       ],
       choiceCount: 3,
-      choices: [{ situation: 'at work', herResponse: 'I asked for the thing', area: 'wealth' }],
-      returnCount: 1,
+      choices: [{ situation: 'at work', herResponse: 'I asked for the thing', area: 'money' }],
       daysCompleted: 6,
       journalEntryCount: 8,
       journalWordCount: 1400,
+      desires: [],
+      behaviorTags: [],
+      unmetNeed: null,
     }
 
     const s = suggestStatements(evidence, ['a generic one'])
