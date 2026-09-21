@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+build/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+.vercel
+
+# The repo root ignores lockfiles; this app needs its own committed so
+# installs are reproducible.
+!package-lock.json

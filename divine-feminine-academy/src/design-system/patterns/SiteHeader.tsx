@@ -1,0 +1,186 @@
+'use client'
+
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import { useEffect, useState } from 'react'
+import { Button } from '@/design-system/primitives'
+import { createClient } from '@/lib/auth/client'
+import { cn } from '@/lib/utils/cn'
+
+/*
+ * The ecosystem, in its own order.
+ *
+ * The Divine Feminine is first because it is the destination - everything
+ * else on this site is a way of arriving at it. Challenges come next because
+ * they are how a woman starts, and the podcast after that because it is how
+ * most of them meet Quiana at all.
+ *
+ * The quiz is NOT here any more. It was the second item for a while, which
+ * quietly made the site about a quiz; it is a line on the pages where it
+ * belongs instead. /stories is absent for a harder reason: it is unpublished,
+ * and a link in the header is how an unpublished page gets found.
+ */
+const links = [
+  { href: '/the-divine-feminine', label: 'The Divine Feminine' },
+  { href: '/challenges', label: 'Challenges' },
+  { href: '/podcast', label: 'Podcast' },
+  { href: '/writing', label: 'Writing' },
+  { href: '/about', label: 'About' },
+]
+
+/**
+ * Resolves whether someone is signed in, in the browser.
+ *
+ * Deliberately not a server read: the marketing pages are statically
+ * prerendered and must stay that way. Defaults to signed-out, which is the
+ * correct first paint for the overwhelming majority of visitors.
+ */
+/**
+ * Whether accounts exist on this deployment at all.
+ *
+ * NEXT_PUBLIC_ variables are inlined at build time, so a client component can
+ * read this directly. When there are no keys there is nothing to sign in to,
+ * and a "Sign in" button that leads to a form that cannot work is worse than
+ * no button — it was the first thing Quiana clicked on the live site, and it
+ * returned a 500.
+ */
+const accountsOn = Boolean(
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+)
+
+function useSignedIn() {
+  const [signedIn, setSignedIn] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    let unsubscribe: (() => void) | undefined
+
+    try {
+      const supabase = createClient()
+      supabase.auth.getUser().then(({ data }) => {
+        if (active) setSignedIn(Boolean(data.user))
+      })
+      const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+        if (active) setSignedIn(Boolean(session?.user))
+      })
+      unsubscribe = () => data.subscription.unsubscribe()
+    } catch {
+      // Supabase is not configured. Signed-out is the right assumption.
+    }
+
+    return () => {
+      active = false
+      unsubscribe?.()
+    }
+  }, [])
+
+  return signedIn
+}
+
+export function SiteHeader() {
+  const [open, setOpen] = useState(false)
+  const pathname = usePathname()
+  const signedIn = useSignedIn()
+
+  return (
+    <header className="border-b border-rule bg-bone/90 backdrop-blur-sm sticky top-0 z-40">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-6 px-5 py-4 md:px-8">
+        <Link
+          href="/"
+          className="font-display text-lg leading-none tracking-tight"
+          onClick={() => setOpen(false)}
+        >
+          Divine Feminine
+        </Link>
+
+        <nav aria-label="Main" className="hidden items-center gap-8 md:flex">
+          {links.map((l) => (
+            <Link
+              key={l.href}
+              href={l.href}
+              aria-current={pathname === l.href ? 'page' : undefined}
+              className={cn(
+                'text-xs transition-colors',
+                pathname === l.href
+                  ? 'text-ink'
+                  : 'text-ink-muted hover:text-ink',
+              )}
+            >
+              {l.label}
+            </Link>
+          ))}
+        </nav>
+
+        <div className="hidden md:block">
+          {(accountsOn || signedIn) && (
+            <Button size="sm" variant={signedIn ? 'secondary' : 'primary'} asChild>
+              <Link href={signedIn ? '/my-practice' : '/login'}>
+                {signedIn ? 'My practice' : 'Sign in'}
+              </Link>
+            </Button>
+          )}
+        </div>
+
+        <button
+          type="button"
+          className="-mr-2 inline-flex h-11 w-11 items-center justify-center md:hidden"
+          aria-expanded={open}
+          aria-controls="site-menu"
+          aria-label={open ? 'Close menu' : 'Open menu'}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <span aria-hidden className="relative block h-3 w-5">
+            <span
+              className={cn(
+                'absolute inset-x-0 top-0 h-px bg-ink transition-transform duration-[--duration-quick]',
+                open && 'translate-y-[6px] rotate-45',
+              )}
+            />
+            <span
+              className={cn(
+                'absolute inset-x-0 top-1/2 h-px bg-ink transition-opacity duration-[--duration-quick]',
+                open && 'opacity-0',
+              )}
+            />
+            <span
+              className={cn(
+                'absolute inset-x-0 bottom-0 h-px bg-ink transition-transform duration-[--duration-quick]',
+                open && '-translate-y-[6px] -rotate-45',
+              )}
+            />
+          </span>
+        </button>
+      </div>
+
+      {open && (
+        <nav
+          id="site-menu"
+          aria-label="Main"
+          className="border-t border-rule bg-bone px-5 py-4 md:hidden"
+        >
+          <ul className="flex flex-col">
+            {links.map((l) => (
+              <li key={l.href}>
+                <Link
+                  href={l.href}
+                  onClick={() => setOpen(false)}
+                  className="flex min-h-12 items-center text-sm text-ink-soft"
+                >
+                  {l.label}
+                </Link>
+              </li>
+            ))}
+          </ul>
+          {(accountsOn || signedIn) && (
+            <Button className="mt-4 w-full" asChild>
+              <Link href={signedIn ? '/my-practice' : '/login'} onClick={() => setOpen(false)}>
+                {signedIn ? 'My practice' : 'Sign in'}
+              </Link>
+            </Button>
+          )}
+        </nav>
+      )}
+    </header>
+  )
+}

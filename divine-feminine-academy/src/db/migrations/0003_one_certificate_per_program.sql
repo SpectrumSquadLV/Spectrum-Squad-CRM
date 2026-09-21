@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "certificates_contact_program_key" ON "certificates" USING btree ("contact_id","program_id");
