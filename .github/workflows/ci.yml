@@ -159,7 +159,8 @@ jobs:
             crypto pacing engine scoring certificates issuance permissions \
             pricing webhooks fulfilment crm-privacy automation reminders \
             rate-limit contrast db-url archetypes quiz sequences writing \
-            cohorts audience curriculum me-vs-her images noindex podcast public
+            cohorts audience curriculum me-vs-her migrations images noindex \
+            podcast public
           do
             echo "::group::verify:$check"
             if npm run --silent "verify:$check"; then

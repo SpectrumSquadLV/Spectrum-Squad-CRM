@@ -15,7 +15,7 @@
  */
 import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 
 process.env.JOURNAL_MASTER_KEY ??= randomBytes(32).toString('base64')
 
@@ -167,6 +167,11 @@ async function blockOfType(type: string) {
     .returning()
 
   if (!made) throw new Error(`could not make a scratch ${type} block`)
+  // Removed in teardown. Without that, every run of this script permanently
+  // added another block to the real Day 1 of the real programme - and the
+  // curriculum check, which asks what is actually seeded, started reporting
+  // Academy content on a day that has none.
+  scratchBlockIds.push(made.id)
   console.log(`  note  ${type} is not in this curriculum — made one to test against`)
 
   return { block: made, lesson: host.lesson, module: host.module }
@@ -178,6 +183,9 @@ async function blockOfType(type: string) {
  * Only the fields the config schema requires. The member UI is not rendered
  * here; these blocks exist to be saved against.
  */
+/** Blocks this run invented, deleted in teardown. */
+const scratchBlockIds: string[] = []
+
 const scratchConfig: Record<string, Record<string, unknown>> = {
   belief_origin: { prompt: 'Where did it come from?' },
   return_practice: { prompt: 'What happened?' },
@@ -455,6 +463,19 @@ await check('every registry definition survives being read on the server', async
 
 // -------------------------------------------------------------- teardown ---
 await db.delete(contacts).where(eq(contacts.id, contact.id))
+
+/*
+ * And the scratch blocks, which used to be left behind forever.
+ *
+ * This script tests block types the curriculum does not use, so it invents
+ * one of each against the first lesson of the real programme. It never
+ * removed them, so each run left four more blocks on Day 1 - which is how a
+ * check asserting "no Academy content in the challenge" came to fail against
+ * a challenge that has none.
+ */
+if (scratchBlockIds.length > 0) {
+  await db.delete(lessonBlocks).where(inArray(lessonBlocks.id, scratchBlockIds))
+}
 
 console.log(`\nengine: all ${passed} checks passed`)
 process.exit(0)

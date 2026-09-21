@@ -109,7 +109,12 @@ check(
  * were decorative marks; the browser audit disagreed, and it was right.
  */
 console.log('\nthe four areas, used as 12px text on their own 5% wash:')
-for (const area of ['area-self', 'area-love', 'area-life', 'area-wealth']) {
+for (const area of [
+  'area-herself',
+  'area-relationships',
+  'area-money',
+  'area-success',
+]) {
   check(`${area} on its wash`, token(area), blend(token(area), bone, 0.05), BODY)
 }
 

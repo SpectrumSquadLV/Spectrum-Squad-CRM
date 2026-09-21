@@ -36,6 +36,7 @@
     "verify:contrast": "tsx scripts/verify-contrast.mts",
     "preflight": "tsx --conditions=react-server scripts/preflight.mts",
     "verify:preflight": "tsx scripts/verify-preflight.mts",
+    "verify:migrations": "tsx scripts/verify-migrations.mts",
     "verify:db-url": "tsx scripts/verify-db-url.mts",
     "verify:me-vs-her": "tsx --conditions=react-server scripts/verify-me-vs-her.mts",
     "verify:archetypes": "tsx scripts/verify-archetypes.mts",

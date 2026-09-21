@@ -30,6 +30,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS "her_desires_area_key"
 -- is what she allows herself to want and nobody needs to read it but her.
 -- Admin surfaces get counts from the row existing, never the sentence.
 ALTER TABLE "her_desires" ENABLE ROW LEVEL SECURITY;
+-- CREATE POLICY has no IF NOT EXISTS, so it is dropped first. Re-running a
+-- migration should never be the thing that breaks a deploy.
+DROP POLICY IF EXISTS "her_desires_owner_all" ON "her_desires";
 CREATE POLICY "her_desires_owner_all" ON "her_desires"
   FOR ALL USING (contact_id = public.current_contact_id())
   WITH CHECK (contact_id = public.current_contact_id());
