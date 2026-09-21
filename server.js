@@ -8655,6 +8655,20 @@ const hr = require("./hr")({
   // time rather than at require time.
   startOnboarding: (employee, actor) => onboarding.startOnboarding(employee, actor),
   onboardingPortalUrl: (token) => onboarding.portalUrl(token),
+  // Building timecards straight from Rethink's verified sessions, so a payroll
+  // spreadsheet that will not parse is no longer the only way to get a pay
+  // period onto a timecard. Late-bound: the Rethink module is constructed
+  // after this one. What counts as verified is Rethink's own rule, read
+  // through the module that owns it -- the same verdict the unverified-session
+  // report files infractions on.
+  fetchAppointments: (from, to) => rethink.fetchAppointments(from, to),
+  verificationVerdict: (row, cfg) => rethink.verificationVerdict(row, cfg),
+  getRethinkConfig: () => rethink.getConfig(),
+  rethinkBillableRaw: (row) => rethink._billable.billableRaw(row),
+  // Whose sessions these were, for naming a Rethink id that has no staff
+  // record yet. Read through the module that already works this out rather
+  // than a second list of the field names a staff name can hide behind.
+  rethinkStaffName: (row) => rethinkVerification._internal.nameHint(row),
 });
 // ===== PTO add-on: accrual per hour worked, on top of the existing
 // staff_time_off table (which already records leave taken) =====

@@ -1,0 +1,405 @@
+// The two ways a pay period becomes timecards.
+//
+// There was no coverage here at all, which is how the .xlsx path came to fail
+// silently: every shape of broken file produced the same sentence, "No
+// employees found in the export. Is this the Rethink payroll export?", with
+// nowhere to go when the answer was yes.
+//
+// What is checked:
+//   - a well-formed export imports, with hours split billable / non-billable
+//   - an export whose cells carry no r="B7" position attribute (legal, and
+//     what some writers emit) imports too -- it used to parse as empty rows
+//   - tab names that have been re-cased or re-spaced still match
+//   - each way of being unreadable reports what the parser actually SAW
+//   - building from Rethink's verified sessions: guards, validation, and a
+//     clear answer when Rethink is not configured on this server
+//
+//   DATABASE_URL=... PORT=3011 node server.js
+//   BASE=http://127.0.0.1:3011 DATABASE_URL=... node test-payroll-import.js
+"use strict";
+const { Pool } = require("pg");
+const crypto = require("crypto");
+const zlib = require("zlib");
+
+const BASE = process.env.BASE || "http://localhost:3011";
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false });
+let pass = 0, fail = 0;
+function check(n, c, d) { if (c) { pass++; console.log("  PASS  " + n); } else { fail++; console.log("  FAIL  " + n + (d !== undefined ? "  -> " + JSON.stringify(d).slice(0, 300) : "")); } }
+const section = (t) => console.log("\n== " + t + " ==");
+function mkClient() {
+  let cookie = "";
+  return async (p, { method = "GET", body } = {}) => {
+    const r = await fetch(BASE + p, { method, headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(cookie ? { Cookie: cookie } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    const sc = r.headers.get("set-cookie"); if (sc) cookie = sc.split(";")[0];
+    let d = null; try { d = await r.json(); } catch (e) {}
+    return { status: r.status, data: d };
+  };
+}
+function hp(pw) { const salt = crypto.randomBytes(16).toString("hex"); return { hash: crypto.scryptSync(pw, salt, 64).toString("hex"), salt }; }
+
+// ---------------------------------------------------------------- xlsx writer
+// Just enough of the format to produce files the server has to read: a real
+// ZIP, real sharedStrings, real sheets. `withRefs: false` omits the optional
+// r="B7" cell position attribute, which is what the regression is about.
+const xmlEsc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const colName = (i) => { let s = "", n = i + 1; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
+
+function buildXlsx(sheetsIn, { withRefs = true } = {}) {
+  const names = Object.keys(sheetsIn);
+  const shared = [];
+  const sharedIdx = new Map();
+  const intern = (v) => { if (!sharedIdx.has(v)) { sharedIdx.set(v, shared.length); shared.push(v); } return sharedIdx.get(v); };
+
+  const sheetXml = names.map((name) => {
+    const rows = sheetsIn[name].map((cells, ri) => {
+      const cs = cells.map((val, ci) => {
+        const ref = withRefs ? ` r="${colName(ci)}${ri + 1}"` : "";
+        // Without r="B7" a cell's column is its position in the row, so a
+        // blank has to be written out as <c/> rather than dropped -- that is
+        // what a writer which omits the attribute actually emits.
+        if (val === "" || val === null || val === undefined) return withRefs ? "" : `<c/>`;
+        if (typeof val === "number") return `<c${ref}><v>${val}</v></c>`;
+        return `<c${ref} t="s"><v>${intern(String(val))}</v></c>`;
+      }).join("");
+      return `<row${withRefs ? ` r="${ri + 1}"` : ""}>${cs}</row>`;
+    }).join("");
+    return `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rows}</sheetData></worksheet>`;
+  });
+
+  const files = {
+    "[Content_Types].xml": `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`,
+    "xl/workbook.xml": `<?xml version="1.0"?><workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${names.map((n, i) => `<sheet name="${xmlEsc(n)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("")}</sheets></workbook>`,
+    "xl/_rels/workbook.xml.rels": `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${names.map((n, i) => `<Relationship Id="rId${i + 1}" Target="worksheets/sheet${i + 1}.xml"/>`).join("")}</Relationships>`,
+    "xl/sharedStrings.xml": `<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${shared.map((v) => `<si><t>${xmlEsc(v)}</t></si>`).join("")}</sst>`,
+  };
+  names.forEach((_, i) => { files[`xl/worksheets/sheet${i + 1}.xml`] = sheetXml[i]; });
+  return zipOf(files);
+}
+
+function zipOf(files) {
+  const names = Object.keys(files);
+  const locals = [], central = [];
+  let offset = 0;
+  const crcTable = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = (buf) => { let c = 0xffffffff; for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+
+  for (const name of names) {
+    const raw = Buffer.from(files[name], "utf8");
+    const comp = zlib.deflateRawSync(raw);
+    const nameBuf = Buffer.from(name, "utf8");
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(8, 8);
+    lh.writeUInt32LE(crc32(raw), 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(raw.length, 22);
+    lh.writeUInt16LE(nameBuf.length, 26);
+    locals.push(lh, nameBuf, comp);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(8, 10);
+    ch.writeUInt32LE(crc32(raw), 16); ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(raw.length, 24);
+    ch.writeUInt16LE(nameBuf.length, 28); ch.writeUInt32LE(offset, 42);
+    central.push(ch, nameBuf);
+    offset += lh.length + nameBuf.length + comp.length;
+  }
+  const cdBuf = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(names.length, 8); eocd.writeUInt16LE(names.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12); eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([Buffer.concat(locals), cdBuf, eocd]);
+}
+
+// A payroll export shaped like the real one. Excel dates are serials.
+const DAY = (y, m, d) => Math.round((Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 86400000);
+function exportFor(ids, { summaryTab = "Summary", entriesTab = "Time Sheet Entries" } = {}) {
+  const summary = [
+    ["Start Date:", "09/07/2026", "", "End Date:", "09/20/2026"],
+    ["Id", "FirstName", "LastName", "RegHours", "OT1Hours"],
+    ...ids.map((e) => [e.id, e.first, e.last, e.reg, 0]),
+  ];
+  const entries = [
+    ["", "Payroll detail"],
+    ["", "Id", "Alerts", "StartTime", "EndTime", "DateOfService", "ActualStartTime", "ActualEndTime", "Duration", "StaffVerified", "ApptStatus", "Appt Type"],
+    ...ids.flatMap((e) => (e.shifts || []).map((sft) =>
+      ["", e.id, "", "9:00 AM", "1:00 PM", DAY(2026, 9, sft.day), "9:00 AM", "1:00 PM", sft.hours, "Yes", "Completed", sft.type])),
+  ];
+  return buildXlsx({ [summaryTab]: summary, [entriesTab]: entries });
+}
+const b64 = (buf) => buf.toString("base64");
+
+(async () => {
+  const m = hp("TestMgr123!");
+  await pool.query(
+    `INSERT INTO users (name, email, password_hash, password_salt, role, department_id, created_at)
+     VALUES ('Payroll Mgr','payrollmgr@spectrumsquadlv.com',$1,$2,'hr_admin',NULL,now())
+     ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash, password_salt=EXCLUDED.password_salt, role='hr_admin'`,
+    [m.hash, m.salt]
+  );
+  const s = hp("TestStaff123!");
+  await pool.query(
+    `INSERT INTO users (name, email, password_hash, password_salt, role, department_id, created_at)
+     VALUES ('Clin User','payrollclin@spectrumsquadlv.com',$1,$2,'clinical',NULL,now())
+     ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash, password_salt=EXCLUDED.password_salt, role='clinical'`,
+    [s.hash, s.salt]
+  );
+
+  const owner = mkClient(), mgr = mkClient(), clin = mkClient();
+  check("owner signs in", (await owner("/api/auth/login", { method: "POST", body: { email: "admin@spectrumsquadlv.com", password: "TestOwner123!" } })).status === 200);
+  check("a manager signs in", (await mgr("/api/auth/login", { method: "POST", body: { email: "payrollmgr@spectrumsquadlv.com", password: "TestMgr123!" } })).status === 200);
+  check("a clinical user signs in", (await clin("/api/auth/login", { method: "POST", body: { email: "payrollclin@spectrumsquadlv.com", password: "TestStaff123!" } })).status === 200);
+
+  const stamp = Date.now().toString().slice(-6);
+  const mk = async (name, rethinkId, email) => (await pool.query(
+    "INSERT INTO hr_employees (name,email,rethink_id,status,created_at) VALUES ($1,$2,$3,'active',now()) RETURNING id",
+    [name, email, rethinkId]
+  )).rows[0].id;
+  const aliceId = await mk(`Alice Payroll ${stamp}`, `RT-A-${stamp}`, `alice.${stamp}@example.test`);
+  const bobId = await mk(`Bob Payroll ${stamp}`, `RT-B-${stamp}`, null);
+  check("created the staff the export refers to", !!aliceId && !!bobId);
+
+  const roster = [
+    { id: `RT-A-${stamp}`, first: "Alice", last: `Payroll ${stamp}`, reg: 6,
+      shifts: [{ day: 8, hours: 4, type: "Billable" }, { day: 9, hours: 2, type: "Non-Billable" }] },
+    { id: `RT-B-${stamp}`, first: "Bob", last: `Payroll ${stamp}`, reg: 3,
+      shifts: [{ day: 10, hours: 3, type: "Billable" }] },
+  ];
+
+  // ------------------------------------------------------------------
+  section("A well-formed export");
+
+  let r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "payroll.xlsx", content_base64: b64(exportFor(roster)) } });
+  check("it imports", r.status === 200, r.data);
+  check("it read the pay period off the file", r.data.pay_period_start === "09/07/2026" && r.data.pay_period_end === "09/20/2026", r.data);
+  check("both staff matched on their Rethink id", r.data.matched === 2, r.data);
+  check("hours are split billable / non-billable", r.data.billable_hours === 7 && r.data.non_billable_hours === 2, r.data);
+  check("a timecard exists per matched person", (r.data.timecard_ids || []).length === 2, r.data.timecard_ids);
+  check("somebody with no email is named rather than dropped",
+    (r.data.no_email || []).some((n) => n.includes("Bob")), r.data.no_email);
+
+  const tcId = r.data.timecard_ids[0];
+  const tc = (await owner(`/api/hr/timecards/${tcId}`)).data;
+  check("the timecard carries its shifts", (tc.entries || []).length >= 1, (tc.entries || []).length);
+  check("each shift kept its appointment type", (tc.entries || []).every((e) => e.appt_type), tc.entries);
+
+  // ------------------------------------------------------------------
+  section("An export whose cells carry no position attribute");
+
+  // r="B7" is optional in the spec. Omitting it used to make every row parse
+  // as empty, and the only symptom was "no employees found".
+  r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "norefs.xlsx", content_base64: b64(buildXlsx({
+    Summary: [
+      ["Start Date:", "09/07/2026", "", "End Date:", "09/20/2026"],
+      ["Id", "FirstName", "LastName", "RegHours"],
+      [`RT-A-${stamp}`, "Alice", `Payroll ${stamp}`, 4],
+    ],
+    "Time Sheet Entries": [
+      ["", "Payroll detail"],
+      ["", "Id", "Alerts", "StartTime", "EndTime", "DateOfService", "ActualStartTime", "ActualEndTime", "Duration", "StaffVerified", "ApptStatus", "Appt Type"],
+      ["", `RT-A-${stamp}`, "", "9:00 AM", "1:00 PM", DAY(2026, 9, 8), "9:00 AM", "1:00 PM", 4, "Yes", "Completed", "Billable"],
+    ],
+  }, { withRefs: false })) } });
+  check("it still imports", r.status === 200, r.data);
+  check("with the right person and hours", r.data.matched === 1 && r.data.billable_hours === 4, r.data);
+
+  // ------------------------------------------------------------------
+  section("Tabs that have been renamed on the way through");
+
+  r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "recased.xlsx", content_base64: b64(exportFor(roster, { summaryTab: "summary", entriesTab: "TimeSheet Entries" })) } });
+  check("a re-cased and re-spaced tab name still matches", r.status === 200 && r.data.matched === 2, r.data);
+
+  // ------------------------------------------------------------------
+  section("When it cannot be read, it says what it saw");
+
+  r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "wrong.xlsx", content_base64: b64(buildXlsx({ "Sheet1": [["Name", "Hours"], ["Alice", 4]] })) } });
+  check("a file with no Summary tab is refused", r.status === 400, r.status);
+  check("and it names the tabs the file actually has",
+    /no Summary tab/i.test(r.data.error || "") && /Sheet1/.test(r.data.error || ""), r.data.error);
+
+  r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "cols.xlsx", content_base64: b64(buildXlsx({
+    Summary: [["Start Date:", "09/07/2026"], ["Employee", "Hours Worked"], ["Alice", 4]],
+  })) } });
+  check("a Summary tab with the wrong columns is refused", r.status === 400, r.status);
+  check("and it prints the header it found, and the one it wanted",
+    /Employee/.test(r.data.error || "") && /FirstName/.test(r.data.error || ""), r.data.error);
+
+  r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "empty.xlsx", content_base64: b64(buildXlsx({ Summary: [] })) } });
+  check("an empty Summary tab says it is empty", r.status === 400 && /empty/i.test(r.data.error || ""), r.data.error);
+
+  r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "notazip.xlsx", content_base64: Buffer.from("this is not a spreadsheet").toString("base64") } });
+  check("something that is not a spreadsheet at all is refused clearly",
+    r.status === 400 && /\.xlsx|ZIP/i.test(r.data.error || ""), r.data.error);
+
+  r = await clin("/api/hr/payroll/import", { method: "POST", body: { filename: "x.xlsx", content_base64: b64(exportFor(roster)) } });
+  check("a clinical user cannot import payroll", r.status === 403, r.status);
+
+  // ------------------------------------------------------------------
+  section("Building from Rethink's verified sessions");
+
+  r = await clin("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20" } });
+  check("a clinical user cannot build timecards", r.status === 403, r.status);
+
+  r = await owner("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "nope", to: "2026-09-20" } });
+  check("a start date that is not a date is refused", r.status === 400 && /YYYY-MM-DD/.test(r.data.error || ""), r.data);
+
+  r = await owner("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-20", to: "2026-09-07" } });
+  check("a range that runs backwards is refused", r.status === 400 && /after the end/i.test(r.data.error || ""), r.data);
+
+  r = await owner("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20" } });
+  // No Rethink credentials in the test environment, so this must fail LOUDLY
+  // and specifically -- never with an empty, plausible-looking run of zero
+  // timecards that somebody could mistake for "nobody worked".
+  check("with no Rethink credentials it refuses rather than returning nothing",
+    r.status === 502 || r.status === 503, { status: r.status, data: r.data });
+  check("and says Rethink is the problem",
+    /rethink|credential|configured/i.test((r.data && r.data.error) || ""), r.data);
+  check("it did not create any timecards on the way",
+    !r.data || !(r.data.timecard_ids || []).length, r.data && r.data.timecard_ids);
+
+  // ------------------------------------------------------------------
+  section("Which sessions land on a timecard");
+
+  // The route's network half cannot run here, but the rule it applies can:
+  // load the module with a stub context and feed it appointment rows. This is
+  // the part that decides whose hours those were and which sessions count.
+  const hrMod = require("./hr")({
+    dbGet: async () => null, dbAll: async () => [], dbRun: async () => ({ rows: [] }),
+    sendEmail: async () => ({}), nowISO: () => new Date().toISOString(),
+    crypto, APP_BASE_URL: "http://localhost", readBody: async () => ({}),
+    json: () => {}, sendFile: () => {},
+    // Rethink's own rule, stubbed to the shape the real one returns.
+    verificationVerdict: (row) => {
+      const ok = String(row.staffVerification || "").toLowerCase() === "verified"
+        && /complete/i.test(String(row.appointmentStatus || ""));
+      return { statusOk: /complete/i.test(String(row.appointmentStatus || "")), verifiedOk: ok, counts: ok };
+    },
+    rethinkBillableRaw: (row) => row.appointmentType || "",
+    rethinkStaffName: (row) => row.staffName || null,
+  });
+  const group = hrMod._internal.groupVerifiedSessions;
+
+  const rows = [
+    { staffId: "S1", appointmentDate: "2026-09-09", actualDurationHours: 2, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+    { staffId: "S1", appointmentDate: "2026-09-07", actualDurationHours: 3, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Non-Billable" },
+    { staffId: "S2", appointmentDate: "2026-09-08", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+    // left out: delivered but never verified
+    { staffId: "S1", appointmentDate: "2026-09-10", actualDurationHours: 8, staffVerification: "", appointmentStatus: "Completed", appointmentType: "Billable" },
+    // left out: no staff member on the row at all
+    { staffId: "", appointmentDate: "2026-09-11", actualDurationHours: 5, staffVerification: "Verified", appointmentStatus: "Completed" },
+  ];
+  const g = group(rows, {});
+  check("every row is accounted for", g.scanned === 5, g);
+  check("unverified sessions are left off", g.unverified === 1, g);
+  check("so are rows with nobody on them", g.noStaff === 1, g);
+  check("what is left is grouped per staff member", g.byStaff.size === 2, [...g.byStaff.keys()]);
+
+  const s1 = g.byStaff.get("S1");
+  check("one person's verified sessions are all there", s1.length === 2, s1);
+  check("and are in date order, not the order Rethink returned them",
+    s1[0].date === "2026-09-07" && s1[1].date === "2026-09-09", s1.map((e) => e.date));
+  check("the unverified 8-hour session is nowhere in their hours",
+    s1.reduce((a, e) => a + e.hours, 0) === 5, s1);
+  check("billable and non-billable are carried through from the appointment type",
+    s1.filter((e) => e.billable === true).length === 1 && s1.filter((e) => e.billable === false).length === 1, s1);
+  check("no client name or id rides along on a timecard entry",
+    s1.every((e) => !("clientId" in e) && !("clientName" in e) && !("client" in e)), s1[0]);
+
+  // An id with no staff record has to be nameable, or "go link this person"
+  // is not something anybody can act on.
+  const named = group([
+    { staffId: "S9", staffName: "Dana Reyes", appointmentDate: "2026-09-09", actualDurationHours: 2, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+  ], {});
+  check("an unmatched Rethink id carries the staff name off the session",
+    named.names.get("S9") === "Dana Reyes", [...named.names.entries()]);
+
+  // A row shaped exactly like the live ones. The field names below are the
+  // ones Rethink logs on every Appointments fetch for this account -- note
+  // appointmentDate arrives with a time on it, and staffId arrives as a
+  // number, not a string.
+  const live = group([
+    { staffId: 4821, renderingProvider: "Ayaana Harris", appointmentDate: "2026-09-08T00:00:00",
+      appointmentStartTime: "9:00 AM", actualDurationHours: 3.5, staffVerification: "Verified",
+      appointmentStatus: "Completed", appointmentType: "Billable",
+      clientId: 991, sessionNote: "a session note", diagnosisCode: "F84.0" },
+  ], {});
+  const liveEntries = live.byStaff.get("4821");
+  check("a numeric staff id is keyed as the string the staff record stores", !!liveEntries, [...live.byStaff.keys()]);
+  check("a date that arrives with a time on it is cut back to the day",
+    liveEntries && liveEntries[0].date === "2026-09-08", liveEntries && liveEntries[0].date);
+  check("the hours come off actualDurationHours", liveEntries && liveEntries[0].hours === 3.5, liveEntries);
+  check("and the appointment type is read for the billable split",
+    liveEntries && liveEntries[0].billable === true, liveEntries);
+  check("no client id, session note or diagnosis rides along onto a timecard",
+    !/a session note|F84\.0|991/.test(JSON.stringify(liveEntries)), liveEntries);
+
+  // The two import routes write a pay period in different formats, so an
+  // exact string match can never notice that the same fortnight is already on
+  // file. Two timecards for one pay period is a payroll mess worth naming.
+  const overlap = hrMod._internal.periodsOverlap;
+  const pday = hrMod._internal.periodDay;
+  check("the spreadsheet's date format is understood", pday("09/07/2026") === "2026-09-07", pday("09/07/2026"));
+  check("and so is ISO", pday("2026-09-07") === "2026-09-07", pday("2026-09-07"));
+  check("the same fortnight written both ways is seen as the same dates",
+    overlap("2026-09-07", "2026-09-20", "09/07/2026", "09/20/2026") === true);
+  check("a period that merely touches at one end still overlaps",
+    overlap("2026-09-07", "2026-09-20", "09/20/2026", "10/03/2026") === true);
+  check("the next fortnight does not", overlap("2026-09-07", "2026-09-20", "09/21/2026", "10/04/2026") === false);
+  check("an unparseable period never counts as an overlap",
+    overlap("2026-09-07", "2026-09-20", "last two weeks", "") === false);
+
+  const empty = group([], {});
+  check("an empty range groups to nobody rather than throwing", empty.byStaff.size === 0 && empty.scanned === 0, empty);
+
+  // ------------------------------------------------------------------
+  section("Building the same period twice");
+
+  // The normal way to use a date range: build it, notice people have not
+  // verified their sessions yet, chase them, build again. That must not leave
+  // two timecards per person with no way to tell which one to send.
+  //
+  // Driven through a module instance wired to the real database, so this is
+  // the same upsert the route calls -- not a re-implementation of it.
+  const q = (sql, params = []) => {
+    let i = 0;
+    return pool.query(String(sql).replace(/\?/g, () => `$${++i}`), params);
+  };
+  const dbHr = require("./hr")({
+    dbGet: async (sql, p2) => (await q(sql, p2)).rows[0] || null,
+    dbAll: async (sql, p2) => (await q(sql, p2)).rows,
+    dbRun: async (sql, p2) => await q(sql, p2),
+    sendEmail: async () => ({}), nowISO: () => new Date().toISOString(),
+    crypto, APP_BASE_URL: "http://localhost", readBody: async () => ({}),
+    json: () => {}, sendFile: () => {},
+  });
+  const upsert = dbHr._internal.upsertPeriodTimecard;
+
+  const rebuildEmp = await mk(`Rebuild Test ${stamp}`, `RT-R-${stamp}`, `rebuild.${stamp}@example.test`);
+  const period = { employee_id: rebuildEmp, source: "rethink_verified", pay_period_start: "2026-09-07", pay_period_end: "2026-09-20" };
+  const withHours = (hours) => ({ ...period, entries: [{ date: "2026-09-08", hours, appt_type: "Billable", billable: true }] });
+  const cards = async () => (await q(
+    "SELECT id, status, entries FROM hr_timecards WHERE employee_id = ? ORDER BY id", [rebuildEmp])).rows;
+
+  const first = await upsert(withHours(4), "tester");
+  check("the first build creates a timecard", !!first.id && first.replaced === false, first);
+  check("and there is exactly one", (await cards()).length === 1, (await cards()).length);
+
+  const second = await upsert(withHours(6), "tester");
+  check("building the same period again does NOT create a second timecard", (await cards()).length === 1, (await cards()).length);
+  check("it rebuilds the one that was already there", second.id === first.id && second.replaced === true, second);
+  check("with the new hours, not the old ones",
+    JSON.parse((await cards())[0].entries)[0].hours === 6, (await cards())[0].entries);
+
+  // Once it has been sent for signature it is a record of what somebody was
+  // shown, and is never rewritten underneath them.
+  await q("UPDATE hr_timecards SET verification_requested_at = ? WHERE id = ?", [new Date().toISOString(), first.id]);
+  const third = await upsert(withHours(99), "tester");
+  check("a timecard already sent for signature is reported as locked", third.locked === true && third.replaced === false, third);
+  check("its hours are left exactly as that employee saw them",
+    JSON.parse((await cards())[0].entries)[0].hours === 6, (await cards())[0].entries);
+  check("and no duplicate was created alongside it", (await cards()).length === 1, (await cards()).length);
+
+  // A different period for the same person is a different timecard.
+  const other = await upsert({ ...period, pay_period_start: "2026-09-21", pay_period_end: "2026-10-04", entries: [{ date: "2026-09-22", hours: 3 }] }, "tester");
+  check("the next pay period gets its own timecard", other.id !== first.id && (await cards()).length === 2, (await cards()).length);
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  await pool.end();
+  process.exit(fail ? 1 : 0);
+})().catch((e) => { console.error(e); process.exit(1); });

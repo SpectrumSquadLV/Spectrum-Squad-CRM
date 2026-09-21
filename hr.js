@@ -34,6 +34,25 @@ module.exports = function initHr(ctx) {
     sendFile,
   } = ctx;
 
+  // Rethink, late-bound. hr.js is constructed before the Rethink module, so
+  // these arrive as arrow functions that resolve at call time -- the same
+  // pattern rethink-verification.js uses. All three absent simply means the
+  // "build from verified sessions" route reports itself unavailable; it never
+  // guesses at hours.
+  const fetchAppointments = ctx.fetchAppointments || null;
+  const verificationVerdict = ctx.verificationVerdict || null;
+  const getRethinkConfig = ctx.getRethinkConfig || null;
+  // Billable / Non-Billable as RETHINK classifies it, read off the appointment
+  // row. Borrowed from the Rethink module rather than re-derived here so a
+  // timecard built from the API splits hours exactly the way one built from
+  // the spreadsheet export does.
+  const rethinkBillableRaw = ctx.rethinkBillableRaw || null;
+  // The staff member's name as it appears on the appointment row. Only used
+  // to say WHO an unmatched Rethink id belongs to -- "Rethink staff #4821" is
+  // not something anybody can act on, and the point of naming them is so they
+  // can be linked to a staff record.
+  const rethinkStaffName = ctx.rethinkStaffName || null;
+
 
   // The new-hire employment packet is sent through SignNow, which lives in
   // server.js. If an older server.js is running without it, degrade to a
@@ -3354,6 +3373,116 @@ module.exports = function initHr(ctx) {
         return json(res, 200, { ok: true, sent, skipped });
       }
 
+      // Build timecards straight from Rethink's verified sessions for a date
+      // range, with no spreadsheet in the middle. The payroll export was the
+      // only way in, so a wrong tab name or a re-saved file meant no timecards
+      // at all; the sessions themselves are already in Rethink, already
+      // staff-verified, and are what the export is generated from.
+      //
+      // "Verified" is NOT redefined here. It is the same verdict the unverified-
+      // appointment report files infractions on, read through the module that
+      // owns it -- two copies of that rule would mean one screen calling a
+      // session verified while the other called it late.
+      if (pathname === "/api/hr/timecards/from-rethink" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        if (!fetchAppointments || !verificationVerdict || !getRethinkConfig) {
+          return json(res, 503, { error: "This server build cannot reach Rethink directly. Use the payroll export instead." });
+        }
+        const b = await readBody(req);
+        const isDay = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ""));
+        const from = String(b.from || "").slice(0, 10);
+        const to = String(b.to || "").slice(0, 10);
+        if (!isDay(from) || !isDay(to)) return json(res, 400, { error: "Give a start and end date as YYYY-MM-DD." });
+        if (from > to) return json(res, 400, { error: "The start date is after the end date." });
+
+        const cfg = await getRethinkConfig();
+        const fetched = await fetchAppointments(from, to);
+        if (!fetched.ok) return json(res, 502, { error: fetched.error || "Rethink could not be reached." });
+
+        const grouped = groupVerifiedSessions(fetched.rows || [], cfg);
+        const { byStaff, names, scanned, unverified, noStaff } = grouped;
+
+        const preview = [];
+        for (const [staffId, entries] of byStaff) {
+          const staff = await dbGet("SELECT id, name, email FROM hr_employees WHERE rethink_id = ?", [staffId]);
+          const t = timecardTotals(entries);
+          let timecardId = null, replaced = false, locked = false, overlaps = false;
+          if (staff) {
+            const r = await upsertPeriodTimecard({
+              employee_id: staff.id,
+              source: "rethink_verified",
+              pay_period_start: from,
+              pay_period_end: to,
+              entries,
+              raw: { rethink_id: staffId, total_hours: t.total_hours, sessions: entries.length },
+            }, actor);
+            timecardId = r.id;
+            replaced = r.replaced;
+            locked = r.locked;
+            // Anything else already covering these dates for this person --
+            // most likely a payroll-export import of the same fortnight,
+            // which stores its period in the spreadsheet's date format and so
+            // never collides with this one on a string match.
+            const others = await dbAll(
+              `SELECT id, source, pay_period_start, pay_period_end FROM hr_timecards
+                WHERE employee_id = ? AND id <> ? ORDER BY id DESC LIMIT 20`,
+              [staff.id, timecardId]
+            ).catch(() => []);
+            overlaps = others.some((o) => periodsOverlap(from, to, o.pay_period_start, o.pay_period_end));
+          }
+          preview.push({
+            name: staff ? staff.name : (names.get(staffId) || `Rethink staff #${staffId}`),
+            rethink_id: staffId,
+            total_hours: t.total_hours,
+            billable_hours: t.billable_hours,
+            non_billable_hours: t.non_billable_hours,
+            unclassified_hours: t.unclassified_hours,
+            shifts: entries.length,
+            matched: !!staff,
+            has_email: !!(staff && staff.email),
+            timecard_id: timecardId,
+            replaced,
+            locked,
+            overlaps,
+          });
+        }
+        preview.sort((a, c) => String(a.name).localeCompare(String(c.name)));
+
+        await audit(actor, "payroll_imported", "timecard", null,
+          `source=rethink_verified period=${from}->${to} staff=${preview.length} matched=${preview.filter((p) => p.matched).length} sessions=${scanned}`);
+
+        return json(res, 200, {
+          ok: true,
+          source: "rethink_verified",
+          pay_period_start: from,
+          pay_period_end: to,
+          total_employees: preview.length,
+          matched: preview.filter((p) => p.matched).length,
+          unmatched: preview.filter((p) => !p.matched).map((p) => p.name),
+          no_email: preview.filter((p) => p.matched && !p.has_email).map((p) => p.name),
+          has_appt_type: preview.some((p) => (Number(p.billable_hours) || 0) + (Number(p.non_billable_hours) || 0) > 0),
+          billable_hours: round2(preview.reduce((s, p) => s + (Number(p.billable_hours) || 0), 0)),
+          non_billable_hours: round2(preview.reduce((s, p) => s + (Number(p.non_billable_hours) || 0), 0)),
+          unclassified_hours: round2(preview.reduce((s, p) => s + (Number(p.unclassified_hours) || 0), 0)),
+          total_hours: round2(preview.reduce((s, p) => s + (Number(p.total_hours) || 0), 0)),
+          // What was left out and why, so an unexpectedly small timecard run
+          // has an explanation on the same screen.
+          sessions_scanned: scanned,
+          sessions_unverified: unverified,
+          sessions_without_staff: noStaff,
+          truncated: !!fetched.truncated,
+          rebuilt: preview.filter((p) => p.replaced).length,
+          // Already has another timecard covering these dates, from the other
+          // import route. Named, never merged.
+          overlapping: preview.filter((p) => p.overlaps).map((p) => p.name),
+          // Already sent for signature or already signed: left exactly as the
+          // person saw them.
+          locked: preview.filter((p) => p.locked).map((p) => p.name),
+          timecard_ids: preview.filter((p) => p.timecard_id && !p.locked).map((p) => p.timecard_id),
+          employees: preview,
+        });
+      }
+
       // Upload a Rethink bi-weekly payroll export (.xlsx as base64). Parses it,
       // creates one timecard per employee (matched by rethink_id, else name),
       // and returns a preview. Does NOT send emails — the frontend confirms
@@ -3371,7 +3500,29 @@ module.exports = function initHr(ctx) {
         let parsed;
         try { parsed = buildPayrollTimecards(parseXlsx(buffer)); }
         catch (e) { return json(res, 400, { error: "Could not parse the export: " + e.message }); }
-        if (!parsed.employees.length) return json(res, 400, { error: "No employees found in the export. Is this the Rethink payroll export?" });
+        if (!parsed.employees.length) {
+          // "Is this the Rethink payroll export?" was the whole of the old
+          // message, which left nowhere to go when the answer was yes. Say what
+          // the file actually contained: which tabs it has, which one was read
+          // as the roster, and what its header row said. That is enough to tell
+          // a wrong tab name from a wrong column name from an empty export.
+          const d = parsed.diagnostics || {};
+          const tabs = (d.sheet_names || []).length ? (d.sheet_names || []).join(", ") : "none";
+          let why;
+          if (!d.summary_sheet) {
+            why = `It has no Summary tab. Tabs found: ${tabs}.`;
+          } else if (!d.summary_rows) {
+            why = `Its ${d.summary_sheet} tab is empty.`;
+          } else if (!(d.summary_header || []).length) {
+            why = `The ${d.summary_sheet} tab has ${d.summary_rows} row(s) but no readable header row.`;
+          } else {
+            why = `The ${d.summary_sheet} tab has ${d.summary_rows} row(s), with columns: ${(d.summary_header || []).join(", ")}. The roster is read from an Id column plus FirstName / LastName.`;
+          }
+          return json(res, 400, {
+            error: `No employees could be read from this file. ${why}`,
+            diagnostics: d,
+          });
+        }
 
         const preview = [];
         for (const emp of parsed.employees) {
@@ -4554,11 +4705,18 @@ Write body as plain text with line breaks (no HTML).`;
     let rm;
     while ((rm = rre.exec(xml))) {
       const cells = [];
-      const cre = /<c\s+r="([A-Z]+\d+)"([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g;
-      let cm;
+      // The r="B7" position attribute is OPTIONAL in the spec: a writer may
+      // leave it off and mean "the next column". The old pattern required it,
+      // so an export written that way parsed as entirely empty rows -- which
+      // surfaced as "No employees found in the export" rather than as anything
+      // pointing at the real cause. Fall back to a running column index.
+      const cre = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+      let cm, nextCol = 0;
       while ((cm = cre.exec(rm[1]))) {
-        const ci = colToIndex(cm[1]);
-        const attrs = cm[2] || "", inner = cm[3] || "";
+        const attrs = cm[1] || "", inner = cm[2] || "";
+        const rAttr = attrs.match(/\br="([A-Z]+\d+)"/);
+        const ci = rAttr ? colToIndex(rAttr[1]) : nextCol;
+        nextCol = ci + 1;
         const tMatch = attrs.match(/t="([^"]+)"/);
         const t = tMatch ? tMatch[1] : "";
         const vMatch = inner.match(/<v>([\s\S]*?)<\/v>/);
@@ -4699,8 +4857,25 @@ Write body as plain text with line breaks (no HTML).`;
   // "Summary" sheet for the employee roster + period, and "Time Sheet Entries"
   // for the per-shift detail. Pay/rate columns are intentionally ignored — the
   // employee is verifying HOURS, not wages.
+  // Find a sheet by name without insisting on the exact spelling. Rethink has
+  // shipped exports with "Time Sheet Entries", "TimeSheet Entries" and a
+  // trailing space at different times, and an export saved through Excel or
+  // Google Sheets can come back with the name re-cased. Matching loosely here
+  // is the difference between an import that works and one that reports
+  // finding no employees.
+  function findSheet(sheets, ...names) {
+    const keys = Object.keys(sheets || {});
+    const squash = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    for (const want of names) {
+      const hit = keys.find((k) => squash(k) === squash(want));
+      if (hit) return { rows: sheets[hit] || [], name: hit };
+    }
+    return { rows: [], name: null };
+  }
+
   function buildPayrollTimecards(sheets) {
-    const summary = sheets["Summary"] || [];
+    const summarySheet = findSheet(sheets, "Summary", "Payroll Summary", "Employee Summary");
+    const summary = summarySheet.rows;
     const meta = summary[0] || [];
     // Row 0: ["Start Date:", "MM/DD/YYYY", "", "End Date:", "MM/DD/YYYY", ...]
     let periodStart = "", periodEnd = "";
@@ -4736,7 +4911,8 @@ Write body as plain text with line breaks (no HTML).`;
     }
 
     // Per-shift detail.
-    const tse = sheets["Time Sheet Entries"] || [];
+    const tseSheet = findSheet(sheets, "Time Sheet Entries", "TimeSheet Entries", "Timesheet Entries", "Time Sheet Entry", "Entries", "Detail");
+    const tse = tseSheet.rows;
     let tHdr = tse.findIndex((r) => String((r || [])[1] || "").trim().toLowerCase() === "id");
     if (tHdr < 0) tHdr = 1;
     const th = tse[tHdr] || [];
@@ -4778,7 +4954,129 @@ Write body as plain text with line breaks (no HTML).`;
       emp.unclassified_hours = t.unclassified_hours;
       emp.has_split = t.has_split;
     }
-    return { period_start: periodStart, period_end: periodEnd, has_appt_type: eType >= 0, employees: Object.values(employees) };
+    return {
+      period_start: periodStart, period_end: periodEnd,
+      has_appt_type: eType >= 0,
+      employees: Object.values(employees),
+      // What the parser actually saw, so a failed import can say why instead of
+      // asking whether this is the right file.
+      diagnostics: {
+        sheet_names: Object.keys(sheets || {}),
+        summary_sheet: summarySheet.name,
+        entries_sheet: tseSheet.name,
+        summary_rows: summary.length,
+        entries_rows: tse.length,
+        summary_header: (header || []).filter(Boolean).map((h) => String(h)),
+      },
+    };
+  }
+
+  // Rethink appointment rows -> one list of timecard entries per staff member.
+  // Pulled out of the route so the rule can be tested without a network: this
+  // is the part that decides whose hours those were and which sessions count.
+  //
+  // Only VERIFIED sessions make it through. A timecard is what somebody is
+  // asked to sign, and a session they have not verified is not yet a fact
+  // about their hours -- and "verified" is the verdict passed in, never a
+  // second definition written here.
+  function groupVerifiedSessions(rows, cfg) {
+    const byStaff = new Map();
+    const names = new Map();
+    let scanned = 0, unverified = 0, noStaff = 0;
+    for (const row of rows || []) {
+      scanned++;
+      const staffId = String(row.staffId == null ? "" : row.staffId).trim();
+      if (!staffId) { noStaff++; continue; }
+      const verdict = verificationVerdict ? verificationVerdict(row, cfg) : null;
+      if (!verdict || !verdict.counts) { unverified++; continue; }
+      const apptType = rethinkBillableRaw ? (rethinkBillableRaw(row) || "") : "";
+      const entry = {
+        date: String(row.appointmentDate || "").slice(0, 10),
+        scheduled: row.appointmentStartTime ? String(row.appointmentStartTime) : "",
+        clock_in: "",
+        clock_out: "",
+        hours: round2(Number(row.actualDurationHours) || Number(row.durationHours) || 0),
+        verified: row.staffVerification == null ? "" : String(row.staffVerification).slice(0, 80),
+        alert: "",
+        appt_status: row.appointmentStatus == null ? "" : String(row.appointmentStatus).slice(0, 80),
+        appt_type: apptType,
+        billable: classifyBillable(apptType),
+      };
+      if (!byStaff.has(staffId)) byStaff.set(staffId, []);
+      byStaff.get(staffId).push(entry);
+      if (!names.has(staffId) && rethinkStaffName) {
+        const hint = rethinkStaffName(row);
+        if (hint) names.set(staffId, hint);
+      }
+    }
+    for (const entries of byStaff.values()) {
+      entries.sort((a, c) => String(a.date).localeCompare(String(c.date)));
+    }
+    return { byStaff, names, scanned, unverified, noStaff };
+  }
+
+  // The payroll export writes its period the way the spreadsheet does
+  // ("09/07/2026"); a range built from Rethink writes ISO ("2026-09-07"). So
+  // the same fortnight can be stored two ways, and an exact string match will
+  // never see that somebody already has a timecard covering these dates.
+  // Nothing is merged on the strength of this -- two timecards for one pay
+  // period is a payroll mess worth naming, not one worth silently resolving.
+  function periodDay(v) {
+    const t = String(v || "").trim();
+    let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = t.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (m) return `${m[3]}-${String(m[1]).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
+    return null;
+  }
+  function periodsOverlap(aStart, aEnd, bStart, bEnd) {
+    const a1 = periodDay(aStart), a2 = periodDay(aEnd), b1 = periodDay(bStart), b2 = periodDay(bEnd);
+    if (!a1 || !a2 || !b1 || !b2) return false;
+    return a1 <= b2 && b1 <= a2;
+  }
+
+  // Build-again safety for a date range. Pulling the same period twice is the
+  // normal way to use this -- build it, see that four people have not verified
+  // their sessions yet, chase them, build again. Inserting a second row each
+  // time would leave two timecards per person and no way to tell which one to
+  // send, so a period that has already been built for somebody is REPLACED
+  // rather than added to.
+  //
+  // Except once it has left the building. A timecard that has been emailed for
+  // signature, or signed, is a record of what that person was shown and agreed
+  // to; it is never rewritten underneath them. Those are reported back as
+  // locked so the screen can say so.
+  async function upsertPeriodTimecard(input, actor) {
+    const existing = await dbGet(
+      `SELECT id, status, verification_requested_at, accepted_at FROM hr_timecards
+        WHERE employee_id = ? AND source = ? AND pay_period_start = ? AND pay_period_end = ?
+        ORDER BY id DESC LIMIT 1`,
+      [input.employee_id, input.source, input.pay_period_start, input.pay_period_end]
+    ).catch(() => null);
+
+    if (!existing) return Object.assign({ replaced: false, locked: false }, await importTimecard(input, actor));
+
+    if (existing.accepted_at || existing.verification_requested_at || existing.status === "accepted") {
+      return { id: existing.id, flags: 0, status: existing.status, replaced: false, locked: true };
+    }
+
+    const entries = Array.isArray(input.entries) ? input.entries : [];
+    const flags = detectTimecardAnomalies(entries);
+    const status = flags.length ? "flagged" : "imported";
+    await dbRun(
+      `UPDATE hr_timecards SET entries = ?, raw_json = ?, status = ?, created_at = ? WHERE id = ?`,
+      [JSON.stringify(entries), JSON.stringify(input.raw || input), status, nowISO(), existing.id]
+    );
+    // The old anomaly flags described the old numbers.
+    await dbRun("DELETE FROM hr_timecard_flags WHERE timecard_id = ?", [existing.id]).catch(() => {});
+    for (const f of flags) {
+      await dbRun(
+        `INSERT INTO hr_timecard_flags (timecard_id, flag_type, detail, status, created_at) VALUES (?, ?, ?, 'open', ?)`,
+        [existing.id, f.flag_type, f.detail, nowISO()]
+      );
+    }
+    await audit(actor, "timecard_rebuilt", "timecard", existing.id, `source=${input.source} period=${input.pay_period_start}->${input.pay_period_end} flags=${flags.length}`);
+    return { id: existing.id, flags: flags.length, status, replaced: true, locked: false };
   }
 
   async function importTimecard(input, actor) {
@@ -6391,8 +6689,8 @@ Write body as plain text with line breaks (no HTML).`;
       hrCanAccess, hrCanManage, hrCanSeeSensitive, runScreening, buildScreeningContent, ASSESSMENT_SCHEMA,
       followupMessage, enrollFollowupSequence, processFollowups, missingQuestions,
       handleInbound, draftReply, parseCsv, extractEmail,
-      detectTimecardAnomalies, importTimecard, buildDailySummary,
-      parseXlsx, buildPayrollTimecards,
+      detectTimecardAnomalies, importTimecard, upsertPeriodTimecard, buildDailySummary,
+      parseXlsx, buildPayrollTimecards, findSheet, groupVerifiedSessions, periodDay, periodsOverlap,
       classifyBillable, timecardTotals, shapeTimecardPreview, timecardEmailHtml, timecardVerifyHtml, saveTimecardPdf,
       parsePlatformApplication, matchPosition, handlePlatformApplication,
     },
