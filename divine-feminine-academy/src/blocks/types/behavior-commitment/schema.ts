@@ -11,7 +11,7 @@ export const responseSchema = z.object({
   instead: z.string().min(1),
   /** Specific enough to be checkable. Vagueness is how this fails. */
   nextTime: z.string(),
-  area: z.enum(['self', 'love', 'life', 'wealth']).optional(),
+  area: z.enum(['herself', 'relationships', 'success', 'money']).optional(),
 })
 
 export type Config = z.infer<typeof configSchema>

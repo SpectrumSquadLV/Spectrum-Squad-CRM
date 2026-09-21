@@ -69,7 +69,7 @@ await createEntry(herself, {
   contactId: contact.id,
   title: 'Day 2',
   body: SECRET,
-  area: 'self',
+  area: 'herself',
   source: 'lesson_prompt',
 })
 

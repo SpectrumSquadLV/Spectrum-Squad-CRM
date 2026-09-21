@@ -9,7 +9,7 @@ import { getActor, getQueryContext } from '@/lib/auth/actor-server'
 export const metadata: Metadata = { title: 'I chose HER' }
 
 const isArea = (v: string | null): v is Area =>
-  v === 'self' || v === 'love' || v === 'life' || v === 'wealth'
+  v === 'herself' || v === 'relationships' || v === 'success' || v === 'money'
 
 export default async function ChoicesPage() {
   const actor = await getActor()

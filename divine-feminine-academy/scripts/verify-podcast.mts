@@ -156,7 +156,7 @@ console.log('\nwhat the sync must never touch')
       transcript: 'A full transcript somebody spent an hour on.',
       ctaProgramSlug: 'me-vs-her',
       featuredAt: new Date('2026-06-01T00:00:00Z'),
-      area: 'love',
+      area: 'relationships',
       upgradeHeadline: 'A line written for this episode',
     })
     .where(eq(articles.id, row!.id))
@@ -176,7 +176,7 @@ console.log('\nwhat the sync must never touch')
   check('THE TRANSCRIPT SURVIVES', after?.transcript === 'A full transcript somebody spent an hour on.')
   check('the episode still points at its own door', after?.ctaProgramSlug === 'me-vs-her')
   check('it is still featured', after?.featuredAt !== null)
-  check('its area is untouched', after?.area === 'love')
+  check('its area is untouched', after?.area === 'relationships')
   check('and the line written for it', after?.upgradeHeadline === 'A line written for this episode')
   check(
     'the slug did NOT move with the title',

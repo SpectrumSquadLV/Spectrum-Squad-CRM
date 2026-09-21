@@ -34,11 +34,11 @@ import type { AnyBlockDefinition } from '@/blocks/contract'
  * updates what it wrote the first time instead of duplicating it.
  */
 
-type Area = 'self' | 'love' | 'life' | 'wealth'
+type Area = 'herself' | 'relationships' | 'success' | 'money'
 
 const asString = (v: unknown): string => (typeof v === 'string' ? v : '')
 const asArea = (v: unknown): Area | null =>
-  v === 'self' || v === 'love' || v === 'life' || v === 'wealth' ? v : null
+  v === 'herself' || v === 'relationships' || v === 'success' || v === 'money' ? v : null
 
 export async function contactDataKey(db: Db, contactId: string) {
   const [row] = await db

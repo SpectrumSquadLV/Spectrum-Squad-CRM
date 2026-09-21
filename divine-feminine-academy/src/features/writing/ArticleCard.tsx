@@ -5,7 +5,7 @@ import type { ArticleRow } from '@/db/queries/writing'
 import { excerpt, formatDuration, readingMinutes } from './markdown'
 
 const isArea = (v: string | null): v is Area =>
-  v === 'self' || v === 'love' || v === 'life' || v === 'wealth'
+  v === 'herself' || v === 'relationships' || v === 'success' || v === 'money'
 
 export function articleDate(date: Date | null): string {
   if (!date) return ''

@@ -24,19 +24,19 @@ const PLACEHOLDER = '[PLACEHOLDER]'
 
 type Seed = {
   prompt: string
-  area: 'self' | 'love' | 'life' | 'wealth'
+  area: 'herself' | 'relationships' | 'success' | 'money'
   reverseScored?: boolean
 }
 
 const likerts: Seed[] = [
-  { prompt: `${PLACEHOLDER} I speak to myself the way I would speak to a friend.`, area: 'self' },
-  { prompt: `${PLACEHOLDER} I apologise for things that are not my fault.`, area: 'self', reverseScored: true },
-  { prompt: `${PLACEHOLDER} I ask for what I want directly.`, area: 'love' },
-  { prompt: `${PLACEHOLDER} I accept less than I want to keep the peace.`, area: 'love', reverseScored: true },
-  { prompt: `${PLACEHOLDER} My days look like the life I actually chose.`, area: 'life' },
-  { prompt: `${PLACEHOLDER} I say yes when I mean no.`, area: 'life', reverseScored: true },
-  { prompt: `${PLACEHOLDER} I believe I am allowed to want more money.`, area: 'wealth' },
-  { prompt: `${PLACEHOLDER} I undercharge, or avoid naming a price.`, area: 'wealth', reverseScored: true },
+  { prompt: `${PLACEHOLDER} I speak to myself the way I would speak to a friend.`, area: 'herself' },
+  { prompt: `${PLACEHOLDER} I apologise for things that are not my fault.`, area: 'herself', reverseScored: true },
+  { prompt: `${PLACEHOLDER} I ask for what I want directly.`, area: 'relationships' },
+  { prompt: `${PLACEHOLDER} I accept less than I want to keep the peace.`, area: 'relationships', reverseScored: true },
+  { prompt: `${PLACEHOLDER} My days look like the life I actually chose.`, area: 'success' },
+  { prompt: `${PLACEHOLDER} I say yes when I mean no.`, area: 'success', reverseScored: true },
+  { prompt: `${PLACEHOLDER} I believe I am allowed to want more money.`, area: 'money' },
+  { prompt: `${PLACEHOLDER} I undercharge, or avoid naming a price.`, area: 'money', reverseScored: true },
 ]
 
 async function main() {

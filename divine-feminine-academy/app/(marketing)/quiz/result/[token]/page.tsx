@@ -7,7 +7,11 @@ import { Eyebrow, Prose, Section } from '@/design-system/patterns'
 import { getAttemptByToken } from '@/db/queries/assessments'
 import { archetypes, isMode, modes } from '@/features/quiz/archetypes'
 import { Sigil } from '@/features/quiz/Sigil'
-import { areas as allAreas, type Area } from '@/features/assessment/scoring'
+import {
+  areas as allAreas,
+  areaLabels,
+  type Area,
+} from '@/features/assessment/scoring'
 import { siteImage } from '@/db/queries/images'
 import { SiteImage, SiteImageFrame } from '@/features/images/SiteImage'
 import { imageSlot } from '@/features/images/slots'
@@ -24,19 +28,14 @@ const modeLabels: Record<string, string> = {
   sulk: 'Sulk',
 }
 
-const areaLabels: Record<Area, string> = {
-  self: 'Self',
-  love: 'Love',
-  life: 'Life',
-  wealth: 'Wealth',
-}
+/* Labels come from the scoring module so no surface can drift from it. */
 
 /** The hairline for each area. Thin rules and small marks, never a fill. */
 const areaBar: Record<Area, string> = {
-  self: 'bg-area-self',
-  love: 'bg-area-love',
-  life: 'bg-area-life',
-  wealth: 'bg-area-wealth',
+  herself: 'bg-area-herself',
+  relationships: 'bg-area-relationships',
+  money: 'bg-area-money',
+  success: 'bg-area-success',
 }
 
 /**

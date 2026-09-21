@@ -25,7 +25,7 @@ type Seed = {
   slug: string
   title: string
   dek: string
-  area: 'self' | 'love' | 'life' | 'wealth'
+  area: 'herself' | 'relationships' | 'success' | 'money'
   archetype: 'fight' | 'flight' | 'freeze' | 'sulk'
   upgradeHeadline: string
   upgradeBlurb: string
@@ -38,7 +38,7 @@ const pieces: Seed[] = [
     slug: 'the-cost-of-being-the-capable-one',
     title: 'The cost of being the capable one',
     dek: 'Everybody calls you. Nobody checks on you. Here is how that happened, and what it is quietly taking.',
-    area: 'self',
+    area: 'herself',
     archetype: 'fight',
     upgradeHeadline: 'Five emails for the capable one',
     upgradeBlurb:
@@ -82,7 +82,7 @@ What you are practising is not delegation. It is surviving the discomfort of not
     slug: 'almost-ready-is-a-decision',
     title: 'Almost ready is a decision',
     dek: 'You are not procrastinating. You are waiting for a signal that does not exist.',
-    area: 'wealth',
+    area: 'money',
     archetype: 'freeze',
     upgradeHeadline: 'Five emails for the one who is almost ready',
     upgradeBlurb:
@@ -122,7 +122,7 @@ What you are practising is being witnessed being imperfect and surviving it — 
     slug: 'i-am-fine-and-other-things-that-are-not-true',
     title: 'I am fine, and other things that are not true',
     dek: 'On going quiet, keeping score, and the one sentence that breaks the pattern.',
-    area: 'love',
+    area: 'relationships',
     archetype: 'sulk',
     upgradeHeadline: 'Five emails for the one who went quiet',
     upgradeBlurb:

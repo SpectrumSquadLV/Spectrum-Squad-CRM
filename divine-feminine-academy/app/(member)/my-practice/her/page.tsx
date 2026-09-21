@@ -10,7 +10,7 @@ import { getActor, getQueryContext } from '@/lib/auth/actor-server'
 export const metadata: Metadata = { title: 'HER' }
 
 const isArea = (v: string | null): v is Area =>
-  v === 'self' || v === 'love' || v === 'life' || v === 'wealth'
+  v === 'herself' || v === 'relationships' || v === 'success' || v === 'money'
 
 /**
  * Her HER profile.

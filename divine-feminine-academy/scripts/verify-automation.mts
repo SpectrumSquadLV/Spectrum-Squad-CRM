@@ -94,8 +94,8 @@ await check('a missing number fails a comparison rather than passing it', () => 
 })
 
 await check('in matches any of a set', () => {
-  assert.equal(conditionsMatch({ in: { area: ['self', 'love'] } }, { area: 'love' }), true)
-  assert.equal(conditionsMatch({ in: { area: ['self', 'love'] } }, { area: 'life' }), false)
+  assert.equal(conditionsMatch({ in: { area: ['herself', 'relationships'] } }, { area: 'relationships' }), true)
+  assert.equal(conditionsMatch({ in: { area: ['herself', 'relationships'] } }, { area: 'success' }), false)
 })
 
 await check('exists requires a value that is not null', () => {

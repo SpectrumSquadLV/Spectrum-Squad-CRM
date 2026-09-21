@@ -15,7 +15,7 @@ import { siteUrl } from '@/lib/auth/env'
 export const dynamic = 'force-dynamic'
 
 const isArea = (v: string | null): v is Area =>
-  v === 'self' || v === 'love' || v === 'life' || v === 'wealth'
+  v === 'herself' || v === 'relationships' || v === 'success' || v === 'money'
 
 export async function generateMetadata({
   params,

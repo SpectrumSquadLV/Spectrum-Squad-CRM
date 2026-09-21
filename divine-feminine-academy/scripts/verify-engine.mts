@@ -332,7 +332,7 @@ await check('Day 6 increments the core metric', async () => {
     situation: 'She asked me to cover her shift again',
     oldResponse: 'I would have said yes',
     herResponse: 'I said no',
-    area: 'life',
+    area: 'success',
   })
   const rows = await db
     .select()
@@ -340,7 +340,7 @@ await check('Day 6 increments the core metric', async () => {
     .where(eq(herChoices.contactId, contact.id))
   assert.equal(rows.length, 1)
   assert.equal(rows[0]!.herResponse, 'I said no')
-  assert.equal(rows[0]!.area, 'life')
+  assert.equal(rows[0]!.area, 'success')
 })
 
 await check('re-saving Day 6 does not double-count', async () => {
@@ -348,7 +348,7 @@ await check('re-saving Day 6 does not double-count', async () => {
     situation: 'She asked me to cover her shift again',
     oldResponse: 'I would have said yes',
     herResponse: 'I said no, and did not explain',
-    area: 'life',
+    area: 'success',
   })
   const rows = await db
     .select()

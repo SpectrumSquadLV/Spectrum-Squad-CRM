@@ -27,7 +27,7 @@
  * her, because that is the part she can reach. None of it is about blame.
  */
 
-export type HomeArea = 'love' | 'wealth' | 'self' | 'life'
+export type HomeArea = 'relationships' | 'money' | 'herself' | 'success'
 
 export interface PainLine {
   text: string
@@ -51,7 +51,7 @@ export interface PainBlock {
 export const pain: readonly PainBlock[] = [
   {
     word: 'Love',
-    area: 'love',
+    area: 'relationships',
     lines: [
       { text: 'You reread the text before you send it.', home: true },
       { text: 'You check whether they’ve watched your story.', home: true },
@@ -108,7 +108,7 @@ export const pain: readonly PainBlock[] = [
   },
   {
     word: 'Money',
-    area: 'wealth',
+    area: 'money',
     lines: [
       {
         text: 'You avoid checking your bank account until you absolutely have to.',
@@ -171,7 +171,7 @@ export const pain: readonly PainBlock[] = [
   },
   {
     word: 'Success',
-    area: 'life',
+    area: 'success',
     lines: [
       {
         text: 'You have an idea and immediately think about what everyone else will think of it.',
@@ -232,7 +232,7 @@ export const pain: readonly PainBlock[] = [
   },
   {
     word: 'Manifestation',
-    area: 'self',
+    area: 'herself',
     lines: [
       {
         text: 'You make the vision board and keep making the same choices.',
@@ -330,10 +330,10 @@ export const painIsWritten = pain.some(
  * Feminine rather than showing a stranger a gap.
  */
 export const possibility: readonly PainBlock[] = [
-  { word: 'Love', area: 'love', lines: [] },
-  { word: 'Money', area: 'wealth', lines: [] },
-  { word: 'Success', area: 'life', lines: [] },
-  { word: 'Receiving', area: 'self', lines: [] },
+  { word: 'Love', area: 'relationships', lines: [] },
+  { word: 'Money', area: 'money', lines: [] },
+  { word: 'Success', area: 'success', lines: [] },
+  { word: 'Receiving', area: 'herself', lines: [] },
 ]
 
 export const possibilityIsWritten = possibility.some(
@@ -342,8 +342,8 @@ export const possibilityIsWritten = possibility.some(
 
 /** The hairline colour for each area. Thin rules and small marks only. */
 export const areaRule: Record<HomeArea, string> = {
-  love: 'border-area-love',
-  wealth: 'border-area-wealth',
-  self: 'border-area-self',
-  life: 'border-area-life',
+  relationships: 'border-area-relationships',
+  money: 'border-area-money',
+  herself: 'border-area-herself',
+  success: 'border-area-success',
 }

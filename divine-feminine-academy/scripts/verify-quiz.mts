@@ -93,7 +93,10 @@ async function main() {
   console.log('\nthe seeded quiz')
   check('it is published', Boolean(published.version.publishedAt))
   check('it is an archetype quiz, not a scored one', published.assessment.kind === 'archetype')
-  check('twelve questions came back', published.questions.length === 12)
+  check(
+    'every seeded question came back',
+    published.questions.length === quizQuestions.length,
+  )
   check(
     'every question is a choice question',
     published.questions.every((q) => q.type === 'multiple_choice'),
@@ -135,7 +138,7 @@ async function main() {
     .from(assessmentResponses)
     .where(eq(assessmentResponses.attemptId, attempt!.id))
 
-  check('every answer was stored', responses.length === 12)
+  check('every answer was stored', responses.length === quizQuestions.length)
 
   const [result] = await db
     .select()
@@ -362,7 +365,7 @@ console.log('\nevery completed quiz resolves to one of the four')
   })
 
   // A single answer, carrying a single point.
-  const one = scoreArchetypes([q('q1', { sulk: 1 }, { love: 1 })], [
+  const one = scoreArchetypes([q('q1', { sulk: 1 }, { relationships: 1 })], [
     { questionId: 'q1', value: 'a' },
   ])
   check('one answer is enough', one.primary === 'sulk', String(one.primary))
@@ -370,14 +373,14 @@ console.log('\nevery completed quiz resolves to one of the four')
 
   // A dead-flat four-way tie.
   const tie = scoreArchetypes(
-    [q('q1', { fight: 1, flight: 1, freeze: 1, sulk: 1 }, { self: 1 })],
+    [q('q1', { fight: 1, flight: 1, freeze: 1, sulk: 1 }, { herself: 1 })],
     [{ questionId: 'q1', value: 'a' }],
   )
   check('a perfect tie still names one', tie.primary !== null, String(tie.primary))
   check(
     'and names the same one every time',
     scoreArchetypes(
-      [q('q1', { fight: 1, flight: 1, freeze: 1, sulk: 1 }, { self: 1 })],
+      [q('q1', { fight: 1, flight: 1, freeze: 1, sulk: 1 }, { herself: 1 })],
       [{ questionId: 'q1', value: 'a' }],
     ).primary === tie.primary,
   )
@@ -399,10 +402,10 @@ console.log('\nthe tie-break is decided by her answers, not by the list order')
    * would hand this to fight, which is exactly the bias being removed.
    */
   const questions = [
-    { id: 'q1', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { love: 2 } }] } },
-    { id: 'q2', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { love: 2 } }] } },
-    { id: 'q3', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { fight: 2, flight: 2 }, areas: { self: 2 } }] } },
-    { id: 'q4', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { fight: 2, freeze: 2 }, areas: { self: 2 } }] } },
+    { id: 'q1', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { relationships: 2 } }] } },
+    { id: 'q2', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { relationships: 2 } }] } },
+    { id: 'q3', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { fight: 2, flight: 2 }, areas: { herself: 2 } }] } },
+    { id: 'q4', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { fight: 2, freeze: 2 }, areas: { herself: 2 } }] } },
   ]
   const answers = questions.map((q) => ({ questionId: q.id, value: 'a' }))
   const r = scoreArchetypes(questions, answers)
@@ -421,13 +424,13 @@ console.log('\nwhere it is loudest')
 
 {
   const questions = [
-    { id: 'q1', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { wealth: 3 } }] } },
-    { id: 'q2', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { wealth: 3, love: 1 } }] } },
-    { id: 'q3', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { love: 2 } }] } },
+    { id: 'q1', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { money: 3 } }] } },
+    { id: 'q2', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { money: 3, relationships: 1 } }] } },
+    { id: 'q3', type: 'multiple_choice' as const, config: { options: [{ value: 'a', weights: { sulk: 2 }, areas: { relationships: 2 } }] } },
   ]
   const r = scoreArchetypes(questions, questions.map((q) => ({ questionId: q.id, value: 'a' })))
 
-  check('the loudest area is named', r.loudest === 'wealth', String(r.loudest))
+  check('the loudest area is named', r.loudest === 'money', String(r.loudest))
   check('all four areas are reported', r.areas.length === 4)
   check(
     'the shares add up to about a hundred',
@@ -436,11 +439,11 @@ console.log('\nwhere it is loudest')
   )
   check(
     'an area nothing touched is zero rather than absent',
-    r.areas.find((a) => a.area === 'self')?.share === 0,
+    r.areas.find((a) => a.area === 'herself')?.share === 0,
   )
   check(
     'the two halves are independent',
-    r.primary === 'sulk' && r.loudest === 'wealth',
+    r.primary === 'sulk' && r.loudest === 'money',
     'how she protects herself and where it costs her are different answers',
   )
 }

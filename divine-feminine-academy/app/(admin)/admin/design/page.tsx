@@ -217,10 +217,10 @@ export default function DesignSystemPage() {
 
       <Section title="Area marks" note="The four areas as badges — a thin mark, never a filled card.">
         <div className="flex flex-wrap gap-3">
-          <Badge area="self">Self</Badge>
-          <Badge area="love">Love</Badge>
-          <Badge area="life">Life</Badge>
-          <Badge area="wealth">Wealth</Badge>
+          <Badge area="herself">Herself</Badge>
+          <Badge area="relationships">Relationships</Badge>
+          <Badge area="money">Money</Badge>
+          <Badge area="success">Success</Badge>
           <Badge>Neutral</Badge>
         </div>
       </Section>
