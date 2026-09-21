@@ -9,7 +9,7 @@ this is a choice, not a migration.
 | | Vercel | Railway |
 | --- | --- | --- |
 | Next.js support | Native | Good |
-| Hourly job | Built in (`vercel.json`) | Needs a second service or an external scheduler |
+| Hourly job | Built in (`vercel.json`) | GitHub Actions (see §8) |
 | You already use it | No | Yes |
 
 **Recommendation: Vercel**, because the hourly job is one line of config rather
@@ -186,21 +186,35 @@ has never spoken to Stripe.
 **Vercel:** already configured in `vercel.json`. Vercel sends `CRON_SECRET` as
 a Bearer token automatically.
 
-**Railway:** no built-in scheduler. Either add a second service running
+**Railway:** no built-in scheduler, and this is now handled by GitHub Actions
+instead — `.github/workflows/divine-feminine-cron.yml`, hourly at minute 17.
 
-```bash
-while true; do
-  curl -fsS -X POST -H "authorization: Bearer $CRON_SECRET" \
-    "$NEXT_PUBLIC_SITE_URL/api/cron/automations" || true
-  sleep 3600
-done
-```
+It needs one thing set by hand, once: a repository secret named
+`DIVINE_FEMININE_CRON_SECRET`, under Settings → Secrets and variables →
+Actions, whose value is the `CRON_SECRET` variable on the
+`divine-feminine-web` service in Railway. Until it is set, every run fails
+loudly with a message saying exactly that, which is the right way round —
+a scheduler that silently does nothing is the failure this replaced.
 
-or point an external scheduler (cron-job.org, EasyCron, a GitHub Action) at the
-same URL hourly.
+Run it by hand from the Actions tab any time (`workflow_dispatch`); that is
+also how to trigger the first podcast sync without waiting for the hour.
 
-**Without this, no reminder, nudge or abandoned-checkout email ever sends.**
-The challenge depends on that daily email.
+**A Railway cron service was tried first and did not work.** The container
+started on schedule and produced no output, no request and no error — the job
+never ran once. If somebody tries that route again, prove it by looking at
+the WEB service's request count in the minute the cron fired, not at the cron
+container's own status: a container that starts and exits silently reports
+SUCCESS.
+
+Two things about GitHub's scheduler worth knowing: runs can land five to
+fifteen minutes late when the shared runners are busy, and GitHub disables
+scheduled workflows in a repository with no commits for 60 days. Everything
+the endpoint does is idempotent and driven by timestamps, so lateness costs
+only a delay.
+
+**Without a scheduler, no reminder, nudge or abandoned-checkout email ever
+sends, and the podcast never syncs.** The challenge depends on that daily
+email.
 
 ## 9. Preflight
 

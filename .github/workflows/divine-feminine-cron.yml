@@ -1,0 +1,90 @@
+# The scheduled jobs for Divine Feminine.
+#
+# The app has an hourly job that syncs the podcast feed, sends the day
+# reminders, chases abandoned checkouts, advances the four archetype email
+# sequences and announces new writing. It has no way to run itself: a Next
+# server only does something when somebody asks it to.
+#
+# Railway has no scheduler. A Railway cron service was tried first and its
+# container started on schedule and then did nothing at all - no output, no
+# request, no error - so the job never ran a single time in production.
+#
+# GitHub Actions is the scheduler instead. It is free, it lives outside
+# Railway so a Railway problem cannot take it down with the site, and every
+# run is visible in the Actions tab with the response body in the log.
+#
+# TWO THINGS TO KNOW ABOUT IT.
+#
+# GitHub's schedule is best effort. A run can land five or fifteen minutes
+# late when the shared runners are busy, and can occasionally be skipped.
+# Everything the endpoint does is idempotent and works off timestamps rather
+# than off being called exactly on the hour, so a late or missed run costs
+# nothing but a delay.
+#
+# GitHub disables scheduled workflows in a repository with no commits for 60
+# days, and emails the owner when it does. If the podcast ever stops updating
+# after a long quiet period, that is the first thing to check.
+
+name: Divine Feminine — hourly jobs
+
+on:
+  schedule:
+    # Minute 17 rather than 0 on purpose: everybody schedules on the hour, and
+    # the runner queue at :00 is where the long delays come from.
+    - cron: '17 * * * *'
+  # So it can be run by hand from the Actions tab - useful for the first
+  # podcast sync, and for confirming a fix without waiting for the hour.
+  workflow_dispatch:
+
+# Never let two runs overlap. The endpoint is safe to run twice, but a queue
+# of them after an outage would send the same reminders in a burst.
+concurrency:
+  group: divine-feminine-cron
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run the scheduled jobs
+        env:
+          SITE: https://divine-feminine-web-production.up.railway.app
+          CRON_SECRET: ${{ secrets.DIVINE_FEMININE_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CRON_SECRET}" ]; then
+            echo "::error::DIVINE_FEMININE_CRON_SECRET is not set on this repository."
+            echo "Add it under Settings → Secrets and variables → Actions."
+            echo "Its value is the CRON_SECRET variable on the divine-feminine-web service in Railway."
+            exit 1
+          fi
+
+          # The secret goes in a header, never in the URL: a query string ends
+          # up in access logs and in any proxy in between.
+          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' \
+            --max-time 540 --retry 2 --retry-delay 10 --retry-connrefused \
+            -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${SITE}/api/cron/automations")
+
+          echo "HTTP ${code}"
+          cat /tmp/out.json
+          echo
+
+          if [ "${code}" != "200" ]; then
+            echo "::error::The scheduled run failed with HTTP ${code}."
+            exit 1
+          fi
+
+          # Surface what actually happened in the run summary, so a failing
+          # podcast sync is visible without opening the log.
+          {
+            echo "### Divine Feminine — hourly run"
+            echo
+            echo '```json'
+            cat /tmp/out.json
+            echo
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

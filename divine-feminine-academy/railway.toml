@@ -1,9 +1,11 @@
 # Railway.
 #
-# Railway has no built-in scheduler, so the hourly job needs either a second
-# service running a cron, or an external scheduler hitting the endpoint. Both
-# are described in DEPLOY.md. On Vercel the schedule lives in vercel.json and
-# nothing else is needed.
+# Railway has no built-in scheduler. The hourly job is driven from GitHub
+# Actions instead - .github/workflows/divine-feminine-cron.yml - because a
+# Railway cron service was tried here first and silently did nothing: the
+# container started on schedule, produced no output, and never made the
+# request. See DEPLOY.md section 8. On Vercel the schedule lives in
+# vercel.json and nothing else is needed.
 
 [build]
 builder = "NIXPACKS"
