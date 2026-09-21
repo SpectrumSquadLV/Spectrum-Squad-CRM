@@ -253,7 +253,11 @@ module.exports = function initRethinkVerification(ctx) {
 
   // Same probe the supervision sync uses, kept identical so a provider is never
   // named one way on the tracker and another way on this report.
-  const STAFF_NAME_KEYS = ["staffName", "staffFullName", "providerName", "therapistName", "employeeName", "staff", "provider"];
+  // "renderingProvider" is last deliberately. It is the field this account's
+  // Appointments rows actually carry -- none of the others appear in the
+  // schema Rethink logs on every fetch -- but it is a billing field, so any
+  // genuine name field wins if one ever shows up.
+  const STAFF_NAME_KEYS = ["staffName", "staffFullName", "providerName", "therapistName", "employeeName", "staff", "provider", "renderingProvider"];
   function nameHint(row) {
     for (const k of STAFF_NAME_KEYS) {
       const v = row ? row[k] : null;
