@@ -189,13 +189,50 @@ export function runPreflight(env: Env): PreflightReport {
           ? 'Set.'
           : 'Not set while Stripe IS. Every webhook will be rejected, so women will pay and get nothing.',
       })
-      if (present(env.STRIPE_SECRET_KEY) && env.STRIPE_SECRET_KEY.startsWith('sk_test')) {
+      const key = env.STRIPE_SECRET_KEY ?? ''
+
+      if (key.startsWith('sk_test')) {
+        /*
+         * An ERROR in production, not a warning.
+         *
+         * It used to be a warning, on the reasoning that a test key is
+         * obvious because real cards decline. That is exactly backwards.
+         * The person who finds out is a woman standing at a checkout with
+         * her card in her hand being told it was declined - she does not
+         * think "test mode", she thinks her card was refused, and she
+         * leaves. Nothing appears in any log, because nothing went wrong:
+         * Stripe did precisely what a test key asks for.
+         *
+         * Launching in test mode is the single most likely way to lose a
+         * sale on day one, and it is a one-line environment variable, so it
+         * gates the deploy.
+         */
         results.push({
           key: 'STRIPE_SECRET_KEY',
-          severity: isProduction ? 'warning' : 'ok',
+          severity: isProduction ? 'error' : 'ok',
           message: isProduction
-            ? 'This is a TEST key. No real money will move.'
+            ? 'This is a TEST key in production. Real cards will be DECLINED and no money will move.'
             : 'Test key, as expected.',
+        })
+      }
+
+      if (key.startsWith('sk_live')) {
+        /*
+         * The mismatch nothing can detect.
+         *
+         * Stripe's webhook secrets are `whsec_...` in both modes, with
+         * nothing in the string to say which. So a LIVE key paired with a
+         * TEST-mode webhook secret passes every check here and is the worst
+         * failure the product has: her card is really charged, the webhook
+         * signature fails, fulfilment never runs, and she has paid real
+         * money for nothing. It cannot be detected from the environment, so
+         * it is said out loud instead.
+         */
+        results.push({
+          key: 'STRIPE_WEBHOOK_SECRET',
+          severity: 'warning',
+          message:
+            'Live key in use. This secret MUST come from the live-mode endpoint — a test-mode one takes real money and grants nothing, and nothing can detect it.',
         })
       }
     }
