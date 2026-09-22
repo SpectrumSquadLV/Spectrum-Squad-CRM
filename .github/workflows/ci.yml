@@ -152,6 +152,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      # verify:a11y, verify:journeys and verify:photo-type are deliberately
+      # NOT in this list. Each one drives a real browser against a running
+      # server, and this job installs neither - adding them would fail on
+      # ERR_CONNECTION_REFUSED rather than on anything true about the code.
       - name: Run the checks
         run: |
           failed=()
@@ -159,8 +163,8 @@ jobs:
             crypto pacing engine scoring certificates issuance permissions \
             pricing webhooks fulfilment crm-privacy automation reminders \
             rate-limit contrast db-url archetypes quiz sequences writing \
-            cohorts audience curriculum me-vs-her migrations origin images \
-            noindex podcast public
+            cohorts audience curriculum me-vs-her scenes migrations origin \
+            preflight images noindex podcast public
           do
             echo "::group::verify:$check"
             if npm run --silent "verify:$check"; then
