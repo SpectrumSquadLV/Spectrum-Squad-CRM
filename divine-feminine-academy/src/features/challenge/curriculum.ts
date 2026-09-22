@@ -120,6 +120,11 @@ export const days: DaySeed[] = [
       {
         type: 'rich_text',
         config: {
+          // The day opens. Oversized title, and ME's list of ways of moving
+          // through the world falls out as a stacked litany rather than a
+          // paragraph - compressed, repetitive, which is ME before anybody
+          // has explained what ME is.
+          scene: 'chapter',
           heading: 'MEET ME',
           body: `Before we can talk about HER, I need you to meet ME.
 
@@ -227,6 +232,15 @@ What did ME do?`,
       {
         type: 'rich_text',
         config: {
+          /*
+           * The confrontation, and the reason the scene system exists.
+           *
+           * She typed the trigger ninety seconds ago. Here it is read back to
+           * her at display scale, edge to edge, on near-black, with "That's
+           * her." underneath - the whole page darkens for it. As a paragraph
+           * on cream this screen passed by; it is the hinge of Day 1.
+           */
+          scene: 'confront',
           heading: 'REFLECTION',
           body: `THIS HAPPENED:
 
@@ -256,6 +270,9 @@ ME showed up.`,
       {
         type: 'rich_text',
         config: {
+          // The one line she has to carry into sixty seconds of silence. It
+          // gets the screen; the instructions sit small underneath it.
+          scene: 'declaration',
           heading: 'LOOK AT HER.',
           body: `For one minute, look into your own eyes.
 
@@ -284,6 +301,18 @@ Today, you're simply learning to see ME.`,
       {
         type: 'rich_text',
         config: {
+          /*
+           * The day goes quiet, and then HER speaks for the first time.
+           *
+           * Day 1 is about meeting ME, so this is not a reveal. The last line
+           * of the curriculum promises that tomorrow we understand her, and
+           * then a hand she has never seen writes "you already know"
+           * underneath it. Nothing asks her to do anything about it. By Day 7
+           * she should know that handwriting on sight - which only works if
+           * it stays this rare.
+           */
+          scene: 'close',
+          herVoice: 'you-already-know',
           body: `Today, you met ME.
 
 Not the whole of you.

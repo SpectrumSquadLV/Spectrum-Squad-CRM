@@ -59,6 +59,12 @@
   /* --- Type -------------------------------------------------------------- */
   --font-display: var(--font-display-family), Georgia, "Times New Roman", serif;
   --font-sans: var(--font-sans-family), ui-sans-serif, system-ui, sans-serif;
+  /*
+   * HER voice. Display sizes only - see the note in layout.tsx. The fallback
+   * is a real cursive rather than the serif, so a failed font load still
+   * reads as a different voice rather than as the same one in italics.
+   */
+  --font-script: var(--font-script-family), "Snell Roundhand", "Apple Chancery", cursive;
 
   --text-2xs: 0.75rem;     /* 12 */
   --text-xs: 0.875rem;     /* 14 */

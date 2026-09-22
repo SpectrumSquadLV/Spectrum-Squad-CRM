@@ -7,6 +7,7 @@ import { Button, Rule } from '@/design-system/primitives'
 import type { HerEvidence } from '@/blocks/contract'
 import type { SlotImages } from '@/db/queries/images'
 import { cn } from '@/lib/utils/cn'
+import { isDark, type Scene } from '@/blocks/types/rich-text/scene'
 import { completeDay, saveBlockResponse } from './actions'
 import { BlockRenderer } from './BlockRenderer'
 
@@ -60,6 +61,22 @@ export function DayRunner({
 
   const dirty = useRef<Set<string>>(new Set())
   const block = blocks[index]
+
+  /*
+   * The page goes with the scene.
+   *
+   * A confronting screen rendered as a dark box floating on cream is a
+   * component, not a confrontation - the ground around it says the page is
+   * still calm. So when the block on screen is a dark scene the whole runner
+   * goes dark with it: background, chrome, the progress marks, the buttons.
+   * She does not scroll into a dark section, the room changes.
+   *
+   * Read off the block's own config rather than tracked in state, so moving
+   * back and forth through the day can never leave the page dark on a light
+   * screen.
+   */
+  const scene = (block?.config as { scene?: Scene } | undefined)?.scene
+  const dark = block?.type === 'rich_text' && scene !== undefined && isDark(scene)
   const isLast = index === blocks.length - 1
 
   /**
@@ -172,20 +189,38 @@ export function DayRunner({
   }
 
   return (
-    <div className="mx-auto max-w-2xl px-5 py-8 md:px-8 md:py-14">
+    <div
+      className={cn(
+        'min-h-screen transition-colors duration-700 motion-reduce:transition-none',
+        dark && 'bg-plum-deep',
+      )}
+    >
+      <div className="mx-auto max-w-2xl px-5 py-8 md:px-8 md:py-14">
       <div className="flex items-baseline justify-between gap-4">
         <div>
-          <p className="text-2xs uppercase tracking-[0.22em] text-clay-deep">
+          <p
+            className={cn(
+              'text-2xs uppercase tracking-[0.22em]',
+              dark ? 'text-bone/60' : 'text-clay-deep',
+            )}
+          >
             Day {dayNumber} of {totalDays}
           </p>
-          <h1 className="mt-2 font-display text-2xl">{dayTitle}</h1>
+          <h1 className={cn('mt-2 font-display text-2xl', dark && 'text-bone')}>
+            {dayTitle}
+          </h1>
           {daySubtitle && (
-            <p className="mt-1 text-xs text-ink-muted">{daySubtitle}</p>
+            <p className={cn('mt-1 text-xs', dark ? 'text-bone/60' : 'text-ink-muted')}>
+              {daySubtitle}
+            </p>
           )}
         </div>
         <Link
           href="/my-academy"
-          className="shrink-0 text-2xs text-ink-muted hover:text-ink"
+          className={cn(
+            'shrink-0 text-2xs',
+            dark ? 'text-bone/60 hover:text-bone' : 'text-ink-muted hover:text-ink',
+          )}
         >
           Save and leave
         </Link>
@@ -199,9 +234,9 @@ export function DayRunner({
             aria-current={i === index ? 'step' : undefined}
             className={cn(
               'h-0.5 flex-1 rounded-full transition-colors',
-              i < index && 'bg-clay',
-              i === index && 'bg-plum',
-              i > index && 'bg-rule',
+              i < index && (dark ? 'bg-bone/60' : 'bg-clay'),
+              i === index && (dark ? 'bg-bone' : 'bg-plum'),
+              i > index && (dark ? 'bg-bone/20' : 'bg-rule'),
             )}
           />
         ))}
@@ -228,7 +263,7 @@ export function DayRunner({
         </p>
       )}
 
-      <Rule className="mt-12" />
+      <Rule className={cn('mt-12', dark && 'border-bone/20')} />
 
       <div className="mt-6 flex items-center justify-between gap-4">
         <Button
@@ -251,9 +286,15 @@ export function DayRunner({
         </Button>
       </div>
 
-      <p className="mt-6 text-center text-2xs text-ink-faint">
+      <p
+        className={cn(
+          'mt-6 text-center text-2xs',
+          dark ? 'text-bone/60' : 'text-ink-faint',
+        )}
+      >
         Your answers save as you move through.
       </p>
+      </div>
     </div>
   )
 }

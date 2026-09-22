@@ -86,6 +86,50 @@ for (const name of ['ink', 'ink-soft', 'ink-muted', 'ink-faint']) {
 }
 check('ink-muted on linen', token('ink-muted'), linen, BODY)
 
+/*
+ * THE DARK SCENES.
+ *
+ * Day 1's REFLECTION turns the whole page near-black and sets every piece of
+ * type on it as bone at some opacity. An opacity is not a token, so nothing
+ * in this file would ever have looked at it - which is exactly how a screen
+ * ends up shipping with 4:1 labels that nobody can read in daylight.
+ *
+ * Compositing is done here rather than eyeballed: bone at x% over plum-deep
+ * is a real colour and it either passes or it does not.
+ */
+function over(fg: string, bg: string, alpha: number): string {
+  const f = parseInt(fg.slice(1), 16)
+  const b = parseInt(bg.slice(1), 16)
+  const mix = (shift: number) => {
+    const a = (f >> shift) & 255
+    const c = (b >> shift) & 255
+    return Math.round(a * alpha + c * (1 - alpha))
+  }
+  return (
+    '#' +
+    [16, 8, 0]
+      .map((shift) => mix(shift).toString(16).padStart(2, '0'))
+      .join('')
+  )
+}
+
+const plumDeep = token('plum-deep')
+
+for (const [name, alpha] of [
+  ['muted type', 0.6],
+  ['body type', 0.75],
+  ['her handwriting', 0.7],
+] as const) {
+  check(
+    `bone at ${alpha * 100}% (${name}) on plum-deep`,
+    over(bone, plumDeep, alpha),
+    plumDeep,
+    BODY,
+  )
+}
+
+check('bone on plum-deep', bone, plumDeep, BODY)
+
 console.log('\naccents used as text:')
 check('clay-deep on bone', token('clay-deep'), bone, BODY)
 check('clay-deep on alabaster', token('clay-deep'), alabaster, BODY)
