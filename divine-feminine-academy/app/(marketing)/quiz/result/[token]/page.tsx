@@ -39,6 +39,33 @@ const areaBar: Record<Area, string> = {
 }
 
 /**
+ * Her archetype's own colour, for the reveal.
+ *
+ * Not a fifth palette. Each of the four already declares the area it is
+ * loudest in, and the four areas are distinct, so every archetype resolves to
+ * exactly one of the four area colours that are already in the design system:
+ *
+ *   The Commander      herself         The Escape Artist  success
+ *   The Watcher        money           The Quiet Storm    relationships
+ *
+ * That is what makes this an identity rather than decoration - the colour of
+ * her reveal is the colour of the room her protector works hardest in, and it
+ * is the same colour she has just seen on her own bars further up the page.
+ * Inventing four new colours here would have said nothing and clashed with
+ * the bars.
+ *
+ * Applied to the mark and to one hairline above it, never to the name: these
+ * are mid-tones chosen for 1px rules and small marks, and a 60px headline set
+ * in one would be the palest thing on the most important line of the page.
+ */
+const areaInk: Record<Area, string> = {
+  herself: 'text-area-herself',
+  relationships: 'text-area-relationships',
+  money: 'text-area-money',
+  success: 'text-area-success',
+}
+
+/**
  * Her result, opened from the quiz or from a link in her inbox.
  *
  * No login, and not indexed. The token is the credential. Asking a woman to
@@ -166,14 +193,44 @@ export default async function QuizResultPage({
         supposed to feel like.
       */}
       <div className="mt-20 flex flex-col items-center gap-8 border-y border-rule bg-linen/50 px-5 py-20 text-center md:mt-28 md:py-32">
+        {/*
+          Her colour, once, as a hairline above the mark. It is the first
+          thing that arrives and it is the only part of the frame that
+          differs between the four, so the reveal is recognisably HERS from
+          the moment it starts drawing.
+        */}
+        <span
+          aria-hidden="true"
+          className={`h-px w-16 ${areaBar[archetype.area]}`}
+        />
+
         <Sigil
           mode={primary}
           animate
-          className="h-32 w-32 text-ink md:h-40 md:w-40"
+          className={`h-32 w-32 md:h-40 md:w-40 ${areaInk[archetype.area]}`}
         />
 
+        {/*
+          THERE SHE IS.
+
+          The beat between the mark finishing and the name arriving. Without
+          it the sigil draws and the label starts explaining immediately,
+          which is a caption, not a reveal - the moment needs somewhere to
+          land before it is named.
+
+          Set in the serif, NOT in her handwriting, and that is deliberate
+          rather than an oversight. The script is HER's voice everywhere else
+          in this product, and the woman being pointed at here is ME - the
+          protector. Putting "there she is" in HER's hand would have HER
+          announce the protector, which inverts the one relationship the
+          whole instrument is built on.
+        */}
+        <p className="font-display text-3xl leading-none tracking-[-0.01em] text-ink md:text-5xl">
+          There she is.
+        </p>
+
         <p className="text-2xs uppercase tracking-[0.3em] text-clay-deep">
-          Your primary protector
+          Your Divine Feminine archetype is
         </p>
 
         <h2 className="font-display text-4xl leading-none tracking-[-0.02em] md:text-6xl">

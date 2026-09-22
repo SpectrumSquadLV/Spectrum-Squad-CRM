@@ -174,6 +174,25 @@ for (const area of [
   check(`${area} on its wash`, token(area), blend(token(area), bone, 0.05), BODY)
 }
 
+/*
+ * The reveal sigil is drawn in her archetype's area colour, 128px, on the
+ * linen band. A mark that large is a non-text graphic, so 3:1 applies - but
+ * it is the single most looked-at object on the page a woman reaches after
+ * answering twelve honest questions, and each of the four gets a different
+ * one of these. If one of the four is weaker than the others, exactly the
+ * women who came out as that archetype get the faint version of their own
+ * reveal, and nothing else on the site would ever show it.
+ */
+console.log('\nthe reveal sigil, in her area colour on the linen band:')
+for (const area of [
+  'area-herself',
+  'area-relationships',
+  'area-money',
+  'area-success',
+]) {
+  check(`${area} sigil on linen`, token(area), blend(linen, bone, 0.5), LARGE)
+}
+
 console.log('\naccents inside a tinted callout:')
 check(
   'clay-deep on the caution wash',
