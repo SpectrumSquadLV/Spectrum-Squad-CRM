@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { linkUserToContact } from '@/lib/auth/actions'
+import { requestOrigin } from '@/lib/auth/env'
 import { createServerSupabase } from '@/lib/auth/server'
 
 /**
@@ -7,7 +8,23 @@ import { createServerSupabase } from '@/lib/auth/server'
  * authenticated user to her contact row before sending her onward.
  */
 export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url)
+  const { searchParams } = new URL(request.url)
+
+  /*
+   * NOT `new URL(request.url).origin`, and this one signed a woman in and
+   * then sent her nowhere.
+   *
+   * Behind Railway's proxy the server is reached on its own internal address,
+   * so request.url reads https://localhost:8080 however the browser got here.
+   * Every redirect below was built from that: the session cookie was set
+   * correctly on the real domain, the sign-in genuinely worked, and then the
+   * last line of it bounced her to a host that does not exist.
+   *
+   * It looks exactly like a broken login. It is a correct login with a wrong
+   * forwarding address, which is worse, because everything you would check -
+   * the link, the keys, the redirect allow-list - is already right.
+   */
+  const origin = await requestOrigin()
   const code = searchParams.get('code')
   const rawNext = searchParams.get('next') ?? '/my-academy'
 

@@ -82,5 +82,53 @@ check('NEVER produces the localhost:8080 that caused this', () => {
   for (const o of origins) assert.ok(!o.includes('localhost'), o)
 })
 
+console.log('\nnothing builds a redirect from the internal address')
+
+/*
+ * The source-level half of this check.
+ *
+ * `new URL(request.url).origin` reads the address the CONTAINER was reached
+ * on. Behind Railway's proxy that is localhost:$PORT, whatever the browser
+ * typed. Using it for a redirect signs a woman in correctly and then sends
+ * her to a host that does not exist - which is indistinguishable, from the
+ * outside, from a login that is simply broken.
+ *
+ * Reading searchParams off request.url is fine and common; it is `.origin`
+ * that lies. So this looks for that specifically.
+ */
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+
+function walk(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    if (entry === 'node_modules' || entry === '.next' || entry.startsWith('.')) continue
+    const full = join(dir, entry)
+    if (statSync(full).isDirectory()) walk(full, out)
+    else if (/\.(ts|tsx)$/.test(full)) out.push(full)
+  }
+  return out
+}
+
+const root = join(import.meta.dirname, '..')
+const offenders: string[] = []
+for (const file of [...walk(join(root, 'app')), ...walk(join(root, 'src'))]) {
+  // Comments explain this very bug in at least one file, so strip them
+  // before scanning or the guard trips on the note warning about it.
+  const text = readFileSync(file, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+  // Destructured `const { origin } = new URL(request.url)` or `.url).origin`.
+  if (
+    /new URL\((?:request|req)\.url\)\.origin/.test(text) ||
+    /const \{[^}]*\borigin\b[^}]*\} = new URL\((?:request|req)\.url\)/.test(text)
+  ) {
+    offenders.push(file.replace(root + '/', ''))
+  }
+}
+
+check('no route builds a redirect from request.url origin', () => {
+  assert.deepEqual(offenders, [], offenders.join(', '))
+})
+
 console.log(`\norigin: all ${passed} checks passed`)
 process.exit(0)
