@@ -40,8 +40,18 @@ export function FounderNoteMember({ config, portrait }: BlockMemberProps<Config,
   const photo = config.portrait ? (portrait?.desktop ?? null) : null
   const mobile = portrait?.mobile ?? null
 
+  /*
+   * A photograph needs its own room, not a share of the text's.
+   *
+   * `measure` caps body copy near 68 characters, which is right for a column
+   * of prose and wrong the moment a 160px portrait is standing in it: the
+   * paragraphs were left with about a third of the line and broke to three
+   * words each. Widening to `measure-wide` gives the text back a real
+   * measure beside the photograph, and the no-photo note keeps the tighter
+   * one it was designed for.
+   */
   return (
-    <div className="measure mx-auto">
+    <div className={cn('mx-auto', photo ? 'measure-wide' : 'measure')}>
       <figure
         className={cn(
           'flex flex-col gap-8',
