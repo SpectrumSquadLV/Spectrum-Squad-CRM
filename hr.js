@@ -3400,7 +3400,7 @@ module.exports = function initHr(ctx) {
         if (!fetched.ok) return json(res, 502, { error: fetched.error || "Rethink could not be reached." });
 
         const grouped = groupVerifiedSessions(fetched.rows || [], cfg);
-        const { byStaff, names, scanned, unverified, noStaff } = grouped;
+        const { byStaff, names, scanned, unverified, notCompleted, noStaff } = grouped;
 
         // Resolve each Rethink staff id to a person, then MERGE the ones that
         // turn out to be the same person.
@@ -3513,7 +3513,12 @@ module.exports = function initHr(ctx) {
           // has an explanation on the same screen.
           sessions_scanned: scanned,
           sessions_unverified: unverified,
+          sessions_not_completed: notCompleted,
           sessions_without_staff: noStaff,
+          // What Rethink's staff-verification field said, across the sessions
+          // that actually happened. The answer to "why is this range emptier
+          // than I expected".
+          verification_values: grouped.verification_values,
           truncated: !!fetched.truncated,
           rebuilt: preview.filter((p) => p.replaced).length,
           // People Rethink holds more than one staff record for, and people
@@ -5031,13 +5036,39 @@ Write body as plain text with line breaks (no HTML).`;
   function groupVerifiedSessions(rows, cfg) {
     const byStaff = new Map();
     const names = new Map();
-    let scanned = 0, unverified = 0, noStaff = 0;
+    // Staff verification is NOT optional on a timecard, whatever the shared
+    // Rethink filter says.
+    //
+    // The filter carries a require_staff_verification switch, and when it is
+    // off the verification test is skipped entirely -- every completed session
+    // counts as verified. That is a defensible setting for a supervision or
+    // billable total, where the question is "did this session happen". It is
+    // the wrong answer here: a timecard is a document somebody puts their name
+    // to, and asking them to sign for sessions they have not verified is
+    // exactly what this feature exists to avoid. So the switch is overridden
+    // on, and only here -- the RULE for what counts as verified is still
+    // Rethink's own, read through the module that owns it.
+    const strictCfg = Object.assign({}, cfg || {}, { require_staff_verification: true });
+    const seenVerification = new Map();
+    let scanned = 0, unverified = 0, notCompleted = 0, noStaff = 0;
     for (const row of rows || []) {
       scanned++;
       const staffId = String(row.staffId == null ? "" : row.staffId).trim();
       if (!staffId) { noStaff++; continue; }
-      const verdict = verificationVerdict ? verificationVerdict(row, cfg) : null;
-      if (!verdict || !verdict.counts) { unverified++; continue; }
+      const verdict = verificationVerdict ? verificationVerdict(row, strictCfg) : null;
+      // Split the two reasons a session is left off. They used to be counted
+      // together and reported as "not staff-verified", which was wrong for
+      // every session dropped for its STATUS and sent anybody reading it after
+      // the wrong thing.
+      if (!verdict || !verdict.statusOk) { notCompleted++; continue; }
+      // What the verification field actually said, tallied across the sessions
+      // that did happen. When a range comes back emptier than expected this is
+      // the answer: it shows whether Rethink is saying "" for them, or a word
+      // the filter does not recognise as verified.
+      const vRaw = String(row.staffVerification == null ? "" : row.staffVerification).trim().toLowerCase().slice(0, 40);
+      const vKey = vRaw || "(blank)";
+      seenVerification.set(vKey, (seenVerification.get(vKey) || 0) + 1);
+      if (!verdict.verifiedOk) { unverified++; continue; }
       const apptType = rethinkBillableRaw ? (rethinkBillableRaw(row) || "") : "";
       const entry = {
         date: String(row.appointmentDate || "").slice(0, 10),
@@ -5061,7 +5092,13 @@ Write body as plain text with line breaks (no HTML).`;
     for (const entries of byStaff.values()) {
       entries.sort((a, c) => String(a.date).localeCompare(String(c.date)));
     }
-    return { byStaff, names, scanned, unverified, noStaff };
+    return {
+      byStaff, names, scanned, unverified, notCompleted, noStaff,
+      // [{ value, sessions }] -- highest count first.
+      verification_values: [...seenVerification.entries()]
+        .map(([value, sessions]) => ({ value, sessions }))
+        .sort((a, b) => b.sessions - a.sessions),
+    };
   }
 
   // The payroll export writes its period the way the spreadsheet does
