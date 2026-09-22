@@ -205,7 +205,25 @@ export function runPreflight(env: Env): PreflightReport {
       })
       const key = env.STRIPE_SECRET_KEY ?? ''
 
-      if (key.startsWith('sk_test')) {
+      /*
+       * Restricted keys count. `sk_` is not the only prefix.
+       *
+       * Stripe issues rk_live_/rk_test_ for a key with chosen permissions -
+       * which is what "Full access, except sensitive operations" produces,
+       * and that is the option a careful person picks. Matching only `sk_`
+       * meant a production deploy on a restricted key skipped BOTH branches
+       * below: the test-key gate did not fire, and neither did the live-key
+       * warning, which is the one that stands between taking real money and
+       * granting nothing. The check reported zero errors and zero warnings
+       * and had in fact looked at nothing.
+       */
+      const mode = /^[sr]k_live/.test(key)
+        ? 'live'
+        : /^[sr]k_test/.test(key)
+          ? 'test'
+          : 'unknown'
+
+      if (mode === 'test') {
         /*
          * An ERROR in production, not a warning.
          *
@@ -230,7 +248,7 @@ export function runPreflight(env: Env): PreflightReport {
         })
       }
 
-      if (key.startsWith('sk_live')) {
+      if (mode === 'live') {
         /*
          * The mismatch nothing can detect.
          *
@@ -247,6 +265,23 @@ export function runPreflight(env: Env): PreflightReport {
           severity: 'warning',
           message:
             'Live key in use. This secret MUST come from the live-mode endpoint — a test-mode one takes real money and grants nothing, and nothing can detect it.',
+        })
+      }
+
+      if (mode === 'unknown') {
+        /*
+         * Silence here would be a lie.
+         *
+         * A key whose prefix is not recognised has been neither cleared as
+         * live nor caught as test — so saying nothing would report a clean
+         * check on a key nobody has looked at, which is how the restricted
+         * key slipped through in the first place.
+         */
+        results.push({
+          key: 'STRIPE_SECRET_KEY',
+          severity: isProduction ? 'error' : 'warning',
+          message:
+            'Set, but the prefix is not one Stripe issues (sk_live/sk_test/rk_live/rk_test). Neither the test-key gate nor the live-key warning applies, so this key has NOT been checked.',
         })
       }
     }
