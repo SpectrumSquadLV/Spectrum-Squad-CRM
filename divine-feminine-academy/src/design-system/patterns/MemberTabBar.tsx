@@ -16,7 +16,9 @@ const tabs = [
   { href: '/my-academy', label: 'Academy', icon: Compass, exact: true },
   { href: '/my-academy/today', label: 'Today', icon: Sunrise },
   { href: '/my-academy/her', label: 'HER', icon: Heart },
-  { href: '/my-academy/journal', label: 'Journal', icon: BookOpen },
+  // "Pages", matching THE PRIVATE PAGES on the home page. A tab and the
+  // place it leads to should not have two different names.
+  { href: '/my-academy/journal', label: 'Pages', icon: BookOpen },
 ]
 
 export function MemberTabBar() {
