@@ -3394,13 +3394,25 @@ module.exports = function initHr(ctx) {
         const to = String(b.to || "").slice(0, 10);
         if (!isDay(from) || !isDay(to)) return json(res, 400, { error: "Give a start and end date as YYYY-MM-DD." });
         if (from > to) return json(res, 400, { error: "The start date is after the end date." });
+        // Build for ONE person rather than the whole practice. Everything else
+        // is identical -- the same pull, the same verified-only rule, the same
+        // review-and-send screen -- so a single timecard never takes a
+        // different path from the batch and cannot quietly disagree with it.
+        const onlyEmployeeId = b.employee_id == null || b.employee_id === "" ? null : Number(b.employee_id);
+        let onlyEmployee = null;
+        if (onlyEmployeeId != null) {
+          if (!Number.isFinite(onlyEmployeeId)) return json(res, 400, { error: "That is not a staff member." });
+          onlyEmployee = await dbGet("SELECT id, name, email, rethink_id FROM hr_employees WHERE id = ?", [onlyEmployeeId]);
+          if (!onlyEmployee) return json(res, 404, { error: "Staff member not found." });
+        }
 
         const cfg = await getRethinkConfig();
         const fetched = await fetchAppointments(from, to);
         if (!fetched.ok) return json(res, 502, { error: fetched.error || "Rethink could not be reached." });
 
         const grouped = groupVerifiedSessions(fetched.rows || [], cfg);
-        const { byStaff, names, scanned, unverified, notCompleted, noStaff } = grouped;
+        const { byStaff, names, excludedByStaff } = grouped;
+        let { scanned, unverified, notCompleted, noStaff } = grouped;
 
         // Resolve each Rethink staff id to a person, then MERGE the ones that
         // turn out to be the same person.
@@ -3439,8 +3451,38 @@ module.exports = function initHr(ctx) {
           merged.set(key, bucket);
         }
 
+        // Narrow to the one person, once the merge has resolved who is who --
+        // their sessions can be spread across several Rethink staff records,
+        // so filtering any earlier would drop half their hours.
+        let buckets = [...merged.values()];
+        if (onlyEmployee) {
+          buckets = buckets.filter((bk) => bk.staff && bk.staff.id === onlyEmployee.id);
+          // Their own numbers, not the practice's -- "29 sessions left off"
+          // across everybody says nothing about the person on the screen.
+          const theirIds = new Set(buckets.flatMap((bk) => bk.staffIds));
+          // Sessions excluded before a bucket ever existed: all of this
+          // person's sessions may have been unverified, which is a real
+          // answer and not an empty range.
+          if (!theirIds.size && onlyEmployee.rethink_id) theirIds.add(String(onlyEmployee.rethink_id).trim());
+          for (const [sid, ex] of excludedByStaff) {
+            if (!theirIds.has(sid) && names.get(sid) && onlyEmployee.name
+                && String(names.get(sid)).trim().toLowerCase() === String(onlyEmployee.name).trim().toLowerCase()) {
+              theirIds.add(sid);
+            }
+          }
+          scanned = 0; unverified = 0; notCompleted = 0; noStaff = 0;
+          buckets.forEach((bk) => { scanned += bk.entries.length; });
+          for (const sid of theirIds) {
+            const ex = excludedByStaff.get(sid);
+            if (!ex) continue;
+            unverified += ex.unverified;
+            notCompleted += ex.notCompleted;
+            scanned += ex.unverified + ex.notCompleted;
+          }
+        }
+
         const preview = [];
-        for (const bucket of merged.values()) {
+        for (const bucket of buckets) {
           const staffIds = bucket.staffIds;
           const staffId = staffIds[0];
           const staff = bucket.staff;
@@ -3498,6 +3540,7 @@ module.exports = function initHr(ctx) {
         return json(res, 200, {
           ok: true,
           source: "rethink_verified",
+          built_for: onlyEmployee ? { id: onlyEmployee.id, name: onlyEmployee.name } : null,
           pay_period_start: from,
           pay_period_end: to,
           total_employees: preview.length,
@@ -5050,6 +5093,13 @@ Write body as plain text with line breaks (no HTML).`;
     // Rethink's own, read through the module that owns it.
     const strictCfg = Object.assign({}, cfg || {}, { require_staff_verification: true });
     const seenVerification = new Map();
+    // staffId -> { unverified, notCompleted }
+    const excludedByStaff = new Map();
+    const bumpExcluded = (staffId, why) => {
+      const e = excludedByStaff.get(staffId) || { unverified: 0, notCompleted: 0 };
+      e[why]++;
+      excludedByStaff.set(staffId, e);
+    };
     let scanned = 0, unverified = 0, notCompleted = 0, noStaff = 0;
     for (const row of rows || []) {
       scanned++;
@@ -5060,7 +5110,11 @@ Write body as plain text with line breaks (no HTML).`;
       // together and reported as "not staff-verified", which was wrong for
       // every session dropped for its STATUS and sent anybody reading it after
       // the wrong thing.
-      if (!verdict || !verdict.statusOk) { notCompleted++; continue; }
+      if (!verdict || !verdict.statusOk) {
+        notCompleted++;
+        bumpExcluded(staffId, "notCompleted");
+        continue;
+      }
       // What the verification field actually said, tallied across the sessions
       // that did happen. When a range comes back emptier than expected this is
       // the answer: it shows whether Rethink is saying "" for them, or a word
@@ -5068,7 +5122,18 @@ Write body as plain text with line breaks (no HTML).`;
       const vRaw = String(row.staffVerification == null ? "" : row.staffVerification).trim().toLowerCase().slice(0, 40);
       const vKey = vRaw || "(blank)";
       seenVerification.set(vKey, (seenVerification.get(vKey) || 0) + 1);
-      if (!verdict.verifiedOk) { unverified++; continue; }
+      if (!verdict.verifiedOk) {
+        unverified++;
+        bumpExcluded(staffId, "unverified");
+        if (!names.has(staffId) && rethinkStaffName) {
+          // Name them even though nothing of theirs is being imported, so a
+          // build for one person can say "all of yours were unverified"
+          // instead of showing an empty range.
+          const h = rethinkStaffName(row);
+          if (h) names.set(staffId, h);
+        }
+        continue;
+      }
       const apptType = rethinkBillableRaw ? (rethinkBillableRaw(row) || "") : "";
       const entry = {
         date: String(row.appointmentDate || "").slice(0, 10),
@@ -5093,7 +5158,7 @@ Write body as plain text with line breaks (no HTML).`;
       entries.sort((a, c) => String(a.date).localeCompare(String(c.date)));
     }
     return {
-      byStaff, names, scanned, unverified, notCompleted, noStaff,
+      byStaff, names, excludedByStaff, scanned, unverified, notCompleted, noStaff,
       // [{ value, sessions }] -- highest count first.
       verification_values: [...seenVerification.entries()]
         .map(([value, sessions]) => ({ value, sessions }))

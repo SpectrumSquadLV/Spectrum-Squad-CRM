@@ -282,7 +282,10 @@ const b64 = (buf) => buf.toString("base64");
       return { statusOk, verifiedOk, counts: statusOk && verifiedOk };
     },
     rethinkBillableRaw: (row) => row.appointmentType || "",
-    rethinkStaffName: (row) => row.staffName || null,
+    // Mirrors nameHint(): renderingProvider is the field this account's
+    // appointment rows actually carry, so a stub that only knew staffName
+    // would pass while production found nobody.
+    rethinkStaffName: (row) => row.staffName || row.renderingProvider || null,
   });
   const group = hrMod._internal.groupVerifiedSessions;
 
@@ -489,6 +492,44 @@ const b64 = (buf) => buf.toString("base64");
         ORDER BY (COALESCE(status,'active') = 'terminated'), id LIMIT 1`, [dupName])).rows[0];
     check("a shared name prefers the staff member who still works here",
       pick && pick.id === hereId && pick.id !== goneId, { pick, hereId, goneId });
+  }
+
+  // ------------------------------------------------------------------
+  section("Building one person's timecard on its own");
+
+  // Doing a single person should not need a spreadsheet, and should not be a
+  // different code path from the batch -- a one-off that disagreed with the
+  // batch would be worse than not having it.
+  r = await owner("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20", employee_id: 999999 } });
+  check("building for a staff member who does not exist is refused", r.status === 404, { status: r.status, data: r.data });
+
+  r = await owner("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20", employee_id: "not-a-number" } });
+  check("and so is something that is not a staff member at all", r.status === 400, { status: r.status, data: r.data });
+
+  r = await owner("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20", employee_id: splitEmp } });
+  check("a real staff member still refuses without Rethink credentials rather than inventing hours",
+    r.status === 502 || r.status === 503, { status: r.status, data: r.data });
+
+  r = await clin("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20", employee_id: splitEmp } });
+  check("a clinical user cannot build one person's timecard either", r.status === 403, r.status);
+
+  // The per-person accounting has to be about THAT person. "29 sessions left
+  // off" across the whole practice says nothing about the name on the screen.
+  {
+    const g = group([
+      { staffId: "P1", renderingProvider: "Solo One", appointmentDate: "2026-09-08", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+      { staffId: "P1", renderingProvider: "Solo One", appointmentDate: "2026-09-09", actualDurationHours: 3, staffVerification: "", appointmentStatus: "Completed", appointmentType: "Billable" },
+      { staffId: "P2", renderingProvider: "Solo Two", appointmentDate: "2026-09-09", actualDurationHours: 9, staffVerification: "", appointmentStatus: "Completed", appointmentType: "Billable" },
+    ], {});
+    check("skipped sessions are attributed to the staff member they belong to",
+      g.excludedByStaff.get("P1").unverified === 1 && g.excludedByStaff.get("P2").unverified === 1,
+      [...g.excludedByStaff.entries()]);
+    check("so one person's count is not the whole practice's",
+      g.excludedByStaff.get("P1").unverified !== g.unverified, { theirs: g.excludedByStaff.get("P1"), everyone: g.unverified });
+    check("somebody whose every session was unverified is still named",
+      g.names.get("P2") === "Solo Two", [...g.names.entries()]);
+    check("and has no bucket of hours, because none of it is verified",
+      !g.byStaff.has("P2"), [...g.byStaff.keys()]);
   }
 
   // ------------------------------------------------------------------
