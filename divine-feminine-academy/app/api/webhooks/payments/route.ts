@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/db/client'
 import { handlePaymentEvent } from '@/features/commerce/fulfilment'
+import { requestOrigin } from '@/lib/auth/env'
 import { paymentProvider } from '@/lib/payments'
 
 /**
@@ -34,7 +35,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await handlePaymentEvent(db, event)
+    /*
+     * Resolved from the headers of the provider's own call, not from
+     * NEXT_PUBLIC_SITE_URL, so the "go to your practice" link in her receipt
+     * points where she can actually reach.
+     */
+    const result = await handlePaymentEvent(db, event, await requestOrigin())
     return NextResponse.json({ received: true, ...result })
   } catch {
     // Verified but we failed to apply it. 500 asks for a retry, and
