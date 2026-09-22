@@ -6161,7 +6161,7 @@ function openPayrollImportModal(pageMount) {
         ${why.length ? `<div style="color:#92400e; margin-top:6px;">${why.join(", and ")}. Have them verify in Rethink, then build again.</div>`
           : `<div style="color:var(--text-muted); margin-top:6px;">Rethink has no sessions for them in these dates. Check their Rethink ID is set on their staff record.</div>`}
       </div><div style="margin-top:12px;"><button class="btn secondary" id="payroll-done">Close</button></div>`;
-      previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); renderStaff(pageMount); });
+      previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); if (pageMount) renderStaff(pageMount); });
       return;
     }
     previewEl.innerHTML = `
@@ -6181,7 +6181,7 @@ function openPayrollImportModal(pageMount) {
         <button class="btn" id="payroll-review" ${res.matched ? "" : "disabled"}>Preview &amp; send ${res.matched} timecard(s) →</button>
         <button class="btn secondary" id="payroll-done">Close</button>
       </div>`;
-    previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); renderStaff(pageMount); });
+    previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); if (pageMount) renderStaff(pageMount); });
     previewEl.querySelector("#payroll-review").addEventListener("click", () => {
       close();
       openTimecardReviewModal({

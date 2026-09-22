@@ -1407,7 +1407,7 @@ async function hrRenderTimecards(body) {
     : `<p class="hr-muted">No timecards imported yet.</p>`;
 
   body.innerHTML = `
-    <div class="hr-alert">This is the future HR / timecard-verification workspace. It flags anomalies and collects employee explanations for supervisor approval — it never changes payroll or timecards automatically. Import can later be wired to Homebase or another approved system.</div>
+    <div class="hr-alert">Timecard verification. Timecards are built from staff-verified Rethink sessions, checked for anomalies, and sent to each person to review and sign \u2014 nothing here changes payroll, and nothing is emailed until you send it.</div>
     <div class="hr-2col">
       <div class="hr-card"><h2>Employees</h2>
         ${canManage ? `<div class="hr-2col"><div class="hr-field"><label>Name</label><input id="emp-name"/></div><div class="hr-field"><label>Email</label><input id="emp-email"/></div></div>
@@ -1415,17 +1415,10 @@ async function hrRenderTimecards(body) {
         <div class="hr-row"><button class="hr-btn sm" id="emp-add">Add employee</button><span class="hr-status" id="emp-status"></span></div><hr style="border:none;border-top:1px solid #eee;margin:12px 0"/>` : ""}
         ${empRows}
       </div>
-      <div class="hr-card"><h2>Import timecard</h2>
-        ${canManage ? `<div class="hr-field"><label>Employee</label><select id="tc-emp"><option value="">—</option>${employees.map((e) => `<option value="${e.id}">${hrEsc(e.name)}</option>`).join("")}</select></div>
-        <div class="hr-2col"><div class="hr-field"><label>Period start</label><input type="date" id="tc-start"/></div><div class="hr-field"><label>Period end</label><input type="date" id="tc-end"/></div></div>
-        <div class="hr-field"><label>Source</label><input id="tc-source" value="manual" placeholder="homebase / manual"/></div>
-        <div class="hr-field"><label>Entries (JSON array)</label><textarea id="tc-entries" style="min-height:120px" placeholder='[{"date":"2026-08-04","clock_in":"2026-08-04T09:00","clock_out":"2026-08-04T18:30"}]'></textarea></div>
-        <div class="hr-row"><button class="hr-btn sm" id="tc-import">Import & scan</button><span class="hr-status" id="tc-status"></span></div>
-        <hr style="border:none;border-top:1px solid #eee;margin:14px 0"/>
-        <h3 style="margin:0 0 6px;font-size:14px;">Bulk import (Rethink export)</h3>
-        <p class="hr-muted" style="margin:0 0 8px;">Paste the timecards JSON to create one timecard per employee (matched by name).</p>
-        <div class="hr-field"><textarea id="tc-batch" style="min-height:90px" placeholder='[{"employee_name":"Ayaana Harris","pay_period_start":"2026-07-27","pay_period_end":"2026-08-06","entries":[...]}]'></textarea></div>
-        <div class="hr-row"><button class="hr-btn sm" id="tc-batch-import">Import all</button><span class="hr-status" id="tc-batch-status"></span></div>` : `<p class="hr-muted">Managers can import timecards.</p>`}
+      <div class="hr-card"><h2>Build timecards</h2>
+        ${canManage ? `<p class="hr-muted" style="margin:0 0 10px;">Timecards are built from the sessions each staff member has already verified in Rethink. Pick a date range, and either everyone or one person \u2014 no spreadsheet, no JSON.</p>
+        <div class="hr-row"><button class="hr-btn sm" id="tc-open-builder">Build timecards\u2026</button><span class="hr-status" id="tc-builder-status"></span></div>
+        <p class="hr-muted" style="margin:10px 0 0;font-size:12px;">The same builder is on Staff &rsaquo; Staff, under <strong>Import payroll &rarr; timecards</strong>.</p>` : `<p class="hr-muted">Managers can build timecards.</p>`}
       </div>
     </div>
     <div class="hr-card"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><h2 style="margin:0;">Timecards</h2>${canManage && timecards.length ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><button class="hr-btn sm" id="tc-send-selected" disabled>Send selected (0)</button><button class="hr-btn sm ghost" id="tc-send-all">Send to all unaccepted</button><span class="hr-status" id="tc-send-all-status"></span></div>` : ""}</div>${tcRows}</div>`;
@@ -1448,31 +1441,22 @@ async function hrRenderTimecards(body) {
         try { await hrApi("/api/hr/employees/" + b.dataset.addcred + "/credentials", { method: "POST", body: { credential_type: type, expiration_date: exp || null } }); hrRenderTimecards(body); } catch (e) { alert(e.message); }
       })
     );
-    document.getElementById("tc-import").addEventListener("click", async () => {
-      const st = document.getElementById("tc-status");
-      let entries;
-      try { entries = JSON.parse(document.getElementById("tc-entries").value || "[]"); } catch (e) { st.textContent = "Entries must be valid JSON."; st.className = "hr-status err"; return; }
-      if (!Array.isArray(entries) || !entries.length) { st.textContent = "Provide at least one entry."; st.className = "hr-status err"; return; }
-      st.textContent = "Importing…"; st.className = "hr-status";
-      try {
-        const r = await hrApi("/api/hr/timecards/import", { method: "POST", body: { employee_id: document.getElementById("tc-emp").value || null, source: document.getElementById("tc-source").value, pay_period_start: document.getElementById("tc-start").value, pay_period_end: document.getElementById("tc-end").value, entries } });
-        st.textContent = `Imported — ${r.flags} flag(s) found.`; st.className = "hr-status ok";
-        hrRenderTimecards(body);
-      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
-    });
-    const batchBtn = document.getElementById("tc-batch-import");
-    if (batchBtn) batchBtn.addEventListener("click", async () => {
-      const st = document.getElementById("tc-batch-status");
-      let list;
-      try { list = JSON.parse(document.getElementById("tc-batch").value || "[]"); } catch (e) { st.textContent = "Must be valid JSON."; st.className = "hr-status err"; return; }
-      if (!Array.isArray(list) || !list.length) { st.textContent = "Paste the timecards array."; st.className = "hr-status err"; return; }
-      st.textContent = "Importing…"; st.className = "hr-status";
-      try {
-        const r = await hrApi("/api/hr/timecards/import-batch", { method: "POST", body: { timecards: list } });
-        st.textContent = `Imported ${r.created_count}.` + (r.unmatched && r.unmatched.length ? ` Unmatched (add these employees first): ${r.unmatched.join(", ")}` : "");
-        st.className = r.unmatched && r.unmatched.length ? "hr-status err" : "hr-status ok";
-        hrRenderTimecards(body);
-      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+    // The hand-written-JSON import that used to live here is gone. It looked
+    // like the way to make a timecard and could not be used without writing a
+    // JSON array by hand, so it caught people who were looking for the real
+    // builder. One way in now: the same modal the Staff directory opens.
+    const builderBtn = document.getElementById("tc-open-builder");
+    if (builderBtn) builderBtn.addEventListener("click", () => {
+      const st = document.getElementById("tc-builder-status");
+      if (typeof window.openPayrollImportModal !== "function") {
+        // Only reachable if this page is open against an older index.html.
+        if (st) { st.textContent = "Open Staff \u203a Staff and use Import payroll \u2192 timecards."; st.className = "hr-status err"; }
+        return;
+      }
+      // No page mount: there is no staff directory behind this modal to
+      // refresh when it closes, and handing it this page's body would render
+      // the Staff page into HR & Recruiting.
+      window.openPayrollImportModal(null);
     });
     const sendAllBtn = document.getElementById("tc-send-all");
     if (sendAllBtn) sendAllBtn.addEventListener("click", async () => {

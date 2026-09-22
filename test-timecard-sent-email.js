@@ -155,6 +155,45 @@ const BASE = process.env.BASE || "http://localhost:3009";
       /timecard/i.test(opened) && opened.length > modal.length, opened.length + " vs " + modal.length);
   }
 
+  // ---------------- one way in ----------------
+  // HR & Recruiting used to carry its own timecard import: an Employee picker,
+  // a date range, and a textarea wanting a hand-written JSON array. It looked
+  // like the way to make a timecard and could not be used without writing JSON,
+  // so it caught people looking for the real builder. It is a button now.
+  // The Sent-email panel from the section above is still open and swallows
+  // clicks. Dismiss it before touching anything underneath.
+  await page.evaluate(() => {
+    document.querySelectorAll(".hr-modal-back").forEach((el) => el.remove());
+    location.hash = "#/hr/timecards";
+  });
+  await page.waitForTimeout(1800);
+  const hrBody = await page.locator("#hr-body").innerText().catch(() => "");
+  check("the hand-written JSON import is gone from HR & Recruiting",
+    await page.locator("#tc-entries").count() === 0 && await page.locator("#tc-batch").count() === 0,
+    hrBody.slice(0, 300));
+  check("and there is a button that opens the real builder instead",
+    await page.locator("#tc-open-builder").count() === 1, hrBody.slice(0, 300));
+  check("the stale Homebase banner is gone", !/Homebase/.test(hrBody), hrBody.slice(0, 300));
+
+  if (await page.locator("#tc-open-builder").count()) {
+    await page.locator("#tc-open-builder").click();
+    await page.waitForTimeout(1200);
+    const builder = await page.locator(".modal-backdrop").last().innerText().catch(() => "");
+    check("clicking it opens the Build Timecards modal", /Build Timecards/i.test(builder), builder.slice(0, 300));
+    check("with the date range and the who picker on it",
+      await page.locator("#payroll-from").count() === 1
+      && await page.locator("#payroll-to").count() === 1
+      && await page.locator("#payroll-who").count() === 1, builder.slice(0, 300));
+    check("and no spreadsheet is required to use it",
+      /No spreadsheet needed/i.test(builder), builder.slice(0, 400));
+    // Closing must not render the Staff directory into the HR page behind it.
+    await page.locator(".modal-backdrop").last().locator(".close-btn").click();
+    await page.waitForTimeout(800);
+    const after = await page.locator("#hr-body").innerText().catch(() => "");
+    check("closing it leaves HR & Recruiting where it was",
+      /Build timecards/i.test(after) && !/Team directory/i.test(after), after.slice(0, 300));
+  }
+
   check("no uncaught JavaScript errors", errors.length === 0, errors.join(" ;; "));
   console.log(`\n  ${pass} passed, ${fail} failed`);
   await browser.close();
