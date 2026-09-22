@@ -3,6 +3,7 @@ import { Button } from '@/design-system/primitives'
 import Link from 'next/link'
 import { Eyebrow, Prose } from '@/design-system/patterns'
 import { getBlock } from '@/blocks/registry'
+import { siteImageMap } from '@/db/queries/images'
 import {
   getChallengeState,
   getDay,
@@ -78,6 +79,15 @@ export default async function DayPage({
     ? await getHerEvidence(ctx, actor.contactId)
     : undefined
 
+  // Same rule for her photograph: fetched only when a note on this day shows
+  // it, so six of the seven days make no image query at all.
+  const needsPortrait = dayContent.blocks.some(
+    (b) => getBlock(b.type)?.resolvesContext === 'founder_portrait',
+  )
+  const portrait = needsPortrait
+    ? ((await siteImageMap()).get('founder-note') ?? { desktop: null, mobile: null })
+    : undefined
+
   return (
     <DayRunner
       programSlug={programSlug}
@@ -88,6 +98,7 @@ export default async function DayPage({
       blocks={blocks}
       initialResponses={Object.fromEntries(saved)}
       evidence={evidence}
+      portrait={portrait}
       alreadyComplete={state.completed >= dayNumber}
     />
   )

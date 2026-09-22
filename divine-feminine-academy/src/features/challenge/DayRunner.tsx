@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
 import { Button, Rule } from '@/design-system/primitives'
 import type { HerEvidence } from '@/blocks/contract'
+import type { SlotImages } from '@/db/queries/images'
 import { cn } from '@/lib/utils/cn'
 import { completeDay, saveBlockResponse } from './actions'
 import { BlockRenderer } from './BlockRenderer'
@@ -36,6 +37,7 @@ export function DayRunner({
   blocks,
   initialResponses,
   evidence,
+  portrait,
   alreadyComplete,
 }: {
   programSlug: string
@@ -46,6 +48,7 @@ export function DayRunner({
   blocks: RunnerBlock[]
   initialResponses: Record<string, unknown>
   evidence?: HerEvidence
+  portrait?: SlotImages
   alreadyComplete: boolean
 }) {
   const router = useRouter()
@@ -214,6 +217,7 @@ export function DayRunner({
           onChange={(v) => setValue(block.id, v)}
           disabled={saving || pending}
           context={evidence}
+          portrait={portrait}
           today={today}
         />
       </div>

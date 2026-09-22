@@ -250,6 +250,10 @@ ME showed up.`,
         },
       },
       {
+        type: 'founder_note',
+        config: { note: 'before-the-first-mirror', portrait: true },
+      },
+      {
         type: 'rich_text',
         config: {
           heading: 'LOOK AT HER.',
@@ -577,6 +581,10 @@ Today, we’re going to look at what ME has been creating.`,
           minWords: 0,
           alsoSaveToJournal: true,
         },
+      },
+      {
+        type: 'founder_note',
+        config: { note: 'before-the-hardest-mirror', portrait: true },
       },
       {
         type: 'rich_text',
