@@ -38,6 +38,23 @@ export const herLines: readonly HerLine[] = [
       'about meeting ME, so this is not a reveal: it is a woman catching ' +
       'something out of the corner of her eye on the way out of the room.',
   },
+  {
+    key: 'there-you-are',
+    text: 'there you are',
+    where:
+      'Day 5, at the very end - the day a woman meets HER. Four days of ' +
+      'learning to see ME, and then the hand she half-noticed on Day 1 ' +
+      'writes this. Who is saying it to whom is deliberately not settled.',
+  },
+  {
+    key: 'i-was-waiting-for-you',
+    text: 'I was waiting for you',
+    where:
+      'Day 7, the last thing in the challenge. By now she knows this hand ' +
+      'on sight, which is the only reason the line can carry what it has to ' +
+      'carry - three appearances across seven days, and this is what they ' +
+      'were building to.',
+  },
 ] as const
 
 export function herLine(key: string): HerLine | undefined {

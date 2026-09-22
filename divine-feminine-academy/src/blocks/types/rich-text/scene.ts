@@ -33,6 +33,17 @@ export type Scene =
   | 'confront'
   /** One line, enormous, alone. Everything else gets out of its way. */
   | 'declaration'
+  /**
+   * HER. Warm light, wide, elevated - the exact opposite of `confront`.
+   *
+   * The two scenes are a pair and only mean anything because of each other.
+   * ME is looked at in the dark, compressed, edge to edge; HER is given warm
+   * ground, a wider measure and more air than any other screen in the
+   * product. Day 7 puts them on consecutive screens - ME's answer, then
+   * HER's - and the whole week's argument is made in the change of light
+   * rather than in a sentence explaining it.
+   */
+  | 'her'
   /** The end of a day. Small, quiet, a great deal of space around it. */
   | 'close'
 

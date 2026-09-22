@@ -18,7 +18,7 @@ const configSchema = z.object({
   align: z.enum(['left', 'center']).default('left'),
   /** The environment this passage lives in. See ./scene.ts. */
   scene: z
-    .enum(['page', 'chapter', 'confront', 'declaration', 'close'])
+    .enum(['page', 'chapter', 'confront', 'declaration', 'her', 'close'])
     .default('page'),
   /** A key from her-voice.ts. HER, in handwriting, after the copy. */
   herVoice: z.string().optional(),
@@ -166,7 +166,13 @@ function Paragraph({
   }
 
   return (
-    <p className={cn('mb-6 whitespace-pre-line leading-relaxed last:mb-0', body)}>
+    <p
+      className={cn(
+        'mb-6 whitespace-pre-line leading-relaxed last:mb-0',
+        scene === 'her' && 'text-lg',
+        body,
+      )}
+    >
       {text.trim()}
     </p>
   )
@@ -195,7 +201,9 @@ function Member({ config, today }: BlockMemberProps<Config, undefined>) {
             ? 'mb-10 text-4xl md:text-5xl'
             : scene === 'confront'
               ? 'mb-12 text-2xs uppercase tracking-[0.24em] text-bone/60'
-              : 'mb-4 text-2xl',
+              : scene === 'her'
+                ? 'mb-10 text-4xl md:text-5xl'
+                : 'mb-4 text-2xl',
         dark && scene !== 'confront' && 'text-bone',
       )}
     >
@@ -239,6 +247,40 @@ function Member({ config, today }: BlockMemberProps<Config, undefined>) {
           ))}
         </div>
         {config.herVoice && <HerVoice voiceKey={config.herVoice} dark={dark} />}
+      </div>
+    )
+  }
+
+  if (scene === 'her') {
+    /*
+     * Warm light, and more room than anything else gets.
+     *
+     * Everywhere else the measure is 34rem, because that is where body copy
+     * is comfortable. Here it is wider and the type is larger, which is
+     * technically a worse reading measure and is the correct decision: this
+     * screen is not for reading efficiently, it is for a woman noticing that
+     * the room has opened up.
+     */
+    return (
+      <div className="-mx-5 bg-champagne px-5 py-20 md:-mx-8 md:px-14 md:py-24">
+        <div className="measure-wide">
+          <span
+            aria-hidden
+            className="mb-10 block h-px w-16 bg-gilt"
+          />
+          {heading}
+          {paras.map((p, i) => (
+            <Paragraph
+              key={i}
+              text={p}
+              scene={scene}
+              dark={dark}
+              loud={loud[i] ?? false}
+              answer={answer[i] ?? false}
+            />
+          ))}
+          {config.herVoice && <HerVoice voiceKey={config.herVoice} dark={dark} />}
+        </div>
       </div>
     )
   }

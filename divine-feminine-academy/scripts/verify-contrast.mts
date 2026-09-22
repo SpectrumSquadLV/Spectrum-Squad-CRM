@@ -130,6 +130,18 @@ for (const [name, alpha] of [
 
 check('bone on plum-deep', bone, plumDeep, BODY)
 
+/*
+ * HER's ground.
+ *
+ * The warm surface Day 5 and Day 7 open onto. It is lighter than bone, which
+ * makes it the least forgiving background in the system for muted type - and
+ * it carries the largest, most important copy in the challenge.
+ */
+const champagne = token('champagne')
+for (const name of ['ink', 'ink-soft', 'ink-muted', 'clay-deep', 'plum'] as const) {
+  check(`${name} on champagne`, token(name), champagne, BODY)
+}
+
 console.log('\naccents used as text:')
 check('clay-deep on bone', token('clay-deep'), bone, BODY)
 check('clay-deep on alabaster', token('clay-deep'), alabaster, BODY)

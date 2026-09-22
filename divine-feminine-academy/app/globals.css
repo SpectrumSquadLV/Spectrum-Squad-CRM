@@ -40,6 +40,16 @@
   --color-sage-wash: #e8ede8;
 
   --color-gilt: #b2914f;         /* HAIRLINES AND SMALL MARKS ONLY */
+  /*
+   * HER's ground. The only warm-light surface in the system.
+   *
+   * ME lives on bone, and on plum-deep when she is being looked at straight
+   * on. HER gets this, and it is used nowhere else in the product - which is
+   * the entire point. By Day 7 a woman has seen the page go dark for ME's
+   * answer and warm for HER's on two consecutive screens, and the difference
+   * has been made without a word of explanation.
+   */
+  --color-champagne: #f7f0e2;
 
   /* --- The four areas ----------------------------------------------------
      Each is rendered as 12px TEXT inside a badge on a 5% wash of itself, so

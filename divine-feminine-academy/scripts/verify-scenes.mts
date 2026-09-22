@@ -186,6 +186,62 @@ check(
   ),
 )
 
+console.log('\nthe week has an arc:')
+
+type Seed = { type: string; config?: Record<string, unknown> }
+const sceneOf = (b: Seed) => (b.config as { scene?: string } | undefined)?.scene
+
+// The recurring shape of the week. Every day that ends at a mirror introduces
+// it with a screen whose heading tells a woman to go and look - and every one
+// of those is a declaration, so by Day 6 she knows what is coming from the
+// shape alone, before she has read a word.
+days.forEach((day, i) => {
+  day.blocks.forEach((block, j) => {
+    if (block.type !== 'mirror_gaze') return
+    const before = day.blocks[j - 1] as Seed | undefined
+    if (!before || before.type !== 'rich_text') return
+    const heading = (before.config as { heading?: string } | undefined)?.heading
+    if (!heading?.toUpperCase().includes('LOOK')) return
+    check(
+      `day ${i + 1}: "${heading}" is a declaration before the mirror`,
+      sceneOf(before) === 'declaration',
+      sceneOf(before) ?? 'none',
+    )
+  })
+})
+
+// ME is looked at in the dark; HER is given warm light. The pair is the whole
+// argument of the challenge, so its absence would be a silent regression -
+// the challenge would still run and would simply stop meaning anything.
+const day7 = days[6]!
+const letHerSeeMe = day7.blocks.findIndex(
+  (b) => (b.config as { heading?: string } | undefined)?.heading === 'LET HER SEE ME',
+)
+const nowHer = day7.blocks.findIndex(
+  (b) => (b.config as { heading?: string } | undefined)?.heading === 'NOW, HER',
+)
+check('day 7: ME answers in the dark', sceneOf(day7.blocks[letHerSeeMe] as Seed) === 'confront')
+check('day 7: HER answers in the light', sceneOf(day7.blocks[nowHer] as Seed) === 'her')
+check(
+  'and they are consecutive, so the light changes between them',
+  nowHer === letHerSeeMe + 1,
+  `${letHerSeeMe} then ${nowHer}`,
+)
+
+// HER's ground appears nowhere before she does.
+const firstHer = days.findIndex((d) => d.blocks.some((b) => sceneOf(b as Seed) === 'her'))
+check(
+  'the warm ground is never used before the day HER arrives',
+  firstHer === 4,
+  `first on day ${firstHer + 1}`,
+)
+
+check(
+  'her hand appears three times in seven days, no more',
+  herLines.length === 3,
+  String(herLines.length),
+)
+
 console.log('\nthe classifier reads shape, not words:')
 
 check('a line ending in a colon is a label', classify('THIS HAPPENED:') === 'label')
