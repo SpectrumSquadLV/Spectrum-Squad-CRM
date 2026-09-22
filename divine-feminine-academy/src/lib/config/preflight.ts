@@ -164,12 +164,26 @@ export function runPreflight(env: Env): PreflightReport {
   }
 
   // --- Payments ----------------------------------------------------------
+  /*
+   * This said the app "refuses to start this way in production". It does not.
+   *
+   * paymentProvider() throws, and it is only called when a woman presses the
+   * button that takes her money - so the container boots, the health check
+   * passes, every page renders, and the ONLY broken thing is the purchase.
+   * She fills in her name and her email, presses Continue to payment, and is
+   * told checkout is unavailable. Nothing else on the site tells anyone.
+   *
+   * That wording is why this survived to be found by a customer instead of by
+   * this check: it read as though the boot already protected her, which made
+   * running the check look optional. It is the only thing standing between a
+   * left-over default and a sale that cannot happen.
+   */
   if (env.PAYMENTS_PROVIDER === 'fake') {
     results.push({
       key: 'PAYMENTS_PROVIDER',
       severity: isProduction ? 'error' : 'warning',
       message: isProduction
-        ? 'Set to "fake", which approves every payment. The app refuses to start this way in production, and so does this check.'
+        ? 'Set to "fake", which approves every payment. The app will still boot and every page will work — checkout is the only thing that fails, and it fails at the moment someone tries to pay.'
         : 'Using the fake provider. No money moves.',
     })
   } else {
