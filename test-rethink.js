@@ -705,6 +705,88 @@ const initRethink = require("./rethink");
     check("an empty pull writes no authorization rows", state.authRows.length === 0);
   }
 
+  // THE PARAMETER LADDER.
+  //
+  // /api/ClientAuthorization was called with no parameters at all, and answered
+  // 200 with zero rows on every sync while 28 clients sat linked and
+  // appointments came back carrying clientAuthorizationId. The client endpoint
+  // had already been through this: it was given a From/To window and started
+  // returning rows. Authorizations never were.
+  {
+    const seen = [];
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: authClients });
+    stub.dwhGetAllPages = async (endpoint, params) => {
+      seen.push(params || {});
+      // Only the windowed call returns anything, which is the shape the client
+      // endpoint turned out to want.
+      if (params && params.From && params.To) {
+        return { rows: [auth({ id: "AU9", c: "C10", s: "2026-08-01", e: "2026-12-31" })], pages: 1, truncated: false, counters: {} };
+      }
+      return { rows: [], pages: 1, truncated: false, counters: { totalCount: 0 } };
+    };
+    const out = await initRethink(ctx).syncAuthorizations("test");
+    check("the authorization pull is tried with a date window, not only bare", seen.length >= 1 && !!seen[0].From, JSON.stringify(seen[0]));
+    check("and the windowed attempt is the FIRST one, so the steady state is one request",
+      !!(seen[0].From && seen[0].To), JSON.stringify(seen[0]));
+    check("once an attempt returns rows the ladder stops", seen.length === 1, seen.length);
+    check("and the sync succeeds on what the window returned", out.ok !== false, JSON.stringify(out).slice(0, 200));
+  }
+
+  // The window must run FORWARD. An authorization that is currently running
+  // ends in the future, so a To of today would filter out every live one if
+  // the endpoint filters on the end date.
+  {
+    let firstParams = null;
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: authClients });
+    stub.dwhGetAllPages = async (endpoint, params) => {
+      if (!firstParams) firstParams = params || {};
+      return { rows: [], pages: 1, truncated: false, counters: {} };
+    };
+    await initRethink(ctx).syncAuthorizations("test");
+    check("the window reaches back far enough to cover any date it might filter on",
+      firstParams.From <= "2000-01-01", firstParams.From);
+    check("and forward past today, so a live authorization is not filtered out",
+      firstParams.To > new Date().toISOString().slice(0, 10), firstParams.To);
+  }
+
+  // A parameter this tenant rejects must not take the rest of the ladder down
+  // with it -- including the bare call, which is the behaviour that shipped.
+  {
+    const labels = [];
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: authClients });
+    stub.dwhGetAllPages = async (endpoint, params) => {
+      const keys = Object.keys(params || {}).sort().join(",");
+      labels.push(keys || "(none)");
+      if (keys.includes("IncludeInactive")) {
+        throw new realClient.RethinkError("Rethink ClientAuthorization returned HTTP 400.", { kind: "http", status: 400 });
+      }
+      if (!keys) return { rows: [auth({ id: "AU8", c: "C10", s: "2026-08-01", e: "2026-12-31" })], pages: 1, truncated: false, counters: {} };
+      return { rows: [], pages: 1, truncated: false, counters: {} };
+    };
+    const out = await initRethink(ctx).syncAuthorizations("test");
+    check("an attempt that errors does not abort the ones after it", labels.includes("(none)"), labels.join(" | "));
+    check("so the original no-parameter call still gets its turn", out.ok !== false, JSON.stringify(out).slice(0, 200));
+  }
+
+  // When everything still comes back empty, what Rethink says about ITSELF is
+  // the thing that decides where to look next.
+  {
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: authClients });
+    stub.dwhGetAllPages = async () => ({ rows: [], pages: 1, truncated: false, counters: { totalCount: 1240 } });
+    const out = await initRethink(ctx).syncAuthorizations("test");
+    check("a totalCount above zero next to an empty list points at the query",
+      /1240/.test(out.error || "") && /query/i.test(out.error || ""), out.error);
+    check("and every attempt that was made is listed",
+      /with_date_window/.test(out.error || "") && /no_parameters/.test(out.error || ""), out.error);
+  }
+  {
+    const { ctx } = makeDb({ now: NOW, config: CONFIRMED, clients: authClients });
+    stub.dwhGetAllPages = async () => ({ rows: [], pages: 1, truncated: false, counters: { totalCount: 0 } });
+    const out = await initRethink(ctx).syncAuthorizations("test");
+    check("a totalCount of zero points at permissions or the endpoint instead",
+      /totalCount=0/.test(out.error || "") && /permission/i.test(out.error || ""), out.error);
+  }
+
   // The same empty 200, but with nothing linked to Rethink yet. Here zero is
   // simply true, and a hard failure would be crying wolf at a practice that has
   // not finished setting up.

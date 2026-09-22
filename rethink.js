@@ -81,6 +81,25 @@ module.exports = function initRethink(ctx) {
   // includes every client on the books, and narrowed only if that proves noisy.
   const CLIENTS_FROM = process.env.RETHINK_CLIENTS_FROM || "2000-01-01";
 
+  // The same reasoning applied to authorizations, where it had never been:
+  // /api/ClientAuthorization was called with NO parameters at all, and has
+  // answered 200 with zero rows on every sync while 28 clients sit linked to
+  // Rethink and appointments come back carrying clientAuthorizationId and
+  // authorizationNo -- so the authorizations plainly exist.
+  //
+  // The window runs FORWARD as well as back, which is the part that differs
+  // from clients. An authorization is a period, and a current one ends in the
+  // future; a To of today would filter out every authorization still running
+  // if the endpoint happens to filter on the end date. Both ends are opened
+  // wide rather than guessing which date the filter uses.
+  const AUTH_FROM = process.env.RETHINK_AUTH_FROM || "2000-01-01";
+  const AUTH_FORWARD_YEARS = Math.max(1, Number(process.env.RETHINK_AUTH_FORWARD_YEARS) || 5);
+  function authWindowTo() {
+    const d = new Date();
+    d.setUTCFullYear(d.getUTCFullYear() + AUTH_FORWARD_YEARS);
+    return d.toISOString().slice(0, 10);
+  }
+
   // How far back the appointment-activity fallback looks when deciding who is
   // currently in therapy. Ninety days rather than thirty: a child on a school
   // break, or between authorizations, is not a discharged child, and reporting
@@ -2098,21 +2117,65 @@ module.exports = function initRethink(ctx) {
         { safe: "Rethink credentials are not configured on the server." });
     }
 
-    let fetched;
-    try {
-      fetched = await client.dwhGetAllPages(DWH_AUTHORIZATIONS, {}, { nowMs: nowMs(), pageSize: 500 });
-    } catch (e) {
-      // A 404 here almost always means the configured path is wrong, so the
-      // path travels to the browser too. It is configuration, not a secret,
-      // and it is the difference between "something failed" and "fix this".
+    // The same ladder the client scan uses, for the same reason: settle in one
+    // run which query this endpoint actually answers, rather than guessing and
+    // spending a deploy per guess. The window goes first because that is the
+    // difference that made Clients work; the old no-parameter call is still in
+    // the list, last, so if Rethink was right all along nothing is lost.
+    //
+    // Unlike the client scan, a failing attempt does not abort the ladder: a
+    // parameter this tenant rejects outright would otherwise stop the attempts
+    // that come after it, including the one that used to be the only behaviour.
+    const authTo = authWindowTo();
+    const attempts = [
+      { label: "with_date_window", params: { From: AUTH_FROM, To: authTo } },
+      { label: "window_plus_inactive", params: { From: AUTH_FROM, To: authTo, IncludeInactive: true, IncludeExpired: true } },
+      { label: "no_parameters", params: {} },
+    ];
+
+    let fetched = null, usedAttempt = null, lastError = null;
+    const tried = [];
+    for (const attempt of attempts) {
+      let result;
+      try {
+        result = await client.dwhGetAllPages(DWH_AUTHORIZATIONS, attempt.params, { nowMs: nowMs(), pageSize: 500 });
+      } catch (e) {
+        lastError = e;
+        client.log("authorizations_attempt", {
+          endpoint: DWH_AUTHORIZATIONS, attempt: attempt.label,
+          params_sent: Object.keys(attempt.params).sort().join(",") || "(none)",
+          error_kind: e.kind, status: e.status, error: e.message,
+        });
+        tried.push(`${attempt.label}: ${e.status ? `HTTP ${e.status}` : e.kind || "failed"}`);
+        continue;
+      }
+      const n = (result.rows || []).length;
+      const counts = result.counters || {};
+      client.log("authorizations_attempt", {
+        endpoint: DWH_AUTHORIZATIONS, attempt: attempt.label,
+        params_sent: Object.keys(attempt.params).sort().join(",") || "(none)",
+        rows: n,
+        envelope_counts: Object.keys(counts).length
+          ? Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ") : "(none)",
+      });
+      tried.push(`${attempt.label}: ${n} row(s)${counts.totalCount != null ? ` (Rethink reports totalCount=${counts.totalCount})` : ""}`);
+      if (n) { fetched = result; usedAttempt = attempt.label; break; }
+      if (!fetched) fetched = result; // keep the last empty result for reporting
+    }
+
+    if (!fetched) {
+      // Every attempt threw. Report the last failure the way the single call
+      // used to, including the 404-means-wrong-path hint.
+      const e = lastError || new Error("Rethink could not be reached.");
       if (e.status === 404) {
         e.safe = `${e.safe || client.redact(e.message)} — the configured path is "${DWH_AUTHORIZATIONS}"; set RETHINK_AUTH_ENDPOINT if that is wrong.`;
       }
       return fail(
-        `${e.message} (endpoint "${DWH_AUTHORIZATIONS}" -- set RETHINK_AUTH_ENDPOINT if that path is wrong)`,
+        `${e.message} (endpoint "${DWH_AUTHORIZATIONS}" -- set RETHINK_AUTH_ENDPOINT if that path is wrong). Attempts: ${tried.join("; ")}`,
         e.kind || "http", e
       );
     }
+    if (usedAttempt) client.log("authorizations_loaded", { endpoint: DWH_AUTHORIZATIONS, attempt: usedAttempt, rows: (fetched.rows || []).length });
 
     const rows = fetched.rows || [];
     if (fetched.truncated) warnings.push("Stopped at the authorization page limit; the list may be incomplete.");
@@ -2144,16 +2207,30 @@ module.exports = function initRethink(ctx) {
     // reported as one. With nothing linked yet, zero is simply true, and says
     // so instead of crying wolf.
     if (!rows.length) {
+      const counts = fetched.counters || {};
       client.log("authorizations_empty", {
         kind: "authorizations", endpoint: DWH_AUTHORIZATIONS,
         linked_clients: byRethinkClientId.size, pages: fetched.pages,
+        attempts: tried.join(" | "),
+        envelope_counts: Object.keys(counts).length
+          ? Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ") : "(none)",
       });
       if (byRethinkClientId.size > 0) {
+        // What Rethink says about itself decides where to look next, so it goes
+        // in the message rather than only the log: a totalCount above zero next
+        // to an empty list is our query's problem, a totalCount of zero is a
+        // permission or scope question on Rethink's side. Either way the reader
+        // gets a next step instead of "it returned nothing".
+        const verdict = counts.totalCount == null
+          ? ""
+          : counts.totalCount > 0
+            ? ` Rethink reports it holds ${counts.totalCount} authorization(s) but returned none of them, which points at the query rather than at permissions.`
+            : ` Rethink reports totalCount=0, so it is saying it has none matching -- which points at permissions or at the wrong endpoint rather than at the query.`;
         return fail(
           `The Rethink "${DWH_AUTHORIZATIONS}" endpoint returned HTTP 200 with no authorizations at all, `
           + `while ${byRethinkClientId.size} active client(s) are linked to Rethink and would be expected to have them. `
-          + `The endpoint is reachable and authenticated, so this is a query or permission question on Rethink's side `
-          + `rather than a connection problem -- set RETHINK_AUTH_ENDPOINT if "${DWH_AUTHORIZATIONS}" is the wrong path. `
+          + `Tried: ${tried.join("; ")}.${verdict} `
+          + `The endpoint is reachable and authenticated -- set RETHINK_AUTH_ENDPOINT if "${DWH_AUTHORIZATIONS}" is the wrong path. `
           + `Nothing already synced has been changed.`,
           "empty"
         );
