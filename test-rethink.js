@@ -160,9 +160,15 @@ function makeDb(seed) {
       return;
     }
     if (/INSERT INTO rethink_unmatched_staff/i.test(sql)) {
+      const cols = ((sql.match(/INSERT INTO rethink_unmatched_staff\s*\(([^)]*)\)/i) || [])[1] || "")
+        .split(",").map((c) => c.trim());
+      const row = {};
+      cols.forEach((name, i) => { row[name] = p[i]; });
+      const arr = (v) => { try { const a = JSON.parse(v || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
       state.unmatchedStaff.push({
-        staffId: p[0], name: p[1], appointments: p[2], hours: p[3],
-        clients: p[4], first: p[5], last: p[6],
+        staffId: row.rethink_staff_id, name: row.name_hint, appointments: row.appointments,
+        hours: row.hours, clients: row.distinct_clients, first: row.first_seen, last: row.last_seen,
+        clientNames: arr(row.client_names), noteAuthors: arr(row.note_authors),
       });
       return;
     }
@@ -418,14 +424,27 @@ const initRethink = require("./rethink");
     const { state, ctx } = makeDb({
       now: NOW, config: CONFIRMED,
       employees: [{ id: 1, name: "Known RBT", email: "known@x.invalid", rethink_id: "S100" }],
+      // Two of the children are linked to the CRM, one is not. Only the linked
+      // ones can be named: an unlinked Rethink client id is not known to be
+      // anybody here.
+      clients: [
+        { rethink_client_id: "C4", child_name: "Theo B." },
+        { rethink_client_id: "C5", child_name: "Priya K." },
+      ],
     });
     stub.dwhGetAllPages = async () => ({ rows: [
       { staffId: "S100", clientId: "C1", appointmentDate: "2026-08-03", actualDurationHours: 2 },
       { staffId: "S900", staffName: "Nina Alvarez", clientId: "C2", appointmentDate: "2026-08-04", actualDurationHours: 3 },
       { staffId: "S900", staffName: "Nina Alvarez", clientId: "C3", appointmentDate: "2026-08-09", actualDurationHours: 1.5 },
       // No name anywhere in the payload: this is the case that decides whether
-      // the feature can create anybody at all.
-      { staffId: "S901", clientId: "C4", appointmentDate: "2026-08-05", actualDurationHours: 4 },
+      // the feature can create anybody at all. Everything the owner has to
+      // recognise this person by comes off these rows.
+      { staffId: "S901", clientId: "C4", appointmentDate: "2026-08-05", actualDurationHours: 4,
+        sessionNoteCreatedBy: "Micah Torres" },
+      { staffId: "S901", clientId: "C5", appointmentDate: "2026-08-06", actualDurationHours: 2,
+        sessionNoteCreatedBy: "Micah Torres" },
+      { staffId: "S901", clientId: "C6", appointmentDate: "2026-08-07", actualDurationHours: 2,
+        sessionNoteCreatedBy: "Dana Fields" },
     ], pages: 1, truncated: false });
 
     const r = initRethink(ctx);
@@ -451,6 +470,24 @@ const initRethink = require("./rethink");
     check("and is not given an invented one", anon && anon.name == null, anon && anon.name);
     check("the scan says plainly that a name is missing",
       out.without_a_name === 1 && out.warnings.some((w) => /no provider name|had no name/i.test(w)),
+      JSON.stringify(out.warnings));
+
+    // ---- a staff id nobody can read is not an answer ----
+    // With no name in the payload the only way an owner identifies this person
+    // is by what they can recognise: whose children they see, and who signs
+    // their notes. Without it the screen shows "1142821" and the owner is
+    // stuck, which is exactly where this feature was.
+    check("an unnamed provider is shown by the clients they work with",
+      anon && anon.clientNames.join(" | ") === "Theo B. | Priya K.", JSON.stringify(anon));
+    check("only clients the CRM has approved a link for are named",
+      anon && anon.clientNames.length === 2 && anon.clients === 3, JSON.stringify(anon));
+    check("and by who writes their session notes",
+      anon && anon.noteAuthors.slice().sort().join(" | ") === "Dana Fields | Micah Torres",
+      JSON.stringify(anon));
+    check("a note author is never promoted to being their name",
+      anon && anon.name == null, JSON.stringify(anon));
+    check("the warning points at the evidence instead of just naming the problem",
+      out.warnings.some((w) => /client/i.test(w) && /staff id/i.test(w)),
       JSON.stringify(out.warnings));
 
     // ---- creating the record is a separate, deliberate act ----

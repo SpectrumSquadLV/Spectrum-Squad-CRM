@@ -3455,6 +3455,21 @@ module.exports = function initHr(ctx) {
         // their sessions can be spread across several Rethink staff records,
         // so filtering any earlier would drop half their hours.
         let buckets = [...merged.values()];
+        // Rethink staff who delivered sessions in this range and are linked to
+        // nobody in the CRM. Worth naming: when a build for one person comes
+        // back empty, "Rethink has no sessions for them" is often not true --
+        // it has their sessions under a staff id, or a spelling, that no staff
+        // record claims. Telling somebody their colleague did no work that
+        // fortnight when the truth is a missing link is the wrong answer.
+        const unlinkedCandidates = buckets
+          .filter((bk) => !bk.staff)
+          .map((bk) => ({
+            name: bk.hint || null,
+            rethink_ids: bk.staffIds,
+            sessions: bk.entries.length,
+            hours: round2(bk.entries.reduce((a, e) => a + (Number(e.hours) || 0), 0)),
+          }))
+          .sort((a, b) => b.sessions - a.sessions);
         if (onlyEmployee) {
           buckets = buckets.filter((bk) => bk.staff && bk.staff.id === onlyEmployee.id);
           // Their own numbers, not the practice's -- "29 sessions left off"
@@ -3524,6 +3539,10 @@ module.exports = function initHr(ctx) {
             non_billable_hours: t.non_billable_hours,
             unclassified_hours: t.unclassified_hours,
             shifts: entries.length,
+            // Hours Rethink gave no Billable/Non-Billable word for, counted as
+            // Non-Billable under the practice's own rule. Reported so the
+            // decision is visible and correctable, not silent.
+            inferred_hours: round2(entries.filter((e) => e.billable_inferred).reduce((a, e) => a + (Number(e.hours) || 0), 0)),
             matched: !!staff,
             has_email: !!(staff && staff.email),
             timecard_id: timecardId,
@@ -3572,6 +3591,10 @@ module.exports = function initHr(ctx) {
           // Already has another timecard covering these dates, from the other
           // import route. Named, never merged.
           overlapping: preview.filter((p) => p.overlaps).map((p) => p.name),
+          // Only meaningful when building for one person; for Everyone these
+          // already appear as their own "no staff match" rows.
+          unlinked_candidates: onlyEmployee ? unlinkedCandidates.slice(0, 12) : [],
+          inferred_hours: round2(preview.reduce((s, p) => s + (Number(p.inferred_hours) || 0), 0)),
           // Already sent for signature or already signed: left exactly as the
           // person saw them.
           locked: preview.filter((p) => p.locked).map((p) => p.name),
@@ -5039,7 +5062,14 @@ Write body as plain text with line breaks (no HTML).`;
         alert: eAlert >= 0 ? (r[eAlert] || "") : "",
         appt_status: eStatus >= 0 ? (r[eStatus] || "") : "",
         appt_type: apptType,
-        billable: classifyBillable(apptType),
+        // Same rule as the Rethink build: every appointment here is Billable
+        // or Non-Billable, so a blank cell becomes Non-Billable rather than a
+        // third column for somebody to classify by hand. Only when the export
+        // HAS the column -- an older export without it has said nothing about
+        // any row, and those timecards still render as one undivided table
+        // instead of claiming a fortnight was entirely non-billable.
+        billable: eType >= 0 ? (classifyBillable(apptType) === true) : classifyBillable(apptType),
+        billable_inferred: (eType >= 0 && classifyBillable(apptType) === null) || undefined,
       });
     }
     // Roll the billable split up to the employee so the import preview can show
@@ -5105,6 +5135,16 @@ Write body as plain text with line breaks (no HTML).`;
       scanned++;
       const staffId = String(row.staffId == null ? "" : row.staffId).trim();
       if (!staffId) { noStaff++; continue; }
+      // Name them before deciding anything about the session. A staff member
+      // whose sessions are ALL excluded -- every one unverified, or none of
+      // them completed -- used to leave no trace at all, so a build for that
+      // person reported "Rethink has no sessions for them" about somebody who
+      // may have worked the whole fortnight. Knowing who a staff id belongs to
+      // does not depend on whether their sessions counted.
+      if (!names.has(staffId) && rethinkStaffName) {
+        const h = rethinkStaffName(row);
+        if (h) names.set(staffId, h);
+      }
       const verdict = verificationVerdict ? verificationVerdict(row, strictCfg) : null;
       // Split the two reasons a session is left off. They used to be counted
       // together and reported as "not staff-verified", which was wrong for
@@ -5125,16 +5165,22 @@ Write body as plain text with line breaks (no HTML).`;
       if (!verdict.verifiedOk) {
         unverified++;
         bumpExcluded(staffId, "unverified");
-        if (!names.has(staffId) && rethinkStaffName) {
-          // Name them even though nothing of theirs is being imported, so a
-          // build for one person can say "all of yours were unverified"
-          // instead of showing an empty range.
-          const h = rethinkStaffName(row);
-          if (h) names.set(staffId, h);
-        }
         continue;
       }
       const apptType = rethinkBillableRaw ? (rethinkBillableRaw(row) || "") : "";
+      // Every appointment at this practice is Billable or Non-Billable. There
+      // is no third kind, so a timecard must not invent one: an hour landing
+      // in a "not labeled" column is an hour somebody has to go and classify
+      // by hand, for a distinction the practice has already made.
+      //
+      // Rethink's own word still decides whenever it gives one. When it gives
+      // nothing, the hour is Non-Billable -- the safe direction, since the
+      // opposite would quietly count unclassifiable time as billable -- and
+      // the entry is stamped so the review screen can say which ones were
+      // decided that way rather than read off the appointment.
+      let billable = classifyBillable(apptType);
+      const inferred = billable === null;
+      if (inferred) billable = false;
       const entry = {
         date: String(row.appointmentDate || "").slice(0, 10),
         scheduled: row.appointmentStartTime ? String(row.appointmentStartTime) : "",
@@ -5145,14 +5191,11 @@ Write body as plain text with line breaks (no HTML).`;
         alert: "",
         appt_status: row.appointmentStatus == null ? "" : String(row.appointmentStatus).slice(0, 80),
         appt_type: apptType,
-        billable: classifyBillable(apptType),
+        billable,
+        billable_inferred: inferred || undefined,
       };
       if (!byStaff.has(staffId)) byStaff.set(staffId, []);
       byStaff.get(staffId).push(entry);
-      if (!names.has(staffId) && rethinkStaffName) {
-        const hint = rethinkStaffName(row);
-        if (hint) names.set(staffId, hint);
-      }
     }
     for (const entries of byStaff.values()) {
       entries.sort((a, c) => String(a.date).localeCompare(String(c.date)));

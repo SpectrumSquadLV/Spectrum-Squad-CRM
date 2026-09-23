@@ -404,6 +404,64 @@ const b64 = (buf) => buf.toString("base64");
   }
 
   // ------------------------------------------------------------------
+  section("Billable or non-billable, and nothing else");
+
+  // Every appointment at this practice is one or the other. A timecard that
+  // offered a third "Not labeled" column handed back a pile of hours for
+  // somebody to classify by hand, for a distinction that had already been
+  // made -- and those hours sat outside both subtotals on the sheet staff
+  // were asked to sign.
+  {
+    const totals = hrMod._internal.timecardTotals;
+    const g = group([
+      { staffId: "B1", appointmentDate: "2026-09-08", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+      { staffId: "B1", appointmentDate: "2026-09-09", actualDurationHours: 2, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Non-Billable" },
+      // Rethink sent no type at all.
+      { staffId: "B1", appointmentDate: "2026-09-10", actualDurationHours: 3, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "" },
+      // And a word that is neither.
+      { staffId: "B1", appointmentDate: "2026-09-11", actualDurationHours: 1, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Parent Training" },
+    ], {});
+    const e = g.byStaff.get("B1") || [];
+    check("every verified session is on the timecard", e.length === 4, e.length);
+    check("not one entry is left unclassified",
+      e.every((x) => x.billable === true || x.billable === false), e.map((x) => x.billable));
+    check("Rethink's own word still decides when it gives one",
+      e[0].billable === true && e[1].billable === false, e.slice(0, 2));
+    check("an hour Rethink said nothing about counts as non-billable, not as billable",
+      e[2].billable === false && e[3].billable === false, e.slice(2));
+    check("and is stamped as a guess, so the review screen can say which ones",
+      e[2].billable_inferred === true && e[3].billable_inferred === true
+        && !e[0].billable_inferred && !e[1].billable_inferred, e);
+
+    const t = totals(e);
+    check("the sheet has no third column of hours", t.unclassified_hours === 0 && t.unclassified.length === 0, t.unclassified);
+    check("and the two subtotals account for the whole 10 hours",
+      t.billable_hours === 4 && t.non_billable_hours === 6, t);
+  }
+
+  // The same rule on the spreadsheet route, end to end -- two import paths
+  // disagreeing about what a blank cell means is its own bug.
+  {
+    const blankId = await mk(`Blankcell Payroll ${stamp}`, `RT-BC-${stamp}`, `blank.${stamp}@example.test`);
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "blanktype.xlsx", content_base64: b64(exportFor([
+      { id: `RT-BC-${stamp}`, first: "Blankcell", last: `Payroll ${stamp}`, reg: 7,
+        shifts: [{ day: 8, hours: 4, type: "Billable" }, { day: 9, hours: 3, type: "" }] },
+    ])) } });
+    check("an export with a blank Appt Type cell still imports", r.status === 200, r.data);
+    check("the blank cell does not become a third bucket of hours",
+      !r.data.unclassified_hours, r.data);
+    check("it is counted as non-billable, the safe direction",
+      r.data.billable_hours === 4 && r.data.non_billable_hours === 3, r.data);
+    const card = (await owner(`/api/hr/timecards/${r.data.timecard_ids[0]}`)).data;
+    const blank = (card.entries || []).find((x) => !String(x.appt_type || "").trim());
+    check("and the entry itself says non-billable rather than nothing",
+      blank && blank.billable === false, blank);
+    check("stamped as inferred, because the export did not say so",
+      blank && blank.billable_inferred === true, blank);
+    void blankId;
+  }
+
+  // ------------------------------------------------------------------
   section("One person, several Rethink staff records");
 
   // Straight from a real run: Rethink held THREE staff records for one RBT.
@@ -530,6 +588,41 @@ const b64 = (buf) => buf.toString("base64");
       g.names.get("P2") === "Solo Two", [...g.names.entries()]);
     check("and has no bucket of hours, because none of it is verified",
       !g.byStaff.has("P2"), [...g.byStaff.keys()]);
+  }
+
+  // ------------------------------------------------------------------
+  section("A person whose Rethink record is not linked");
+
+  // Reported from a real run: a BCBA who is plainly in Rethink came back as
+  // "Rethink has no sessions for them in these dates". Her CRM record carried
+  // no Rethink id and her name in Rethink did not match hers here, so her
+  // sessions sat in a bucket belonging to nobody -- and the screen told her
+  // employer she had delivered nothing, which was false.
+  {
+    const g = group([
+      // Hers, under a spelling the CRM does not have.
+      { staffId: "MG1", renderingProvider: "Galang, Micah", appointmentDate: "2026-09-08", actualDurationHours: 6, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+      { staffId: "MG1", renderingProvider: "Galang, Micah", appointmentDate: "2026-09-09", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+    ], {});
+    const bucketKeys = [...g.byStaff.keys()];
+    check("her sessions are still read off Rethink", bucketKeys.includes("MG1"), bucketKeys);
+    check("and carry the name Rethink gave them", g.names.get("MG1") === "Galang, Micah", [...g.names.entries()]);
+    check("they are not counted as unverified -- they were verified",
+      g.unverified === 0 && g.notCompleted === 0, g);
+
+    // What the route does with that: the bucket resolves to no employee, so it
+    // becomes an unlinked candidate rather than silently vanishing.
+    const unresolved = { staff: null, hint: g.names.get("MG1"), staffIds: ["MG1"], entries: g.byStaff.get("MG1") };
+    const candidate = {
+      name: unresolved.hint,
+      rethink_ids: unresolved.staffIds,
+      sessions: unresolved.entries.length,
+      hours: unresolved.entries.reduce((a, e) => a + e.hours, 0),
+    };
+    check("an unlinked Rethink record is reportable by name, not just by id",
+      candidate.name === "Galang, Micah", candidate);
+    check("with the work it represents, so it is obvious it is somebody's",
+      candidate.sessions === 2 && candidate.hours === 10, candidate);
   }
 
   // ------------------------------------------------------------------

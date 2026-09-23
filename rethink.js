@@ -364,6 +364,12 @@ module.exports = function initRethink(ctx) {
       last_seen TEXT,
       scanned_at TEXT
     )`).catch((e) => console.error("rethink_unmatched_staff initTables:", e.message));
+    // Evidence for identifying a staff id when Rethink sends no name. This
+    // account's appointments carry no provider name at all, so a staff id is
+    // all there is -- and nobody can look at "Rethink staff 982341" and say
+    // who that is. Whose clients they are answers it immediately.
+    await dbRun("ALTER TABLE rethink_unmatched_staff ADD COLUMN IF NOT EXISTS client_names TEXT").catch(() => {});
+    await dbRun("ALTER TABLE rethink_unmatched_staff ADD COLUMN IF NOT EXISTS note_authors TEXT").catch(() => {});
     await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS last_staff_scan_at TEXT").catch(() => {});
 
     // PER DAY, not per month, and that is the whole point of it.
@@ -1518,7 +1524,7 @@ module.exports = function initRethink(ctx) {
         const date = String(row.appointmentDate || "").slice(0, 10);
         const cur = byStaff.get(sid) || {
           rethink_staff_id: sid, name_hint: null, appointments: 0, hours: 0,
-          first_seen: null, last_seen: null, clients: new Set(),
+          first_seen: null, last_seen: null, clients: new Set(), noteAuthors: new Set(),
         };
         cur.appointments += 1;
         cur.hours += num(row.actualDurationHours);
@@ -1529,6 +1535,15 @@ module.exports = function initRethink(ctx) {
         }
         const cid = String(row.clientId == null ? "" : row.clientId).trim();
         if (cid) cur.clients.add(cid);
+        // Who wrote the session note. NOT treated as the provider's name --
+        // it is whoever typed the note, which is usually but not always the
+        // person who delivered the session, and a name put on the wrong staff
+        // id is worse than no name. It is shown as evidence, labelled as what
+        // it is, for a human to read.
+        const author = row.sessionNoteCreatedBy;
+        if (typeof author === "string" && author.trim() && cur.noteAuthors.size < 4) {
+          cur.noteAuthors.add(author.trim().slice(0, 80));
+        }
         byStaff.set(sid, cur);
       } catch (e) {
         warnings.push(`A row could not be read: ${client.redact(e.message)}`);
@@ -1542,6 +1557,17 @@ module.exports = function initRethink(ctx) {
     // off without anyone having to dismiss them.
     await dbRun("DELETE FROM rethink_unmatched_staff").catch(() => {});
 
+    // Rethink client id -> the name the CRM knows that child by, for the
+    // clients an owner has already approved a link for. Only linked ones: an
+    // unlinked Rethink client id is not known to be anybody here.
+    const clientNameById = new Map();
+    try {
+      const linked = await dbAll(
+        "SELECT rethink_client_id, child_name FROM clients WHERE rethink_client_id IS NOT NULL AND TRIM(rethink_client_id) <> ''"
+      );
+      linked.forEach((c) => clientNameById.set(String(c.rethink_client_id).trim(), c.child_name));
+    } catch (e) { /* evidence is best-effort; the scan still works without it */ }
+
     let matched = 0, unmatched = 0, unnamed = 0;
     for (const v of byStaff.values()) {
       const emp = byRethinkId.get(v.rethink_staff_id) || null;
@@ -1550,15 +1576,19 @@ module.exports = function initRethink(ctx) {
       if (!v.name_hint) unnamed++;
       await dbRun(
         `INSERT INTO rethink_unmatched_staff
-           (rethink_staff_id, name_hint, appointments, hours, distinct_clients, first_seen, last_seen, scanned_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           (rethink_staff_id, name_hint, appointments, hours, distinct_clients, first_seen, last_seen, scanned_at,
+            client_names, note_authors)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (rethink_staff_id) DO UPDATE SET
            name_hint = EXCLUDED.name_hint, appointments = EXCLUDED.appointments,
            hours = EXCLUDED.hours, distinct_clients = EXCLUDED.distinct_clients,
            first_seen = EXCLUDED.first_seen, last_seen = EXCLUDED.last_seen,
-           scanned_at = EXCLUDED.scanned_at`,
+           scanned_at = EXCLUDED.scanned_at,
+           client_names = EXCLUDED.client_names, note_authors = EXCLUDED.note_authors`,
         [v.rethink_staff_id, v.name_hint, v.appointments, round2(v.hours), v.clients.size,
-         v.first_seen, v.last_seen, nowISO()]
+         v.first_seen, v.last_seen, nowISO(),
+         JSON.stringify([...v.clients].map((cid) => clientNameById.get(cid)).filter(Boolean).slice(0, 8)),
+         JSON.stringify([...v.noteAuthors])]
       ).catch((e) => warnings.push(`Could not record a provider: ${e.message}`));
     }
 
@@ -1569,8 +1599,8 @@ module.exports = function initRethink(ctx) {
     if (unnamed) {
       warnings.push(
         unnamed === unmatched
-          ? `Rethink sent no provider name on any of these appointments, so the ${unnamed} unmatched provider(s) can only be shown by staff id. You will need to type each name.`
-          : `${unnamed} of the ${unmatched} unmatched provider(s) had no name in the Rethink payload and can only be shown by staff id.`
+          ? `Rethink sent no provider name on any of these appointments, so the ${unnamed} unmatched provider(s) are listed by staff id. Each one shows the clients they work with and who signs their notes, so you can recognise them and type the name in.`
+          : `${unnamed} of the ${unmatched} unmatched provider(s) had no name in the Rethink payload and are listed by staff id, with the clients they work with to identify them.`
       );
     }
 
@@ -1593,7 +1623,7 @@ module.exports = function initRethink(ctx) {
   async function staffMatchReview() {
     const unmatched = await dbAll(
       `SELECT rethink_staff_id, name_hint, appointments, hours, distinct_clients,
-              first_seen, last_seen, scanned_at
+              first_seen, last_seen, scanned_at, client_names, note_authors
          FROM rethink_unmatched_staff
         ORDER BY appointments DESC, rethink_staff_id`
     ).catch(() => []);
@@ -1614,6 +1644,10 @@ module.exports = function initRethink(ctx) {
         distinct_clients: Number(r.distinct_clients) || 0,
         first_seen: r.first_seen || null,
         last_seen: r.last_seen || null,
+        // Who this staff id works with, and who writes their notes. Evidence
+        // for a human, never a claim about who they are.
+        client_names: (() => { try { const a = JSON.parse(r.client_names || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } })(),
+        note_authors: (() => { try { const a = JSON.parse(r.note_authors || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } })(),
       })),
       employees: employees.map((e) => ({
         id: e.id, name: e.name, email: e.email || null,
