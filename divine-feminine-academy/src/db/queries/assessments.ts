@@ -172,3 +172,36 @@ export async function getPriorAttempt(
 export async function listAssessments(db: QueryContext['db']) {
   return db.select().from(assessments).orderBy(asc(assessments.title))
 }
+
+/**
+ * The archetype she came out as, most recently.
+ *
+ * Read for her own Academy page, so the room called YOUR ARCHETYPE either
+ * holds something true about her or honestly says she has not taken the quiz
+ * yet. A room that claims to know her and does not is worse than one that
+ * admits it.
+ *
+ * Latest rather than first: she is allowed to change, and the quiz is
+ * deliberately retakeable.
+ */
+export async function latestArchetype(
+  db: QueryContext['db'],
+  contactId: string,
+): Promise<{ archetype: string; takenAt: Date | null } | null> {
+  const [row] = await db
+    .select({
+      archetype: assessmentResults.archetype,
+      completedAt: assessmentAttempts.completedAt,
+    })
+    .from(assessmentResults)
+    .innerJoin(
+      assessmentAttempts,
+      eq(assessmentAttempts.id, assessmentResults.attemptId),
+    )
+    .where(eq(assessmentAttempts.contactId, contactId))
+    .orderBy(desc(assessmentAttempts.completedAt))
+    .limit(1)
+
+  if (!row?.archetype) return null
+  return { archetype: row.archetype, takenAt: row.completedAt }
+}

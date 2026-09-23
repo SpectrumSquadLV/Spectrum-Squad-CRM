@@ -17,6 +17,7 @@ import { behaviorCommitment } from './types/behavior-commitment'
 import { beliefOrigin } from './types/belief-origin'
 import { dualColumnExercise } from './types/dual-column-exercise'
 import { evidenceReview } from './types/evidence-review'
+import { founderNote } from './types/founder-note'
 import { herChoiceCapture } from './types/her-choice-capture'
 import { herReveal } from './types/her-reveal'
 import { meVsHerCard } from './types/me-vs-her-card'
@@ -52,6 +53,7 @@ const definitions: AnyBlockDefinition[] = [
   richText,
   video,
   milestone,
+  founderNote, // Quiana's own voice, before a mirror
   // ME VS HER — the seven days
   mirrorGaze, // Days 1-6. Silent. Never Day 7.
   patternSelect, // Day 1 - WHICH ONES FEEL LIKE ME? and Day 4

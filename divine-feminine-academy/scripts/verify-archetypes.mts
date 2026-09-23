@@ -269,6 +269,55 @@ console.log('\ncomparison over time')
 
 console.log('\nthe four')
 
+/*
+ * THE FOUR, PINNED BY NAME.
+ *
+ * Everything else in this section checks SHAPE - four of them, one per mode,
+ * unique URL-safe slugs. Shape survives a rename. All four could be replaced
+ * with four different women tomorrow and every check below would still pass,
+ * which is how a set of approved archetypes goes missing without anything
+ * going red.
+ *
+ * So the identities are written down here, once, and compared.
+ *
+ * A SLUG is a promise to the outside world: it is in every shared result
+ * link, every archetype page that has been indexed, and every email already
+ * sent. Changing one silently 404s women who are holding the old link.
+ *
+ * A NAME is the word a woman uses for herself after she takes this. It is
+ * Quiana's to change - but never by accident, and never as a side effect of
+ * editing something near it.
+ *
+ * This is a tripwire, not a veto. If a change here is deliberate, change this
+ * list in the same commit and say so; the point is that it cannot happen
+ * without somebody deciding it should.
+ *
+ * Taglines and the rest of the copy are deliberately NOT pinned. Those are
+ * hers to rewrite whenever she likes, and a test that fails when she improves
+ * her own words is a test that gets deleted.
+ */
+const APPROVED: Record<ProtectiveMode, { slug: string; name: string }> = {
+  fight: { slug: 'the-commander', name: 'The Commander' },
+  flight: { slug: 'the-escape-artist', name: 'The Escape Artist' },
+  freeze: { slug: 'the-watcher', name: 'The Watcher' },
+  sulk: { slug: 'the-quiet-storm', name: 'The Quiet Storm' },
+}
+
+for (const mode of modes) {
+  const expected = APPROVED[mode]
+  const actual = archetypes[mode]
+  check(
+    `${mode} is still ${expected.name}`,
+    actual.name === expected.name,
+    `expected "${expected.name}", found "${actual.name}"`,
+  )
+  check(
+    `${mode} still lives at /quiz/${expected.slug}`,
+    actual.slug === expected.slug,
+    `expected "${expected.slug}", found "${actual.slug}" — every shared link to the old slug is now dead`,
+  )
+}
+
 check('there are exactly four', archetypeList.length === 4)
 check('one per mode', modes.every((m) => archetypes[m].mode === m))
 check('slugs are unique', new Set(archetypeList.map((a) => a.slug)).size === 4)

@@ -1,79 +1,37 @@
-import type { Metadata } from 'next'
-import { db } from '@/db/client'
-import { Eyebrow, Prose, Section, StaffNote } from '@/design-system/patterns'
-import { getPublishedAssessment } from '@/db/queries/assessments'
-import { AssessmentFlow, type FlowQuestion } from '@/features/assessment/AssessmentFlow'
-import { JoinForm } from '@/features/auth/JoinForm'
+import { permanentRedirect } from 'next/navigation'
 
-export const metadata: Metadata = {
-  title: 'The assessment',
-  description:
-    'A short, free assessment across Self, Love, Life and Wealth — where you are now, in your own words.',
-}
-
-export const dynamic = 'force-dynamic'
-
-const SLUG = 'where-are-you'
-
-export default async function AssessmentPage() {
-  const published = await getPublishedAssessment(db, SLUG)
-
-  const questions: FlowQuestion[] = (published?.questions ?? []).map((q) => ({
-    id: q.id,
-    type: q.type,
-    prompt: q.prompt,
-    area: q.area,
-    config: (q.config ?? {}) as FlowQuestion['config'],
-  }))
-
-  return (
-    <Section className="pt-14 md:pt-24 pb-24">
-      <Eyebrow>Free</Eyebrow>
-      <h1 className="mt-6 text-3xl md:text-4xl">Where are you, honestly?</h1>
-      <Prose className="mt-8 text-lg">
-        <p>
-          A short set of questions across Self, Love, Life and Wealth. No score
-          to feel bad about — a picture of which room the pattern is loudest in
-          right now.
-        </p>
-      </Prose>
-
-      {questions.length > 0 ? (
-        <>
-          <StaffNote what="the real assessment questions" className="mt-10">
-            <p>
-              The engine, the scoring and the pre/post comparison are finished
-              and tested. These particular questions are stand-ins so the flow
-              can be used — they are not a validated instrument and should be
-              replaced before launch.
-            </p>
-          </StaffNote>
-
-          <div className="mt-12">
-            <AssessmentFlow slug={SLUG} questions={questions} />
-          </div>
-        </>
-      ) : (
-        <>
-          <StaffNote what="the assessment to be seeded" className="mt-10">
-            <p>
-              No published assessment was found for “{SLUG}”. Run
-              npm run seed:assessment. Until then this page collects emails
-              rather than showing a stranger that something is missing.
-            </p>
-          </StaffNote>
-
-          <div className="mt-12 max-w-md rounded-xl border border-rule bg-alabaster p-6 md:p-8">
-            <h2 className="font-display text-xl">Tell me when it is ready</h2>
-            <JoinForm
-              className="mt-6"
-              source="assessment-waitlist"
-              next="/my-academy"
-              submitLabel="Keep me posted"
-            />
-          </div>
-        </>
-      )}
-    </Section>
-  )
+/**
+ * /assessment now goes to the quiz.
+ *
+ * WHAT WAS HERE, and why it is gone.
+ *
+ * A second instrument - slug `where-are-you`, "Where are you, honestly?" -
+ * scoring Self, Love, Life and Wealth. It was real and it worked, but its
+ * questions were stand-ins, and it said so IN PUBLIC: a staff note sat on the
+ * live page telling any stranger who found it that these questions "are not a
+ * validated instrument and should be replaced before launch". That note is
+ * the development artifact that has been showing on the site.
+ *
+ * It is also redundant. The archetype quiz already produces BOTH the four
+ * area scores and the archetype from one set of answers - that was the point
+ * of consolidating onto one instrument - so this page asked a woman to answer
+ * a second, weaker set of questions for information the first set already
+ * gives. Two instruments also means two results in her inbox and no way to
+ * tell which one is "hers".
+ *
+ * So the four archetypes were never lost. They were never on this page. They
+ * live in src/features/quiz/archetypes.ts, intact, and the experience that
+ * reveals them is /quiz. This route existing separately is what made it look
+ * as though they had gone missing.
+ *
+ * permanent, not temporary: the split is a decision, not an outage, and the
+ * 308 lets search engines move the ranking rather than sit on a dead URL.
+ *
+ * /assessment/results/[token] is deliberately NOT redirected. Those links are
+ * in women's inboxes and they still resolve to real, completed results. A
+ * result a woman was emailed must not stop opening because the page that
+ * produced it was retired.
+ */
+export default function AssessmentPage(): never {
+  permanentRedirect('/quiz')
 }

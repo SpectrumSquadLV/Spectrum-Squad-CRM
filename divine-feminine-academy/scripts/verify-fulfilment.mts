@@ -12,6 +12,8 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 
 process.env.JOURNAL_MASTER_KEY ??= randomBytes(32).toString('base64')
+// No real mail out of a test run, whatever else is in the environment.
+process.env.EMAIL_PROVIDER = 'fake'
 
 const { db } = await import('../src/db/client')
 const { contacts } = await import('../src/db/schema/identity')
@@ -20,7 +22,7 @@ const { enrollments } = await import('../src/db/schema/progress')
 const { coupons, offers, orderItems, orders, payments } = await import(
   '../src/db/schema/commerce'
 )
-const { activityEvents } = await import('../src/db/schema/activity')
+const { activityEvents, emailEvents } = await import('../src/db/schema/activity')
 const { handlePaymentEvent } = await import('../src/features/commerce/fulfilment')
 const { createFakeProvider } = await import('../src/lib/payments/fake')
 
@@ -165,6 +167,42 @@ await check('adds to her lifetime value', async () => {
 await check('moves her along the pipeline', async () => {
   const [contact] = await db.select().from(contacts).where(eq(contacts.id, s1.contact.id))
   assert.ok(contact!.crmStageId, 'she should have been moved to a stage')
+})
+
+await check('emails her the receipt that carries the way in', async () => {
+  const rows = await db
+    .select()
+    .from(emailEvents)
+    .where(eq(emailEvents.contactId, s1.contact.id))
+  const receipts = rows.filter(
+    (r) =>
+      r.type === 'sent' &&
+      (r.metadata as { idempotencyKey?: string } | null)?.idempotencyKey ===
+        `order-receipt:${s1.order.id}`,
+  )
+  // She paid and closed the tab. Without this she has access and no way to
+  // know it exists.
+  assert.equal(receipts.length, 1, 'she should have been sent exactly one receipt')
+})
+
+await check('a second paid event for the same order does not email her twice', async () => {
+  // Stripe sends checkout.completed AND payment.succeeded for one purchase.
+  await handlePaymentEvent(db, {
+    ...paidEvent(s1.order.id, `evt_${randomUUID()}`),
+    type: 'payment.succeeded',
+  })
+
+  const rows = await db
+    .select()
+    .from(emailEvents)
+    .where(eq(emailEvents.contactId, s1.contact.id))
+  const receipts = rows.filter(
+    (r) =>
+      r.type === 'sent' &&
+      (r.metadata as { idempotencyKey?: string } | null)?.idempotencyKey ===
+        `order-receipt:${s1.order.id}`,
+  )
+  assert.equal(receipts.length, 1, 'one purchase, one receipt')
 })
 
 console.log('\nthe same webhook delivered twice:')

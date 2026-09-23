@@ -38,7 +38,10 @@ const production: Env = {
   NEXT_PUBLIC_SUPABASE_ANON_KEY: 'anon',
   RESEND_API_KEY: 'PLACEHOLDER-resend-key',
   EMAIL_FROM: 'Academy <hello@example.com>',
-  STRIPE_SECRET_KEY: 'PLACEHOLDER-stripe-key',
+  // Shaped like a real key, because the rules read the prefix. The old
+  // placeholder had no Stripe prefix at all, so the baseline "fully
+  // configured" deploy was quietly exercising none of the key rules.
+  STRIPE_SECRET_KEY: 'sk_live_PLACEHOLDER_NOT_A_REAL_KEY',
   STRIPE_WEBHOOK_SECRET: 'PLACEHOLDER-webhook-secret',
   CRON_SECRET: 'PLACEHOLDER-cron-secret',
 }
@@ -176,17 +179,98 @@ check('no Stripe at all is only a warning — she is not selling yet', () => {
   assert.equal(report.ok, true, 'not selling yet should not block a deploy')
 })
 
-check('a Stripe TEST key in production is flagged but not fatal', () => {
+check('a Stripe TEST key in production BLOCKS the deploy', () => {
+  /*
+   * This assertion used to say "flagged but not fatal", on the reasoning
+   * that a test key announces itself because real cards decline.
+   *
+   * That is backwards. The person who finds out is a woman at the checkout
+   * being told her card was declined — she does not conclude "test mode",
+   * she concludes her card was refused, and she leaves. Nothing appears in
+   * any log, because nothing failed: Stripe did exactly what a test key
+   * asks for. It is the most likely way to lose a sale on launch day and
+   * the fix is one environment variable, so it gates the deploy.
+   */
   // The prefix is what the rule looks at, so this one has to carry it. The
   // rest is deliberately unmistakable.
   const report = runPreflight({
     ...production,
     STRIPE_SECRET_KEY: 'sk_test_PLACEHOLDER_NOT_A_REAL_KEY',
   })
-  assert.equal(report.ok, true)
+  assert.equal(report.ok, false, 'launching in test mode must not be deployable')
   assert.ok(
-    report.warnings.some((w) => w.key === 'STRIPE_SECRET_KEY'),
-    'a test key in production should at least be mentioned',
+    report.errors.some((e) => e.key === 'STRIPE_SECRET_KEY'),
+    'and it must say which variable is wrong',
+  )
+})
+
+check('a LIVE key warns that the webhook secret must match its mode', () => {
+  /*
+   * The one failure nothing can detect. Stripe's webhook secrets are
+   * `whsec_...` in both modes with nothing to tell them apart, so a live key
+   * paired with a test-mode secret passes every check: her card is really
+   * charged, the signature fails, fulfilment never runs, and she has paid
+   * real money for nothing. Unverifiable, so it is said out loud.
+   */
+  const report = runPreflight({
+    ...production,
+    STRIPE_SECRET_KEY: 'sk_live_PLACEHOLDER_NOT_A_REAL_KEY',
+  })
+  assert.equal(report.ok, true, 'a live key is the correct state, not an error')
+  assert.ok(
+    report.warnings.some((w) => w.key === 'STRIPE_WEBHOOK_SECRET'),
+    'going live without a word about the webhook mode is how she loses a real sale',
+  )
+})
+
+check('a RESTRICTED live key gets the same warning as a plain one', () => {
+  /*
+   * The gap that let a real deploy through unchecked.
+   *
+   * "Full access, except sensitive operations" - the option a careful person
+   * picks - issues rk_live_, not sk_live_. The rule matched only `sk_`, so a
+   * production deploy on a restricted key fell through BOTH branches: no test
+   * gate, no live warning. Preflight printed "no errors, 0 warnings" about a
+   * key it had not examined, which is worse than printing nothing, because it
+   * reads as a clearance.
+   */
+  const report = runPreflight({
+    ...production,
+    STRIPE_SECRET_KEY: 'rk_live_PLACEHOLDER_NOT_A_REAL_KEY',
+  })
+  assert.equal(report.ok, true, 'a restricted live key is a correct state')
+  assert.ok(
+    report.warnings.some((w) => w.key === 'STRIPE_WEBHOOK_SECRET'),
+    'a restricted key takes real money too, so it needs the same warning',
+  )
+})
+
+check('a RESTRICTED test key blocks the deploy like any other test key', () => {
+  const report = runPreflight({
+    ...production,
+    STRIPE_SECRET_KEY: 'rk_test_PLACEHOLDER_NOT_A_REAL_KEY',
+  })
+  assert.equal(report.ok, false, 'rk_test declines real cards exactly as sk_test does')
+  assert.ok(
+    report.errors.some((e) => e.key === 'STRIPE_SECRET_KEY'),
+    'and it must name the variable',
+  )
+})
+
+check('a key with an unrecognised prefix is never reported as clean', () => {
+  /*
+   * Whatever prefixes Stripe issues next, the failure mode to avoid is a
+   * silent pass: a key matched by no branch must not come back looking
+   * cleared. Reporting nothing is what made the restricted key invisible.
+   */
+  const report = runPreflight({
+    ...production,
+    STRIPE_SECRET_KEY: 'zz_unknown_PLACEHOLDER_NOT_A_REAL_KEY',
+  })
+  assert.equal(report.ok, false, 'an unexamined key must not pass production')
+  assert.ok(
+    report.errors.some((e) => e.key === 'STRIPE_SECRET_KEY'),
+    'and it must say the key has not been checked',
   )
 })
 

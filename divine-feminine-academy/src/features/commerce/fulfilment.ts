@@ -17,7 +17,11 @@ import {
   programVersions,
   programs,
 } from '@/db/schema'
+import { sendToContact } from '@/features/email/send'
+import { orderReceipt } from '@/features/email/templates'
 import type { PaymentEvent } from '@/lib/payments/provider'
+import { siteUrl as configuredSiteUrl } from '@/lib/auth/env'
+import { formatMoney } from './pricing'
 
 /**
  * What happens after she pays.
@@ -163,6 +167,90 @@ async function grantAccess(db: Db, orderId: string, contactId: string) {
   }
 }
 
+/**
+ * Tell her she is in, and give her the way back.
+ *
+ * She has just paid and closed the tab. The enrollment above is what lets her
+ * in; this email is the only thing that tells her the door exists. Without it
+ * a completed purchase looks, from her side, exactly like a payment that
+ * vanished.
+ *
+ * Three things this must get right:
+ *
+ * `transactional`, not `lifecycle`. A receipt for money she has spent is owed
+ * to her whether or not she wants the daily emails, and opting out of
+ * encouragement is not opting out of proof of purchase.
+ *
+ * Once per order, ever. The idempotency key is the order, not the event, so a
+ * provider that delivers `checkout.completed` and `payment.succeeded` for one
+ * purchase — which Stripe does — sends her one receipt, not two.
+ *
+ * And it must never throw. `recordHandled` runs before the side effects, so a
+ * throw here would return 500, the provider would retry, the retry would see
+ * the event already handled and stop — leaving her with access she was never
+ * told about and no second chance to tell her. A failed send is logged and
+ * swallowed; access is already granted and that is the part she cannot
+ * recover herself.
+ */
+async function sendReceipt(
+  db: Db,
+  orderId: string,
+  contactId: string,
+  site: string,
+) {
+  try {
+    const [line] = await db
+      .select({
+        programTitle: programs.title,
+        refundWindowDays: offers.refundWindowDays,
+      })
+      .from(orderItems)
+      .innerJoin(offers, eq(offers.id, orderItems.offerId))
+      .innerJoin(programs, eq(programs.id, offers.programId))
+      .where(eq(orderItems.orderId, orderId))
+      .limit(1)
+
+    if (!line) return
+
+    const [order] = await db
+      .select({ totalCents: orders.totalCents, currency: orders.currency })
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1)
+
+    if (!order) return
+
+    const [contact] = await db
+      .select({ firstName: contacts.firstName })
+      .from(contacts)
+      .where(eq(contacts.id, contactId))
+      .limit(1)
+
+    const rendered = orderReceipt({
+      firstName: contact?.firstName ?? null,
+      programTitle: line.programTitle,
+      amountLabel: formatMoney(order.totalCents, order.currency),
+      // No separate receipt number in the schema, and inventing a counter
+      // would be a second source of truth for the same fact. The order's own
+      // id, shortened, is unique and is what support would look her up by.
+      orderReference: orderId.slice(0, 8).toUpperCase(),
+      refundWindowDays: line.refundWindowDays,
+      siteUrl: site,
+    })
+
+    await sendToContact({
+      db,
+      contactId,
+      rendered,
+      kind: 'transactional',
+      templateSlug: 'order-receipt',
+      idempotencyKey: `order-receipt:${orderId}`,
+    })
+  } catch (error) {
+    console.error('[fulfilment] receipt email failed', { orderId, error })
+  }
+}
+
 export interface FulfilmentResult {
   handled: boolean
   reason?: 'duplicate' | 'no-order' | 'unknown-event'
@@ -172,6 +260,16 @@ export interface FulfilmentResult {
 export async function handlePaymentEvent(
   db: Db,
   event: PaymentEvent,
+  /*
+   * Where the links in her receipt point.
+   *
+   * Passed in rather than read here, because the correct answer depends on
+   * the caller: the webhook route resolves it from the request headers, which
+   * is the only source that survives NEXT_PUBLIC_SITE_URL having been wrong
+   * at build time. The env fallback keeps the admin action and the
+   * verification scripts working unchanged.
+   */
+  site: string = configuredSiteUrl(),
 ): Promise<FulfilmentResult> {
   if (await alreadyHandled(db, event.id)) {
     return { handled: false, reason: 'duplicate' }
@@ -261,6 +359,7 @@ export async function handlePaymentEvent(
 
       await grantAccess(db, order.id, order.contactId)
       await moveToStage(db, order.contactId, 'enrolled')
+      await sendReceipt(db, order.id, order.contactId, site)
 
       return { handled: true, orderId: order.id }
     }

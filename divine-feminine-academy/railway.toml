@@ -17,6 +17,18 @@ buildCommand = "npm run build"
 
 [deploy]
 startCommand = "npm run start"
+# Migrate, seed, THEN check the configuration - and fail the deploy if the
+# configuration is wrong.
+#
+# preflight was written to catch exactly this and was never run against the
+# real environment, so PAYMENTS_PROVIDER sat at "fake" in production. The app
+# booted, the health check passed, every page rendered, and the single broken
+# thing was the purchase - discovered by someone trying to buy.
+#
+# A failing preflight fails this deploy and leaves the PREVIOUS one serving,
+# which is the right way round: a misconfiguration should cost a deploy, not a
+# customer.
+preDeployCommand = "npm run db:migrate && npm run bootstrap && npm run preflight"
 # Restart on crash, but give up rather than loop forever on a broken deploy.
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
