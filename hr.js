@@ -3400,6 +3400,8 @@ module.exports = function initHr(ctx) {
         // different path from the batch and cannot quietly disagree with it.
         const onlyEmployeeId = b.employee_id == null || b.employee_id === "" ? null : Number(b.employee_id);
         let onlyEmployee = null;
+        let excludedHours = 0;
+        let statusValues = null, verificationValues = null;
         if (onlyEmployeeId != null) {
           if (!Number.isFinite(onlyEmployeeId)) return json(res, 400, { error: "That is not a staff member." });
           onlyEmployee = await dbGet("SELECT id, name, email, rethink_id FROM hr_employees WHERE id = ?", [onlyEmployeeId]);
@@ -3487,13 +3489,27 @@ module.exports = function initHr(ctx) {
           }
           scanned = 0; unverified = 0; notCompleted = 0; noStaff = 0;
           buckets.forEach((bk) => { scanned += bk.entries.length; });
+          const theirStatuses = new Map(), theirVerifications = new Map();
           for (const sid of theirIds) {
             const ex = excludedByStaff.get(sid);
             if (!ex) continue;
             unverified += ex.unverified;
             notCompleted += ex.notCompleted;
             scanned += ex.unverified + ex.notCompleted;
+            excludedHours = round2(excludedHours + (ex.hours || 0));
+            // The words Rethink used on THIS person's dropped sessions. The
+            // practice-wide tally under a heading naming one employee reads as
+            // a statement about them and is not one.
+            for (const [k, n] of ex.statuses) theirStatuses.set(k, (theirStatuses.get(k) || 0) + n);
+            for (const [k, n] of ex.verifications) theirVerifications.set(k, (theirVerifications.get(k) || 0) + n);
           }
+          const asList = (m) => [...m.entries()]
+            .map(([value, sessions]) => ({ value, sessions }))
+            .sort((a, b) => b.sessions - a.sessions);
+          statusValues = asList(theirStatuses);
+          // A verification value is only interesting on sessions that
+          // happened, so the excluded-for-status ones are not folded in here.
+          verificationValues = asList(theirVerifications);
         }
 
         const preview = [];
@@ -3580,7 +3596,14 @@ module.exports = function initHr(ctx) {
           // What Rethink's staff-verification field said, across the sessions
           // that actually happened. The answer to "why is this range emptier
           // than I expected".
-          verification_values: grouped.verification_values,
+          verification_values: verificationValues || grouped.verification_values,
+          // What the appointment status said on everything dropped for it, and
+          // the hours behind all the dropped sessions -- the number to compare
+          // against a payroll export when a range comes back short.
+          status_values: statusValues || grouped.status_values,
+          excluded_hours: onlyEmployee
+            ? excludedHours
+            : round2((grouped.unverified_hours || 0) + (grouped.not_completed_hours || 0)),
           truncated: !!fetched.truncated,
           rebuilt: preview.filter((p) => p.replaced).length,
           // People Rethink holds more than one staff record for, and people
@@ -5123,14 +5146,26 @@ Write body as plain text with line breaks (no HTML).`;
     // Rethink's own, read through the module that owns it.
     const strictCfg = Object.assign({}, cfg || {}, { require_staff_verification: true });
     const seenVerification = new Map();
-    // staffId -> { unverified, notCompleted }
+    const seenStatus = new Map();
+    // staffId -> { unverified, notCompleted, statuses, verifications }
+    //
+    // The two tallies are kept PER STAFF as well as across the practice,
+    // because a build for one person that reports the practice's numbers is
+    // telling them about 2,000 sessions that are not theirs.
     const excludedByStaff = new Map();
-    const bumpExcluded = (staffId, why) => {
-      const e = excludedByStaff.get(staffId) || { unverified: 0, notCompleted: 0 };
+    const bumpExcluded = (staffId, why, saw) => {
+      const e = excludedByStaff.get(staffId)
+        || { unverified: 0, notCompleted: 0, statuses: new Map(), verifications: new Map() };
       e[why]++;
+      const bag = why === "notCompleted" ? e.statuses : e.verifications;
+      if (saw) bag.set(saw, (bag.get(saw) || 0) + 1);
       excludedByStaff.set(staffId, e);
     };
+    const tally = (m) => [...m.entries()]
+      .map(([value, sessions]) => ({ value, sessions }))
+      .sort((a, b) => b.sessions - a.sessions);
     let scanned = 0, unverified = 0, notCompleted = 0, noStaff = 0;
+    let unverifiedHours = 0, notCompletedHours = 0;
     for (const row of rows || []) {
       scanned++;
       const staffId = String(row.staffId == null ? "" : row.staffId).trim();
@@ -5150,9 +5185,24 @@ Write body as plain text with line breaks (no HTML).`;
       // together and reported as "not staff-verified", which was wrong for
       // every session dropped for its STATUS and sent anybody reading it after
       // the wrong thing.
+      // WHAT the status actually said, not just that it was not accepted.
+      // "13 were not completed sessions" is the shape of an answer without
+      // being one: a fortnight can come back forty hours short of the payroll
+      // export and the screen gave nobody a way to see whether those hours
+      // were cancellations, or real work sitting under a status this practice
+      // has not told the CRM to count.
+      const sRaw = String(row.appointmentStatus == null ? "" : row.appointmentStatus)
+        .trim().toLowerCase().slice(0, 40) || "(blank)";
       if (!verdict || !verdict.statusOk) {
         notCompleted++;
-        bumpExcluded(staffId, "notCompleted");
+        seenStatus.set(sRaw, (seenStatus.get(sRaw) || 0) + 1);
+        bumpExcluded(staffId, "notCompleted", sRaw);
+        // The hours behind those sessions, which is the number that gets
+        // compared against a payroll export.
+        const h = round2(Number(row.actualDurationHours) || Number(row.durationHours) || 0);
+        notCompletedHours = round2(notCompletedHours + h);
+        const ex = excludedByStaff.get(staffId);
+        ex.hours = round2((ex.hours || 0) + h);
         continue;
       }
       // What the verification field actually said, tallied across the sessions
@@ -5164,7 +5214,11 @@ Write body as plain text with line breaks (no HTML).`;
       seenVerification.set(vKey, (seenVerification.get(vKey) || 0) + 1);
       if (!verdict.verifiedOk) {
         unverified++;
-        bumpExcluded(staffId, "unverified");
+        bumpExcluded(staffId, "unverified", vKey);
+        const h = round2(Number(row.actualDurationHours) || Number(row.durationHours) || 0);
+        unverifiedHours = round2(unverifiedHours + h);
+        const ex = excludedByStaff.get(staffId);
+        ex.hours = round2((ex.hours || 0) + h);
         continue;
       }
       const apptType = rethinkBillableRaw ? (rethinkBillableRaw(row) || "") : "";
@@ -5202,10 +5256,12 @@ Write body as plain text with line breaks (no HTML).`;
     }
     return {
       byStaff, names, excludedByStaff, scanned, unverified, notCompleted, noStaff,
+      unverified_hours: unverifiedHours, not_completed_hours: notCompletedHours,
       // [{ value, sessions }] -- highest count first.
-      verification_values: [...seenVerification.entries()]
-        .map(([value, sessions]) => ({ value, sessions }))
-        .sort((a, b) => b.sessions - a.sessions),
+      verification_values: tally(seenVerification),
+      // What the appointment status said on the sessions that were dropped for
+      // it. Same purpose, other half of the question.
+      status_values: tally(seenStatus),
     };
   }
 
