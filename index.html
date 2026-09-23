@@ -6151,6 +6151,30 @@ function openPayrollImportModal(pageMount) {
       if (res.overlapping && res.overlapping.length) warn.push(`<div style="color:#991b1b; font-size:12.5px; margin-top:6px;">⚠ ${res.overlapping.length} staff already have another timecard covering these dates, most likely from a payroll-export import: ${staffEsc(res.overlapping.join(", "))}. Send only one of them — check the Timecards list and delete the one you don't want.</div>`);
       if (res.truncated) warn.push(`<div style="color:#991b1b; font-size:12.5px; margin-top:6px;">⚠ Rethink returned more sessions than could be read in one go, so this range may be incomplete. Build it in two shorter ranges.</div>`);
     }
+    // The payroll export pairs a Rethink staff id with a name on every row,
+    // which is the pairing the appointment API does not give and the Rethink
+    // Staff screen cannot work without. Offered here because this is the
+    // moment the file is in front of somebody who knows whether it is right.
+    const links = res.link_suggestions || [];
+    if (links.length) {
+      warn.push(`<div style="background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; border-radius:8px; padding:10px 12px; margin-top:8px; font-size:12.5px;">
+        <strong>This export knows ${links.length} staff member's Rethink ID${links.length === 1 ? "" : "s"}</strong> that the CRM does not.
+        They were matched on their name this time; linking the ID means they match on it from now on — and it is what makes them identifiable on the Rethink Staff screen.
+        <div style="margin-top:7px; display:flex; flex-direction:column; gap:5px;">
+          ${links.map((l) => `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span><strong>${staffEsc(l.employee_name)}</strong> = Rethink ID ${staffEsc(l.rethink_id)}${
+              String(l.export_name || "").toLowerCase() !== String(l.employee_name || "").toLowerCase()
+                ? ` <span style="opacity:.8;">(the export spells them "${staffEsc(l.export_name)}")</span>` : ""}</span>
+            <button class="btn small secondary" data-pl-emp="${l.employee_id}" data-pl-rid="${staffEsc(l.rethink_id)}" style="padding:2px 9px; font-size:11.5px;">Link</button>
+          </div>`).join("")}
+        </div>
+      </div>`);
+    }
+    if ((res.unknown_ids || []).length) {
+      warn.push(`<div style="color:var(--text-muted); font-size:12px; margin-top:6px;">${res.unknown_ids.length} ID(s) in this export reach nobody on the CRM roster under any spelling: ${
+        staffEsc(res.unknown_ids.slice(0, 6).map((u) => `${u.name} (#${u.rethink_id})`).join(", "))
+      }. Add them on <strong>Rethink Staff</strong> if they work here.</div>`);
+    }
     if (res.inferred_hours) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ Rethink gave no Billable/Non-Billable word for ${res.inferred_hours} hour(s). Every appointment here is one or the other, so those are counted as <strong>non-billable</strong> — the safe direction. Change any that should be billable on the review screen.</div>`);
     if (split && res.unclassified_hours) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ ${res.unclassified_hours} hour(s) have an appointment type that's neither Billable nor Non-Billable. They're shown separately as "not labeled" — you can relabel them on the review screen.</div>`);
     const totalsStrip = split
@@ -6171,8 +6195,18 @@ function openPayrollImportModal(pageMount) {
       // a fortnight with no work in it.
       const unlinked = res.unlinked_candidates || [];
       const unlinkedBlock = unlinked.length
-        ? `<div style="color:#92400e; margin-top:10px;">Rethink <strong>did</strong> deliver sessions in this range under ${unlinked.length} staff record(s) that no staff record in the CRM claims:
-             <ul style="margin:6px 0 0 18px; padding:0;">${unlinked.map((u) => `<li>${staffEsc(u.name || `Rethink staff #${u.rethink_ids[0]}`)} — ${u.sessions} session(s), ${u.hours}h</li>`).join("")}</ul>
+        ? `<div style="color:#92400e; margin-top:10px;">Rethink <strong>did</strong> have sessions in this range under ${unlinked.length} staff record(s) that no staff record in the CRM claims:
+             <ul style="margin:6px 0 0 18px; padding:0;">${unlinked.map((u) => {
+               // A record whose sessions were ALL excluded counts zero, and
+               // saying only "0 sessions" would read as "they did nothing" --
+               // the exact sentence this block exists to stop. Say what was
+               // left off and under which word instead.
+               const st = (u.statuses || []).map((x) => `${x.value} ${x.sessions}`).join(", ");
+               const left = u.excluded_sessions
+                 ? ` · <span style="color:#92400e;">${u.excluded_sessions} session(s) left off${u.excluded_hours ? `, ${u.excluded_hours}h` : ""}${st ? ` — status: ${staffEsc(st)}` : ""}${u.unverified ? `${st ? "; " : " — "}${u.unverified} not staff-verified` : ""}</span>`
+                 : "";
+               return `<li>${staffEsc(u.name || `Rethink staff #${u.rethink_ids[0]}`)} — ${u.sessions} session(s) counted, ${u.hours}h${left}</li>`;
+             }).join("")}</ul>
              <div style="margin-top:6px;">If one of those is ${staffEsc(res.built_for.name)}, link them on <strong>Rethink Staff</strong> (Scan Rethink for employees), then build this range again.</div>
            </div>`
         : "";
@@ -6199,14 +6233,33 @@ function openPayrollImportModal(pageMount) {
       </div>
       ${warn.join("")}
       <div style="margin-top:14px; display:flex; gap:8px; align-items:center;">
-        <button class="btn" id="payroll-review" ${res.matched ? "" : "disabled"}>Preview &amp; send ${res.matched} timecard(s) →</button>
+        <button class="btn" id="payroll-review" ${res.matched ? "" : "disabled"}>${
+          (res.timecard_ids || []).length
+            ? `Preview &amp; send ${(res.timecard_ids || []).length} timecard(s) →`
+            : "Review timecards →"
+        }</button>
         <button class="btn secondary" id="payroll-done">Close</button>
       </div>`;
+    // Writes hr_employees.rethink_id through the same endpoint the Rethink
+    // Staff screen uses, so there is one way to link a person and not two.
+    previewEl.querySelectorAll("[data-pl-emp]").forEach((b) => b.addEventListener("click", async () => {
+      const empId = Number(b.getAttribute("data-pl-emp"));
+      const rid = b.getAttribute("data-pl-rid");
+      b.disabled = true; b.textContent = "Linking…";
+      try {
+        await api("/api/rethink/staff-match/link", { method: "POST", body: { rethink_staff_id: rid, employee_id: empId } });
+        b.textContent = "Linked ✓";
+      } catch (e) {
+        b.disabled = false; b.textContent = "Link";
+        alert((e && e.message) || "Couldn't link that.");
+      }
+    }));
     previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); if (pageMount) renderStaff(pageMount); });
     previewEl.querySelector("#payroll-review").addEventListener("click", () => {
       close();
       openTimecardReviewModal({
-        ids: res.timecard_ids || (res.employees || []).filter((e) => e.timecard_id).map((e) => e.timecard_id),
+        ids: res.all_timecard_ids
+          || (res.employees || []).filter((e) => e.timecard_id).map((e) => e.timecard_id),
         payPeriodEnd: res.pay_period_end,
         pageMount,
       });
@@ -6331,6 +6384,10 @@ async function openTimecardReviewModal({ ids, payPeriodEnd, pageMount }) {
     if (tc.status === "accepted") badges.push(`<span class="tag" style="background:#dcfce7; color:#166534;">already signed</span>`);
     if (tc.already_sent_at && tc.status !== "accepted") badges.push(`<span class="tag" style="background:#e0e7ff; color:#3730a3;">already sent — this resends</span>`);
     if (tc.open_flags) badges.push(`<span class="tag" style="background:#fef3c7; color:#92400e;">⚠ ${tc.open_flags} flag(s)</span>`);
+    // Their signing link, on every card. Wanted most by the cards that cannot
+    // be sent from here -- no email on file, or already sent and the email
+    // never arrived -- which were exactly the ones offering nothing at all.
+    badges.push(`<button class="btn secondary" data-tclink="${tc.id}" style="padding:2px 8px; font-size:11.5px;">Copy signing link</button>`);
     if (t.unclassified) badges.push(`<span class="tag" style="background:#f1f1f4; color:#4b5563;">${t.unclassified}h not labeled</span>`);
     if (dirty.get(tc.id) && dirty.get(tc.id).size) badges.push(`<span class="tag" style="background:#fef9c3; color:#854d0e;">unsaved edits</span>`);
     const open = openRows.has(tc.id);
@@ -6430,6 +6487,25 @@ async function openTimecardReviewModal({ ids, payPeriodEnd, pageMount }) {
       const id = Number(cb.getAttribute("data-id"));
       if (cb.checked) picked.add(id); else picked.delete(id);
       render();
+    }));
+    bodyEl.querySelectorAll("[data-tclink]").forEach((b) => b.addEventListener("click", async () => {
+      const id = Number(b.getAttribute("data-tclink"));
+      const was = b.textContent;
+      b.disabled = true; b.textContent = "Getting link…";
+      try {
+        const r = await api("/api/hr/timecards/" + id + "/link");
+        // The clipboard is not available on an insecure origin or when the
+        // browser refuses it, and a silent failure here looks exactly like a
+        // successful copy. Show the link either way so it can be taken by hand.
+        let copied = false;
+        try { await navigator.clipboard.writeText(r.url); copied = true; } catch (e) { copied = false; }
+        b.textContent = copied ? "Link copied ✓" : was;
+        if (!copied) window.prompt("Copy this employee's signing link:", r.url);
+        setTimeout(() => { b.textContent = was; b.disabled = false; }, 2200);
+      } catch (e) {
+        b.textContent = was; b.disabled = false;
+        alert((e && e.message) || "Couldn't get that link.");
+      }
     }));
     bodyEl.querySelectorAll("[data-tctoggle]").forEach((b) => b.addEventListener("click", () => {
       const id = Number(b.getAttribute("data-tctoggle"));

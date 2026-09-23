@@ -3213,6 +3213,29 @@ module.exports = function initHr(ctx) {
         });
       }
 
+      // The link this timecard is signed through. Already minted when the
+      // timecard was emailed; handing it back lets somebody send it by text,
+      // by Teams, or read it down the phone when the email did not arrive.
+      // Read-only: it mints nothing new for a card that already has one, and
+      // never changes what the employee sees.
+      const tcLinkMatch = pathname.match(/^\/api\/hr\/timecards\/(\d+)\/link$/);
+      if (tcLinkMatch && method === "GET") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const tc = await dbGet("SELECT id, employee_id, status FROM hr_timecards WHERE id = ?", [tcLinkMatch[1]]);
+        if (!tc) return json(res, 404, { error: "Not found" });
+        const token = await getOrCreateTimecardLink(tc.id);
+        await audit(actor, "timecard_link_viewed", "timecard", tc.id, "");
+        return json(res, 200, {
+          ok: true,
+          id: tc.id,
+          status: tc.status,
+          // The same URL the email puts behind its button -- built by
+          // the same rule, so the two can never drift into a link that
+          // works in email and 404s when copied from here.
+          url: `${APP_BASE_URL}/verify-timecard/${token}`,
+        });
+      }
+
       // Correct hours (or a mis-labelled Billable/Non-Billable) BEFORE the
       // employee ever sees the timecard. Patch-by-index so the client can't
       // drop fields it didn't render. Refuses once a timecard is signed --
@@ -3472,6 +3495,50 @@ module.exports = function initHr(ctx) {
             hours: round2(bk.entries.reduce((a, e) => a + (Number(e.hours) || 0), 0)),
           }))
           .sort((a, b) => b.sessions - a.sessions);
+        // A staff id whose sessions were ALL excluded never produced a bucket,
+        // so it was invisible to the list above -- and that is the likeliest
+        // case for exactly the people this list exists for. A BCBA whose
+        // fortnight is supervision and assessment can have every appointment
+        // filed under a status this practice has not told the CRM to count;
+        // the screen then reported "nothing in Rethink for these dates is
+        // theirs", which is the same false sentence in a new place.
+        //
+        // Only worth the lookups when building for one person, which is the
+        // only time this list is returned.
+        if (onlyEmployee) {
+          const claimed = new Set(buckets.flatMap((bk) => bk.staffIds));
+          for (const [sid, ex] of excludedByStaff) {
+            if (claimed.has(sid)) continue;
+            const hint = names.get(sid) || null;
+            let staff = await dbGet("SELECT id FROM hr_employees WHERE rethink_id = ?", [sid]).catch(() => null);
+            if (!staff && hint) {
+              staff = await dbGet(
+                `SELECT id FROM hr_employees WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                  ORDER BY (COALESCE(status,'active') = 'terminated'), id LIMIT 1`, [hint]
+              ).catch(() => null);
+            }
+            // Claimed by a CRM record: their exclusions are already reported
+            // against them by the per-person accounting below.
+            if (staff) continue;
+            unlinkedCandidates.push({
+              name: hint,
+              rethink_ids: [sid],
+              sessions: 0,
+              hours: 0,
+              // Nothing counted, but the work is not nothing -- say how much
+              // and under which word, so it is checkable rather than absent.
+              excluded_sessions: ex.unverified + ex.notCompleted,
+              excluded_hours: round2(ex.hours || 0),
+              statuses: [...ex.statuses.entries()]
+                .map(([value, sessions]) => ({ value, sessions }))
+                .sort((a, b) => b.sessions - a.sessions)
+                .slice(0, 4),
+              unverified: ex.unverified,
+            });
+          }
+          unlinkedCandidates.sort((a, b) =>
+            (b.sessions + (b.excluded_sessions || 0)) - (a.sessions + (a.excluded_sessions || 0)));
+        }
         if (onlyEmployee) {
           buckets = buckets.filter((bk) => bk.staff && bk.staff.id === onlyEmployee.id);
           // Their own numbers, not the practice's -- "29 sessions left off"
@@ -3622,6 +3689,13 @@ module.exports = function initHr(ctx) {
           // person saw them.
           locked: preview.filter((p) => p.locked).map((p) => p.name),
           timecard_ids: preview.filter((p) => p.timecard_id && !p.locked).map((p) => p.timecard_id),
+          // Every card this build touched, locked ones included. The review
+          // screen opens on THIS: a fortnight where the only person is
+          // already signed used to enable "Preview & send 1 timecard(s)" --
+          // counted off matched -- and then open a review with nothing in it,
+          // because the sendable list was empty. Nothing was broken enough to
+          // error, so it just did nothing when pressed.
+          all_timecard_ids: preview.filter((p) => p.timecard_id).map((p) => p.timecard_id),
           employees: preview,
         });
       }
@@ -3668,11 +3742,52 @@ module.exports = function initHr(ctx) {
         }
 
         const preview = [];
+        // Staff the export names with a Rethink id that their CRM record does
+        // not carry. Collected while matching, offered afterwards.
+        const linkSuggestions = [];
         for (const emp of parsed.employees) {
           // Match: rethink_id first, then case-insensitive full name.
-          let staff = null;
-          if (emp.rethink_id) staff = await dbGet("SELECT id, name, email FROM hr_employees WHERE rethink_id = ?", [emp.rethink_id]);
-          if (!staff && emp.name) staff = await dbGet("SELECT id, name, email FROM hr_employees WHERE LOWER(name) = LOWER(?)", [emp.name]);
+          let staff = null, matchedBy = null;
+          if (emp.rethink_id) {
+            staff = await dbGet("SELECT id, name, email, rethink_id FROM hr_employees WHERE rethink_id = ?", [emp.rethink_id]);
+            if (staff) matchedBy = "rethink_id";
+          }
+          if (!staff && emp.name) {
+            staff = await dbGet("SELECT id, name, email, rethink_id FROM hr_employees WHERE LOWER(name) = LOWER(?)", [emp.name]);
+            if (staff) matchedBy = "name";
+          }
+          // THIS FILE IS THE STAFF DIRECTORY RETHINK'S API WILL NOT GIVE US.
+          //
+          // The export pairs a Rethink staff id with a first and last name on
+          // every row. The appointment payload this account can read carries
+          // no provider name at all, which is why the Rethink Staff screen
+          // lists people as bare numbers that nobody can link. The pairing has
+          // been arriving in this upload every pay period and being discarded.
+          //
+          // Offered, not written: an hr_employees.rethink_id decides whose
+          // verified hours count towards whose supervision record, so it is
+          // somebody's decision and not an upload's. One press on the preview
+          // does it, and then the id matches on its own from that day on.
+          if (staff && matchedBy === "name" && emp.rethink_id
+              && !(staff.rethink_id != null && String(staff.rethink_id).trim() !== "")) {
+            // Belt against the id being held by a row the lookup above did
+            // not return -- stored with stray whitespace, or two rows holding
+            // it after a bad import. Nearly unreachable, and deliberately not
+            // claimed as tested: the id lookup runs first, so the ordinary
+            // "somebody else has it" case never gets here.
+            const takenBy = await dbGet(
+              "SELECT id, name FROM hr_employees WHERE TRIM(COALESCE(rethink_id,'')) = ?", [emp.rethink_id]
+            ).catch(() => null);
+            if (!takenBy) {
+              linkSuggestions.push({
+                employee_id: staff.id,
+                employee_name: staff.name,
+                rethink_id: emp.rethink_id,
+                export_name: emp.name,
+                hours: emp.total_hours,
+              });
+            }
+          }
           let timecardId = null;
           if (staff) {
             const r = await importTimecard({
@@ -3694,6 +3809,7 @@ module.exports = function initHr(ctx) {
             unclassified_hours: emp.unclassified_hours,
             shifts: emp.entries.length,
             matched: !!staff,
+            matched_by: matchedBy,
             has_email: !!(staff && staff.email),
             timecard_id: timecardId,
           });
@@ -3713,6 +3829,13 @@ module.exports = function initHr(ctx) {
           billable_hours: round2(preview.reduce((s, p) => s + (Number(p.billable_hours) || 0), 0)),
           non_billable_hours: round2(preview.reduce((s, p) => s + (Number(p.non_billable_hours) || 0), 0)),
           unclassified_hours: round2(preview.reduce((s, p) => s + (Number(p.unclassified_hours) || 0), 0)),
+          // Whose Rethink id this file can teach the CRM. Acting on one is a
+          // press on the preview; nothing here has written anything.
+          link_suggestions: linkSuggestions,
+          // Ids in the export that reach nobody here at all -- a name the CRM
+          // does not have under any spelling. Not a link, a person to add.
+          unknown_ids: preview.filter((p) => !p.matched && p.rethink_id)
+            .map((p) => ({ rethink_id: p.rethink_id, name: p.name, hours: p.total_hours })),
           timecard_ids: preview.filter((p) => p.timecard_id).map((p) => p.timecard_id),
           employees: preview,
         });

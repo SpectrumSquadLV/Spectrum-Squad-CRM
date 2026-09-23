@@ -703,6 +703,61 @@ const b64 = (buf) => buf.toString("base64");
   }
 
   // ------------------------------------------------------------------
+  section("A person whose every session was excluded");
+
+  // Reported from a real run, one deploy after the unlinked-candidate list
+  // shipped: a BCBA plainly working in Rethink still came back as
+  // "nothing in Rethink for these dates is theirs". The list was built from
+  // the BUCKETS, and a bucket only exists for a staff id with at least one
+  // session that survived the filters. Somebody whose fortnight is entirely
+  // supervision and assessment -- filed under a status this practice has not
+  // told the CRM to count -- produces no bucket at all, so they were invisible
+  // to the very list that exists to find them. Same false sentence, new place.
+  {
+    const cfgStrict = { filter_confirmed: true, completed_statuses: ["Completed"], verified_values: ["Verified"] };
+    const g = group([
+      // Hers: real work, every session under a word the accepted list lacks.
+      { staffId: "EX1", renderingProvider: "Galang, Micah", appointmentDate: "2026-09-08", actualDurationHours: 6, staffVerification: "Verified", appointmentStatus: "Rendered", appointmentType: "Billable" },
+      { staffId: "EX1", renderingProvider: "Galang, Micah", appointmentDate: "2026-09-09", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Rendered", appointmentType: "Billable" },
+      { staffId: "EX1", renderingProvider: "Galang, Micah", appointmentDate: "2026-09-10", actualDurationHours: 2, staffVerification: "", appointmentStatus: "Completed", appointmentType: "Billable" },
+    ], cfgStrict);
+
+    check("she produces no bucket at all, because nothing survived the filters",
+      !g.byStaff.has("EX1"), [...g.byStaff.keys()]);
+    check("but the staff id is still named, so she is not anonymous",
+      g.names.get("EX1") === "Galang, Micah", [...g.names.entries()]);
+
+    // Everything the screen needs comes off excludedByStaff, which is the
+    // half the candidate list was not reading.
+    const ex = g.excludedByStaff.get("EX1");
+    check("her sessions are all accounted for against her id",
+      ex.notCompleted === 2 && ex.unverified === 1, ex);
+    check("with the hours behind them, so the work is not reported as nothing",
+      ex.hours === 12, ex.hours);
+    check("and the word that kept them off, so it can be checked",
+      ex.statuses.get("rendered") === 2, [...ex.statuses.entries()]);
+
+    // What the route builds from that: a candidate with zero counted and the
+    // exclusions attached, rather than no candidate at all.
+    const candidate = {
+      name: g.names.get("EX1"),
+      rethink_ids: ["EX1"],
+      sessions: 0,
+      hours: 0,
+      excluded_sessions: ex.unverified + ex.notCompleted,
+      excluded_hours: ex.hours,
+      statuses: [...ex.statuses.entries()].map(([value, sessions]) => ({ value, sessions })),
+      unverified: ex.unverified,
+    };
+    check("she is reportable by name even though nothing of hers counted",
+      candidate.name === "Galang, Micah" && candidate.sessions === 0, candidate);
+    check("carrying the work that was left off, so nobody reads it as an idle fortnight",
+      candidate.excluded_sessions === 3 && candidate.excluded_hours === 12, candidate);
+    check("and the status to check, which is the actionable part",
+      candidate.statuses.some((x) => x.value === "rendered" && x.sessions === 2), candidate.statuses);
+  }
+
+  // ------------------------------------------------------------------
   section("Building the same period twice");
 
   // The normal way to use a date range: build it, notice people have not
@@ -749,6 +804,134 @@ const b64 = (buf) => buf.toString("base64");
   // A different period for the same person is a different timecard.
   const other = await upsert({ ...period, pay_period_start: "2026-09-21", pay_period_end: "2026-10-04", entries: [{ date: "2026-09-22", hours: 3 }] }, "tester");
   check("the next pay period gets its own timecard", other.id !== first.id && (await cards()).length === 2, (await cards()).length);
+
+  // ------------------------------------------------------------------
+  section("Reviewing a fortnight where everybody is already signed");
+
+  // Reported from a real run: "the review timecard button is not working."
+  // It was enabled off MATCHED but opened on the SENDABLE ids, and a card
+  // already sent for signature is excluded from those. A fortnight whose only
+  // person is already signed therefore offered "Preview & send 1 timecard(s)"
+  // and opened a review with nothing in it. Nothing errored, so pressing it
+  // simply did nothing -- and there was no other way to reach that person's
+  // signing link.
+  {
+    const lockedEmp = await mk(`Locked Review ${stamp}`, `RT-LK-${stamp}`, `locked.${stamp}@example.test`);
+    const card = await dbHr._internal.upsertPeriodTimecard({
+      employee_id: lockedEmp, source: "rethink_verified",
+      pay_period_start: "2026-09-07", pay_period_end: "2026-09-20",
+      entries: [{ date: "2026-09-08", hours: 4, appt_type: "Billable", billable: true }],
+    }, "tester");
+    await q("UPDATE hr_timecards SET verification_requested_at = ? WHERE id = ?", [new Date().toISOString(), card.id]);
+
+    // An empty array is TRUTHY, so the old "sendable || everything" fallback
+    // never ran. Pinned because it is the whole shape of the bug.
+    const sendable = [];
+    check("an empty sendable list does not fall back through ||",
+      (sendable || ["would-have-fallen-back"]).length === 0, sendable);
+
+    // preview-batch is what the review screen loads. Asked for the locked
+    // card by id it returns it, so the screen has something to show.
+    r = await owner("/api/hr/timecards/preview-batch", { method: "POST", body: { ids: [card.id] } });
+    check("the review screen can load a timecard that is already sent", r.status === 200 && r.data.count === 1, r.data);
+    // Still sendable: "already sent" locks it against being REBUILT under
+    // somebody who has already seen it, not against being sent again. The
+    // screen labels it "already sent -- this resends" and means it.
+    check("and marks it as already sent rather than hiding it",
+      (r.data.timecards[0].already_sent_at || null) !== null, r.data.timecards && r.data.timecards[0]);
+    check("which is a resend, not a refusal -- the badge and the count agree",
+      r.data.sendable === 1, r.data.sendable);
+
+    // The link, which is the thing asked for: a way to get it to somebody
+    // when the email is not how it is reaching them.
+    r = await owner(`/api/hr/timecards/${card.id}/link`);
+    check("an already-sent timecard hands back its signing link", r.status === 200 && !!r.data.url, r.data);
+    check("the link is the same verify-timecard URL the email uses, not a new shape",
+      /\/verify-timecard\/[a-f0-9]{8,}$/.test(r.data.url || ""), r.data.url);
+
+    // Asking twice must not invalidate what the employee already has.
+    const again = await owner(`/api/hr/timecards/${card.id}/link`);
+    check("asking again returns the SAME link, so the one they were emailed still works",
+      again.data.url === r.data.url, { first: r.data.url, second: again.data.url });
+
+    r = await clin(`/api/hr/timecards/${card.id}/link`);
+    check("a clinical user cannot read somebody's signing link", r.status === 403, r.status);
+
+    r = await owner("/api/hr/timecards/99999999/link");
+    check("a timecard that does not exist has no link to give", r.status === 404, r.status);
+  }
+
+  // ------------------------------------------------------------------
+  section("The export knows the Rethink IDs the API will not give");
+
+  // This account's appointment payload carries no provider name, so the
+  // Rethink Staff screen lists people as bare numbers nobody can link. The
+  // payroll export pairs an id with a first and last name on every row -- the
+  // exact mapping that is missing -- and the import read it, matched on the
+  // NAME, and threw the id away. Every pay period, for as long as there have
+  // been pay periods.
+  {
+    const learnName = `Learnid Person ${stamp}`;
+    const learnEmp = await mk(learnName, null, `learn.${stamp}@example.test`);  // deliberately no rethink_id
+    const rid = `RT-LEARN-${stamp}`;
+
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "learn.xlsx", content_base64: b64(exportFor([
+      { id: rid, first: "Learnid", last: `Person ${stamp}`, reg: 5, shifts: [{ day: 8, hours: 5, type: "Billable" }] },
+    ])) } });
+    check("the export still imports as usual", r.status === 200, r.data);
+    check("and the person is matched on their name, as before", r.data.matched === 1, r.data);
+    check("it reports the Rethink ID their CRM record is missing",
+      (r.data.link_suggestions || []).some((l) => l.employee_id === learnEmp && l.rethink_id === rid),
+      r.data.link_suggestions);
+    check("and NOTHING is written -- the id is offered, not applied",
+      !(await q("SELECT rethink_id FROM hr_employees WHERE id = ?", [learnEmp])).rows[0].rethink_id,
+      "rethink_id must still be null until somebody presses Link");
+
+    // Somebody who already has an id is not offered one.
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "already.xlsx", content_base64: b64(exportFor([
+      { id: `RT-A-${stamp}`, first: "Alice", last: `Payroll ${stamp}`, reg: 4, shifts: [{ day: 8, hours: 4, type: "Billable" }] },
+    ])) } });
+    check("a staff member already linked is not offered a link again",
+      !(r.data.link_suggestions || []).some((l) => l.employee_id === aliceId), r.data.link_suggestions);
+
+    // An id already on somebody else is never quietly moved.
+    const otherName = `Otherlearn Person ${stamp}`;
+    const otherEmp = await mk(otherName, null, `otherlearn.${stamp}@example.test`);
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "taken.xlsx", content_base64: b64(exportFor([
+      { id: `RT-A-${stamp}`, first: "Otherlearn", last: `Person ${stamp}`, reg: 3, shifts: [{ day: 9, hours: 3, type: "Billable" }] },
+    ])) } });
+    // NOT what it looks like: the id lookup runs first, so this row matches
+    // ALICE, who holds that id, and never reaches the name match at all. That
+    // is the behaviour worth pinning -- an id in the export belongs to whoever
+    // holds it, and a name-twin cannot take it off them.
+    check("an id already on a staff record stays with its holder, and no second link is offered",
+      !(r.data.link_suggestions || []).some((l) => l.employee_id === otherEmp)
+        && (r.data.employees || []).every((e) => e.matched_by !== "name"),
+      { links: r.data.link_suggestions, employees: r.data.employees });
+
+    // A name the CRM has never heard of is a person to add, not a link.
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "stranger.xlsx", content_base64: b64(exportFor([
+      { id: `RT-STR-${stamp}`, first: "Stranger", last: `Nobody ${stamp}`, reg: 2, shifts: [{ day: 9, hours: 2, type: "Billable" }] },
+    ])) } });
+    check("an id reaching nobody on the roster is reported as unknown, not as a link",
+      (r.data.unknown_ids || []).some((u) => u.rethink_id === `RT-STR-${stamp}`)
+        && !(r.data.link_suggestions || []).length, { unknown: r.data.unknown_ids, links: r.data.link_suggestions });
+
+    // Pressing Link goes through the Rethink Staff endpoint -- one way to
+    // link a person, not two that can disagree.
+    const linked = await owner("/api/rethink/staff-match/link", { method: "POST", body: { rethink_staff_id: rid, employee_id: learnEmp } });
+    check("linking from the import preview writes the id", linked.status === 200, linked.data);
+    check("and the staff record now carries it",
+      String((await q("SELECT rethink_id FROM hr_employees WHERE id = ?", [learnEmp])).rows[0].rethink_id) === rid,
+      "rethink_id after link");
+
+    // Which is the point: next time, no suggestion, because it matches on id.
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "learn2.xlsx", content_base64: b64(exportFor([
+      { id: rid, first: "Learnid", last: `Person ${stamp}`, reg: 5, shifts: [{ day: 10, hours: 5, type: "Billable" }] },
+    ])) } });
+    check("the next export matches them on the id and offers nothing",
+      r.data.matched === 1 && !(r.data.link_suggestions || []).length, r.data.link_suggestions);
+  }
 
   console.log(`\n${pass} passed, ${fail} failed`);
   await pool.end();
