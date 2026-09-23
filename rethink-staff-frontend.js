@@ -85,6 +85,20 @@
     const rows = unmatched.map((u) => {
       const named = !!u.name_hint;
       const who = named ? esc(u.name_hint) : `Rethink staff ${esc(u.rethink_staff_id)}`;
+      const clientNames = Array.isArray(u.client_names) ? u.client_names : [];
+      const noteAuthors = Array.isArray(u.note_authors) ? u.note_authors : [];
+      const unnamedClients = Math.max(0, (u.distinct_clients || 0) - clientNames.length);
+      // A bare staff ID identifies nobody. Whose children they see is what
+      // makes a person recognisable here. Note authors are shown as evidence
+      // and labelled as such -- Rethink records whoever touched the note,
+      // which is often a supervisor rather than the provider, so printing one
+      // as this person's name would put the wrong name on the ID.
+      const evidence = (clientNames.length || noteAuthors.length)
+        ? `<div style="font-size:12px; color:var(--text-muted); margin-top:5px; line-height:1.6;">
+            ${clientNames.length ? `<div><strong style="font-weight:600;">Works with:</strong> ${esc(clientNames.join(", "))}${unnamedClients ? ` <span style="opacity:.8;">(+${unnamedClients} client${unnamedClients === 1 ? "" : "s"} not yet in the CRM)</span>` : ""}</div>` : ""}
+            ${noteAuthors.length ? `<div><strong style="font-weight:600;">Session notes signed by:</strong> ${esc(noteAuthors.join(", "))} <span style="opacity:.8;">— a clue, not necessarily their name</span></div>` : ""}
+          </div>`
+        : `<div style="font-size:12px; color:var(--text-muted); margin-top:5px;">Rethink sent nothing else to go on — no name, no client the CRM recognises, no note author.</div>`;
       return `<div class="card" style="margin-bottom:10px; padding:12px 14px;">
         <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
           <div style="min-width:200px;">
@@ -95,6 +109,7 @@
               · ${u.hours} hrs · ${u.distinct_clients} client${u.distinct_clients === 1 ? "" : "s"}
               · ${esc(dayLabel(u.first_seen))} – ${esc(dayLabel(u.last_seen))}
             </div>
+            ${named ? "" : evidence}
           </div>
         </div>
         <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; padding-top:10px; border-top:1px solid var(--border,#e5e7eb);">

@@ -404,6 +404,64 @@ const b64 = (buf) => buf.toString("base64");
   }
 
   // ------------------------------------------------------------------
+  section("Billable or non-billable, and nothing else");
+
+  // Every appointment at this practice is one or the other. A timecard that
+  // offered a third "Not labeled" column handed back a pile of hours for
+  // somebody to classify by hand, for a distinction that had already been
+  // made -- and those hours sat outside both subtotals on the sheet staff
+  // were asked to sign.
+  {
+    const totals = hrMod._internal.timecardTotals;
+    const g = group([
+      { staffId: "B1", appointmentDate: "2026-09-08", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+      { staffId: "B1", appointmentDate: "2026-09-09", actualDurationHours: 2, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Non-Billable" },
+      // Rethink sent no type at all.
+      { staffId: "B1", appointmentDate: "2026-09-10", actualDurationHours: 3, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "" },
+      // And a word that is neither.
+      { staffId: "B1", appointmentDate: "2026-09-11", actualDurationHours: 1, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Parent Training" },
+    ], {});
+    const e = g.byStaff.get("B1") || [];
+    check("every verified session is on the timecard", e.length === 4, e.length);
+    check("not one entry is left unclassified",
+      e.every((x) => x.billable === true || x.billable === false), e.map((x) => x.billable));
+    check("Rethink's own word still decides when it gives one",
+      e[0].billable === true && e[1].billable === false, e.slice(0, 2));
+    check("an hour Rethink said nothing about counts as non-billable, not as billable",
+      e[2].billable === false && e[3].billable === false, e.slice(2));
+    check("and is stamped as a guess, so the review screen can say which ones",
+      e[2].billable_inferred === true && e[3].billable_inferred === true
+        && !e[0].billable_inferred && !e[1].billable_inferred, e);
+
+    const t = totals(e);
+    check("the sheet has no third column of hours", t.unclassified_hours === 0 && t.unclassified.length === 0, t.unclassified);
+    check("and the two subtotals account for the whole 10 hours",
+      t.billable_hours === 4 && t.non_billable_hours === 6, t);
+  }
+
+  // The same rule on the spreadsheet route, end to end -- two import paths
+  // disagreeing about what a blank cell means is its own bug.
+  {
+    const blankId = await mk(`Blankcell Payroll ${stamp}`, `RT-BC-${stamp}`, `blank.${stamp}@example.test`);
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "blanktype.xlsx", content_base64: b64(exportFor([
+      { id: `RT-BC-${stamp}`, first: "Blankcell", last: `Payroll ${stamp}`, reg: 7,
+        shifts: [{ day: 8, hours: 4, type: "Billable" }, { day: 9, hours: 3, type: "" }] },
+    ])) } });
+    check("an export with a blank Appt Type cell still imports", r.status === 200, r.data);
+    check("the blank cell does not become a third bucket of hours",
+      !r.data.unclassified_hours, r.data);
+    check("it is counted as non-billable, the safe direction",
+      r.data.billable_hours === 4 && r.data.non_billable_hours === 3, r.data);
+    const card = (await owner(`/api/hr/timecards/${r.data.timecard_ids[0]}`)).data;
+    const blank = (card.entries || []).find((x) => !String(x.appt_type || "").trim());
+    check("and the entry itself says non-billable rather than nothing",
+      blank && blank.billable === false, blank);
+    check("stamped as inferred, because the export did not say so",
+      blank && blank.billable_inferred === true, blank);
+    void blankId;
+  }
+
+  // ------------------------------------------------------------------
   section("One person, several Rethink staff records");
 
   // Straight from a real run: Rethink held THREE staff records for one RBT.

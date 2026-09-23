@@ -10,7 +10,9 @@
 // The scan's own arithmetic -- who worked, how many sessions, whose name came
 // back -- is covered against a stubbed transport in test-rethink.js.
 const { chromium } = require("playwright");
+const { Pool } = require("pg");
 const BASE = process.env.BASE || "http://localhost:3009";
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false });
 
 (async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
@@ -101,6 +103,41 @@ const BASE = process.env.BASE || "http://localhost:3009";
   check("with the Rethink id attached, so their hours can match",
     made && made.rethink_id === "RS-" + stamp, JSON.stringify(made));
 
+  // ---------------- a staff id nobody can read ----------------
+  // This account's Rethink appointments carry no provider name, so unmatched
+  // providers arrive as bare numbers: "1142821, 41 sessions". Nobody can look
+  // at that and say who it is, which left the owner unable to link the people
+  // the screen exists to find. The scan records what they CAN recognise --
+  // whose children the person sees, and who signs the notes -- so the card has
+  // to actually show it.
+  const rsId = "RS-EV-" + stamp;
+  await pool.query(
+    `INSERT INTO rethink_unmatched_staff
+       (rethink_staff_id, name_hint, appointments, hours, distinct_clients, first_seen, last_seen, scanned_at,
+        client_names, note_authors)
+     VALUES ($1, NULL, 41, 101.5, 6, '2026-08-01', '2026-08-29', now(), $2, $3)
+     ON CONFLICT (rethink_staff_id) DO UPDATE SET client_names = EXCLUDED.client_names,
+       note_authors = EXCLUDED.note_authors`,
+    [rsId, JSON.stringify(["Theo B.", "Priya K."]), JSON.stringify(["Micah Torres"])]
+  );
+  await page.evaluate(() => { location.hash = "#/dashboard"; });
+  await page.waitForTimeout(400);
+  await page.evaluate(() => { location.hash = "#/rethink-staff"; });
+  await page.waitForTimeout(1800);
+  const ev = await page.locator("#view-mount").innerText();
+  check("an unnamed provider is still listed by their staff id",
+    ev.includes(rsId), ev.slice(0, 400));
+  check("the children they work with are shown, so they can be recognised",
+    /Theo B\./.test(ev) && /Priya K\./.test(ev), ev.slice(0, 600));
+  check("the clients the CRM cannot name are counted rather than hidden",
+    /\+4 clients not yet in the CRM/i.test(ev), ev.slice(0, 600));
+  check("whoever signs their notes is shown too",
+    /Micah Torres/.test(ev), ev.slice(0, 600));
+  check("and is labelled a clue, never presented as their name",
+    /clue, not necessarily their name/i.test(ev), ev.slice(0, 600));
+  check("the name box is still empty, so nothing is created from a guess",
+    (await page.locator(`input[data-rs-name="${rsId}"]`).inputValue()) === "", "name box");
+
   // ---------------- server-side permission, not a hidden button ----------------
   const anon = await page.evaluate(async () => {
     const res = await fetch("/api/rethink/staff-match/scan", {
@@ -112,6 +149,8 @@ const BASE = process.env.BASE || "http://localhost:3009";
   check("scanning is refused without a session", anon === 401 || anon === 403, anon);
 
   check("no uncaught JavaScript errors", errors.length === 0, errors.join(" ;; "));
+  await pool.query("DELETE FROM rethink_unmatched_staff WHERE rethink_staff_id = $1", [rsId]).catch(() => {});
+  await pool.end().catch(() => {});
   console.log(`\n  ${pass} passed, ${fail} failed`);
   await browser.close();
   process.exit(fail ? 1 : 0);
