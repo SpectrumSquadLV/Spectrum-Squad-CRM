@@ -370,6 +370,12 @@ module.exports = function initRethink(ctx) {
     // who that is. Whose clients they are answers it immediately.
     await dbRun("ALTER TABLE rethink_unmatched_staff ADD COLUMN IF NOT EXISTS client_names TEXT").catch(() => {});
     await dbRun("ALTER TABLE rethink_unmatched_staff ADD COLUMN IF NOT EXISTS note_authors TEXT").catch(() => {});
+    // The Rethink client ids this provider delivered sessions for. Stored as
+    // IDS, and turned into names when the screen is read rather than when the
+    // scan runs: a client sync that lands afterwards then improves the screen
+    // on its own, instead of leaving stale names until somebody re-scans
+    // Rethink.
+    await dbRun("ALTER TABLE rethink_unmatched_staff ADD COLUMN IF NOT EXISTS client_ids TEXT").catch(() => {});
     await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS last_staff_scan_at TEXT").catch(() => {});
 
     // PER DAY, not per month, and that is the whole point of it.
@@ -1577,18 +1583,20 @@ module.exports = function initRethink(ctx) {
       await dbRun(
         `INSERT INTO rethink_unmatched_staff
            (rethink_staff_id, name_hint, appointments, hours, distinct_clients, first_seen, last_seen, scanned_at,
-            client_names, note_authors)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            client_names, note_authors, client_ids)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (rethink_staff_id) DO UPDATE SET
            name_hint = EXCLUDED.name_hint, appointments = EXCLUDED.appointments,
            hours = EXCLUDED.hours, distinct_clients = EXCLUDED.distinct_clients,
            first_seen = EXCLUDED.first_seen, last_seen = EXCLUDED.last_seen,
            scanned_at = EXCLUDED.scanned_at,
-           client_names = EXCLUDED.client_names, note_authors = EXCLUDED.note_authors`,
+           client_names = EXCLUDED.client_names, note_authors = EXCLUDED.note_authors,
+           client_ids = EXCLUDED.client_ids`,
         [v.rethink_staff_id, v.name_hint, v.appointments, round2(v.hours), v.clients.size,
          v.first_seen, v.last_seen, nowISO(),
          JSON.stringify([...v.clients].map((cid) => clientNameById.get(cid)).filter(Boolean).slice(0, 8)),
-         JSON.stringify([...v.noteAuthors])]
+         JSON.stringify([...v.noteAuthors]),
+         JSON.stringify([...v.clients].slice(0, 60))]
       ).catch((e) => warnings.push(`Could not record a provider: ${e.message}`));
     }
 
@@ -1618,12 +1626,120 @@ module.exports = function initRethink(ctx) {
     };
   }
 
+  // Every Rethink client id this practice could put a name to, and who is on
+  // that child's care team. Three sources, in descending certainty, because a
+  // provider is only recognisable by the children they see if the children can
+  // be named -- and naming only the already-linked ones left the screen saying
+  // "+4 clients not yet in the CRM", which identifies nobody.
+  //
+  //   linked  -- an owner approved this link. The CRM's own name for the child.
+  //   likely  -- the client matcher found exactly ONE candidate for this
+  //              Rethink id. Shown as likely, never as settled: a contested id
+  //              (two candidates) is left unnamed rather than guessed at.
+  //   rethink -- no CRM record at all, so Rethink's own spelling of the name.
+  //              Recognisable to the person reading the screen even though the
+  //              CRM has never heard of them.
+  async function buildClientDirectory() {
+    const byRethinkId = new Map();
+
+    const linked = await dbAll(
+      `SELECT id, rethink_client_id, child_name, assigned_bcba_name, assigned_rbt_name
+         FROM clients
+        WHERE rethink_client_id IS NOT NULL AND TRIM(rethink_client_id) <> ''`
+    ).catch(() => []);
+    for (const c of linked) {
+      byRethinkId.set(String(c.rethink_client_id).trim(), {
+        crm_client_id: c.id, name: c.child_name, via: "linked",
+        bcba: c.assigned_bcba_name || null, rbt: c.assigned_rbt_name || null,
+      });
+    }
+
+    // Candidates are keyed the other way round -- one CRM client may have
+    // several Rethink candidates and vice versa -- so count per Rethink id
+    // first and use only the uncontested ones.
+    const cands = await dbAll(
+      `SELECT m.rethink_client_id, m.confidence, c.id AS crm_client_id, c.child_name,
+              c.assigned_bcba_name, c.assigned_rbt_name
+         FROM rethink_client_match_candidates m
+         JOIN clients c ON c.id = m.crm_client_id`
+    ).catch(() => []);
+    const perId = new Map();
+    for (const m of cands) {
+      const k = String(m.rethink_client_id).trim();
+      if (!perId.has(k)) perId.set(k, []);
+      perId.get(k).push(m);
+    }
+    for (const [k, list] of perId) {
+      if (byRethinkId.has(k) || list.length !== 1) continue;
+      const m = list[0];
+      byRethinkId.set(k, {
+        crm_client_id: m.crm_client_id, name: m.child_name, via: "likely",
+        confidence: m.confidence || null,
+        bcba: m.assigned_bcba_name || null, rbt: m.assigned_rbt_name || null,
+      });
+    }
+
+    const orphans = await dbAll(
+      "SELECT rethink_client_id, first_name, last_name FROM rethink_unmatched_clients"
+    ).catch(() => []);
+    for (const o of orphans) {
+      const k = String(o.rethink_client_id).trim();
+      if (byRethinkId.has(k)) continue;
+      const nm = [o.first_name, o.last_name].map((x) => String(x || "").trim()).filter(Boolean).join(" ");
+      if (nm) byRethinkId.set(k, { crm_client_id: null, name: nm, via: "rethink", bcba: null, rbt: null });
+    }
+
+    return byRethinkId;
+  }
+
+  // Who the CRM says looks after these children. A provider Rethink will not
+  // name is still identifiable if the same staff member is on the care team of
+  // the children they work with -- which is the one fact the CRM holds and
+  // Rethink's appointment payload does not.
+  //
+  // A SUGGESTION, deliberately: it is offered with the count it rests on so a
+  // human can see how strong it is, it never fills the name box, and nothing
+  // is linked without somebody choosing it. One shared client is a
+  // coincidence, so two is the floor, and a tie between two staff members
+  // suggests neither.
+  function suggestFromCareTeam(clients, employees) {
+    const tally = new Map();
+    for (const c of clients) {
+      for (const [role, raw] of [["BCBA", c.bcba], ["RBT", c.rbt]]) {
+        const key = normName(raw);
+        if (!key) continue;
+        const cur = tally.get(key) || { key, display: String(raw).trim(), role, clients: 0 };
+        cur.clients++;
+        tally.set(key, cur);
+      }
+    }
+    const ranked = [...tally.values()].sort((a, b) => b.clients - a.clients);
+    const top = ranked[0];
+    if (!top || top.clients < 2) return null;
+    if (ranked[1] && ranked[1].clients === top.clients) return null;
+
+    const emp = employees.find((e) => normName(e.name) === top.key) || null;
+    return {
+      employee_id: emp ? emp.id : null,
+      name: emp ? emp.name : top.display,
+      role: top.role,
+      on_care_team_of: top.clients,
+      of_named_clients: clients.length,
+      // An unlinked staff record is the case this exists for, but somebody who
+      // already has a Rethink id is still worth suggesting: one person can hold
+      // several Rethink staff records, which is how one RBT arrived as three
+      // separate timecards.
+      already_linked: !!(emp && emp.rethink_id != null && String(emp.rethink_id).trim() !== ""),
+      in_crm: !!emp,
+    };
+  }
+
   // The review screen: who Rethink knows that the CRM does not, and who the CRM
   // knows that Rethink cannot reach.
   async function staffMatchReview() {
     const unmatched = await dbAll(
       `SELECT rethink_staff_id, name_hint, appointments, hours, distinct_clients,
-              first_seen, last_seen, scanned_at, client_names, note_authors
+              first_seen, last_seen, scanned_at, client_names, note_authors, client_ids
          FROM rethink_unmatched_staff
         ORDER BY appointments DESC, rethink_staff_id`
     ).catch(() => []);
@@ -1635,6 +1751,10 @@ module.exports = function initRethink(ctx) {
     ).catch(() => []);
 
     const cfg = await getConfig().catch(() => ({}));
+    const directory = await buildClientDirectory();
+    const jsonArray = (v) => { try { const a = JSON.parse(v || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
+    const roster = employees.map((e) => ({ id: e.id, name: e.name, rethink_id: e.rethink_id }));
+
     return {
       unmatched: unmatched.map((r) => ({
         rethink_staff_id: String(r.rethink_staff_id),
@@ -1646,8 +1766,22 @@ module.exports = function initRethink(ctx) {
         last_seen: r.last_seen || null,
         // Who this staff id works with, and who writes their notes. Evidence
         // for a human, never a claim about who they are.
-        client_names: (() => { try { const a = JSON.parse(r.client_names || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } })(),
-        note_authors: (() => { try { const a = JSON.parse(r.note_authors || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } })(),
+        note_authors: jsonArray(r.note_authors),
+        ...(() => {
+          const ids = jsonArray(r.client_ids).map((x) => String(x).trim()).filter(Boolean);
+          // Rows written before client ids were stored still have the names the
+          // scan resolved at the time, so an old scan keeps working until the
+          // next one rather than going blank.
+          if (!ids.length) {
+            return { clients: jsonArray(r.client_names).map((n) => ({ name: n, via: "linked" })), suggestion: null };
+          }
+          const found = ids.map((id) => directory.get(id)).filter(Boolean);
+          return {
+            clients: found.map((c) => ({ name: c.name, via: c.via, crm_client_id: c.crm_client_id || null })),
+            // Only children the CRM actually holds carry a care team.
+            suggestion: suggestFromCareTeam(found.filter((c) => c.crm_client_id), roster),
+          };
+        })(),
       })),
       employees: employees.map((e) => ({
         id: e.id, name: e.name, email: e.email || null,

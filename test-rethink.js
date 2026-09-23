@@ -414,6 +414,161 @@ const initRethink = require("./rethink");
     void state;
   }
 
+  // ---- PUTTING A NAME TO A STAFF ID ------------------------------------
+  // This account's Rethink appointments carry no provider name at all, so an
+  // unmatched provider is a bare number: "1142821, 41 sessions, 6 clients".
+  // Nobody can link a number. What the practice DOES know is who those six
+  // children are and who looks after them, so that is what the screen has to
+  // say -- and the naming happens when the screen is READ, so a client sync
+  // landing afterwards improves it without anybody re-scanning Rethink.
+  {
+    const staffRow = {
+      rethink_staff_id: "1142821", name_hint: null, appointments: 41, hours: 101.5,
+      distinct_clients: 5, first_seen: "2026-08-01", last_seen: "2026-08-29",
+      scanned_at: NOW, client_names: "[]", note_authors: JSON.stringify(["Dana Fields"]),
+      // Five children: two linked, one a sole match candidate, one contested
+      // between two CRM records, one Rethink knows and the CRM does not.
+      client_ids: JSON.stringify(["C_LINK1", "C_LINK2", "C_CAND", "C_CONTESTED", "C_ORPHAN"]),
+    };
+    const ctx = {
+      dbGet: async (sql) => (/FROM rethink_config/i.test(sql) ? CONFIRMED : null),
+      dbRun: async () => {},
+      dbAll: async (sql) => {
+        if (/FROM rethink_unmatched_staff/i.test(sql)) return [staffRow];
+        if (/FROM hr_employees/i.test(sql)) return [
+          { id: 4, name: "Micah Galang", email: "micah@x.invalid", role_title: "BCBA", rethink_id: null, status: "active" },
+          { id: 5, name: "Other Person", email: "other@x.invalid", role_title: "RBT", rethink_id: "S777", status: "active" },
+        ];
+        if (/FROM rethink_client_match_candidates/i.test(sql)) return [
+          { rethink_client_id: "C_CAND", confidence: "high", crm_client_id: 12, child_name: "Priya K.",
+            assigned_bcba_name: "Micah Galang", assigned_rbt_name: null },
+          // Two CRM children look like this one Rethink record. Naming either
+          // would be a guess, so it stays unnamed.
+          { rethink_client_id: "C_CONTESTED", confidence: "medium", crm_client_id: 13, child_name: "Sam A.",
+            assigned_bcba_name: "Micah Galang", assigned_rbt_name: null },
+          { rethink_client_id: "C_CONTESTED", confidence: "medium", crm_client_id: 14, child_name: "Sam B.",
+            assigned_bcba_name: "Someone Else", assigned_rbt_name: null },
+        ];
+        if (/FROM rethink_unmatched_clients/i.test(sql)) return [
+          { rethink_client_id: "C_ORPHAN", first_name: "Nico", last_name: "Vargas" },
+        ];
+        if (/FROM clients/i.test(sql)) return [
+          { id: 10, rethink_client_id: "C_LINK1", child_name: "Theo B.", assigned_bcba_name: "Micah Galang", assigned_rbt_name: null },
+          { id: 11, rethink_client_id: "C_LINK2", child_name: "Ivy R.", assigned_bcba_name: "micah  galang", assigned_rbt_name: null },
+        ];
+        return [];
+      },
+      nowISO: () => NOW,
+    };
+
+    const review = await initRethink(ctx).staffMatchReview();
+    const row = review.unmatched[0];
+    const named = (row.clients || []).map((c) => c.name);
+
+    check("a client the owner already linked is named from the CRM",
+      named.includes("Theo B.") && named.includes("Ivy R."), JSON.stringify(row.clients));
+    check("a client the matcher found exactly one candidate for is named too",
+      named.includes("Priya K."), JSON.stringify(row.clients));
+    check("and is marked as likely rather than settled",
+      (row.clients.find((c) => c.name === "Priya K.") || {}).via === "likely", JSON.stringify(row.clients));
+    check("a client two CRM records both look like is NOT named, because either would be a guess",
+      !named.includes("Sam A.") && !named.includes("Sam B."), JSON.stringify(row.clients));
+    check("a child only Rethink knows is still named, from Rethink's own spelling",
+      named.includes("Nico Vargas"), JSON.stringify(row.clients));
+    check("that one is marked as coming from Rethink, not the CRM",
+      (row.clients.find((c) => c.name === "Nico Vargas") || {}).via === "rethink", JSON.stringify(row.clients));
+    check("the client nobody can name is left out rather than shown as blank",
+      row.clients.length === 4, JSON.stringify(row.clients));
+
+    // The payoff: the CRM knows who looks after these children even though
+    // Rethink will not say who delivered the sessions.
+    check("the care team the children share suggests who the staff id is",
+      row.suggestion && row.suggestion.name === "Micah Galang", JSON.stringify(row.suggestion));
+    check("it resolves to the staff record, so it can be acted on in one click",
+      row.suggestion && row.suggestion.employee_id === 4, JSON.stringify(row.suggestion));
+    check("it says which role and how many children it rests on, so it can be judged",
+      row.suggestion && row.suggestion.role === "BCBA" && row.suggestion.on_care_team_of === 3
+        && row.suggestion.of_named_clients === 3, JSON.stringify(row.suggestion));
+    check("a name spelled differently in the CRM still counts towards it",
+      row.suggestion && row.suggestion.on_care_team_of === 3, JSON.stringify(row.suggestion));
+    check("the suggestion does not fill the name box -- nothing is created from it",
+      row.name_hint === null, row.name_hint);
+
+  }
+
+  // One client in common, or two staff members equally represented, is not
+  // enough to put somebody's name on a staff id.
+  {
+    const mk = (clients) => ({
+      dbGet: async (sql) => (/FROM rethink_config/i.test(sql) ? CONFIRMED : null),
+      dbRun: async () => {},
+      dbAll: async (sql) => {
+        if (/FROM rethink_unmatched_staff/i.test(sql)) return [{
+          rethink_staff_id: "X1", name_hint: null, appointments: 3, hours: 9, distinct_clients: clients.length,
+          first_seen: "2026-08-01", last_seen: "2026-08-03", scanned_at: NOW,
+          client_names: "[]", note_authors: "[]",
+          client_ids: JSON.stringify(clients.map((c) => c.rethink_client_id)),
+        }];
+        if (/FROM hr_employees/i.test(sql)) return [
+          { id: 4, name: "Micah Galang", rethink_id: null, status: "active" },
+          { id: 6, name: "Ava Stone", rethink_id: null, status: "active" },
+        ];
+        if (/FROM rethink_client_match_candidates/i.test(sql)) return [];
+        if (/FROM rethink_unmatched_clients/i.test(sql)) return [];
+        if (/FROM clients/i.test(sql)) return clients;
+        return [];
+      },
+      nowISO: () => NOW,
+    });
+
+    const one = await initRethink(mk([
+      { id: 10, rethink_client_id: "A", child_name: "Theo B.", assigned_bcba_name: "Micah Galang", assigned_rbt_name: null },
+    ])).staffMatchReview();
+    check("one shared client is a coincidence, not a suggestion",
+      one.unmatched[0].suggestion === null, JSON.stringify(one.unmatched[0].suggestion));
+
+    const tie = await initRethink(mk([
+      { id: 10, rethink_client_id: "A", child_name: "Theo B.", assigned_bcba_name: "Micah Galang", assigned_rbt_name: null },
+      { id: 11, rethink_client_id: "B", child_name: "Ivy R.", assigned_bcba_name: "Micah Galang", assigned_rbt_name: null },
+      { id: 12, rethink_client_id: "C", child_name: "Sam A.", assigned_bcba_name: "Ava Stone", assigned_rbt_name: null },
+      { id: 13, rethink_client_id: "D", child_name: "Kai M.", assigned_bcba_name: "Ava Stone", assigned_rbt_name: null },
+    ])).staffMatchReview();
+    check("two staff members equally represented suggests neither",
+      tie.unmatched[0].suggestion === null, JSON.stringify(tie.unmatched[0].suggestion));
+
+    const rbt = await initRethink(mk([
+      { id: 10, rethink_client_id: "A", child_name: "Theo B.", assigned_bcba_name: null, assigned_rbt_name: "Ava Stone" },
+      { id: 11, rethink_client_id: "B", child_name: "Ivy R.", assigned_bcba_name: null, assigned_rbt_name: "Ava Stone" },
+    ])).staffMatchReview();
+    check("an RBT's caseload identifies them the same way a BCBA's does",
+      rbt.unmatched[0].suggestion && rbt.unmatched[0].suggestion.name === "Ava Stone"
+        && rbt.unmatched[0].suggestion.role === "RBT", JSON.stringify(rbt.unmatched[0].suggestion));
+  }
+
+  // A row scanned before client ids were stored still shows what it had, so an
+  // old scan degrades rather than going blank.
+  {
+    const ctx = {
+      dbGet: async (sql) => (/FROM rethink_config/i.test(sql) ? CONFIRMED : null),
+      dbRun: async () => {},
+      dbAll: async (sql) => {
+        if (/FROM rethink_unmatched_staff/i.test(sql)) return [{
+          rethink_staff_id: "OLD1", name_hint: null, appointments: 2, hours: 4, distinct_clients: 2,
+          first_seen: "2026-08-01", last_seen: "2026-08-02", scanned_at: NOW,
+          client_names: JSON.stringify(["Theo B."]), note_authors: "[]", client_ids: null,
+        }];
+        return [];
+      },
+      nowISO: () => NOW,
+    };
+    const old = await initRethink(ctx).staffMatchReview();
+    check("a row from before this change keeps the names it already had",
+      (old.unmatched[0].clients || []).map((c) => c.name).join(",") === "Theo B.",
+      JSON.stringify(old.unmatched[0].clients));
+    check("and offers no suggestion, because it has nothing to base one on",
+      old.unmatched[0].suggestion === null, JSON.stringify(old.unmatched[0].suggestion));
+  }
+
   // ---- SCANNING RETHINK FOR EMPLOYEES ----------------------------------
   // The CRM has no Rethink staff endpoint to call: this account can only read
   // Appointments, which the activity scan already records in production terms.

@@ -85,9 +85,15 @@
     const rows = unmatched.map((u) => {
       const named = !!u.name_hint;
       const who = named ? esc(u.name_hint) : `Rethink staff ${esc(u.rethink_staff_id)}`;
-      const clientNames = Array.isArray(u.client_names) ? u.client_names : [];
+      const clients = Array.isArray(u.clients) ? u.clients : [];
       const noteAuthors = Array.isArray(u.note_authors) ? u.note_authors : [];
-      const unnamedClients = Math.max(0, (u.distinct_clients || 0) - clientNames.length);
+      const unnamedClients = Math.max(0, (u.distinct_clients || 0) - clients.length);
+      // A likely match is marked where it sits rather than in a legend, so
+      // nobody reads a guess as settled fact halfway down a list of names.
+      const clientNames = clients
+        .map((c) => esc(c.name) + (c.via === "likely" ? `<span style="opacity:.75;" title="Matched on name and date of birth, not yet linked">?</span>` : ""))
+        .join(", ");
+      const sg = u.suggestion || null;
       // A bare staff ID identifies nobody. Whose children they see is what
       // makes a person recognisable here. Note authors are shown as evidence
       // and labelled as such -- Rethink records whoever touched the note,
@@ -95,7 +101,7 @@
       // as this person's name would put the wrong name on the ID.
       const evidence = (clientNames.length || noteAuthors.length)
         ? `<div style="font-size:12px; color:var(--text-muted); margin-top:5px; line-height:1.6;">
-            ${clientNames.length ? `<div><strong style="font-weight:600;">Works with:</strong> ${esc(clientNames.join(", "))}${unnamedClients ? ` <span style="opacity:.8;">(+${unnamedClients} client${unnamedClients === 1 ? "" : "s"} not yet in the CRM)</span>` : ""}</div>` : ""}
+            ${clients.length ? `<div><strong style="font-weight:600;">Works with:</strong> ${clientNames}${unnamedClients ? ` <span style="opacity:.8;">(+${unnamedClients} more)</span>` : ""}</div>` : ""}
             ${noteAuthors.length ? `<div><strong style="font-weight:600;">Session notes signed by:</strong> ${esc(noteAuthors.join(", "))} <span style="opacity:.8;">— a clue, not necessarily their name</span></div>` : ""}
           </div>`
         : `<div style="font-size:12px; color:var(--text-muted); margin-top:5px;">Rethink sent nothing else to go on — no name, no client the CRM recognises, no note author.</div>`;
@@ -112,6 +118,13 @@
             ${named ? "" : evidence}
           </div>
         </div>
+        ${!named && sg ? `<div style="margin-top:9px; padding:9px 11px; border-radius:8px; background:#ecfdf5; border:1px solid #a7f3d0; font-size:12.5px; color:#065f46;">
+          <strong>Probably ${esc(sg.name)}</strong> — the CRM has them as the ${esc(sg.role)} on
+          ${sg.on_care_team_of} of the ${sg.of_named_clients} client${sg.of_named_clients === 1 ? "" : "s"} this staff id works with.${
+            sg.already_linked ? " They already have a Rethink id, so this would be a second Rethink record for the same person — which happens, and is why hours get split." : ""}${
+            sg.in_crm ? "" : " They are not on the CRM roster under that name."}
+          ${sg.employee_id ? `<button class="btn small secondary" data-rs-accept="${attr(u.rethink_staff_id)}" data-rs-emp-id="${attr(sg.employee_id)}" style="margin-left:6px;">Choose them below</button>` : ""}
+        </div>` : ""}
         <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; padding-top:10px; border-top:1px solid var(--border,#e5e7eb);">
           <div style="flex:1; min-width:250px;">
             <div style="font-size:12px; font-weight:700; margin-bottom:5px;">Already in the CRM?</div>
@@ -157,6 +170,18 @@
   }
 
   function wire(mount, box) {
+    // The suggestion SELECTS the staff member and stops there. It does not
+    // link them: the confirm on the Link button is where somebody reads back
+    // whose compliance record is about to receive these hours, and a shortcut
+    // past it would be a guess applied silently.
+    box.querySelectorAll("[data-rs-accept]").forEach((b) => b.addEventListener("click", () => {
+      const sel = box.querySelector(`[data-rs-emp="${CSS.escape(b.dataset.rsAccept)}"]`);
+      if (!sel) return;
+      sel.value = b.dataset.rsEmpId;
+      sel.focus();
+      if (!sel.value) alert("That staff member is already linked to another Rethink id, so they are not selectable here.");
+    }));
+
     box.querySelectorAll("[data-rs-link]").forEach((b) => b.addEventListener("click", async () => {
       const sid = b.dataset.rsLink;
       const sel = box.querySelector(`[data-rs-emp="${CSS.escape(sid)}"]`);

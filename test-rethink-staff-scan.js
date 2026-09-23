@@ -129,14 +129,63 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
     ev.includes(rsId), ev.slice(0, 400));
   check("the children they work with are shown, so they can be recognised",
     /Theo B\./.test(ev) && /Priya K\./.test(ev), ev.slice(0, 600));
-  check("the clients the CRM cannot name are counted rather than hidden",
-    /\+4 clients not yet in the CRM/i.test(ev), ev.slice(0, 600));
+  check("the clients nobody can name are counted rather than hidden",
+    /\+4 more/i.test(ev), ev.slice(0, 600));
   check("whoever signs their notes is shown too",
     /Micah Torres/.test(ev), ev.slice(0, 600));
   check("and is labelled a clue, never presented as their name",
     /clue, not necessarily their name/i.test(ev), ev.slice(0, 600));
   check("the name box is still empty, so nothing is created from a guess",
     (await page.locator(`input[data-rs-name="${rsId}"]`).inputValue()) === "", "name box");
+
+  // ---------------- the CRM knows who looks after these children ----------------
+  // The whole point of naming the clients: the CRM holds a care team for each
+  // child and Rethink's appointment payload does not. If the same staff member
+  // is the BCBA on the children an unnamed staff id works with, that staff id
+  // is very probably them -- which is the one thing that turns a number nobody
+  // can link into a person somebody can.
+  const sugId = "RS-SG-" + stamp;
+  const kid = async (nm, rcid, bcba) => (await pool.query(
+    `INSERT INTO clients (child_name, rethink_client_id, assigned_bcba_name, stage, submitted_at)
+     VALUES ($1,$2,$3,'active',now()) RETURNING id`, [nm, rcid, bcba])).rows[0].id;
+  const bcbaName = "Caseload Bcba " + stamp;
+  const empId = (await pool.query(
+    "INSERT INTO hr_employees (name,email,status,created_at) VALUES ($1,$2,'active',now()) RETURNING id",
+    [bcbaName, `caseload.${stamp}@example.test`])).rows[0].id;
+  const kidIds = [];
+  for (const [nm, rcid] of [["Amara W. " + stamp, "CL1-" + stamp], ["Bo T. " + stamp, "CL2-" + stamp], ["Cy L. " + stamp, "CL3-" + stamp]]) {
+    kidIds.push(await kid(nm, rcid, bcbaName));
+  }
+  await pool.query(
+    `INSERT INTO rethink_unmatched_staff
+       (rethink_staff_id, name_hint, appointments, hours, distinct_clients, first_seen, last_seen, scanned_at, client_ids)
+     VALUES ($1, NULL, 30, 75, 3, '2026-08-01', '2026-08-29', now(), $2)
+     ON CONFLICT (rethink_staff_id) DO UPDATE SET client_ids = EXCLUDED.client_ids`,
+    [sugId, JSON.stringify(["CL1-" + stamp, "CL2-" + stamp, "CL3-" + stamp])]
+  );
+  await page.evaluate(() => { location.hash = "#/dashboard"; });
+  await page.waitForTimeout(400);
+  await page.evaluate(() => { location.hash = "#/rethink-staff"; });
+  await page.waitForTimeout(1800);
+  const sg = await page.locator("#view-mount").innerText();
+  check("the children on this staff id's caseload are named from the CRM",
+    sg.includes("Amara W. " + stamp) && sg.includes("Cy L. " + stamp), sg.slice(0, 800));
+  check("and the CRM's care team says who the staff id probably is",
+    new RegExp("Probably " + bcbaName).test(sg), sg.slice(0, 900));
+  check("the suggestion shows what it rests on rather than asserting it",
+    /BCBA on\s+3 of the 3 clients/i.test(sg.replace(/\s+/g, " ")), sg.slice(0, 900));
+
+  // It SELECTS them. It does not link them: the confirm on Link is where
+  // somebody reads back whose compliance record receives these hours.
+  const before = (await pool.query("SELECT rethink_id FROM hr_employees WHERE id = $1", [empId])).rows[0].rethink_id;
+  await page.click(`[data-rs-accept="${sugId}"]`);
+  await page.waitForTimeout(300);
+  const picked = await page.locator(`select[data-rs-emp="${sugId}"]`).inputValue();
+  check("accepting the suggestion chooses that staff member in the picker",
+    String(picked) === String(empId), { picked, empId });
+  const after = (await pool.query("SELECT rethink_id FROM hr_employees WHERE id = $1", [empId])).rows[0].rethink_id;
+  check("but nothing is linked until somebody presses Link",
+    String(after || "") === String(before || ""), { before, after });
 
   // ---------------- server-side permission, not a hidden button ----------------
   const anon = await page.evaluate(async () => {
@@ -149,7 +198,8 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
   check("scanning is refused without a session", anon === 401 || anon === 403, anon);
 
   check("no uncaught JavaScript errors", errors.length === 0, errors.join(" ;; "));
-  await pool.query("DELETE FROM rethink_unmatched_staff WHERE rethink_staff_id = $1", [rsId]).catch(() => {});
+  await pool.query("DELETE FROM rethink_unmatched_staff WHERE rethink_staff_id = ANY($1)", [[rsId, sugId]]).catch(() => {});
+  await pool.query("DELETE FROM clients WHERE id = ANY($1)", [kidIds]).catch(() => {});
   await pool.end().catch(() => {});
   console.log(`\n  ${pass} passed, ${fail} failed`);
   await browser.close();
