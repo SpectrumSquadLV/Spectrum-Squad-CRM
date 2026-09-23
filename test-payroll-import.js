@@ -703,6 +703,61 @@ const b64 = (buf) => buf.toString("base64");
   }
 
   // ------------------------------------------------------------------
+  section("A person whose every session was excluded");
+
+  // Reported from a real run, one deploy after the unlinked-candidate list
+  // shipped: a BCBA plainly working in Rethink still came back as
+  // "nothing in Rethink for these dates is theirs". The list was built from
+  // the BUCKETS, and a bucket only exists for a staff id with at least one
+  // session that survived the filters. Somebody whose fortnight is entirely
+  // supervision and assessment -- filed under a status this practice has not
+  // told the CRM to count -- produces no bucket at all, so they were invisible
+  // to the very list that exists to find them. Same false sentence, new place.
+  {
+    const cfgStrict = { filter_confirmed: true, completed_statuses: ["Completed"], verified_values: ["Verified"] };
+    const g = group([
+      // Hers: real work, every session under a word the accepted list lacks.
+      { staffId: "EX1", renderingProvider: "Galang, Micah", appointmentDate: "2026-09-08", actualDurationHours: 6, staffVerification: "Verified", appointmentStatus: "Rendered", appointmentType: "Billable" },
+      { staffId: "EX1", renderingProvider: "Galang, Micah", appointmentDate: "2026-09-09", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Rendered", appointmentType: "Billable" },
+      { staffId: "EX1", renderingProvider: "Galang, Micah", appointmentDate: "2026-09-10", actualDurationHours: 2, staffVerification: "", appointmentStatus: "Completed", appointmentType: "Billable" },
+    ], cfgStrict);
+
+    check("she produces no bucket at all, because nothing survived the filters",
+      !g.byStaff.has("EX1"), [...g.byStaff.keys()]);
+    check("but the staff id is still named, so she is not anonymous",
+      g.names.get("EX1") === "Galang, Micah", [...g.names.entries()]);
+
+    // Everything the screen needs comes off excludedByStaff, which is the
+    // half the candidate list was not reading.
+    const ex = g.excludedByStaff.get("EX1");
+    check("her sessions are all accounted for against her id",
+      ex.notCompleted === 2 && ex.unverified === 1, ex);
+    check("with the hours behind them, so the work is not reported as nothing",
+      ex.hours === 12, ex.hours);
+    check("and the word that kept them off, so it can be checked",
+      ex.statuses.get("rendered") === 2, [...ex.statuses.entries()]);
+
+    // What the route builds from that: a candidate with zero counted and the
+    // exclusions attached, rather than no candidate at all.
+    const candidate = {
+      name: g.names.get("EX1"),
+      rethink_ids: ["EX1"],
+      sessions: 0,
+      hours: 0,
+      excluded_sessions: ex.unverified + ex.notCompleted,
+      excluded_hours: ex.hours,
+      statuses: [...ex.statuses.entries()].map(([value, sessions]) => ({ value, sessions })),
+      unverified: ex.unverified,
+    };
+    check("she is reportable by name even though nothing of hers counted",
+      candidate.name === "Galang, Micah" && candidate.sessions === 0, candidate);
+    check("carrying the work that was left off, so nobody reads it as an idle fortnight",
+      candidate.excluded_sessions === 3 && candidate.excluded_hours === 12, candidate);
+    check("and the status to check, which is the actionable part",
+      candidate.statuses.some((x) => x.value === "rendered" && x.sessions === 2), candidate.statuses);
+  }
+
+  // ------------------------------------------------------------------
   section("Building the same period twice");
 
   // The normal way to use a date range: build it, notice people have not

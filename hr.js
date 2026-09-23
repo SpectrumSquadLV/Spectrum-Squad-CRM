@@ -3472,6 +3472,50 @@ module.exports = function initHr(ctx) {
             hours: round2(bk.entries.reduce((a, e) => a + (Number(e.hours) || 0), 0)),
           }))
           .sort((a, b) => b.sessions - a.sessions);
+        // A staff id whose sessions were ALL excluded never produced a bucket,
+        // so it was invisible to the list above -- and that is the likeliest
+        // case for exactly the people this list exists for. A BCBA whose
+        // fortnight is supervision and assessment can have every appointment
+        // filed under a status this practice has not told the CRM to count;
+        // the screen then reported "nothing in Rethink for these dates is
+        // theirs", which is the same false sentence in a new place.
+        //
+        // Only worth the lookups when building for one person, which is the
+        // only time this list is returned.
+        if (onlyEmployee) {
+          const claimed = new Set(buckets.flatMap((bk) => bk.staffIds));
+          for (const [sid, ex] of excludedByStaff) {
+            if (claimed.has(sid)) continue;
+            const hint = names.get(sid) || null;
+            let staff = await dbGet("SELECT id FROM hr_employees WHERE rethink_id = ?", [sid]).catch(() => null);
+            if (!staff && hint) {
+              staff = await dbGet(
+                `SELECT id FROM hr_employees WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                  ORDER BY (COALESCE(status,'active') = 'terminated'), id LIMIT 1`, [hint]
+              ).catch(() => null);
+            }
+            // Claimed by a CRM record: their exclusions are already reported
+            // against them by the per-person accounting below.
+            if (staff) continue;
+            unlinkedCandidates.push({
+              name: hint,
+              rethink_ids: [sid],
+              sessions: 0,
+              hours: 0,
+              // Nothing counted, but the work is not nothing -- say how much
+              // and under which word, so it is checkable rather than absent.
+              excluded_sessions: ex.unverified + ex.notCompleted,
+              excluded_hours: round2(ex.hours || 0),
+              statuses: [...ex.statuses.entries()]
+                .map(([value, sessions]) => ({ value, sessions }))
+                .sort((a, b) => b.sessions - a.sessions)
+                .slice(0, 4),
+              unverified: ex.unverified,
+            });
+          }
+          unlinkedCandidates.sort((a, b) =>
+            (b.sessions + (b.excluded_sessions || 0)) - (a.sessions + (a.excluded_sessions || 0)));
+        }
         if (onlyEmployee) {
           buckets = buckets.filter((bk) => bk.staff && bk.staff.id === onlyEmployee.id);
           // Their own numbers, not the practice's -- "29 sessions left off"

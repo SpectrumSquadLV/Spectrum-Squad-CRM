@@ -6171,8 +6171,18 @@ function openPayrollImportModal(pageMount) {
       // a fortnight with no work in it.
       const unlinked = res.unlinked_candidates || [];
       const unlinkedBlock = unlinked.length
-        ? `<div style="color:#92400e; margin-top:10px;">Rethink <strong>did</strong> deliver sessions in this range under ${unlinked.length} staff record(s) that no staff record in the CRM claims:
-             <ul style="margin:6px 0 0 18px; padding:0;">${unlinked.map((u) => `<li>${staffEsc(u.name || `Rethink staff #${u.rethink_ids[0]}`)} — ${u.sessions} session(s), ${u.hours}h</li>`).join("")}</ul>
+        ? `<div style="color:#92400e; margin-top:10px;">Rethink <strong>did</strong> have sessions in this range under ${unlinked.length} staff record(s) that no staff record in the CRM claims:
+             <ul style="margin:6px 0 0 18px; padding:0;">${unlinked.map((u) => {
+               // A record whose sessions were ALL excluded counts zero, and
+               // saying only "0 sessions" would read as "they did nothing" --
+               // the exact sentence this block exists to stop. Say what was
+               // left off and under which word instead.
+               const st = (u.statuses || []).map((x) => `${x.value} ${x.sessions}`).join(", ");
+               const left = u.excluded_sessions
+                 ? ` · <span style="color:#92400e;">${u.excluded_sessions} session(s) left off${u.excluded_hours ? `, ${u.excluded_hours}h` : ""}${st ? ` — status: ${staffEsc(st)}` : ""}${u.unverified ? `${st ? "; " : " — "}${u.unverified} not staff-verified` : ""}</span>`
+                 : "";
+               return `<li>${staffEsc(u.name || `Rethink staff #${u.rethink_ids[0]}`)} — ${u.sessions} session(s) counted, ${u.hours}h${left}</li>`;
+             }).join("")}</ul>
              <div style="margin-top:6px;">If one of those is ${staffEsc(res.built_for.name)}, link them on <strong>Rethink Staff</strong> (Scan Rethink for employees), then build this range again.</div>
            </div>`
         : "";
