@@ -6156,10 +6156,21 @@ function openPayrollImportModal(pageMount) {
       const why = [];
       if (res.sessions_unverified) why.push(`${res.sessions_unverified} of their session(s) in this range are not staff-verified yet`);
       if (res.sessions_not_completed) why.push(`${res.sessions_not_completed} were not completed sessions`);
+      // Sessions in this range that belong to nobody in the CRM. If one of
+      // them is the person being built for, the answer is a missing link, not
+      // a fortnight with no work in it.
+      const unlinked = res.unlinked_candidates || [];
+      const unlinkedBlock = unlinked.length
+        ? `<div style="color:#92400e; margin-top:10px;">Rethink <strong>did</strong> deliver sessions in this range under ${unlinked.length} staff record(s) that no staff record in the CRM claims:
+             <ul style="margin:6px 0 0 18px; padding:0;">${unlinked.map((u) => `<li>${staffEsc(u.name || `Rethink staff #${u.rethink_ids[0]}`)} — ${u.sessions} session(s), ${u.hours}h</li>`).join("")}</ul>
+             <div style="margin-top:6px;">If one of those is ${staffEsc(res.built_for.name)}, link them on <strong>Rethink Staff</strong> (Scan Rethink for employees), then build this range again.</div>
+           </div>`
+        : "";
       previewEl.innerHTML = `<div style="font-size:13px; padding:10px 0;">
         No timecard for <strong>${staffEsc(res.built_for.name)}</strong> for ${staffEsc(res.pay_period_start)} – ${staffEsc(res.pay_period_end)}.
-        ${why.length ? `<div style="color:#92400e; margin-top:6px;">${why.join(", and ")}. Have them verify in Rethink, then build again.</div>`
-          : `<div style="color:var(--text-muted); margin-top:6px;">Rethink has no sessions for them in these dates. Check their Rethink ID is set on their staff record.</div>`}
+        ${why.length ? `<div style="color:#92400e; margin-top:6px;">${why.join(", and ")}. Have them verify in Rethink, then build again.</div>` : ""}
+        ${!why.length && !unlinked.length ? `<div style="color:var(--text-muted); margin-top:6px;">Nothing in Rethink for these dates is theirs, and every session in the range is claimed by a linked staff record — so this looks like a fortnight they delivered nothing, rather than a missing link.</div>` : ""}
+        ${unlinkedBlock}
       </div><div style="margin-top:12px;"><button class="btn secondary" id="payroll-done">Close</button></div>`;
       previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); if (pageMount) renderStaff(pageMount); });
       return;

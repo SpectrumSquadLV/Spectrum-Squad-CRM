@@ -3455,6 +3455,21 @@ module.exports = function initHr(ctx) {
         // their sessions can be spread across several Rethink staff records,
         // so filtering any earlier would drop half their hours.
         let buckets = [...merged.values()];
+        // Rethink staff who delivered sessions in this range and are linked to
+        // nobody in the CRM. Worth naming: when a build for one person comes
+        // back empty, "Rethink has no sessions for them" is often not true --
+        // it has their sessions under a staff id, or a spelling, that no staff
+        // record claims. Telling somebody their colleague did no work that
+        // fortnight when the truth is a missing link is the wrong answer.
+        const unlinkedCandidates = buckets
+          .filter((bk) => !bk.staff)
+          .map((bk) => ({
+            name: bk.hint || null,
+            rethink_ids: bk.staffIds,
+            sessions: bk.entries.length,
+            hours: round2(bk.entries.reduce((a, e) => a + (Number(e.hours) || 0), 0)),
+          }))
+          .sort((a, b) => b.sessions - a.sessions);
         if (onlyEmployee) {
           buckets = buckets.filter((bk) => bk.staff && bk.staff.id === onlyEmployee.id);
           // Their own numbers, not the practice's -- "29 sessions left off"
@@ -3572,6 +3587,9 @@ module.exports = function initHr(ctx) {
           // Already has another timecard covering these dates, from the other
           // import route. Named, never merged.
           overlapping: preview.filter((p) => p.overlaps).map((p) => p.name),
+          // Only meaningful when building for one person; for Everyone these
+          // already appear as their own "no staff match" rows.
+          unlinked_candidates: onlyEmployee ? unlinkedCandidates.slice(0, 12) : [],
           // Already sent for signature or already signed: left exactly as the
           // person saw them.
           locked: preview.filter((p) => p.locked).map((p) => p.name),

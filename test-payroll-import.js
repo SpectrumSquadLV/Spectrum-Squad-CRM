@@ -533,6 +533,41 @@ const b64 = (buf) => buf.toString("base64");
   }
 
   // ------------------------------------------------------------------
+  section("A person whose Rethink record is not linked");
+
+  // Reported from a real run: a BCBA who is plainly in Rethink came back as
+  // "Rethink has no sessions for them in these dates". Her CRM record carried
+  // no Rethink id and her name in Rethink did not match hers here, so her
+  // sessions sat in a bucket belonging to nobody -- and the screen told her
+  // employer she had delivered nothing, which was false.
+  {
+    const g = group([
+      // Hers, under a spelling the CRM does not have.
+      { staffId: "MG1", renderingProvider: "Galang, Micah", appointmentDate: "2026-09-08", actualDurationHours: 6, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+      { staffId: "MG1", renderingProvider: "Galang, Micah", appointmentDate: "2026-09-09", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+    ], {});
+    const bucketKeys = [...g.byStaff.keys()];
+    check("her sessions are still read off Rethink", bucketKeys.includes("MG1"), bucketKeys);
+    check("and carry the name Rethink gave them", g.names.get("MG1") === "Galang, Micah", [...g.names.entries()]);
+    check("they are not counted as unverified -- they were verified",
+      g.unverified === 0 && g.notCompleted === 0, g);
+
+    // What the route does with that: the bucket resolves to no employee, so it
+    // becomes an unlinked candidate rather than silently vanishing.
+    const unresolved = { staff: null, hint: g.names.get("MG1"), staffIds: ["MG1"], entries: g.byStaff.get("MG1") };
+    const candidate = {
+      name: unresolved.hint,
+      rethink_ids: unresolved.staffIds,
+      sessions: unresolved.entries.length,
+      hours: unresolved.entries.reduce((a, e) => a + e.hours, 0),
+    };
+    check("an unlinked Rethink record is reportable by name, not just by id",
+      candidate.name === "Galang, Micah", candidate);
+    check("with the work it represents, so it is obvious it is somebody's",
+      candidate.sessions === 2 && candidate.hours === 10, candidate);
+  }
+
+  // ------------------------------------------------------------------
   section("Building the same period twice");
 
   // The normal way to use a date range: build it, notice people have not
