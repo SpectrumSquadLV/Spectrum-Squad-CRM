@@ -6130,8 +6130,17 @@ function openPayrollImportModal(pageMount) {
       if (res.sessions_unverified) bits.push(`${res.sessions_unverified} are not staff-verified yet and were left off`);
       if (res.sessions_not_completed) bits.push(`${res.sessions_not_completed} were not completed sessions`);
       if (res.sessions_without_staff) bits.push(`${res.sessions_without_staff} had no staff member on them`);
-      if (bits.length) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ Of ${res.sessions_scanned} session(s) in this range, ${bits.join(", ")}. Have staff verify them in Rethink, then build this range again — anyone not yet sent their timecard gets it rebuilt in place, so you won't end up with two.</div>`);
-      // If a range comes back emptier than expected, this is the answer.
+      if (bits.length) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ Of ${res.sessions_scanned} session(s) in this range, ${bits.join(", ")}${
+        res.excluded_hours ? `, worth <strong>${res.excluded_hours} hour(s)</strong> that are not on these timecards` : ""
+      }. Have staff verify them in Rethink, then build this range again — anyone not yet sent their timecard gets it rebuilt in place, so you won't end up with two.</div>`);
+      // The two halves of "why is this shorter than the payroll export": what
+      // the appointment STATUS said on the sessions dropped for it, and what
+      // the verification field said on the ones that did happen. Without the
+      // first, a fortnight forty hours short of payroll gave nobody anything
+      // to check -- only a count of sessions it declined to explain.
+      if (res.status_values && res.status_values.length) {
+        warn.push(`<div style="color:var(--text-muted); font-size:12px; margin-top:6px;">Rethink's appointment status on the ${res.sessions_not_completed} session(s) left off for it: ${staffEsc(res.status_values.map((v) => `${v.value} (${v.sessions})`).join(", "))}. If work your staff were paid for is sitting under one of those words, tell Rethink Settings to count it — the accepted statuses are configurable.</div>`);
+      }
       if (res.verification_values && res.verification_values.length) {
         warn.push(`<div style="color:var(--text-muted); font-size:12px; margin-top:6px;">Rethink's staff-verification field on the ${res.sessions_scanned - (res.sessions_not_completed || 0) - (res.sessions_without_staff || 0)} completed session(s): ${staffEsc(res.verification_values.map((v) => `${v.value} (${v.sessions})`).join(", "))}. Only the values Rethink counts as verified are included.</div>`);
       }

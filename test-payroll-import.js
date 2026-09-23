@@ -275,7 +275,14 @@ const b64 = (buf) => buf.toString("base64");
     // INCLUDING its require_staff_verification opt-out, because that switch
     // being honoured is exactly the bug this suite has to catch.
     verificationVerdict: (row, cfg) => {
-      const statusOk = /complete/i.test(String(row.appointmentStatus || ""));
+      const status = String(row.appointmentStatus || "").trim().toLowerCase();
+      // Mirrors decide(): a practice that has named its accepted statuses is
+      // held to that list, and only an unconfigured one falls back to the
+      // module do not rule. A stub that always used the loose rule would let
+      // a configured practice test pass for the wrong reason.
+      const statusOk = (cfg && cfg.filter_confirmed)
+        ? (cfg.completed_statuses || []).map((x) => String(x).trim().toLowerCase()).includes(status)
+        : /^(completed|complete|finalized|finalised|rendered)$/.test(status);
       const verifiedOk = (cfg && cfg.require_staff_verification === false)
         ? true
         : String(row.staffVerification || "").toLowerCase() === "verified";
@@ -401,6 +408,76 @@ const b64 = (buf) => buf.toString("base64");
       vals["verified"] === 1 && vals["(blank)"] === 1, off.verification_values);
     check("and a session that never happened is not tallied among them",
       !vals["cancelled by staff"], off.verification_values);
+  }
+
+  // ------------------------------------------------------------------
+  section("Why a range is shorter than the payroll export");
+
+  // Reported from a real run: one RBT's timecard came back 37 hours where the
+  // payroll export said 77. The screen said "13 were not completed sessions"
+  // and stopped there -- which is the shape of an answer without being one.
+  // Forty hours of somebody's pay were missing and there was nothing on the
+  // screen to check: no way to see whether those thirteen were cancellations
+  // or real work filed under a status this practice never told the CRM to
+  // count. The words Rethink used, and the hours behind them, are the whole
+  // difference between "that is right" and "that is wrong".
+  {
+    const rows = [
+      { staffId: "W1", appointmentDate: "2026-09-08", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+      // Real work, under a word the accepted-status list does not carry.
+      { staffId: "W1", appointmentDate: "2026-09-09", actualDurationHours: 6, staffVerification: "Verified", appointmentStatus: "Rendered", appointmentType: "Billable" },
+      { staffId: "W1", appointmentDate: "2026-09-10", actualDurationHours: 5, staffVerification: "Verified", appointmentStatus: "Rendered", appointmentType: "Billable" },
+      // Not work at all.
+      { staffId: "W1", appointmentDate: "2026-09-11", actualDurationHours: 3, staffVerification: "", appointmentStatus: "Cancelled", appointmentType: "Billable" },
+      // Happened, nobody verified it.
+      { staffId: "W1", appointmentDate: "2026-09-12", actualDurationHours: 2, staffVerification: "", appointmentStatus: "Completed", appointmentType: "Billable" },
+    ];
+    // The configured case: this practice has named its accepted statuses and
+    // "Rendered" is not among them, so real work files itself under a word the
+    // CRM has not been told to count.
+    const g = group(rows, { filter_confirmed: true, completed_statuses: ["Completed"], verified_values: ["Verified"] });
+
+    check("only the completed, verified session lands on the timecard",
+      (g.byStaff.get("W1") || []).length === 1, g.byStaff.get("W1"));
+    check("the sessions dropped for their status are counted", g.notCompleted === 3, g.notCompleted);
+    check("and the ones dropped for verification separately", g.unverified === 1, g.unverified);
+
+    const st = Object.fromEntries((g.status_values || []).map((v) => [v.value, v.sessions]));
+    check("the screen can say WHICH status kept them off, not just how many",
+      st.rendered === 2 && st.cancelled === 1, g.status_values);
+    check("the most common reason is reported first, so the big one is not buried",
+      (g.status_values || [])[0].value === "rendered", g.status_values);
+
+    // The number somebody actually compares against a payroll report.
+    check("the hours behind the dropped sessions are totalled",
+      g.not_completed_hours === 14 && g.unverified_hours === 2,
+      { notCompleted: g.not_completed_hours, unverified: g.unverified_hours });
+    check("so 4 on the timecard and 16 left off accounts for all 20 hours Rethink sent",
+      4 + g.not_completed_hours + g.unverified_hours === 20,
+      { onCard: 4, notCompleted: g.not_completed_hours, unverified: g.unverified_hours });
+
+    // Per person, because a build for one employee that reports the whole
+    // practice's numbers is telling them about sessions that are not theirs.
+    const two = group([
+      ...rows,
+      { staffId: "W2", appointmentDate: "2026-09-08", actualDurationHours: 9, staffVerification: "Verified", appointmentStatus: "No Show", appointmentType: "Billable" },
+    ], { filter_confirmed: true, completed_statuses: ["Completed"], verified_values: ["Verified"] });
+    const exW1 = two.excludedByStaff.get("W1");
+    const exW2 = two.excludedByStaff.get("W2");
+    check("each staff member's dropped statuses are kept against their own id",
+      exW1.statuses.get("rendered") === 2 && !exW1.statuses.has("no show"),
+      [...exW1.statuses.entries()]);
+    check("and somebody else's are not mixed in",
+      exW2.statuses.get("no show") === 1 && exW2.statuses.size === 1, [...exW2.statuses.entries()]);
+    check("the hours left off are attributed per person too",
+      exW1.hours === 16 && exW2.hours === 9, { w1: exW1.hours, w2: exW2.hours });
+    check("what the verification field said is kept per person as well",
+      exW1.verifications.get("(blank)") === 1, [...exW1.verifications.entries()]);
+
+    // A range where nothing was dropped says nothing, rather than an empty list.
+    const clean = group([rows[0]], { filter_confirmed: true, completed_statuses: ["Completed"], verified_values: ["Verified"] });
+    check("a range that dropped nothing reports no statuses to explain",
+      (clean.status_values || []).length === 0 && clean.not_completed_hours === 0, clean.status_values);
   }
 
   // ------------------------------------------------------------------
