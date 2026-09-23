@@ -6209,14 +6209,19 @@ function openPayrollImportModal(pageMount) {
       </div>
       ${warn.join("")}
       <div style="margin-top:14px; display:flex; gap:8px; align-items:center;">
-        <button class="btn" id="payroll-review" ${res.matched ? "" : "disabled"}>Preview &amp; send ${res.matched} timecard(s) →</button>
+        <button class="btn" id="payroll-review" ${res.matched ? "" : "disabled"}>${
+          (res.timecard_ids || []).length
+            ? `Preview &amp; send ${(res.timecard_ids || []).length} timecard(s) →`
+            : "Review timecards →"
+        }</button>
         <button class="btn secondary" id="payroll-done">Close</button>
       </div>`;
     previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); if (pageMount) renderStaff(pageMount); });
     previewEl.querySelector("#payroll-review").addEventListener("click", () => {
       close();
       openTimecardReviewModal({
-        ids: res.timecard_ids || (res.employees || []).filter((e) => e.timecard_id).map((e) => e.timecard_id),
+        ids: res.all_timecard_ids
+          || (res.employees || []).filter((e) => e.timecard_id).map((e) => e.timecard_id),
         payPeriodEnd: res.pay_period_end,
         pageMount,
       });
@@ -6341,6 +6346,10 @@ async function openTimecardReviewModal({ ids, payPeriodEnd, pageMount }) {
     if (tc.status === "accepted") badges.push(`<span class="tag" style="background:#dcfce7; color:#166534;">already signed</span>`);
     if (tc.already_sent_at && tc.status !== "accepted") badges.push(`<span class="tag" style="background:#e0e7ff; color:#3730a3;">already sent — this resends</span>`);
     if (tc.open_flags) badges.push(`<span class="tag" style="background:#fef3c7; color:#92400e;">⚠ ${tc.open_flags} flag(s)</span>`);
+    // Their signing link, on every card. Wanted most by the cards that cannot
+    // be sent from here -- no email on file, or already sent and the email
+    // never arrived -- which were exactly the ones offering nothing at all.
+    badges.push(`<button class="btn secondary" data-tclink="${tc.id}" style="padding:2px 8px; font-size:11.5px;">Copy signing link</button>`);
     if (t.unclassified) badges.push(`<span class="tag" style="background:#f1f1f4; color:#4b5563;">${t.unclassified}h not labeled</span>`);
     if (dirty.get(tc.id) && dirty.get(tc.id).size) badges.push(`<span class="tag" style="background:#fef9c3; color:#854d0e;">unsaved edits</span>`);
     const open = openRows.has(tc.id);
@@ -6440,6 +6449,25 @@ async function openTimecardReviewModal({ ids, payPeriodEnd, pageMount }) {
       const id = Number(cb.getAttribute("data-id"));
       if (cb.checked) picked.add(id); else picked.delete(id);
       render();
+    }));
+    bodyEl.querySelectorAll("[data-tclink]").forEach((b) => b.addEventListener("click", async () => {
+      const id = Number(b.getAttribute("data-tclink"));
+      const was = b.textContent;
+      b.disabled = true; b.textContent = "Getting link…";
+      try {
+        const r = await api("/api/hr/timecards/" + id + "/link");
+        // The clipboard is not available on an insecure origin or when the
+        // browser refuses it, and a silent failure here looks exactly like a
+        // successful copy. Show the link either way so it can be taken by hand.
+        let copied = false;
+        try { await navigator.clipboard.writeText(r.url); copied = true; } catch (e) { copied = false; }
+        b.textContent = copied ? "Link copied ✓" : was;
+        if (!copied) window.prompt("Copy this employee's signing link:", r.url);
+        setTimeout(() => { b.textContent = was; b.disabled = false; }, 2200);
+      } catch (e) {
+        b.textContent = was; b.disabled = false;
+        alert((e && e.message) || "Couldn't get that link.");
+      }
     }));
     bodyEl.querySelectorAll("[data-tctoggle]").forEach((b) => b.addEventListener("click", () => {
       const id = Number(b.getAttribute("data-tctoggle"));

@@ -3213,6 +3213,29 @@ module.exports = function initHr(ctx) {
         });
       }
 
+      // The link this timecard is signed through. Already minted when the
+      // timecard was emailed; handing it back lets somebody send it by text,
+      // by Teams, or read it down the phone when the email did not arrive.
+      // Read-only: it mints nothing new for a card that already has one, and
+      // never changes what the employee sees.
+      const tcLinkMatch = pathname.match(/^\/api\/hr\/timecards\/(\d+)\/link$/);
+      if (tcLinkMatch && method === "GET") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const tc = await dbGet("SELECT id, employee_id, status FROM hr_timecards WHERE id = ?", [tcLinkMatch[1]]);
+        if (!tc) return json(res, 404, { error: "Not found" });
+        const token = await getOrCreateTimecardLink(tc.id);
+        await audit(actor, "timecard_link_viewed", "timecard", tc.id, "");
+        return json(res, 200, {
+          ok: true,
+          id: tc.id,
+          status: tc.status,
+          // The same URL the email puts behind its button -- built by
+          // the same rule, so the two can never drift into a link that
+          // works in email and 404s when copied from here.
+          url: `${APP_BASE_URL}/verify-timecard/${token}`,
+        });
+      }
+
       // Correct hours (or a mis-labelled Billable/Non-Billable) BEFORE the
       // employee ever sees the timecard. Patch-by-index so the client can't
       // drop fields it didn't render. Refuses once a timecard is signed --
@@ -3666,6 +3689,13 @@ module.exports = function initHr(ctx) {
           // person saw them.
           locked: preview.filter((p) => p.locked).map((p) => p.name),
           timecard_ids: preview.filter((p) => p.timecard_id && !p.locked).map((p) => p.timecard_id),
+          // Every card this build touched, locked ones included. The review
+          // screen opens on THIS: a fortnight where the only person is
+          // already signed used to enable "Preview & send 1 timecard(s)" --
+          // counted off matched -- and then open a review with nothing in it,
+          // because the sendable list was empty. Nothing was broken enough to
+          // error, so it just did nothing when pressed.
+          all_timecard_ids: preview.filter((p) => p.timecard_id).map((p) => p.timecard_id),
           employees: preview,
         });
       }

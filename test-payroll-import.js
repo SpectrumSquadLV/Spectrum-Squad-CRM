@@ -805,6 +805,62 @@ const b64 = (buf) => buf.toString("base64");
   const other = await upsert({ ...period, pay_period_start: "2026-09-21", pay_period_end: "2026-10-04", entries: [{ date: "2026-09-22", hours: 3 }] }, "tester");
   check("the next pay period gets its own timecard", other.id !== first.id && (await cards()).length === 2, (await cards()).length);
 
+  // ------------------------------------------------------------------
+  section("Reviewing a fortnight where everybody is already signed");
+
+  // Reported from a real run: "the review timecard button is not working."
+  // It was enabled off MATCHED but opened on the SENDABLE ids, and a card
+  // already sent for signature is excluded from those. A fortnight whose only
+  // person is already signed therefore offered "Preview & send 1 timecard(s)"
+  // and opened a review with nothing in it. Nothing errored, so pressing it
+  // simply did nothing -- and there was no other way to reach that person's
+  // signing link.
+  {
+    const lockedEmp = await mk(`Locked Review ${stamp}`, `RT-LK-${stamp}`, `locked.${stamp}@example.test`);
+    const card = await dbHr._internal.upsertPeriodTimecard({
+      employee_id: lockedEmp, source: "rethink_verified",
+      pay_period_start: "2026-09-07", pay_period_end: "2026-09-20",
+      entries: [{ date: "2026-09-08", hours: 4, appt_type: "Billable", billable: true }],
+    }, "tester");
+    await q("UPDATE hr_timecards SET verification_requested_at = ? WHERE id = ?", [new Date().toISOString(), card.id]);
+
+    // An empty array is TRUTHY, so the old "sendable || everything" fallback
+    // never ran. Pinned because it is the whole shape of the bug.
+    const sendable = [];
+    check("an empty sendable list does not fall back through ||",
+      (sendable || ["would-have-fallen-back"]).length === 0, sendable);
+
+    // preview-batch is what the review screen loads. Asked for the locked
+    // card by id it returns it, so the screen has something to show.
+    r = await owner("/api/hr/timecards/preview-batch", { method: "POST", body: { ids: [card.id] } });
+    check("the review screen can load a timecard that is already sent", r.status === 200 && r.data.count === 1, r.data);
+    // Still sendable: "already sent" locks it against being REBUILT under
+    // somebody who has already seen it, not against being sent again. The
+    // screen labels it "already sent -- this resends" and means it.
+    check("and marks it as already sent rather than hiding it",
+      (r.data.timecards[0].already_sent_at || null) !== null, r.data.timecards && r.data.timecards[0]);
+    check("which is a resend, not a refusal -- the badge and the count agree",
+      r.data.sendable === 1, r.data.sendable);
+
+    // The link, which is the thing asked for: a way to get it to somebody
+    // when the email is not how it is reaching them.
+    r = await owner(`/api/hr/timecards/${card.id}/link`);
+    check("an already-sent timecard hands back its signing link", r.status === 200 && !!r.data.url, r.data);
+    check("the link is the same verify-timecard URL the email uses, not a new shape",
+      /\/verify-timecard\/[a-f0-9]{8,}$/.test(r.data.url || ""), r.data.url);
+
+    // Asking twice must not invalidate what the employee already has.
+    const again = await owner(`/api/hr/timecards/${card.id}/link`);
+    check("asking again returns the SAME link, so the one they were emailed still works",
+      again.data.url === r.data.url, { first: r.data.url, second: again.data.url });
+
+    r = await clin(`/api/hr/timecards/${card.id}/link`);
+    check("a clinical user cannot read somebody's signing link", r.status === 403, r.status);
+
+    r = await owner("/api/hr/timecards/99999999/link");
+    check("a timecard that does not exist has no link to give", r.status === 404, r.status);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   await pool.end();
   process.exit(fail ? 1 : 0);
