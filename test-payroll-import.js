@@ -861,6 +861,78 @@ const b64 = (buf) => buf.toString("base64");
     check("a timecard that does not exist has no link to give", r.status === 404, r.status);
   }
 
+  // ------------------------------------------------------------------
+  section("The export knows the Rethink IDs the API will not give");
+
+  // This account's appointment payload carries no provider name, so the
+  // Rethink Staff screen lists people as bare numbers nobody can link. The
+  // payroll export pairs an id with a first and last name on every row -- the
+  // exact mapping that is missing -- and the import read it, matched on the
+  // NAME, and threw the id away. Every pay period, for as long as there have
+  // been pay periods.
+  {
+    const learnName = `Learnid Person ${stamp}`;
+    const learnEmp = await mk(learnName, null, `learn.${stamp}@example.test`);  // deliberately no rethink_id
+    const rid = `RT-LEARN-${stamp}`;
+
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "learn.xlsx", content_base64: b64(exportFor([
+      { id: rid, first: "Learnid", last: `Person ${stamp}`, reg: 5, shifts: [{ day: 8, hours: 5, type: "Billable" }] },
+    ])) } });
+    check("the export still imports as usual", r.status === 200, r.data);
+    check("and the person is matched on their name, as before", r.data.matched === 1, r.data);
+    check("it reports the Rethink ID their CRM record is missing",
+      (r.data.link_suggestions || []).some((l) => l.employee_id === learnEmp && l.rethink_id === rid),
+      r.data.link_suggestions);
+    check("and NOTHING is written -- the id is offered, not applied",
+      !(await q("SELECT rethink_id FROM hr_employees WHERE id = ?", [learnEmp])).rows[0].rethink_id,
+      "rethink_id must still be null until somebody presses Link");
+
+    // Somebody who already has an id is not offered one.
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "already.xlsx", content_base64: b64(exportFor([
+      { id: `RT-A-${stamp}`, first: "Alice", last: `Payroll ${stamp}`, reg: 4, shifts: [{ day: 8, hours: 4, type: "Billable" }] },
+    ])) } });
+    check("a staff member already linked is not offered a link again",
+      !(r.data.link_suggestions || []).some((l) => l.employee_id === aliceId), r.data.link_suggestions);
+
+    // An id already on somebody else is never quietly moved.
+    const otherName = `Otherlearn Person ${stamp}`;
+    const otherEmp = await mk(otherName, null, `otherlearn.${stamp}@example.test`);
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "taken.xlsx", content_base64: b64(exportFor([
+      { id: `RT-A-${stamp}`, first: "Otherlearn", last: `Person ${stamp}`, reg: 3, shifts: [{ day: 9, hours: 3, type: "Billable" }] },
+    ])) } });
+    // NOT what it looks like: the id lookup runs first, so this row matches
+    // ALICE, who holds that id, and never reaches the name match at all. That
+    // is the behaviour worth pinning -- an id in the export belongs to whoever
+    // holds it, and a name-twin cannot take it off them.
+    check("an id already on a staff record stays with its holder, and no second link is offered",
+      !(r.data.link_suggestions || []).some((l) => l.employee_id === otherEmp)
+        && (r.data.employees || []).every((e) => e.matched_by !== "name"),
+      { links: r.data.link_suggestions, employees: r.data.employees });
+
+    // A name the CRM has never heard of is a person to add, not a link.
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "stranger.xlsx", content_base64: b64(exportFor([
+      { id: `RT-STR-${stamp}`, first: "Stranger", last: `Nobody ${stamp}`, reg: 2, shifts: [{ day: 9, hours: 2, type: "Billable" }] },
+    ])) } });
+    check("an id reaching nobody on the roster is reported as unknown, not as a link",
+      (r.data.unknown_ids || []).some((u) => u.rethink_id === `RT-STR-${stamp}`)
+        && !(r.data.link_suggestions || []).length, { unknown: r.data.unknown_ids, links: r.data.link_suggestions });
+
+    // Pressing Link goes through the Rethink Staff endpoint -- one way to
+    // link a person, not two that can disagree.
+    const linked = await owner("/api/rethink/staff-match/link", { method: "POST", body: { rethink_staff_id: rid, employee_id: learnEmp } });
+    check("linking from the import preview writes the id", linked.status === 200, linked.data);
+    check("and the staff record now carries it",
+      String((await q("SELECT rethink_id FROM hr_employees WHERE id = ?", [learnEmp])).rows[0].rethink_id) === rid,
+      "rethink_id after link");
+
+    // Which is the point: next time, no suggestion, because it matches on id.
+    r = await owner("/api/hr/payroll/import", { method: "POST", body: { filename: "learn2.xlsx", content_base64: b64(exportFor([
+      { id: rid, first: "Learnid", last: `Person ${stamp}`, reg: 5, shifts: [{ day: 10, hours: 5, type: "Billable" }] },
+    ])) } });
+    check("the next export matches them on the id and offers nothing",
+      r.data.matched === 1 && !(r.data.link_suggestions || []).length, r.data.link_suggestions);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   await pool.end();
   process.exit(fail ? 1 : 0);

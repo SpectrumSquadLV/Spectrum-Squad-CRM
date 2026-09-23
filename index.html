@@ -6151,6 +6151,30 @@ function openPayrollImportModal(pageMount) {
       if (res.overlapping && res.overlapping.length) warn.push(`<div style="color:#991b1b; font-size:12.5px; margin-top:6px;">⚠ ${res.overlapping.length} staff already have another timecard covering these dates, most likely from a payroll-export import: ${staffEsc(res.overlapping.join(", "))}. Send only one of them — check the Timecards list and delete the one you don't want.</div>`);
       if (res.truncated) warn.push(`<div style="color:#991b1b; font-size:12.5px; margin-top:6px;">⚠ Rethink returned more sessions than could be read in one go, so this range may be incomplete. Build it in two shorter ranges.</div>`);
     }
+    // The payroll export pairs a Rethink staff id with a name on every row,
+    // which is the pairing the appointment API does not give and the Rethink
+    // Staff screen cannot work without. Offered here because this is the
+    // moment the file is in front of somebody who knows whether it is right.
+    const links = res.link_suggestions || [];
+    if (links.length) {
+      warn.push(`<div style="background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; border-radius:8px; padding:10px 12px; margin-top:8px; font-size:12.5px;">
+        <strong>This export knows ${links.length} staff member's Rethink ID${links.length === 1 ? "" : "s"}</strong> that the CRM does not.
+        They were matched on their name this time; linking the ID means they match on it from now on — and it is what makes them identifiable on the Rethink Staff screen.
+        <div style="margin-top:7px; display:flex; flex-direction:column; gap:5px;">
+          ${links.map((l) => `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span><strong>${staffEsc(l.employee_name)}</strong> = Rethink ID ${staffEsc(l.rethink_id)}${
+              String(l.export_name || "").toLowerCase() !== String(l.employee_name || "").toLowerCase()
+                ? ` <span style="opacity:.8;">(the export spells them "${staffEsc(l.export_name)}")</span>` : ""}</span>
+            <button class="btn small secondary" data-pl-emp="${l.employee_id}" data-pl-rid="${staffEsc(l.rethink_id)}" style="padding:2px 9px; font-size:11.5px;">Link</button>
+          </div>`).join("")}
+        </div>
+      </div>`);
+    }
+    if ((res.unknown_ids || []).length) {
+      warn.push(`<div style="color:var(--text-muted); font-size:12px; margin-top:6px;">${res.unknown_ids.length} ID(s) in this export reach nobody on the CRM roster under any spelling: ${
+        staffEsc(res.unknown_ids.slice(0, 6).map((u) => `${u.name} (#${u.rethink_id})`).join(", "))
+      }. Add them on <strong>Rethink Staff</strong> if they work here.</div>`);
+    }
     if (res.inferred_hours) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ Rethink gave no Billable/Non-Billable word for ${res.inferred_hours} hour(s). Every appointment here is one or the other, so those are counted as <strong>non-billable</strong> — the safe direction. Change any that should be billable on the review screen.</div>`);
     if (split && res.unclassified_hours) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ ${res.unclassified_hours} hour(s) have an appointment type that's neither Billable nor Non-Billable. They're shown separately as "not labeled" — you can relabel them on the review screen.</div>`);
     const totalsStrip = split
@@ -6216,6 +6240,20 @@ function openPayrollImportModal(pageMount) {
         }</button>
         <button class="btn secondary" id="payroll-done">Close</button>
       </div>`;
+    // Writes hr_employees.rethink_id through the same endpoint the Rethink
+    // Staff screen uses, so there is one way to link a person and not two.
+    previewEl.querySelectorAll("[data-pl-emp]").forEach((b) => b.addEventListener("click", async () => {
+      const empId = Number(b.getAttribute("data-pl-emp"));
+      const rid = b.getAttribute("data-pl-rid");
+      b.disabled = true; b.textContent = "Linking…";
+      try {
+        await api("/api/rethink/staff-match/link", { method: "POST", body: { rethink_staff_id: rid, employee_id: empId } });
+        b.textContent = "Linked ✓";
+      } catch (e) {
+        b.disabled = false; b.textContent = "Link";
+        alert((e && e.message) || "Couldn't link that.");
+      }
+    }));
     previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); if (pageMount) renderStaff(pageMount); });
     previewEl.querySelector("#payroll-review").addEventListener("click", () => {
       close();

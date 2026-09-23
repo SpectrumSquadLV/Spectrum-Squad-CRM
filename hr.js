@@ -3742,11 +3742,52 @@ module.exports = function initHr(ctx) {
         }
 
         const preview = [];
+        // Staff the export names with a Rethink id that their CRM record does
+        // not carry. Collected while matching, offered afterwards.
+        const linkSuggestions = [];
         for (const emp of parsed.employees) {
           // Match: rethink_id first, then case-insensitive full name.
-          let staff = null;
-          if (emp.rethink_id) staff = await dbGet("SELECT id, name, email FROM hr_employees WHERE rethink_id = ?", [emp.rethink_id]);
-          if (!staff && emp.name) staff = await dbGet("SELECT id, name, email FROM hr_employees WHERE LOWER(name) = LOWER(?)", [emp.name]);
+          let staff = null, matchedBy = null;
+          if (emp.rethink_id) {
+            staff = await dbGet("SELECT id, name, email, rethink_id FROM hr_employees WHERE rethink_id = ?", [emp.rethink_id]);
+            if (staff) matchedBy = "rethink_id";
+          }
+          if (!staff && emp.name) {
+            staff = await dbGet("SELECT id, name, email, rethink_id FROM hr_employees WHERE LOWER(name) = LOWER(?)", [emp.name]);
+            if (staff) matchedBy = "name";
+          }
+          // THIS FILE IS THE STAFF DIRECTORY RETHINK'S API WILL NOT GIVE US.
+          //
+          // The export pairs a Rethink staff id with a first and last name on
+          // every row. The appointment payload this account can read carries
+          // no provider name at all, which is why the Rethink Staff screen
+          // lists people as bare numbers that nobody can link. The pairing has
+          // been arriving in this upload every pay period and being discarded.
+          //
+          // Offered, not written: an hr_employees.rethink_id decides whose
+          // verified hours count towards whose supervision record, so it is
+          // somebody's decision and not an upload's. One press on the preview
+          // does it, and then the id matches on its own from that day on.
+          if (staff && matchedBy === "name" && emp.rethink_id
+              && !(staff.rethink_id != null && String(staff.rethink_id).trim() !== "")) {
+            // Belt against the id being held by a row the lookup above did
+            // not return -- stored with stray whitespace, or two rows holding
+            // it after a bad import. Nearly unreachable, and deliberately not
+            // claimed as tested: the id lookup runs first, so the ordinary
+            // "somebody else has it" case never gets here.
+            const takenBy = await dbGet(
+              "SELECT id, name FROM hr_employees WHERE TRIM(COALESCE(rethink_id,'')) = ?", [emp.rethink_id]
+            ).catch(() => null);
+            if (!takenBy) {
+              linkSuggestions.push({
+                employee_id: staff.id,
+                employee_name: staff.name,
+                rethink_id: emp.rethink_id,
+                export_name: emp.name,
+                hours: emp.total_hours,
+              });
+            }
+          }
           let timecardId = null;
           if (staff) {
             const r = await importTimecard({
@@ -3768,6 +3809,7 @@ module.exports = function initHr(ctx) {
             unclassified_hours: emp.unclassified_hours,
             shifts: emp.entries.length,
             matched: !!staff,
+            matched_by: matchedBy,
             has_email: !!(staff && staff.email),
             timecard_id: timecardId,
           });
@@ -3787,6 +3829,13 @@ module.exports = function initHr(ctx) {
           billable_hours: round2(preview.reduce((s, p) => s + (Number(p.billable_hours) || 0), 0)),
           non_billable_hours: round2(preview.reduce((s, p) => s + (Number(p.non_billable_hours) || 0), 0)),
           unclassified_hours: round2(preview.reduce((s, p) => s + (Number(p.unclassified_hours) || 0), 0)),
+          // Whose Rethink id this file can teach the CRM. Acting on one is a
+          // press on the preview; nothing here has written anything.
+          link_suggestions: linkSuggestions,
+          // Ids in the export that reach nobody here at all -- a name the CRM
+          // does not have under any spelling. Not a link, a person to add.
+          unknown_ids: preview.filter((p) => !p.matched && p.rethink_id)
+            .map((p) => ({ rethink_id: p.rethink_id, name: p.name, hours: p.total_hours })),
           timecard_ids: preview.filter((p) => p.timecard_id).map((p) => p.timecard_id),
           employees: preview,
         });
