@@ -6006,6 +6006,9 @@ function openPayrollImportModal(pageMount) {
         <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
           <label style="font-size:12px; color:var(--text-muted);">Start<br/><input type="date" id="payroll-from" style="font-size:13px;" /></label>
           <label style="font-size:12px; color:var(--text-muted);">End<br/><input type="date" id="payroll-to" style="font-size:13px;" /></label>
+          <label style="font-size:12px; color:var(--text-muted);">Who<br/>
+            <select id="payroll-who" style="font-size:13px; max-width:220px;"><option value="">Everyone</option></select>
+          </label>
           <button class="btn" id="payroll-pull">Build timecards</button>
         </div>
       </div>
@@ -6038,16 +6041,36 @@ function openPayrollImportModal(pageMount) {
     backdrop.querySelector("#payroll-to").value = end;
   })();
 
+  // The staff list for the "Who" picker. Best-effort: if it cannot be loaded
+  // the picker simply stays on Everyone, which is what the button did before.
+  (async function loadStaffPicker() {
+    try {
+      const staff = await api("/api/hr/employees");
+      const sel = backdrop.querySelector("#payroll-who");
+      (staff || [])
+        .filter((e) => (e.status || "active") !== "terminated")
+        .forEach((e) => {
+          const o = document.createElement("option");
+          o.value = e.id;
+          o.textContent = e.name + (e.role_title ? ` — ${e.role_title}` : "");
+          sel.appendChild(o);
+        });
+    } catch (e) { /* stays on Everyone */ }
+  })();
+
   backdrop.querySelector("#payroll-pull").addEventListener("click", async () => {
     const from = backdrop.querySelector("#payroll-from").value;
     const to = backdrop.querySelector("#payroll-to").value;
     if (!from || !to) { statusEl.textContent = "Pick a start and end date."; return; }
+    const who = backdrop.querySelector("#payroll-who").value;
     const btn = backdrop.querySelector("#payroll-pull");
     btn.disabled = true;
-    statusEl.textContent = "Reading verified sessions from Rethink…";
+    statusEl.textContent = who ? "Reading their verified sessions from Rethink…" : "Reading verified sessions from Rethink…";
     previewEl.innerHTML = "";
     try {
-      const res = await api("/api/hr/timecards/from-rethink", { method: "POST", body: { from, to } });
+      const body = { from, to };
+      if (who) body.employee_id = Number(who);
+      const res = await api("/api/hr/timecards/from-rethink", { method: "POST", body });
       renderPreview(res);
     } catch (err) { statusEl.textContent = err.message || "Could not reach Rethink."; }
     finally { btn.disabled = false; }
@@ -6104,9 +6127,14 @@ function openPayrollImportModal(pageMount) {
     // an unexpectedly short list is usually unverified sessions, not a bug.
     if (res.source === "rethink_verified") {
       const bits = [];
-      if (res.sessions_unverified) bits.push(`${res.sessions_unverified} session(s) are not staff-verified yet and were left off`);
+      if (res.sessions_unverified) bits.push(`${res.sessions_unverified} are not staff-verified yet and were left off`);
+      if (res.sessions_not_completed) bits.push(`${res.sessions_not_completed} were not completed sessions`);
       if (res.sessions_without_staff) bits.push(`${res.sessions_without_staff} had no staff member on them`);
-      if (bits.length) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ Of ${res.sessions_scanned} session(s) in this range, ${bits.join(", and ")}. Have staff verify them in Rethink, then build this range again — anyone not yet sent their timecard gets it rebuilt in place, so you won't end up with two.</div>`);
+      if (bits.length) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ Of ${res.sessions_scanned} session(s) in this range, ${bits.join(", ")}. Have staff verify them in Rethink, then build this range again — anyone not yet sent their timecard gets it rebuilt in place, so you won't end up with two.</div>`);
+      // If a range comes back emptier than expected, this is the answer.
+      if (res.verification_values && res.verification_values.length) {
+        warn.push(`<div style="color:var(--text-muted); font-size:12px; margin-top:6px;">Rethink's staff-verification field on the ${res.sessions_scanned - (res.sessions_not_completed || 0) - (res.sessions_without_staff || 0)} completed session(s): ${staffEsc(res.verification_values.map((v) => `${v.value} (${v.sessions})`).join(", "))}. Only the values Rethink counts as verified are included.</div>`);
+      }
       if (res.rebuilt) warn.push(`<div style="color:var(--text-muted); font-size:12.5px; margin-top:6px;">${res.rebuilt} timecard(s) for this range already existed and were rebuilt with the current numbers.</div>`);
       if (res.locked && res.locked.length) warn.push(`<div style="color:#92400e; font-size:12.5px; margin-top:6px;">⚠ ${res.locked.length} timecard(s) for this range were already sent for signature or signed, so they were left exactly as those staff saw them: ${staffEsc(res.locked.join(", "))}. Delete one first if it genuinely needs rebuilding.</div>`);
       if (res.merged && res.merged.length) warn.push(`<div style="color:var(--text-muted); font-size:12.5px; margin-top:6px;">Rethink holds more than one staff record for ${res.merged.length} person(s), so their sessions were combined onto one timecard each: ${staffEsc(res.merged.map((m) => `${m.name} (${m.records} records)`).join(", "))}.</div>`);
@@ -6122,8 +6150,22 @@ function openPayrollImportModal(pageMount) {
            ${res.unclassified_hours ? miniStat("Not labeled", res.unclassified_hours, "#6b6a86", "#f1f1f4") : ""}
            ${miniStat("Total", res.total_hours ?? (res.employees || []).reduce((s, e) => s + (Number(e.total_hours) || 0), 0), "#166534", "#e9f9ee")}
          </div>` : "";
+    // Building for one person who has nothing to show is a real answer, not an
+    // empty screen: usually every session of theirs is still unverified.
+    if (res.built_for && !res.total_employees) {
+      const why = [];
+      if (res.sessions_unverified) why.push(`${res.sessions_unverified} of their session(s) in this range are not staff-verified yet`);
+      if (res.sessions_not_completed) why.push(`${res.sessions_not_completed} were not completed sessions`);
+      previewEl.innerHTML = `<div style="font-size:13px; padding:10px 0;">
+        No timecard for <strong>${staffEsc(res.built_for.name)}</strong> for ${staffEsc(res.pay_period_start)} – ${staffEsc(res.pay_period_end)}.
+        ${why.length ? `<div style="color:#92400e; margin-top:6px;">${why.join(", and ")}. Have them verify in Rethink, then build again.</div>`
+          : `<div style="color:var(--text-muted); margin-top:6px;">Rethink has no sessions for them in these dates. Check their Rethink ID is set on their staff record.</div>`}
+      </div><div style="margin-top:12px;"><button class="btn secondary" id="payroll-done">Close</button></div>`;
+      previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); if (pageMount) renderStaff(pageMount); });
+      return;
+    }
     previewEl.innerHTML = `
-      <div style="font-size:13px; margin-bottom:8px;">Pay period <strong>${staffEsc(res.pay_period_start || "")} – ${staffEsc(res.pay_period_end || "")}</strong> · ${res.matched}/${res.total_employees} matched to staff. Timecards created — <strong>nothing has been emailed yet</strong>.</div>
+      <div style="font-size:13px; margin-bottom:8px;">Pay period <strong>${staffEsc(res.pay_period_start || "")} – ${staffEsc(res.pay_period_end || "")}</strong>${res.built_for ? ` · <strong>${staffEsc(res.built_for.name)}</strong> only` : ` · ${res.matched}/${res.total_employees} matched to staff`}. Timecards created — <strong>nothing has been emailed yet</strong>.</div>
       ${totalsStrip}
       <div style="max-height:240px; overflow:auto; border:1px solid var(--border,#eee); border-radius:8px;">
         <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
@@ -6139,7 +6181,7 @@ function openPayrollImportModal(pageMount) {
         <button class="btn" id="payroll-review" ${res.matched ? "" : "disabled"}>Preview &amp; send ${res.matched} timecard(s) →</button>
         <button class="btn secondary" id="payroll-done">Close</button>
       </div>`;
-    previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); renderStaff(pageMount); });
+    previewEl.querySelector("#payroll-done").addEventListener("click", () => { close(); if (pageMount) renderStaff(pageMount); });
     previewEl.querySelector("#payroll-review").addEventListener("click", () => {
       close();
       openTimecardReviewModal({

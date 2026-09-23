@@ -68,8 +68,14 @@ jobs:
         timeout-minutes: 5 # fail fast rather than eat the job's budget
         run: npx playwright install chromium
 
+      # 25 minutes was the budget until the suite grew past it. The run that
+      # forced this had every one of the 120 suites it reached passing and was
+      # killed mid-run with 17 still to go -- which surfaces as a red check
+      # with no failing test in it, the most misleading shape a CI failure can
+      # take. 38 keeps the whole run inside the job's own 45-minute limit with
+      # room for a slow runner, rather than sitting one bad day away from red.
       - name: Run tests
-        timeout-minutes: 25
+        timeout-minutes: 38
         run: node run-tests.js
 
       # The per-suite logs say which assertion went red and what the server was

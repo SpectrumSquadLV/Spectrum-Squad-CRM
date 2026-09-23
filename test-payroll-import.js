@@ -271,14 +271,21 @@ const b64 = (buf) => buf.toString("base64");
     sendEmail: async () => ({}), nowISO: () => new Date().toISOString(),
     crypto, APP_BASE_URL: "http://localhost", readBody: async () => ({}),
     json: () => {}, sendFile: () => {},
-    // Rethink's own rule, stubbed to the shape the real one returns.
-    verificationVerdict: (row) => {
-      const ok = String(row.staffVerification || "").toLowerCase() === "verified"
-        && /complete/i.test(String(row.appointmentStatus || ""));
-      return { statusOk: /complete/i.test(String(row.appointmentStatus || "")), verifiedOk: ok, counts: ok };
+    // Rethink's own rule, stubbed to the shape the real decide() returns --
+    // INCLUDING its require_staff_verification opt-out, because that switch
+    // being honoured is exactly the bug this suite has to catch.
+    verificationVerdict: (row, cfg) => {
+      const statusOk = /complete/i.test(String(row.appointmentStatus || ""));
+      const verifiedOk = (cfg && cfg.require_staff_verification === false)
+        ? true
+        : String(row.staffVerification || "").toLowerCase() === "verified";
+      return { statusOk, verifiedOk, counts: statusOk && verifiedOk };
     },
     rethinkBillableRaw: (row) => row.appointmentType || "",
-    rethinkStaffName: (row) => row.staffName || null,
+    // Mirrors nameHint(): renderingProvider is the field this account's
+    // appointment rows actually carry, so a stub that only knew staffName
+    // would pass while production found nobody.
+    rethinkStaffName: (row) => row.staffName || row.renderingProvider || null,
   });
   const group = hrMod._internal.groupVerifiedSessions;
 
@@ -353,6 +360,48 @@ const b64 = (buf) => buf.toString("base64");
 
   const empty = group([], {});
   check("an empty range groups to nobody rather than throwing", empty.byStaff.size === 0 && empty.scanned === 0, empty);
+
+  // ------------------------------------------------------------------
+  section("An unverified session never reaches a timecard");
+
+  // The shared Rethink filter carries a require_staff_verification switch, and
+  // when it is off the verification test is skipped entirely: every completed
+  // session counts as verified. Defensible for a supervision total, wrong for
+  // a timecard -- it put unverified sessions in front of staff to sign for.
+  {
+    const rows = [
+      { staffId: "V1", appointmentDate: "2026-09-08", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+      { staffId: "V1", appointmentDate: "2026-09-09", actualDurationHours: 8, staffVerification: "", appointmentStatus: "Completed", appointmentType: "Billable" },
+      { staffId: "V1", appointmentDate: "2026-09-10", actualDurationHours: 3, staffVerification: "Cancelled by staff", appointmentStatus: "Cancelled", appointmentType: "Billable" },
+    ];
+
+    // The switch OFF is the setting that caused this. It must change nothing.
+    const off = group(rows, { require_staff_verification: false });
+    const entries = off.byStaff.get("V1") || [];
+    check("with verification switched off in the shared filter, the unverified session is STILL left off",
+      entries.length === 1 && entries[0].date === "2026-09-08", entries.map((e) => e.date));
+    check("and only the verified hours are counted",
+      entries.reduce((a, e) => a + e.hours, 0) === 4, entries);
+    check("the unverified one is counted as unverified", off.unverified === 1, off);
+
+    // Switched on, the answer is identical -- the timecard never depended on it.
+    const on = group(rows, { require_staff_verification: true });
+    check("switching it on changes nothing, because a timecard never honoured it",
+      (on.byStaff.get("V1") || []).length === 1 && on.unverified === 1, on);
+
+    // The two reasons a session is dropped are not the same thing, and used to
+    // be counted together and reported as "not staff-verified".
+    check("a session that was not completed is counted separately, not as unverified",
+      off.notCompleted === 1 && off.unverified === 1, { notCompleted: off.notCompleted, unverified: off.unverified });
+
+    // What the verification field actually said, so an emptier-than-expected
+    // range explains itself.
+    const vals = Object.fromEntries((off.verification_values || []).map((v) => [v.value, v.sessions]));
+    check("the verification values seen are reported, blanks included",
+      vals["verified"] === 1 && vals["(blank)"] === 1, off.verification_values);
+    check("and a session that never happened is not tallied among them",
+      !vals["cancelled by staff"], off.verification_values);
+  }
 
   // ------------------------------------------------------------------
   section("One person, several Rethink staff records");
@@ -443,6 +492,44 @@ const b64 = (buf) => buf.toString("base64");
         ORDER BY (COALESCE(status,'active') = 'terminated'), id LIMIT 1`, [dupName])).rows[0];
     check("a shared name prefers the staff member who still works here",
       pick && pick.id === hereId && pick.id !== goneId, { pick, hereId, goneId });
+  }
+
+  // ------------------------------------------------------------------
+  section("Building one person's timecard on its own");
+
+  // Doing a single person should not need a spreadsheet, and should not be a
+  // different code path from the batch -- a one-off that disagreed with the
+  // batch would be worse than not having it.
+  r = await owner("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20", employee_id: 999999 } });
+  check("building for a staff member who does not exist is refused", r.status === 404, { status: r.status, data: r.data });
+
+  r = await owner("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20", employee_id: "not-a-number" } });
+  check("and so is something that is not a staff member at all", r.status === 400, { status: r.status, data: r.data });
+
+  r = await owner("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20", employee_id: splitEmp } });
+  check("a real staff member still refuses without Rethink credentials rather than inventing hours",
+    r.status === 502 || r.status === 503, { status: r.status, data: r.data });
+
+  r = await clin("/api/hr/timecards/from-rethink", { method: "POST", body: { from: "2026-09-07", to: "2026-09-20", employee_id: splitEmp } });
+  check("a clinical user cannot build one person's timecard either", r.status === 403, r.status);
+
+  // The per-person accounting has to be about THAT person. "29 sessions left
+  // off" across the whole practice says nothing about the name on the screen.
+  {
+    const g = group([
+      { staffId: "P1", renderingProvider: "Solo One", appointmentDate: "2026-09-08", actualDurationHours: 4, staffVerification: "Verified", appointmentStatus: "Completed", appointmentType: "Billable" },
+      { staffId: "P1", renderingProvider: "Solo One", appointmentDate: "2026-09-09", actualDurationHours: 3, staffVerification: "", appointmentStatus: "Completed", appointmentType: "Billable" },
+      { staffId: "P2", renderingProvider: "Solo Two", appointmentDate: "2026-09-09", actualDurationHours: 9, staffVerification: "", appointmentStatus: "Completed", appointmentType: "Billable" },
+    ], {});
+    check("skipped sessions are attributed to the staff member they belong to",
+      g.excludedByStaff.get("P1").unverified === 1 && g.excludedByStaff.get("P2").unverified === 1,
+      [...g.excludedByStaff.entries()]);
+    check("so one person's count is not the whole practice's",
+      g.excludedByStaff.get("P1").unverified !== g.unverified, { theirs: g.excludedByStaff.get("P1"), everyone: g.unverified });
+    check("somebody whose every session was unverified is still named",
+      g.names.get("P2") === "Solo Two", [...g.names.entries()]);
+    check("and has no bucket of hours, because none of it is verified",
+      !g.byStaff.has("P2"), [...g.byStaff.keys()]);
   }
 
   // ------------------------------------------------------------------
