@@ -340,17 +340,19 @@
   }
 
   async function openNewCheck(mount, presetEmployeeId) {
-    let rubric, staff;
+    // The roster comes from Fidelity's own endpoint, not HR's. The old call
+    // was gated on HR access, which the Clinical Director does not have --
+    // and the .catch() below turned that 403 into an empty list, so the form
+    // opened with nobody in it and blamed the job titles.
+    let rubric, roster;
     try {
-      [rubric, staff] = await Promise.all([
+      [rubric, roster] = await Promise.all([
         api("/api/fidelity/rubric"),
-        api("/api/hr/employees").catch(() => []),
+        api("/api/fidelity/rbts"),
       ]);
     } catch (e) { alert(e.message || "Couldn't open a new Fidelity Check."); return; }
 
-    const rbts = (Array.isArray(staff) ? staff : []).filter((e) =>
-      String(e.status || "active") !== "terminated" &&
-      /\bRBT\b|registered behavior technician|behavior tech|\bBT\b|student|in[- ]training|trainee/i.test(String(e.role_title || "")));
+    const rbts = (roster && roster.rbts) || [];
 
     const back = document.createElement("div");
     back.className = "modal-backdrop";
@@ -1045,17 +1047,15 @@ This locks the assessment, files the PDF in their personnel record and emails it
 
   // ======================= ASSIGNING AN OBSERVATION =======================
   async function openAssign(mount, presetEmployeeId, presetName) {
-    let staff, evaluators;
+    let roster, evaluators;
     try {
-      [staff, evaluators] = await Promise.all([
-        api("/api/hr/employees").catch(() => []),
+      [roster, evaluators] = await Promise.all([
+        api("/api/fidelity/rbts"),
         api("/api/fidelity/evaluators"),
       ]);
     } catch (e) { alert(e.message || "Couldn't open the assignment form."); return; }
 
-    const rbts = (Array.isArray(staff) ? staff : []).filter((e) =>
-      String(e.status || "active") !== "terminated" &&
-      /\bRBT\b|registered behavior technician|behavior tech|\bBT\b|student|in[- ]training|trainee/i.test(String(e.role_title || "")));
+    const rbts = (roster && roster.rbts) || [];
 
     // Only people who could actually open the check. The server decides who
     // that is -- re-deriving it from module_access here would be this screen

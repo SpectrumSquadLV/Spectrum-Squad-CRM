@@ -2363,6 +2363,34 @@ module.exports = function initFidelity(ctx) {
     // access -- and the rule for who can evaluate is canEvaluate(), which
     // lives here. Asking the admin API meant a screen re-deciding a permission
     // question it does not own.
+    // The RBTs this module works on, served by this module.
+    //
+    // Both forms that choose an RBT -- New Fidelity Check and Ask somebody to
+    // observe -- used to read /api/hr/employees, which is gated on HR access.
+    // Fidelity management is granted by MODULE, deliberately, so that the
+    // Clinical Director (role `clinical`) can run it without being HR. For
+    // exactly that person the roster call returned 403, the browser swallowed
+    // it, and both forms opened with an empty RBT list and a warning blaming
+    // the job titles on the staff records. The random picker named somebody
+    // and then handed over a form that could not be filled in.
+    //
+    // So this is not a permission widening: it is the right endpoint. It
+    // returns the three fields the forms need and nothing else -- the HR
+    // payload carries credentials and pay, which a fidelity form has no
+    // business receiving. It also makes the server's isRbt() the only rule
+    // for who counts as an RBT; the two browser copies of that regex go away.
+    if (pathname === "/api/fidelity/rbts" && method === "GET") {
+      // Evaluators need it too: an assigned evaluator opens a check form.
+      if (!evaluate) return json(res, 403, { error: "Not permitted." });
+      const rows = await dbAll(
+        `SELECT id, name, role_title, status FROM hr_employees
+          WHERE COALESCE(status,'active') <> 'terminated' ORDER BY name`
+      ).catch(() => []);
+      return json(res, 200, {
+        rbts: rows.filter(isRbt).map((e) => ({ id: e.id, name: e.name, role_title: e.role_title || "" })),
+      });
+    }
+
     if (pathname === "/api/fidelity/evaluators" && method === "GET") {
       if (!manage) return json(res, 403, { error: "Not permitted." });
       const rows = await dbAll("SELECT id, name, email, role, module_access FROM users ORDER BY name").catch(() => []);
