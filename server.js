@@ -5071,6 +5071,10 @@ async function handle(req, res, pathname, method, query = {}) {
 
   // Rethink integration status, filter confirmation and manual sync.
   if (pathname.startsWith("/api/rethink")) {
+    // Discovery owns /api/rethink/discovery only and returns false otherwise,
+    // so it is asked first without taking anything off the module below.
+    const probed = await rethinkDiscovery.handleApi(req, res, pathname, method, query, user);
+    if (probed) return true;
     const handled = await rethink.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
@@ -8830,6 +8834,17 @@ const rethink = require("./rethink")({
 // or the person is quietly detached from their own clients, tasks and record.
 const userEmail = require("./user-email")({ pool, dbGet, dbAll, dbRun, nowISO });
 
+// Endpoint discovery: what can this account's Rethink API actually be asked
+// for? Read-only, and it stores KEY NAMES rather than values, so an admin can
+// read the answer on screen without PHI reaching it.
+const rethinkDiscovery = require("./rethink-discovery")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json,
+  client: require("./rethink-client"),
+  // Same tier as the rest of the Rethink admin surface rather than a second
+  // permission structure: MANAGE_ROLES in rethink.js.
+  canManage: (u) => ["owner", "super_admin"].includes((u && (u.role || u.role_key)) || ""),
+});
+
 const rethinkVerification = require("./rethink-verification")({
   dbGet, dbAll, dbRun, nowISO, json, sendEmail,
   getAppSetting: (key, fallback) => getAppSetting(key, fallback),
@@ -9224,6 +9239,7 @@ async function start() {
   await authorizations.initTables().catch((e) => console.error("Authorizations initTables failed:", e));
   await rethink.initTables().catch((e) => console.error("Rethink initTables failed:", e));
   await rethinkVerification.initTables().catch((e) => console.error("Rethink verification initTables failed:", e));
+  await rethinkDiscovery.initTables().catch((e) => console.error("Rethink discovery initTables failed:", e));
   await userEmail.initTables().catch((e) => console.error("User email initTables failed:", e));
   await clientProgramming.initTables().catch((e) => console.error("Client programming initTables failed:", e));
 
