@@ -375,6 +375,64 @@ function makeModule(extra) {
       "a stored VALUE would mean PHI on an admin screen");
   }
 
+  // ------------------------------------------------------------------
+  section("The one boot run, and why it is only one");
+
+  // The owner asked for the probe to be run for them: the credentials and the
+  // route to the vendor exist only on the deployed server, so they cannot be
+  // the one to press the button. The server asks on their behalf -- ONCE.
+  // A restart, a redeploy or a crash loop must not turn forty requests to
+  // somebody else's API into four hundred, so everything here is about the
+  // guard rather than the probe.
+  {
+    const { mod, db } = makeModule();
+    responder = (endpoint) => {
+      if (endpoint === "ClientGoal") return { result: [{ goalId: 1, status: "Active" }] };
+      if (["Appointments", "Clients", "ClientAuthorization"].includes(endpoint)) return { result: [{ clientId: 1 }] };
+      throw new StubError("not found", { status: 404, kind: "http" });
+    };
+
+    const first = await mod.probeOnceOnBoot();
+    check("the first boot runs it", first.ran === true, first);
+    check("and records the run, which is what stops the second", db.state.runs.length === 1, db.state.runs.length);
+
+    calls.length = 0;
+    const second = await mod.probeOnceOnBoot();
+    check("the next boot does NOT run it again", second.ran === false, second);
+    check("...and says why, rather than failing silently", second.why === "already_probed", second);
+    check("...and sends Rethink nothing at all", calls.length === 0, calls.length);
+
+    // Ten restarts in a row is what a crash loop looks like.
+    calls.length = 0;
+    for (let i = 0; i < 10; i++) await mod.probeOnceOnBoot();
+    check("ten restarts send Rethink nothing", calls.length === 0, calls.length);
+    check("and add no runs", db.state.runs.length === 1, db.state.runs.length);
+  }
+
+  {
+    // No credentials: boot must not try, and must not record a run either --
+    // recording one would permanently suppress the real first probe.
+    const { mod, db } = makeModule();
+    const wasConfigured = stub.configured;
+    stub.configured = () => false;
+    calls.length = 0;
+    const out = await mod.probeOnceOnBoot();
+    stub.configured = wasConfigured;
+    check("with no credentials the boot probe does not run", out.ran === false && out.why === "not_configured", out);
+    check("...calls nothing", calls.length === 0, calls.length);
+    check("...and records NO run, so the real first probe is not suppressed",
+      db.state.runs.length === 0, db.state.runs.length);
+  }
+
+  {
+    // A boot probe that throws must never take the server down with it.
+    const { mod } = makeModule();
+    responder = () => { throw new StubError("Rethink rejected our credentials.", { status: 401, kind: "auth" }); };
+    let threw = false;
+    try { await mod.probeOnceOnBoot(); } catch (e) { threw = true; }
+    check("a probe that cannot authenticate does not throw out of boot", threw === false);
+  }
+
   console.log(`\n  ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("harness error:", e); process.exit(1); });

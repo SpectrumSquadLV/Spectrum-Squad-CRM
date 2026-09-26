@@ -9240,6 +9240,12 @@ async function start() {
   await rethink.initTables().catch((e) => console.error("Rethink initTables failed:", e));
   await rethinkVerification.initTables().catch((e) => console.error("Rethink verification initTables failed:", e));
   await rethinkDiscovery.initTables().catch((e) => console.error("Rethink discovery initTables failed:", e));
+  // Asked for by the owner, who cannot press the button themselves: the
+  // credentials and the route to the vendor live here, not on their desk.
+  // Runs only if no probe has EVER run, so a redeploy cannot repeat it.
+  rethinkDiscovery.probeOnceOnBoot()
+    .then((r) => { if (r && r.ran) console.log("[rethink-probe] first run complete"); })
+    .catch((e) => console.error("Rethink discovery boot probe failed:", e.message));
   await userEmail.initTables().catch((e) => console.error("User email initTables failed:", e));
   await clientProgramming.initTables().catch((e) => console.error("Client programming initTables failed:", e));
 

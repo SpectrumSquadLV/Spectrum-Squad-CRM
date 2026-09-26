@@ -620,7 +620,24 @@ const section = (t) => console.log("\n== " + t + " ==");
     if (k === "prep_1" || k === "beh_5") continue;
     await rubricEl.locator(`[data-fid-score='${k}'][data-v='2']`).click();
   }
-  await page.waitForTimeout(1800);
+  // WAIT FOR THE ANSWER, NOT FOR A DURATION.
+  //
+  // Twenty-eight scores are clicked above, and each one saves and recalculates.
+  // A fixed sleep here is a bet that the last of them lands inside 1800ms. On
+  // a loaded CI runner it does not, and then SIX checks below fail together --
+  // the rating, the total, the percentage, the server's copy of the total, the
+  // required Action Plan and the enabled sign button -- all of them reading a
+  // figure that was still being written. That is how this suite failed twice
+  // in CI while passing every time locally.
+  //
+  // So wait for the total to actually reach 58/60, with a ceiling generous
+  // enough for a slow runner. If it never gets there the check below still
+  // fails, and now it fails because the number is wrong rather than because
+  // the clock ran out.
+  await page.waitForFunction(() => {
+    const el = document.querySelector("#fid-scoring #fid-live");
+    return !!el && /58\s*\/\s*60/.test(el.textContent || "");
+  }, null, { timeout: 30000 }).catch(() => {});
   const liveDone = await live.innerText();
   check("with every item scored the rating appears", /EXCEPTIONAL/i.test(liveDone), liveDone);
   check("...at 58 out of 60", /58 \/ 60/.test(liveDone), liveDone);
