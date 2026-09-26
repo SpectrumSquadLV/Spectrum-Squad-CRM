@@ -128,9 +128,21 @@ module.exports = function initRethinkDiscovery(ctx) {
   // refused as a BAD REQUEST specifically, ask again with a window. A 404 is
   // not retried, because "no such endpoint" is an answer, not a failure.
   async function probeOne(endpoint, { from, to }) {
+    // PageSize is 500, NOT 1.
+    //
+    // The first live run asked for a single row -- as little as possible, which
+    // seemed like the courteous thing -- and every one of the three endpoints
+    // the CRM reads every day came back 400 while the candidates came back 404.
+    // A known-good endpoint refusing the request is about the REQUEST, and the
+    // only thing this probe sent that the working integration does not is
+    // PageSize=1. So it now sends the shape that is proven to work in
+    // production: Page 1, PageSize 500, exactly as dwhGetAllPages does.
+    //
+    // A page of rows costs a little bandwidth and buys the truth. Nothing is
+    // kept from it: the key names come off row zero and the rows are dropped.
     const attempts = [
-      { label: "page_1_only", params: { Page: 1, PageSize: 1 } },
-      { label: "with_date_window", params: { Page: 1, PageSize: 1, From: from, To: to } },
+      { label: "page_1", params: { Page: 1, PageSize: 500 } },
+      { label: "with_date_window", params: { Page: 1, PageSize: 500, From: from, To: to } },
     ];
 
     let last = null;
@@ -160,6 +172,7 @@ module.exports = function initRethinkDiscovery(ctx) {
           envelope_counters: {},
           row_keys: [],
           params_used: attempt.label,
+          exists: false,
           error_kind: (e && e.kind) || "error",
           // e.message is already redacted by RethinkError. e.upstream is NOT
           // and is deliberately left behind: we cannot promise an arbitrary
@@ -169,6 +182,11 @@ module.exports = function initRethinkDiscovery(ctx) {
         // 404 means the name does not exist here. Asking again with a date
         // window cannot change that, and would just be a second request.
         if (last.http_status === 404) break;
+        // 400 is not a miss. A route that does not exist answers 404 before
+        // anything looks at the query string, so a 400 means THE ENDPOINT IS
+        // THERE and refused the parameters -- which is a discovery, and worth
+        // saying out loud rather than burying in a table of failures.
+        if (last.http_status === 400) last.exists = true;
         // 401 is about the credential, not this endpoint. Every remaining
         // candidate would fail the same way, so let the caller stop.
         if (last.error_kind === "auth") { last.fatal = true; break; }
@@ -273,10 +291,23 @@ module.exports = function initRethinkDiscovery(ctx) {
     if (stoppedEarly) return stoppedEarly;
     const found = results.filter((r) => !r.is_control && r.ok);
     if (!controlsOk) {
-      return "None of the three endpoints the CRM already uses answered either, so this run says nothing about programming — fix the connection first and re-run.";
+      // The controls exist to catch exactly this. A wall of 404s means one
+      // thing when the known-good endpoints answered and quite another when
+      // they did not -- and on the first live run they did not, which is how
+      // a bad request shape was caught instead of being reported as "Rethink
+      // has no programming data".
+      const why = results.filter((r) => r.is_control).map((r) => `${r.endpoint} ${r.http_status || r.error_kind}`).join(", ");
+      return `None of the three endpoints the CRM already uses answered either (${why}), so this run says NOTHING about programming. A known-good endpoint failing is about the request, not the account — fix that and re-run before drawing any conclusion.`;
+    }
+    // A candidate that answered 400 EXISTS. Saying "none answered" over the
+    // top of that would throw away the most useful thing the run found.
+    const present = results.filter((r) => !r.is_control && !r.ok && r.exists);
+    if (!found.length && present.length) {
+      return `No candidate returned data, but ${present.length} answered 400 rather than 404 — ${
+        present.map((r) => r.endpoint).join(", ")} EXIST on this account and refused the parameters we sent. That is a live lead: the next step is the right query for them, not a different name.`;
     }
     if (!found.length) {
-      return `The ${controlsOk} endpoint(s) the CRM already uses answered normally, and none of the ${results.length - controlsOk} candidate programming endpoints did. On this account, programming does not appear to be reachable through the DWH API under any of the names tried.`;
+      return `The ${controlsOk} endpoint(s) the CRM already uses answered normally, and none of the ${results.length - controlsOk} candidate programming endpoints did — every one returned 404, which is the API saying the name does not exist here. On this account, programming does not appear to be reachable through the DWH API under any of the names tried.`;
     }
     const withRows = found.filter((r) => (r.row_keys || []).length);
     return `${found.length} candidate endpoint(s) answered: ${found.map((r) => r.endpoint).join(", ")}. ` +
@@ -293,6 +324,9 @@ module.exports = function initRethinkDiscovery(ctx) {
       http_status: r.http_status,
       error_kind: r.error_kind || null,
       error_message: r.error_message || null,
+      // True when the endpoint answered 400: present, but not on the terms we
+      // asked. Different from a 404, and a different next step.
+      exists: !!r.exists,
       rows_seen: r.rows_seen || 0,
       envelope_counters: r.envelope_counters || {},
       row_keys: r.row_keys || [],
@@ -370,8 +404,19 @@ module.exports = function initRethinkDiscovery(ctx) {
   // way to probe again, which is where that decision belongs.
   async function probeOnceOnBoot() {
     if (!client.configured()) return { ran: false, why: "not_configured" };
-    const prior = await dbGet("SELECT id FROM rethink_probe_runs LIMIT 1").catch(() => null);
-    if (prior) return { ran: false, why: "already_probed" };
+    // ONCE, EVER -- unless the once was inconclusive.
+    //
+    // A run whose CONTROLS failed answered nothing: it tells us the request was
+    // wrong, not what Rethink holds. Treating that as "already probed" would
+    // lock in a non-answer forever and leave the button as the only way out.
+    // So a run only counts as done when at least one known-good endpoint
+    // answered -- and, because that could otherwise retry on every boot
+    // forever, three attempts is the ceiling.
+    const prior = await dbAll(
+      "SELECT controls_ok FROM rethink_probe_runs ORDER BY id"
+    ).catch(() => []);
+    if (prior.some((r) => Number(r.controls_ok) > 0)) return { ran: false, why: "already_probed" };
+    if (prior.length >= 3) return { ran: false, why: "inconclusive_limit_reached" };
 
     const out = await probeEndpoints({ actor: "boot (first run)" }).catch((e) => ({
       ok: false, kind: "error", error: String((e && e.message) || e),

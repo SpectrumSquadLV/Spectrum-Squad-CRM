@@ -73,6 +73,7 @@ function makeDb() {
   const dbAll = async (sql) => {
     state.sql.push(sql);
     if (/FROM rethink_endpoint_probes/i.test(sql)) return [...state.probes.values()];
+    if (/FROM rethink_probe_runs/i.test(sql)) return state.runs.map((r) => ({ controls_ok: r.controls_ok }));
     return [];
   };
   const dbGet = async (sql) => {
@@ -300,8 +301,13 @@ function makeModule(extra) {
     calls.length = 0;
     responder = () => ({ result: [{ a: 1 }] });
     await mod.probeEndpoints({ actor: "tester" });
-    check("every request asks for a single row", calls.every((c) => c.params.PageSize === 1), calls[0]);
-    check("and only the first page", calls.every((c) => c.params.Page === 1), calls[0]);
+    // Asking for ONE row was the courteous choice and it was wrong: on the
+    // first live run every known-good endpoint answered 400 to PageSize=1
+    // while the candidates answered 404. A proven request shape beats a
+    // frugal one when the whole point is to tell those two apart.
+    check("every request uses the page size the working integration proves",
+      calls.every((c) => c.params.PageSize === 500), calls[0]);
+    check("and only ever the first page", calls.every((c) => c.params.Page === 1), calls[0]);
     check("the number of endpoints tried is capped",
       calls.length <= mod._internal.MAX_CANDIDATES + mod._internal.KNOWN.length, calls.length);
   }
@@ -431,6 +437,69 @@ function makeModule(extra) {
     let threw = false;
     try { await mod.probeOnceOnBoot(); } catch (e) { threw = true; }
     check("a probe that cannot authenticate does not throw out of boot", threw === false);
+  }
+
+  // ------------------------------------------------------------------
+  section("400 is a find, 404 is a miss");
+
+  // Straight from the first live run: every candidate answered 404 and every
+  // KNOWN-GOOD endpoint answered 400. A route that does not exist answers 404
+  // before anything reads the query string, so a 400 means the endpoint IS
+  // THERE and refused the parameters. Reporting that as "did not answer"
+  // would throw away the most valuable thing a run can find.
+  {
+    const { mod } = makeModule();
+    responder = (endpoint) => {
+      if (["Appointments", "Clients", "ClientAuthorization"].includes(endpoint)) return { result: [{ clientId: 1 }] };
+      if (endpoint === "ClientProgram") throw new StubError("Bad Request", { status: 400, kind: "http" });
+      throw new StubError("not found", { status: 404, kind: "http" });
+    };
+    const out = await mod.probeEndpoints({ actor: "tester" });
+    const four00 = out.results.find((r) => r.endpoint === "ClientProgram");
+    const four04 = out.results.find((r) => r.endpoint === "Programs");
+
+    check("an endpoint that answers 400 is marked as existing", four00 && four00.exists === true, four00);
+    check("an endpoint that answers 404 is not", four04 && four04.exists === false, four04);
+    check("the verdict leads with the endpoint that exists, not with the count of misses",
+      /ClientProgram/.test(out.verdict) && /EXIST/i.test(out.verdict), out.verdict);
+    check("...and says the next step is the query, not another name",
+      /parameters|query/i.test(out.verdict), out.verdict);
+  }
+
+  // ------------------------------------------------------------------
+  section("An inconclusive run is not an answer");
+
+  // The first live boot probe recorded a run in which the controls failed.
+  // Under a plain "have we probed before" guard that would lock in a
+  // non-answer forever. A run only counts when a known-good endpoint answered.
+  {
+    const { mod, db } = makeModule();
+    // Controls fail -> controls_ok 0 -> inconclusive.
+    responder = () => { throw new StubError("Bad Request", { status: 400, kind: "http" }); };
+    const first = await mod.probeOnceOnBoot();
+    check("an inconclusive first run still records itself", db.state.runs.length === 1, db.state.runs.length);
+    check("...with no controls answering", db.state.runs[0].controls_ok === 0, db.state.runs[0]);
+    check("...and reports that it ran", first.ran === true, first);
+
+    const second = await mod.probeOnceOnBoot();
+    check("the next boot TRIES AGAIN, because nothing was learned", second.ran === true, second);
+
+    // ...but not forever.
+    await mod.probeOnceOnBoot();
+    const fourth = await mod.probeOnceOnBoot();
+    check("after three inconclusive runs it stops trying",
+      fourth.ran === false && fourth.why === "inconclusive_limit_reached", fourth);
+
+    // And a run that DID learn something stops it immediately.
+    const { mod: m2, db: db2 } = makeModule();
+    responder = (endpoint) => {
+      if (["Appointments", "Clients", "ClientAuthorization"].includes(endpoint)) return { result: [{ clientId: 1 }] };
+      throw new StubError("not found", { status: 404, kind: "http" });
+    };
+    await m2.probeOnceOnBoot();
+    check("a run whose controls answered IS an answer", db2.state.runs[0].controls_ok === 3, db2.state.runs[0]);
+    const again = await m2.probeOnceOnBoot();
+    check("...so the next boot does not repeat it", again.ran === false && again.why === "already_probed", again);
   }
 
   console.log(`\n  ${pass} passed, ${fail} failed`);
