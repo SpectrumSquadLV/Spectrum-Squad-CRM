@@ -714,6 +714,77 @@ const section = (t) => console.log("\n== " + t + " ==");
     evalErrors.length === 0, evalErrors.join(" ;; "));
   await evalPage.close();
 
+  // ================================================================
+  section("Select random RBT, as the person the feature is for");
+
+  // Reported from live use: "the select random RBT button isn't working."
+  //
+  // It was -- the PICK worked. What failed was the form it then opened. Both
+  // RBT-choosing forms read /api/hr/employees, which is gated on HR access,
+  // and Fidelity management is granted by MODULE precisely so the Clinical
+  // Director (role `clinical`) can run it without being HR. For that person
+  // the roster call 403'd, the browser swallowed it, and the form opened with
+  // an empty dropdown under "No active RBTs found" -- which blamed the job
+  // titles on the staff records for a permission problem.
+  //
+  // Driven end to end, as her, because every part of this passed in isolation.
+  {
+    const bcbaEmail = `fid.director.${Date.now().toString().slice(-6)}@example.invalid`;
+    const mk = await api(page, "/api/admin/users", {
+      method: "POST",
+      body: { name: "Fidelity Director", email: bcbaEmail, password: "FidDirector123!", role: "clinical" },
+    });
+    check("a Clinical Director account is created", mk.status === 201, mk.body);
+    const grant = await api(page, `/api/admin/users/${mk.body.id}`, {
+      method: "PATCH", body: { module_access: { fidelity: true } },
+    });
+    check("...and granted Fidelity management, not HR", grant.status === 200, grant.body);
+
+    const bcba = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    const bcbaErrors = [];
+    bcba.on("pageerror", (e) => bcbaErrors.push("pageerror: " + e.message));
+    await bcba.goto(BASE + "/", { waitUntil: "networkidle" });
+    await bcba.fill('#login-form input[name="email"]', bcbaEmail);
+    await bcba.fill('#login-form input[name="password"]', "FidDirector123!");
+    await bcba.click('#login-form button[type="submit"]');
+    await bcba.waitForTimeout(2200);
+
+    const hr = await api(bcba, "/api/hr/employees");
+    check("she cannot read the HR roster, and should not be able to", hr.status === 403, hr.status);
+
+    await bcba.evaluate(() => { location.hash = "#/fidelity"; });
+    await bcba.waitForTimeout(1800);
+    check("she is offered the random picker", await bcba.locator("#fid-random").count() === 1);
+
+    // OK on the confirm means "observe them myself now", which opens the
+    // New Fidelity Check form.
+    let dialogText = "";
+    bcba.once("dialog", async (d) => { dialogText = d.message(); await d.accept(); });
+    await bcba.click("#fid-random");
+    await bcba.waitForTimeout(2500);
+
+    check("the pick names somebody", /Selected: \S/.test(dialogText), dialogText.slice(0, 120));
+    const modalText = await bcba.locator(".modal-backdrop").innerText().catch(() => "");
+    check("the New Fidelity Check form opens", /New Fidelity Check/.test(modalText), modalText.slice(0, 120));
+
+    // THE REGRESSION. An empty dropdown is what "isn't working" looked like.
+    const optionCount = await bcba.locator("#fid-emp option").count().catch(() => 0);
+    check("the RBT dropdown is not empty", optionCount > 1, { options: optionCount });
+    check("and the person just picked at random is already selected in it",
+      (await bcba.locator("#fid-emp").inputValue().catch(() => "")) !== "", "nothing preselected");
+    check("the form does not claim there are no RBTs",
+      !/No active RBTs found/.test(modalText), modalText.slice(0, 200));
+
+    // The name in the dialog and the name in the form are the same person.
+    const picked = (dialogText.match(/Selected: (.+)/) || [])[1] || "";
+    const selectedLabel = await bcba.locator("#fid-emp option:checked").textContent().catch(() => "");
+    check("the form is offering the person the picker named, not somebody else",
+      picked && selectedLabel.trim().startsWith(picked.trim()), { picked, selectedLabel });
+
+    check("no uncaught JavaScript errors on her page", bcbaErrors.length === 0, bcbaErrors.join(" ;; "));
+    await bcba.close();
+  }
+
   check("no uncaught JavaScript errors", errors.length === 0, errors.join(" ;; "));
   console.log(`\n  ${pass} passed, ${fail} failed`);
   await browser.close();

@@ -584,6 +584,65 @@ function scoresTotalling(total, opts = {}) {
     check(`an evaluator is refused ${label}`, res.status === 403, { s: res.status, d: res.data });
   }
 
+  // ================================================================
+  // Reported from live use: "the select random RBT button isn't working."
+  //
+  // It was. The PICK worked; the form it then opened could not be filled in.
+  // Both RBT-choosing forms read /api/hr/employees, which is gated on HR
+  // access -- and Fidelity management is granted by MODULE, deliberately, so
+  // that the Clinical Director (role `clinical`) can run it without being HR.
+  // For exactly that person the roster call returned 403, the browser
+  // swallowed it with a .catch(() => []), and the form opened with an empty
+  // RBT list under a warning blaming the job titles on the staff records.
+  //
+  // Fidelity now serves its own roster. These pin that it is reachable by the
+  // people who need it, that it carries nothing it should not, and -- the
+  // actual regression -- that the manager who cannot read HR can still read
+  // this.
+  {
+    const hr = await manager.req("/api/hr/employees");
+    check("a Fidelity manager who is not HR still cannot read the HR roster", hr.status === 403, hr.status);
+
+    r = await manager.req("/api/fidelity/rbts");
+    check("but Fidelity serves them the RBTs it works on", r.status === 200 && Array.isArray(r.data.rbts), r.data);
+    check("...and there is somebody in it, so the form can be filled in",
+      (r.data.rbts || []).length > 0, r.data.rbts);
+
+    // The whole point of moving off the HR endpoint: that payload carries
+    // credentials and pay, and a form that picks an RBT has no business
+    // receiving either.
+    const blob = JSON.stringify(r.data);
+    check("it carries no pay", !/hourly_rate|annual_review_date/.test(blob), blob.slice(0, 200));
+    check("nor credentials, nor an email address", !/credential|"email"/i.test(blob), blob.slice(0, 200));
+    check("only what the form needs to name somebody",
+      (r.data.rbts || []).every((e) => Object.keys(e).sort().join(",") === "id,name,role_title"),
+      (r.data.rbts || [])[0]);
+
+    // An assigned evaluator opens a check form too, so they need it as well.
+    const ev = await evaluator.req("/api/fidelity/rbts");
+    check("an evaluator can read it too, because they also open a check form",
+      ev.status === 200 && Array.isArray(ev.data.rbts), ev.status);
+
+    // Somebody with neither grant is refused, at the server.
+    const none = await plainAdmin.req("/api/fidelity/rbts");
+    check("somebody with neither Fidelity grant is refused it", none.status === 403, none.status);
+
+    // Same population as the dashboard: two rules for who is an RBT is how
+    // the picker names somebody the form then cannot offer.
+    const dash = await owner("/api/fidelity/dashboard");
+    const rosterIds = new Set((r.data.rbts || []).map((e) => e.id));
+    check("everybody the dashboard counts as an RBT is offered by the roster",
+      (dash.data.employees || []).every((e) => rosterIds.has(e.employee_id)),
+      (dash.data.employees || []).map((e) => e.employee_id));
+
+    // And the pick is always someone the form can actually offer -- which is
+    // the exact failure that was reported.
+    const pick2 = await owner("/api/fidelity/random", { method: "POST", body: {} });
+    check("whoever the random picker names is somebody the form can offer",
+      pick2.status === 200 && rosterIds.has(pick2.data.picked.employee_id),
+      { picked: pick2.data.picked && pick2.data.picked.employee_id, roster: [...rosterIds] });
+  }
+
   // The screen has to know which of the two it is drawing for, and the answer
   // comes from the server rather than from a copy of the grants in the browser.
   // my-assignments is the one Fidelity route both tiers can reach.
