@@ -31,9 +31,98 @@
       <div style="display:flex; gap:8px; align-items:center;">
         <button class="btn" id="rs-scan">⟳ Scan Rethink for employees</button>
       </div></div>
-      <div id="rs-body"><div class="empty-state">Loading…</div></div>`;
+      <div id="rs-body"><div class="empty-state">Loading…</div></div>
+      <div id="rs-discovery"></div>`;
     mount.querySelector("#rs-scan").addEventListener("click", () => runScan(mount));
     await fill(mount);
+    await fillDiscovery(mount);
+  }
+
+  // ---- what this account's Rethink API can actually be asked for ----------
+  //
+  // Sits here because this is the screen where the limits of the integration
+  // already show: the staff list is derived from appointments precisely
+  // BECAUSE there is no staff endpoint. Whether there is a PROGRAMMING
+  // endpoint is the same kind of question and deserves the same kind of
+  // answer -- asked, not assumed.
+  //
+  // Owner/super-admin at the server. The panel is not rendered at all for
+  // anyone else, and it is the 403 that decides that rather than a guess in
+  // the browser about who is reading.
+  async function fillDiscovery(mount) {
+    const box = mount.querySelector("#rs-discovery");
+    if (!box) return;
+    let d;
+    try { d = await api("/api/rethink/discovery"); }
+    catch (e) { box.innerHTML = ""; return; }
+
+    const results = d.results || [];
+    const controls = results.filter((r) => r.is_control);
+    const found = results.filter((r) => !r.is_control && r.ok);
+    const run = d.last_run || null;
+
+    const row = (r) => {
+      const status = r.ok
+        ? `<span class="tag" style="background:#dcfce7; color:#166534;">HTTP 200</span>`
+        : `<span class="tag" style="background:#f1f1f4; color:#4b5563;">${r.http_status ? "HTTP " + r.http_status : esc(r.error_kind || "error")}</span>`;
+      return `<div style="padding:6px 0; border-bottom:1px solid var(--border,#eee); font-size:12.5px;">
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <strong>${esc(r.endpoint)}</strong>
+          ${r.is_control ? `<span class="tag" style="background:#eef1fb; color:#1b2a6b;">already in use</span>` : ""}
+          ${status}
+          ${r.ok ? `<span style="color:var(--text-muted);">${r.rows_seen} row(s) read${
+            r.envelope_counters && r.envelope_counters.totalCount != null ? `, ${r.envelope_counters.totalCount} available` : ""}</span>` : ""}
+        </div>
+        ${r.ok && (r.row_keys || []).length ? `<div style="margin-top:3px; color:var(--text-muted); font-family:ui-monospace,monospace; font-size:11.5px; word-break:break-word;">${
+          esc(r.row_keys.join(", "))}</div>` : ""}
+      </div>`;
+    };
+
+    box.innerHTML = `<details class="card" style="margin-top:18px;">
+      <summary style="cursor:pointer; font-weight:700;">What this Rethink account can be asked for${
+        run ? ` — last checked ${esc(new Date(run.finished_at || run.started_at).toLocaleString())}` : ""}</summary>
+      <p style="font-size:12.5px; color:var(--text-muted); margin:8px 0 10px;">
+        Asks each endpoint for <strong>one row</strong> and records whether it answered and
+        <strong>what its fields are called</strong> — names only, never values, so nothing about a child appears here.
+        It only ever reads; it cannot change anything in Rethink.
+      </p>
+      ${run && run.note ? `<div style="background:#fef2f2; border:1px solid #fecaca; color:#991b1b; border-radius:8px; padding:9px 11px; font-size:12.5px; margin-bottom:10px;">${esc(run.note)}</div>` : ""}
+      ${results.length ? `<div style="background:#eff6ff; border:1px solid #bfdbfe; color:#1e40af; border-radius:8px; padding:10px 12px; font-size:12.5px; margin-bottom:10px;">
+        ${esc(verdictOf(d))}</div>` : ""}
+      ${results.length ? `<div>${controls.map(row).join("")}${results.filter((r) => !r.is_control).map(row).join("")}</div>`
+        : `<div class="empty-state">Not checked yet.</div>`}
+      <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button class="btn secondary" id="rs-probe">${results.length ? "Check again" : "Check what Rethink exposes"}</button>
+        <input id="rs-probe-extra" placeholder="Also try these names (comma separated)"
+          style="flex:1; min-width:220px; padding:6px 8px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:12.5px;" />
+      </div>
+      ${found.length ? "" : `<p style="font-size:12px; color:var(--text-muted); margin:9px 0 0;">
+        If Rethink support gives you the name of a programming endpoint, type it above and check again.</p>`}
+    </details>`;
+
+    const btn = box.querySelector("#rs-probe");
+    if (btn) btn.addEventListener("click", async () => {
+      const extraEl = box.querySelector("#rs-probe-extra");
+      const extra = (extraEl && extraEl.value ? extraEl.value : "").split(",").map((x) => x.trim()).filter(Boolean);
+      btn.disabled = true; btn.textContent = "Checking… this takes about a minute";
+      try {
+        await api("/api/rethink/discovery/probe", { method: "POST", body: { extra_endpoints: extra } });
+      } catch (e) {
+        alert((e && e.message) || "The check could not run.");
+      }
+      await fillDiscovery(mount);
+    });
+  }
+
+  // The server already decides what the run means; the panel repeats its
+  // sentence rather than inventing a second opinion from the same rows.
+  function verdictOf(d) {
+    const results = d.results || [];
+    const controlsOk = results.filter((r) => r.is_control && r.ok).length;
+    const found = results.filter((r) => !r.is_control && r.ok);
+    if (!controlsOk) return "None of the endpoints the CRM already uses answered, so this check says nothing about programming — fix the connection and run it again.";
+    if (!found.length) return `The ${controlsOk} endpoint(s) the CRM already uses answered normally, and none of the candidate programming endpoints did. On this account, programming does not appear to be reachable through the Rethink API under any of the names tried.`;
+    return `${found.length} endpoint(s) answered: ${found.map((r) => r.endpoint).join(", ")}. Their field names are listed above.`;
   }
 
   async function runScan(mount) {
