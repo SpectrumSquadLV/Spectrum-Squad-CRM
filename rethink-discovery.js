@@ -355,8 +355,46 @@ module.exports = function initRethinkDiscovery(ctx) {
     return false;
   }
 
+  // Run the probe once, ever, without anybody pressing the button.
+  //
+  // THE OWNER ASKED FOR IT AND CANNOT BE THE ONE TO PRESS IT. The two things
+  // a probe needs -- the Rethink credentials and network access to the vendor
+  // -- exist only on the deployed server, so the person who wants the answer
+  // and the machine that can get it are not the same place. This closes that
+  // gap: the server asks on their behalf, once, and writes the answer where
+  // the screen and the logs can both show it.
+  //
+  // ONCE, EVER. It runs only when no probe run has EVER been recorded, so a
+  // restart, a redeploy or a crash loop cannot turn forty requests to somebody
+  // else's API into four hundred. After the first run the button is the only
+  // way to probe again, which is where that decision belongs.
+  async function probeOnceOnBoot() {
+    if (!client.configured()) return { ran: false, why: "not_configured" };
+    const prior = await dbGet("SELECT id FROM rethink_probe_runs LIMIT 1").catch(() => null);
+    if (prior) return { ran: false, why: "already_probed" };
+
+    const out = await probeEndpoints({ actor: "boot (first run)" }).catch((e) => ({
+      ok: false, kind: "error", error: String((e && e.message) || e),
+    }));
+    if (!out.ok) {
+      console.log(`[rethink-probe] VERDICT: the probe could not run -- ${out.error || out.kind}`);
+      return { ran: false, why: out.kind || "error" };
+    }
+
+    // Printed so the answer is readable from the deploy logs, not only from
+    // the screen. Endpoint names and FIELD names only -- the same line the
+    // rest of this module holds, because values are PHI and logs travel.
+    console.log(`[rethink-probe] VERDICT: ${out.verdict}`);
+    for (const r of out.results) {
+      if (!r.ok) continue;
+      console.log(`[rethink-probe] ${r.is_control ? "control " : "FOUND   "}${r.endpoint}: ${
+        r.rows_seen} row(s)${r.row_keys.length ? " | fields: " + r.row_keys.join(", ") : " | no row, so no field names"}`);
+    }
+    return { ran: true, found: out.found, controls_ok: out.controls_ok };
+  }
+
   return {
-    initTables, handleApi, probeEndpoints, latestProbe,
+    initTables, handleApi, probeEndpoints, latestProbe, probeOnceOnBoot,
     _internal: { CANDIDATES, KNOWN, keyNamesOf, verdictFor, probeOne, MAX_CANDIDATES },
   };
 };
