@@ -74,14 +74,40 @@ const EMOJI_BY_DEFAULT = /[\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25FD}-\u{25FE}\u
 // The variation selector that forces emoji presentation on a text glyph.
 const VS16 = /\u{FE0F}/u;
 
-const scan = (re) => {
+// ONE EXCEPTION, ASKED FOR BY NAME AND SCOPED TO WHERE IT WAS ASKED FOR.
+//
+// The rule above is the user's own earlier answer -- asked whether the
+// friendly pictures on the family-facing intake forms were deliberate, they
+// said strip those too, and the rule became "no emoji on any screen this
+// application serves".
+//
+// The BCBA dashboard brief then asked for positive reinforcement by name and
+// with examples: a celebration when the weekly billable goal is met, a trophy
+// on a clinical win, a sparkle when there is nothing urgent. That is a newer
+// and more specific instruction than the rule, so it wins -- but only exactly
+// as far as it was given.
+//
+// So the exception is a FIXED LIST in ONE FILE, and both halves are asserted:
+// nothing outside this set may appear even there, and none of these may appear
+// anywhere else. The dashboard's own UI suite carries the other half of it --
+// that no emoji reaches a table, tile, priority row or calendar, which is what
+// the original rule was really protecting.
+const CELEBRATION_FILE = "bcba-dashboard-frontend.js";
+const CELEBRATION_SET = ["\u{1F389}", "\u{2728}", "\u{1F31F}", "\u{1F3C6}", "\u{1F331}", "\u{1F4CB}"];
+
+const scan = (re, opts) => {
+  const allowHere = (opts && opts.allowCelebration) !== false;
   const hits = [];
   for (const f of UI_FILES) {
     const full = path.join(__dirname, f);
     if (!fs.existsSync(full)) continue;
     const lines = fs.readFileSync(full, "utf8").split("\n");
     lines.forEach((line, i) => {
-      const m = line.match(new RegExp(re, "gu"));
+      let m = line.match(new RegExp(re, "gu"));
+      if (m && allowHere && f === CELEBRATION_FILE) {
+        m = m.filter((g) => !CELEBRATION_SET.includes(g));
+        if (!m.length) m = null;
+      }
       if (m) hits.push(`${f}:${i + 1}  [${[...new Set(m)].join("")}]  ${line.trim().slice(0, 100)}`);
     });
   }
@@ -104,6 +130,38 @@ check("no coloured pictographs anywhere in the interface",
 const defaults = scan(EMOJI_BY_DEFAULT.source);
 check("no symbols that render as emoji without a selector (✅ ❌ ❓ ✨ ⚪ …)",
   defaults.length === 0, defaults.slice(0, 12).join("\n        "));
+
+// BOTH HALVES OF THE EXCEPTION.
+//
+// Without these two the carve-out is a hole rather than an exception: the file
+// could quietly grow a seventh pictograph, or one of the six could spread to
+// every other screen in the app, and this suite would go on passing.
+console.log("\n== The one exception, and its edges ==");
+// The list itself is the third edge. Widening it is how a scoped exception
+// becomes a general permission, so the size is pinned: adding a seventh glyph
+// fails this suite and has to be argued for rather than slipped in.
+check("the exception is still six glyphs, not a growing allowlist",
+  CELEBRATION_SET.length === 6, CELEBRATION_SET.join(" "));
+const celebrationElsewhere = [];
+for (const f of UI_FILES) {
+  if (f === CELEBRATION_FILE) continue;
+  const full = path.join(__dirname, f);
+  if (!fs.existsSync(full)) continue;
+  const src = fs.readFileSync(full, "utf8");
+  for (const g of CELEBRATION_SET) if (src.includes(g)) celebrationElsewhere.push(`${f} [${g}]`);
+}
+check("THE CELEBRATION GLYPHS APPEAR ON NO OTHER SCREEN",
+  celebrationElsewhere.length === 0, celebrationElsewhere.slice(0, 12).join("\n        "));
+
+const strictInDash = scan(PICTOGRAPH.source, { allowCelebration: false })
+  .concat(scan(EMOJI_BY_DEFAULT.source, { allowCelebration: false }))
+  .filter((h) => h.startsWith(CELEBRATION_FILE + ":"));
+const unapproved = strictInDash.filter((h) => {
+  const inside = (h.match(/\[([^\]]*)\]/) || [])[1] || "";
+  return [...inside].some((g) => !CELEBRATION_SET.includes(g));
+});
+check("...and the dashboard carries none beyond the six that were asked for",
+  unapproved.length === 0, unapproved.slice(0, 12).join("\n        "));
 
 const selectors = scan(VS16.source);
 check("no emoji variation selectors — a text glyph must stay a text glyph",
