@@ -98,6 +98,10 @@
 
   let data = null, mountEl = null, viewingEmail = null;
   let caseFilter = "all", caseSearch = "", scheduleDate = todayStr();
+  // Empty string means "no health filter". Kept separate from caseFilter so
+  // the stage buttons and the health segments compose rather than replace one
+  // another.
+  let healthFilter = "";
   // The month the calendar is showing, and the month payload it last loaded.
   // Kept apart from scheduleDate so clicking a day inside the open month is
   // instant -- the rows are already here, and re-fetching Rethink to show a
@@ -210,114 +214,346 @@
       .bd-cal-pill { font-size:9.5px; padding:0 4px; }
       .bd-cal-h { display:none; }
     }
+
+    /* ================= the command centre ==============================
+       Everything below is the visual hierarchy this page was missing: it had
+       seven cards of identical weight and a lot of white. The rule here is
+       that SIZE MEANS URGENCY. The billable ring and the priority feed are
+       the two things a BCBA opens this page for, so they are the two things
+       that are big; the counts beside them are a strip of tiles, not seven
+       more cards competing for the same attention. */
+
+    /* The header no longer takes a tenth of the screen. */
+    .bd-head { margin-bottom: 14px; align-items: center; }
+
+    /* WEEK STRIP: the billable ring, then compact tiles. */
+    .bd-week { display:grid; grid-template-columns: minmax(250px, 300px) 1fr; gap:12px; margin-bottom:14px; align-items:stretch; }
+    @media (max-width: 900px) { .bd-week { grid-template-columns: 1fr; } }
+    .bd-hero { background:#fff; border:1px solid #e6e1d4; border-radius:14px; padding:15px 17px; display:flex; gap:15px; align-items:center; }
+    .bd-hero.win { background:linear-gradient(180deg,#f2fbf5 0%,#ffffff 70%); border-color:#bfe6cd; }
+    .bd-hero-txt { min-width:0; }
+    .bd-ring { flex:0 0 auto; position:relative; width:86px; height:86px; }
+    .bd-ring svg { display:block; transform:rotate(-90deg); }
+    .bd-ring-c { position:absolute; inset:0; display:grid; place-items:center; text-align:center; }
+    .bd-ring-n { font-size:19px; font-weight:800; color:#1b2a6b; line-height:1; letter-spacing:-.4px; }
+    .bd-ring-l { font-size:9.5px; font-weight:700; color:#8b8798; text-transform:uppercase; letter-spacing:.05em; margin-top:2px; }
+    .bd-hero-big { font-size:20px; font-weight:800; color:#1b2a6b; letter-spacing:-.3px; line-height:1.1; }
+    .bd-hero-sub { font-size:11.5px; color:#767488; margin-top:4px; line-height:1.5; }
+    .bd-hero-mtd { margin-top:9px; padding-top:9px; border-top:1px dashed #ece8dd; }
+    .bd-mini { height:6px; background:#eeecf6; border-radius:999px; overflow:hidden; margin-top:5px; }
+    .bd-mini i { display:block; height:100%; background:#4a63c9; border-radius:999px; }
+
+    /* TILES: four compact facts, not four more cards. */
+    .bd-tiles { display:grid; grid-template-columns: repeat(auto-fit, minmax(min(140px,100%), 1fr)); gap:10px; }
+    .bd-tile { background:#fff; border:1px solid #e6e1d4; border-radius:12px; padding:11px 13px; text-align:left;
+      font:inherit; cursor:pointer; display:flex; flex-direction:column; gap:2px; border-left-width:4px; }
+    .bd-tile:hover { border-color:#c9c2ae; border-left-color:inherit; background:#fdfcf9; }
+    .bd-tile-n { font-size:22px; font-weight:800; color:#1b2a6b; line-height:1.05; letter-spacing:-.4px; }
+    .bd-tile-t { font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:#8b8798; }
+    .bd-tile-s { font-size:11px; color:#767488; line-height:1.45; margin-top:2px; }
+
+    /* PRIORITY FEED. Left rule carries the colour; the row stays readable. */
+    .bd-prio { display:flex; align-items:center; gap:11px; padding:10px 15px; border-bottom:1px solid #f6f3ec;
+      border-left:4px solid transparent; background:none; width:100%; text-align:left; font:inherit; cursor:pointer; }
+    .bd-prio:last-child { border-bottom:0; }
+    .bd-prio:hover { background:#faf8f3; }
+    .bd-prio-dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; }
+    .bd-prio-txt { flex:1 1 auto; min-width:0; }
+    .bd-prio-n { font-size:13px; font-weight:700; color:#1b2a6b; }
+    .bd-prio-d { font-size:11.5px; color:#5b5878; margin-top:1px; }
+    .bd-prio-go { font-size:11px; font-weight:700; color:#2c4bb8; white-space:nowrap; flex:0 0 auto; display:flex; align-items:center; gap:3px; }
+    .bd-calm { padding:16px 15px; display:flex; gap:11px; align-items:center; }
+    .bd-calm-e { font-size:20px; line-height:1; }
+    .bd-calm-t { font-size:13px; font-weight:700; color:#166534; }
+    .bd-calm-s { font-size:11.5px; color:#767488; margin-top:1px; }
+
+    /* HEALTH: three segments that filter the table below. */
+    .bd-health { display:flex; gap:8px; flex-wrap:wrap; }
+    .bd-hb { display:flex; align-items:center; gap:7px; padding:6px 12px; border-radius:20px; border:1px solid #e6e1d4;
+      background:#fff; font:inherit; font-size:12px; font-weight:600; color:#4b5563; cursor:pointer; }
+    .bd-hb:hover { border-color:#c9c2ae; }
+    .bd-hb.on { border-width:2px; padding:5px 11px; }
+    .bd-hb b { font-size:14px; font-weight:800; }
+    .bd-dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; display:inline-block; }
+    /* The table's health cell: a dot that explains itself on hover. */
+    .bd-hcell { display:inline-flex; align-items:center; gap:6px; cursor:help; }
+    .bd-hcell span.t { font-size:11px; font-weight:700; }
+
+    /* CALENDAR CATEGORIES. Colour is never the only carrier -- the day cell
+       shows counts and the detail rows name the service in words. */
+    .bd-cal-bars { display:flex; gap:2px; margin-top:auto; }
+    .bd-cal-bars i { height:3px; border-radius:2px; flex:1 1 auto; min-width:3px; }
+    .bd-leg { display:flex; gap:9px 14px; flex-wrap:wrap; padding:9px 15px; border-top:1px solid #f0ece2; background:#faf8f3; }
+    .bd-leg span { font-size:10.5px; color:#5b5878; display:inline-flex; align-items:center; gap:5px; }
+    .bd-leg i { width:9px; height:9px; border-radius:3px; display:inline-block; }
+    .bd-appt { display:flex; gap:11px; padding:9px 15px; border-bottom:1px solid #f6f3ec; align-items:flex-start; }
+    .bd-appt:last-child { border-bottom:0; }
+    .bd-appt-bar { width:3px; border-radius:2px; align-self:stretch; flex:0 0 auto; }
+    .bd-appt-t { font-size:11.5px; font-weight:700; color:#1b2a6b; white-space:nowrap; flex:0 0 auto; min-width:92px; }
+    .bd-appt-m { flex:1 1 auto; min-width:0; }
+    .bd-appt-n { font-size:12.5px; font-weight:600; color:#33324a; }
+    .bd-appt-s { font-size:11px; color:#767488; margin-top:1px; }
+
+    /* WINS + ACTIVITY */
+    .bd-win { display:flex; gap:10px; padding:9px 15px; align-items:flex-start; border-bottom:1px solid #f6f3ec; }
+    .bd-win:last-child { border-bottom:0; }
+    .bd-win-e { font-size:15px; line-height:1.3; flex:0 0 auto; }
+    .bd-win-n { font-size:12.5px; color:#33324a; }
+    .bd-win-d { font-size:11px; color:#767488; margin-top:1px; }
+    .bd-act { display:flex; gap:10px; padding:8px 15px; align-items:baseline; border-bottom:1px solid #f6f3ec; font-size:12px; }
+    .bd-act:last-child { border-bottom:0; }
+    .bd-act-w { flex:1 1 auto; min-width:0; color:#33324a; }
+    .bd-act-t { font-size:10.5px; color:#8b8798; white-space:nowrap; flex:0 0 auto; }
+
+    /* QUICK LINKS as tiles rather than six full-width rows. */
+    .bd-tiles-l { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(155px,100%),1fr)); gap:8px; padding:12px 15px; }
+    .bd-lt { display:flex; align-items:center; gap:9px; padding:10px 11px; border:1px solid #e6e1d4; border-radius:10px;
+      background:#fff; font-size:12px; font-weight:600; color:#1b2a6b; text-decoration:none; }
+    .bd-lt:hover { background:#f6f3ec; border-color:#c9c2ae; }
+
+    /* SUPERVISION compliance strip above the table it summarises. */
+    .bd-sup { display:flex; gap:10px 18px; flex-wrap:wrap; align-items:center; padding:11px 15px; border-bottom:1px solid #f0ece2; }
+    .bd-sup-n { font-size:19px; font-weight:800; color:#1b2a6b; line-height:1; }
+    .bd-sup-l { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#8b8798; margin-top:3px; }
+
+    /* Branding must never be easier to read than the data. There are TWO
+       marks on every page -- theme.js paints one behind #view-mount and the
+       shell fixes a second in the top right corner -- and both are dimmed
+       HERE rather than removed at source, so every other page keeps the look
+       it was given.
+       z-index matters as much as opacity: the pseudo-element is positioned
+       and the panels are not, so at z-index 0 it painted OVER the cards it
+       was supposed to sit behind. */
+    #view-mount:has(.bd)::before { opacity:.02 !important; background-size:240px !important;
+      background-position: right 30px bottom 26px !important; z-index:-1 !important; }
+    .main:has(.bd) > img[aria-hidden="true"] { opacity:.028 !important; width:86px !important; }
+
+    /* TASK CENTER. The shell's own component, mounted here -- its markup and
+       its behaviour are not this page's to change, so the empty state is
+       reshaped with CSS alone. Tasks & Alerts keeps the look it was given.
+       An empty task list took a card the height of the caseload table to say
+       nothing was due. */
+    .bd-tc .empty-state { padding:11px 15px !important; min-height:0 !important; height:auto !important;
+      text-align:left !important; font-size:12.5px; color:#166534; display:flex; align-items:center; gap:8px; }
+    .bd-tc .empty-state::before { content:"✓"; font-weight:800; color:#16a34a; font-size:13px; }
+    /* Overdue is the one thing in that list worth interrupting for. */
+    .bd-tc .tc-row.overdue { border-left:3px solid #dc2626; background:#fffafa; }
+
+    /* Micro-interactions only: a fade-in on the priority feed, and nothing
+       that moves while somebody is reading a deadline. */
+    @media (prefers-reduced-motion: no-preference) {
+      .bd-prio, .bd-tile, .bd-hero { animation: bd-in .22s ease-out both; }
+      @keyframes bd-in { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:none; } }
+    }
+
+    /* RESPONSIVE. Desktop and laptop are the BCBA's workflow, so nothing is
+       hidden on the way down -- the grids collapse and the table scrolls
+       inside its own panel rather than the page going wide. */
+    @media (max-width: 1100px) {
+      .bd-week { grid-template-columns: 1fr; }
+      .bd-two { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      .bd-hero { flex-direction:column; align-items:flex-start; }
+      .bd-hcell span.t { display:none; }
+      .bd-prio-go { font-size:0; }
+      .bd-prio-go svg { width:14px; height:14px; }
+      .bd-appt { flex-wrap:wrap; }
+      .bd-appt-t { min-width:0; }
+    }
+
     @media print {
-      .sidebar, .bd-filters, .bd-day, .bd-links, .bd-fb { display:none !important; }
+      .sidebar, .bd-filters, .bd-day, .bd-links, .bd-fb, .bd-health { display:none !important; }
       .bd-panel { break-inside: avoid; }
       .bd-cal-cell { min-height:58px; }
+      .bd-prio, .bd-tile, .bd-hero { animation:none !important; }
     }`;
     document.head.appendChild(st);
   }
 
-  // ================= summary cards =========================================
+  // ================= the clinical week ====================================
+  // WHAT THIS REPLACED, and why: seven cards of identical size and colour,
+  // each with a number in it. A page where everything is emphasised has no
+  // emphasis, and the two things a BCBA opens this for -- am I on track, and
+  // what is on fire -- were the same weight as the Student Analyst count.
+  //
+  // Nothing was removed. Every figure the old cards carried is still here and
+  // still comes from the same place in the payload; they are arranged by how
+  // much they matter instead of by the order they were written.
+  const RING_R = 34, RING_C = 2 * Math.PI * RING_R;
+
+  function ring(percent, tone) {
+    // An unavailable figure gets an empty track and no number, never a 0%
+    // sweep -- a full grey circle reads as "you have done none of it".
+    const p = percent == null ? null : Math.max(0, Math.min(100, percent));
+    const dash = p == null ? 0 : (p / 100) * RING_C;
+    const stroke = tone === "green" ? "#16a34a" : tone === "gold" ? "#d97706" : "#2c4bb8";
+    return `<div class="bd-ring">
+      <svg width="86" height="86" viewBox="0 0 86 86" aria-hidden="true">
+        <circle cx="43" cy="43" r="${RING_R}" fill="none" stroke="#eeecf6" stroke-width="8"/>
+        ${p == null ? "" : `<circle cx="43" cy="43" r="${RING_R}" fill="none" stroke="${stroke}" stroke-width="8"
+          stroke-linecap="round" stroke-dasharray="${dash.toFixed(1)} ${(RING_C - dash).toFixed(1)}"/>`}
+      </svg>
+      <div class="bd-ring-c">
+        <div class="bd-ring-n" style="${p == null ? "color:#b9b6c9;" : ""}">${p == null ? "—" : p + "%"}</div>
+        <div class="bd-ring-l">of goal</div>
+      </div>
+    </div>`;
+  }
+
+  // The headline for a billable figure that is not available. Each cause has
+  // its own words because each has a different person fixing it; the server
+  // decides which, and the page does not guess.
+  const UNAVAILABLE_HEAD = {
+    none_counted: "Waiting on verification",
+    not_linked: "Not linked to Rethink",
+    sync_failed: "Sync failed",
+    never_synced: "Not synced yet",
+    not_configured: "Not configured",
+    no_target: "No weekly requirement",
+    no_staff_record: "No staff record",
+  };
+
+  function billableHero(d) {
+    const b = d.summary.billable;
+    if (!b.available) {
+      return `<div class="bd-hero">
+        ${ring(null)}
+        <div class="bd-hero-txt">
+          <div class="bd-ct">Billable progress</div>
+          <div class="bd-hero-big" style="font-size:15px; line-height:1.3;">${esc(UNAVAILABLE_HEAD[b.reason] || "Not available")}</div>
+          <div class="bd-hero-sub">${esc(b.note || "")}</div>
+        </div>
+      </div>`;
+    }
+    const met = b.percent != null && b.percent >= 100;
+    const over = Math.round((b.completed - b.required) * 10) / 10;
+    const m = b.month;
+    return `<div class="bd-hero${met ? " win" : ""}">
+      ${ring(b.percent, met ? "green" : b.percent != null && b.percent >= 70 ? "gold" : null)}
+      <div class="bd-hero-txt">
+        <div class="bd-ct">${met ? "Weekly goal reached 🎉" : "Billable · this week"}</div>
+        <div class="bd-hero-big">${b.completed} / ${b.required} <span style="font-size:13px; font-weight:600; color:#767488;">hrs</span></div>
+        <div class="bd-hero-sub">${met
+          ? `${over > 0 ? over + " hours above target." : "Target met exactly."} Nice work.`
+          : `${b.remaining} hour${b.remaining === 1 ? "" : "s"} remaining this week.`}</div>
+        ${b.unverified_appointments ? `<div class="bd-hero-sub" style="color:#b45309;">${b.unverified_appointments} session${
+            b.unverified_appointments === 1 ? " is" : "s are"} awaiting staff verification in Rethink.</div>` : ""}
+        ${m ? `<div class="bd-hero-mtd">
+          <div class="bd-ct" style="margin-bottom:3px;">This month so far</div>
+          <div style="font-size:12.5px; font-weight:700; color:#33324a;">${m.completed} / ${m.required} hrs${
+            m.percent == null ? "" : ` · ${m.percent}%`}</div>
+          <div class="bd-mini"><i style="width:${Math.max(0, Math.min(100, m.percent || 0))}%;"></i></div>
+          <div class="bd-hero-sub">${m.remaining > 0
+            ? `${m.remaining} hours remaining across ${m.weeks_counted} measured week${m.weeks_counted === 1 ? "" : "s"}.`
+            : `Ahead across ${m.weeks_counted} measured week${m.weeks_counted === 1 ? "" : "s"}.`}</div>
+        </div>` : ""}
+      </div>
+    </div>`;
+  }
+
+  // A tile is a fact plus a way in. `go` is the existing navigation, unchanged.
+  function tile(opts) {
+    return `<button class="bd-tile" data-go="${opts.go}" style="border-left-color:${opts.rule};"
+      ${opts.title ? `title="${esc(opts.title)}"` : ""}>
+      <div class="bd-tile-t">${esc(opts.label)}</div>
+      <div class="bd-tile-n"${opts.numColor ? ` style="color:${opts.numColor};"` : ""}>${esc(String(opts.value))}</div>
+      <div class="bd-tile-s">${opts.sub}</div>
+    </button>`;
+  }
+
   function cards(d) {
     const s = d.summary;
-    const c = s.clients, a = s.authorizations, tp = s.treatment_plans, an = s.analysts, b = s.billable;
-    const chip = (label, v, tone) => {
-      if (!v) return "";
-      const t = TONES[tone] || TONES.grey;
-      return `<span class="bd-chip" style="background:${t.soft}; color:${t.softFg};">${esc(label)} ${v}</span>`;
-    };
-    // Billable says what it knows. An unavailable figure is named, never drawn
-    // as 0% -- that would report a clinician as behind when nothing is wrong.
-    //
-    // The headline for an unavailable figure is no longer always the same two
-    // words. "Not available" was accurate and useless: it read as a broken
-    // integration whether the cause was a missing link, a failed sync or a
-    // week of sessions nobody has verified yet. Each of those has a different
-    // person fixing it, so each gets its own heading and the sentence
-    // underneath says what to do.
-    const UNAVAILABLE_HEAD = {
-      none_counted: "Waiting on verification",
-      not_linked: "Not linked to Rethink",
-      sync_failed: "Sync failed",
-      never_synced: "Not synced yet",
-      not_configured: "Not configured",
-      no_target: "No weekly requirement",
-      no_staff_record: "No staff record",
-    };
-    // Sessions that exist but are not in the figure yet, said once and in the
-    // same words whether the total is zero or twelve.
-    const pending = b.available && b.unverified_appointments
-      ? `<div class="bd-cl" style="color:#b45309;">${b.unverified_appointments} more session${
-          b.unverified_appointments === 1 ? " is" : "s are"} awaiting staff verification in Rethink.</div>`
-      : "";
-    const billableBody = b.available
-      ? `<div class="bd-cn">${b.percent == null ? "—" : b.percent + "%"}</div>
-         <div class="bd-bar"><i style="width:${Math.max(0, Math.min(100, b.percent || 0))}%;"></i></div>
-         <div class="bd-cl">${b.completed} of ${b.required} hours · ${b.remaining} remaining</div>
-         ${pending}`
-      : `<div class="bd-cn" style="font-size:15px; line-height:1.35; padding-top:5px;">${
-           esc(UNAVAILABLE_HEAD[b.reason] || "Not available")}</div>
-         <div class="bd-cl">${esc(b.note || "")}</div>`;
+    const c = s.clients, a = s.authorizations, tp = s.treatment_plans, an = s.analysts;
 
-    return `<div class="bd-cards">
-      <button class="bd-card" data-go="caseload">
-        <div class="bd-chead">
-          <span class="bd-mark" style="background:#e8eefc; color:#2c4bb8;">${icon("people", 20)}</span>
-          <div><div class="bd-cn">${c.total}</div><div class="bd-ct" style="margin:0;">Total Clients</div></div>
-        </div>
-        <div class="bd-split">
-          ${chip("In therapy", c.in_therapy, "none")}
-          ${chip("Assessment", c.assessment, "grey")}
-          ${chip("On hold", c.on_hold, "yellow")}
-        </div>
-      </button>
+    // Urgency chooses the rule colour: red for anything already past, gold for
+    // anything inside the window, green when there is nothing to do. The
+    // thresholds are the server's -- this reads its bands, it does not invent
+    // its own.
+    const toneOf = (bands) => bands.expired ? "#dc2626"
+      : (bands.d7 || bands.d30) ? "#d97706"
+      : bands.d60 ? "#eab308" : "#16a34a";
 
-      <button class="bd-card" data-go="auth">
-        <div class="bd-chead">
-          <span class="bd-mark" style="background:#fdeaea; color:#c0392b;">${icon("doc", 20)}</span>
-          <div><div class="bd-cn">${a.attention}</div><div class="bd-ct" style="margin:0;">Authorizations Expiring Soon</div></div>
-        </div>
-        <div class="bd-split">
-          ${chip("Expired", a.expired, "darkred")}
-          ${chip("7 days", a.d7, "red")}
-          ${chip("30 days", a.d30, "orange")}
-          ${chip("60 days", a.d60, "yellow")}
-        </div>
-        ${a.attention ? "" : `<div class="bd-cl">Nothing inside 60 days.</div>`}
-      </button>
+    const authSub = a.attention
+      ? [a.expired ? `${a.expired} expired` : "", a.d7 ? `${a.d7} within 7 days` : "",
+         a.d30 ? `${a.d30} within 30` : "", a.d60 ? `${a.d60} within 60` : ""].filter(Boolean).join(" · ")
+      : "Nothing inside 60 days.";
+    const tpSub = tp.attention
+      ? [tp.expired ? `${tp.expired} overdue` : "", tp.d7 ? `${tp.d7} within 7 days` : "",
+         tp.d30 ? `${tp.d30} within 30` : "", tp.d60 ? `${tp.d60} within 60` : ""].filter(Boolean).join(" · ")
+      : "Nothing inside 60 days.";
 
-      <button class="bd-card" data-go="caseload">
-        <div class="bd-chead">
-          <span class="bd-mark" style="background:#e8f0fd; color:#2563eb;">${icon("checkbox", 20)}</span>
-          <div><div class="bd-cn">${tp.attention}</div><div class="bd-ct" style="margin:0;">Treatment Plans Due Soon</div></div>
-        </div>
-        <div class="bd-split">
-          ${chip("Overdue", tp.expired, "darkred")}
-          ${chip("7 days", tp.d7, "red")}
-          ${chip("30 days", tp.d30, "orange")}
-          ${chip("60 days", tp.d60, "yellow")}
-        </div>
-        ${tp.attention ? "" : `<div class="bd-cl">Nothing inside 60 days.</div>`}
-        ${s.plans && s.plans.no_date ? `<div class="bd-cl">${s.plans.no_date} client${s.plans.no_date === 1 ? "" : "s"} with no plan deadline recorded.</div>` : ""}
-      </button>
-
-      <button class="bd-card" data-go="analysts">
-        <div class="bd-chead">
-          <span class="bd-mark" style="background:#e6f6ec; color:#177a3c;">${icon("cap", 20)}</span>
-          <div><div class="bd-cn">${an.count}</div><div class="bd-ct" style="margin:0;">Student Analysts</div></div>
-        </div>
-        <div class="bd-cl">${an.clients_with} client${an.clients_with === 1 ? "" : "s"} with an analyst${
-          an.clients_without ? ` · <strong>${an.clients_without}</strong> without` : ""}</div>
-      </button>
-
-      <div class="bd-card" data-static="1">
-        <div class="bd-chead">
-          <span class="bd-mark" style="background:#eeeafc; color:#5b4bbd;">${icon("chart", 20)}</span>
-          <div class="bd-ct" style="margin:0;">Weekly Billable Progress</div>
-        </div>
-        ${billableBody}
+    return `<div class="bd-week">
+      ${billableHero(d)}
+      <div class="bd-tiles">
+        ${tile({ go: "caseload", label: "Total caseload", value: c.total, rule: "#2c4bb8",
+          sub: [c.in_therapy ? `${c.in_therapy} in therapy` : "", c.assessment ? `${c.assessment} assessment` : "",
+                c.on_hold ? `${c.on_hold} on hold` : ""].filter(Boolean).join(" · ") || "No open clients." })}
+        ${tile({ go: "caseload", label: "Treatment plans", value: tp.attention, rule: toneOf(tp),
+          numColor: tp.expired ? "#b91c1c" : undefined, sub: esc(tpSub)
+            + (s.plans && s.plans.no_date ? `<br/><span style="color:#b45309;">${s.plans.no_date} with no deadline recorded</span>` : "") })}
+        ${tile({ go: "auth", label: "Authorizations", value: a.attention, rule: toneOf(a),
+          numColor: a.expired ? "#b91c1c" : undefined, sub: esc(authSub) })}
+        ${tile({ go: "analysts", label: "Student analysts", value: an.count, rule: an.clients_without ? "#eab308" : "#16a34a",
+          sub: an.clients_without
+            ? `${an.clients_with} client${an.clients_with === 1 ? "" : "s"} covered · <span style="color:#b45309;">${an.clients_without} unassigned</span>`
+            : `Every client has one.` })}
       </div>
+    </div>`;
+  }
+
+  // ================= priority for you =====================================
+  // THE SAME VERDICTS THE HEALTH DOTS USE, ranked. The server builds them from
+  // one set of rules so a client cannot be top of this list and green in the
+  // table. Nothing here is hard-coded: every line is a client on this BCBA's
+  // own caseload with a reason that came out of their own record.
+  const LEVEL = {
+    action:    { dot: "#dc2626", rule: "#dc2626", label: "Action required" },
+    attention: { dot: "#eab308", rule: "#eab308", label: "Needs attention" },
+  };
+  // Which existing screen a reason belongs on. No new pages: these are the
+  // routes the dashboard already links to.
+  const PRIO_ACTION = {
+    auth_expired: "Review authorization", auth_urgent: "Review authorization",
+    auth_soon: "Review authorization",
+    plan_overdue: "Open treatment plan", plan_soon: "Open treatment plan",
+    plan_missing: "Set plan deadline",
+    no_analyst: "Assign an analyst", task_overdue: "Open tasks", task_today: "Open tasks",
+  };
+
+  function priorityPanel(d) {
+    const rows = d.priorities || [];
+    const body = rows.length
+      ? rows.map((p) => {
+          const L = LEVEL[p.level] || LEVEL.attention;
+          const go = PRIO_ACTION[p.reason_key] || "Open client";
+          const attrs = p.client_id
+            ? `data-client="${p.client_id}"${p.section ? ` data-section="${esc(p.section)}"` : ""}`
+            : `data-goto="#/tasks"`;
+          return `<button class="bd-prio" style="border-left-color:${L.rule};" ${attrs}
+            title="${esc([p.title].concat(p.other_reasons || []).join(" "))}">
+            <span class="bd-prio-dot" style="background:${L.dot};"></span>
+            <span class="bd-prio-txt">
+              <span class="bd-prio-n">${esc(p.client_name || "My tasks")}</span>
+              <span class="bd-prio-d">${esc(p.title)}${p.also ? ` · and ${p.also} more` : ""}</span>
+            </span>
+            <span class="bd-prio-go">${esc(go)} ${icon("chevron", 13)}</span>
+          </button>`;
+        }).join("")
+      : `<div class="bd-calm">
+          <span class="bd-calm-e">✨</span>
+          <span><span class="bd-calm-t">Caseload looking good</span>
+          <span class="bd-calm-s">No expired authorizations, no overdue plans and no overdue tasks on this caseload.</span></span>
+        </div>`;
+    const urgent = rows.filter((p) => p.level === "action").length;
+    return `<div class="bd-panel">
+      <div class="bd-ph"><div>
+        <h2 class="bd-pt">${icon("clock", 16)} Priority for you</h2>
+        <p class="bd-pn">${rows.length
+          ? `${urgent ? `<strong>${urgent} need${urgent === 1 ? "s" : ""} action now</strong> · ` : ""}ranked from your own client records — authorizations, plan deadlines and your tasks.`
+          : "Ranked from your own client records — authorizations, plan deadlines and your tasks."}</p>
+      </div></div>
+      <div class="bd-body" style="padding:0;">${body}</div>
     </div>`;
   }
 
@@ -395,6 +631,54 @@
     };
   }
 
+  // ---- appointment categories -------------------------------------------
+  // COLOUR IS DERIVED FROM WHAT RETHINK ACTUALLY SENT, and from nothing else.
+  // scheduleRange() already passes through `service` (the first of cptCode,
+  // serviceCode, appointmentType, serviceName that Rethink populated) and
+  // `status`. If neither says anything recognisable the appointment is grey
+  // and is labelled "Uncategorised" -- a guessed category on a clinical
+  // calendar is worse than no category, and inventing a CPT code that Rethink
+  // did not send would be worse still.
+  //
+  // The words come first and the colour second: every row names its service in
+  // text, so the palette is a scanning aid rather than the only carrier.
+  const APPT_CATS = [
+    { key: "cancelled",  label: "Cancelled / no-show", color: "#dc2626" },
+    { key: "assessment", label: "Assessment",          color: "#16a34a" },
+    { key: "parent",     label: "Parent training",     color: "#7c3aed" },
+    { key: "direct",     label: "Direct / supervision", color: "#2c4bb8" },
+    { key: "clinical",   label: "Treatment plan / clinical work", color: "#d97706" },
+    { key: "nonbillable", label: "Non-billable",       color: "#9ca3af" },
+    { key: "other",      label: "Uncategorised",       color: "#c7c3d4" },
+  ];
+  const CAT_BY_KEY = {};
+  APPT_CATS.forEach((c) => { CAT_BY_KEY[c.key] = c; });
+
+  function apptCategory(r) {
+    const status = String(r.status || "").toLowerCase();
+    if (/cancel|no[-\s]?show|missed/.test(status)) return "cancelled";
+    const svc = String(r.service || "").toLowerCase();
+    if (!svc) return "other";
+    // CPT first, because a code is unambiguous where a free-text name is not.
+    if (/\b97151\b|\b97152\b|assessment|intake/.test(svc)) return "assessment";
+    if (/\b97156\b|\b97157\b|parent|caregiver|family/.test(svc)) return "parent";
+    if (/\b97153\b|\b97155\b|direct|supervis/.test(svc)) return "direct";
+    if (/treatment plan|report|clinical|indirect/.test(svc)) return "clinical";
+    if (/non[-\s]?billable|admin|travel|cancellation/.test(svc)) return "nonbillable";
+    return "other";
+  }
+  const catColor = (key) => (CAT_BY_KEY[key] || CAT_BY_KEY.other).color;
+
+  function legendHtml(rows) {
+    // Only the categories that are actually on this month's calendar. A legend
+    // listing six colours none of which are on screen is decoration.
+    const present = new Set((rows || []).map(apptCategory));
+    const shown = APPT_CATS.filter((c) => present.has(c.key));
+    if (!shown.length) return "";
+    return `<div class="bd-leg">${shown.map((c) =>
+      `<span><i style="background:${c.color};"></i>${esc(c.label)}</span>`).join("")}</div>`;
+  }
+
   const apptTime = (r) => {
     if (!r.start) return "—";
     const t = String(r.start).slice(11, 16) || String(r.start).slice(0, 5);
@@ -405,23 +689,37 @@
   // The selected day's appointments, under the grid. Unchanged in substance
   // from the old day view -- the calendar is how you choose a day, not a
   // replacement for seeing what is on it.
+  // The chosen day, as a readable agenda rather than a five-column table. The
+  // substance is unchanged -- same fields, same source, same "not linked"
+  // wording -- but a BCBA reads their day down the times, not across columns.
   function dayDetailHtml(rows, iso) {
     if (!rows.length) {
       return `<div class="bd-empty">No appointments in Rethink for ${esc(dayLabel(iso))}.</div>`;
     }
-    return `<div class="bd-scroll"><table>
-      <thead><tr><th>Time</th><th>Client</th><th>Location</th><th>Type / CPT</th><th>Status</th></tr></thead>
-      <tbody>${rows.map((r) => `<tr>
-        <td>${esc(apptTime(r))}</td>
-        <td>${r.client_id
+    const hours = rows.reduce((a, r) => a + (Number(r.duration_hours) || 0), 0);
+    const shown = Math.round(hours * 10) / 10;
+    return `<div style="border-top:1px solid #f0ece2;">
+      <div style="padding:10px 15px 4px;">
+        <div class="bd-ct" style="margin:0;">${esc(dayLabel(iso))}</div>
+      </div>
+      ${rows.map((r) => {
+        const cat = apptCategory(r);
+        return `<div class="bd-appt">
+          <span class="bd-appt-bar" style="background:${catColor(cat)};" title="${esc((CAT_BY_KEY[cat] || {}).label || "")}"></span>
+          <span class="bd-appt-t">${esc(apptTime(r))}</span>
+          <span class="bd-appt-m">
+            <span class="bd-appt-n">${r.client_id
               ? `<button class="bd-link" data-client="${r.client_id}">${esc(r.client_name)}</button>`
-              : `<span style="color:#767488;">Not linked to a CRM client</span>`}</td>
-        <td>${esc(r.location || "—")}</td>
-        <td>${esc(r.service || "—")}</td>
-        <td>${esc(r.status || "—")}</td>
-      </tr>`).join("")}</tbody>
-    </table></div>
-    <div class="bd-note">${esc(dayLabel(iso))} · ${rows.length} appointment${rows.length === 1 ? "" : "s"} from Rethink.</div>`;
+              : `<span style="color:#767488; font-weight:500;">Not linked to a CRM client</span>`}</span>
+            <span class="bd-appt-s">${[r.service, r.location, r.status].filter(Boolean).map(esc).join(" &middot; ") || "Rethink sent no service or location for this appointment."}</span>
+          </span>
+        </div>`;
+      }).join("")}
+      <div class="bd-note">${rows.length} appointment${rows.length === 1 ? "" : "s"} from Rethink${
+        // Only stated when Rethink actually gave durations. A day total of 0
+        // because the field was empty is not a day with no hours on it.
+        hours > 0 ? ` &middot; <strong>${shown} hour${shown === 1 ? "" : "s"}</strong> recorded` : ""}.</div>
+    </div>`;
   }
 
   function calendarHtml(d) {
@@ -445,14 +743,22 @@
         <span class="bd-cal-n">${n}</span>
         ${c.count ? `<span class="bd-cal-pill">${c.count}</span>` : ""}
         ${c.count && c.hours ? `<span class="bd-cal-h">${c.hours}h</span>` : ""}
+        ${c.count ? `<span class="bd-cal-bars">${
+          // One stripe per appointment, in the order they sit on the day, so
+          // the shape of a day is legible without opening it.
+          (c.rows || []).slice(0, 8).map((r) => `<i style="background:${catColor(apptCategory(r))};"></i>`).join("")
+        }</span>` : ""}
       </button>`);
     }
 
-    return `<div class="bd-cal" role="grid" aria-label="${esc(monthLabel(d.month))} schedule">
+    return `<div style="padding:4px 15px 12px;">
+      <div class="bd-cal" role="grid" aria-label="${esc(monthLabel(d.month))} schedule">
         ${dow.map((x) => `<div class="bd-cal-dow">${x}</div>`).join("")}
         ${cells.join("")}
       </div>
-      <div class="bd-cal-sum">${esc(monthLabel(d.month))} · ${d.total_appointments} appointment${d.total_appointments === 1 ? "" : "s"}${d.total_hours ? ` · ${d.total_hours}h` : ""} from Rethink.</div>`;
+      <div class="bd-cal-sum">${esc(monthLabel(d.month))} · ${d.total_appointments} appointment${d.total_appointments === 1 ? "" : "s"}${d.total_hours ? ` · ${d.total_hours}h` : ""} from Rethink.</div>
+      </div>
+      ${legendHtml((d.days || []).reduce((a, c) => a.concat(c.rows || []), []))}`;
   }
 
   // Redraws from what is already loaded -- no fetch. Used when the person
@@ -500,20 +806,66 @@
     { key: "waitlist", label: "Waitlisted" },
   ];
 
+  // The number on a stage button is how many clients are AT THAT STAGE, which
+  // is what somebody reads it as. It deliberately ignores the health filter:
+  // a count that changed every time a health segment was pressed would be
+  // describing the screen rather than the caseload.
   function countFor(d, key) {
     if (!d || !Array.isArray(d.clients)) return null;
-    const was = caseFilter;
-    caseFilter = key;
+    const wasCase = caseFilter, wasHealth = healthFilter;
+    caseFilter = key; healthFilter = "";
     const n = d.clients.filter(matchesFilter).length;
-    caseFilter = was;
+    caseFilter = wasCase; healthFilter = wasHealth;
     return n;
   }
 
   function matchesFilter(c) {
+    // Health is a SECOND filter, not a sixth stage button: somebody wants "the
+    // three that need action" without giving up "in therapy". The stage
+    // filters below are untouched and still mean exactly what they meant.
+    if (healthFilter && (!c.health || c.health.key !== healthFilter)) return false;
     if (caseFilter === "all") return true;
     if (caseFilter === "hold" || caseFilter === "waitlist") return c.waitlisted;
     if (caseFilter === "active") return c.stage === "active" && !c.waitlisted;
     return c.stage === caseFilter;
+  }
+
+  // ---- caseload health -------------------------------------------------
+  const HEALTH = {
+    action:    { dot: "#dc2626", label: "Action required", short: "Action" },
+    attention: { dot: "#eab308", label: "Needs attention", short: "Attention" },
+    ok:        { dot: "#16a34a", label: "On track",        short: "On track" },
+  };
+
+  // The dot explains itself. Colour alone is not a message somebody can act
+  // on -- and for anyone who cannot separate the reds and greens it is not a
+  // message at all -- so the reasons the server computed are the title text,
+  // and the word is beside the dot on the wider layouts.
+  function healthCell(c) {
+    const h = c.health || { key: "ok", reasons: [] };
+    const H = HEALTH[h.key] || HEALTH.ok;
+    const why = (h.reasons || []).map((r) => r.text).join(" ") || "Nothing outstanding on this client.";
+    return `<span class="bd-hcell" title="${esc(H.label + ". " + why)}">
+      <span class="bd-dot" style="background:${H.dot};"></span>
+      <span class="t" style="color:${H.dot};">${esc(H.short)}</span>
+    </span>`;
+  }
+
+  function healthStrip(d) {
+    const t = (d.summary && d.summary.health) || { ok: 0, attention: 0, action: 0 };
+    const seg = (key, n) => {
+      const H = HEALTH[key];
+      const on = healthFilter === key;
+      return `<button class="bd-hb ${on ? "on" : ""}" data-health="${key}"
+        style="${on ? `border-color:${H.dot};` : ""}"
+        aria-pressed="${on}">
+        <span class="bd-dot" style="background:${H.dot};"></span><b>${n}</b> ${esc(H.label)}
+      </button>`;
+    };
+    return `<div class="bd-health">
+      ${seg("ok", t.ok)}${seg("attention", t.attention)}${seg("action", t.action)}
+      ${healthFilter ? `<button class="bd-hb" data-health="">Clear</button>` : ""}
+    </div>`;
   }
 
   function caseloadPanel(d) {
@@ -524,11 +876,12 @@
     const body = rows.length
       ? `<div class="bd-scroll"><table>
           <thead><tr>
-            <th>Client</th><th>Status</th><th>Payer</th><th>Auth End</th>
+            <th>Client</th><th>Health</th><th>Status</th><th>Payer</th><th>Auth End</th>
             <th>Treatment Plan Due</th><th>Student Analyst</th><th>Next Session</th>
           </tr></thead>
           <tbody>${rows.map((c) => `<tr>
             <td><button class="bd-link" data-client="${c.id}">${esc(c.child_name)}</button></td>
+            <td>${healthCell(c)}</td>
             <td>${esc(stageLabel(c))}</td>
             <td>${esc(c.insurance_provider || "—")}</td>
             <td>${c.auth_expiration_date ? dayLabel(c.auth_expiration_date) + " " + pill(c.auth_urgency) : "—"}</td>
@@ -545,16 +898,17 @@
         </table></div>`
       : `<div class="bd-empty">No clients match that filter.</div>`;
 
-    return `<div class="bd-panel">
+    return `<div class="bd-panel" id="bd-caseload">
       <div class="bd-ph">
         <div><h2 class="bd-pt">${icon("briefcase", 16)} My Caseload</h2>
-          <p class="bd-pn">${d.clients.length} open client${d.clients.length === 1 ? "" : "s"}. The Student Analyst is here so you never have to open a card to find one.</p></div>
+          <p class="bd-pn">${d.clients.length} open client${d.clients.length === 1 ? "" : "s"}. Health is worked out from this client's own authorization, plan deadline, analyst and tasks — hover a dot for the reason.</p></div>
         <div class="bd-filters">
           ${FILTERS.map((f) => `<button class="bd-fb ${caseFilter === f.key ? "on" : ""}" data-filter="${f.key}">${esc(f.label)}${countFor(d, f.key) === null ? "" : ` (${countFor(d, f.key)})`}</button>`).join("")}
           <input class="bd-search" id="bd-case-search" placeholder="Search my clients…" value="${esc(caseSearch)}" />
           <button class="bd-db" id="bd-export">${icon("download", 14)} Export</button>
         </div>
       </div>
+      <div style="padding:11px 15px; border-bottom:1px solid #f0ece2;">${healthStrip(d)}</div>
       <div class="bd-body">${body}</div>
     </div>`;
   }
@@ -677,6 +1031,72 @@
     </div>`;
   }
 
+  // ================= clinical wins ========================================
+  // Milestones a clinician RECORDED in Client Programming, on this BCBA's own
+  // clients. Read from client_milestones and nowhere else: nothing here is
+  // inferred, and Rethink exposes no mastery data to infer it from -- the
+  // endpoint probe established that, which is why milestones are recorded by
+  // a person in the first place.
+  //
+  // INTERNAL. The parent-facing side of a milestone is the celebration email,
+  // and this panel neither sends nor re-sends one.
+  function winsPanel(d) {
+    const w = d.wins || { rows: [], week_count: 0, available: true };
+    const body = !w.available
+      ? `<div class="bd-empty">Clinical wins could not be read just now.</div>`
+      : w.rows.length
+        ? w.rows.map((r) => `<div class="bd-win">
+            <span class="bd-win-e">${r.event_type === "mastery" ? "🏆" : "🌟"}</span>
+            <span>
+              <span class="bd-win-n"><button class="bd-link" data-client="${r.client_id}" data-section="programming">${esc(r.client_name)}</button>
+                — ${r.event_type === "mastery" ? "mastered" : "reached a treatment milestone"}${
+                  r.program ? ` <strong>${esc(r.program)}</strong>` : ""}</span>
+              <span class="bd-win-d">${esc(dayLabel(r.achieved_at))}</span>
+            </span>
+          </div>`).join("")
+        : `<div class="bd-calm">
+            <span class="bd-calm-e">🌱</span>
+            <span><span class="bd-calm-t" style="color:#1b2a6b;">No milestones recorded yet</span>
+            <span class="bd-calm-s">Wins appear here as soon as a clinician records one in a client's Client Programming section.</span></span>
+          </div>`;
+    return `<div class="bd-panel">
+      <div class="bd-ph"><div>
+        <h2 class="bd-pt">🌟 Clinical wins</h2>
+        <p class="bd-pn">${w.week_count
+          ? `<strong>${w.week_count} recorded in the last 7 days</strong> across your caseload. `
+          : ""}From Client Programming — recorded by a clinician, never inferred.</p>
+      </div></div>
+      <div class="bd-body" style="padding:0;">${body}</div>
+    </div>`;
+  }
+
+  // ================= recent clinical activity =============================
+  // Three things that are genuinely written down against a client, each read
+  // from the table that owns it. A source that cannot be read contributes
+  // nothing rather than a placeholder row.
+  const ACT_ICON = { mastery: "🏆", milestone: "🌟", programming: "📋", task: "✓" };
+
+  function activityPanel(d) {
+    const rows = d.activity || [];
+    const body = rows.length
+      ? rows.map((a) => `<div class="bd-act">
+          <span>${ACT_ICON[a.kind] || "•"}</span>
+          <span class="bd-act-w">${esc(a.what)}${a.detail ? ` — ${esc(a.detail)}` : ""}
+            ${a.client_id ? `· <button class="bd-link" data-client="${a.client_id}" style="font-weight:600;">${esc(a.client_name)}</button>` : ""}
+            ${a.who ? `<span style="color:#8b8798;"> · ${esc(a.who)}</span>` : ""}
+            ${a.note ? `<span style="color:#16a34a;"> · ${esc(a.note)}</span>` : ""}</span>
+          <span class="bd-act-t">${a.at ? esc(dayLabel(String(a.at).slice(0, 10))) : ""}</span>
+        </div>`).join("")
+      : `<div class="bd-empty">Nothing recorded against your clients in the last 30 days.</div>`;
+    return `<div class="bd-panel">
+      <div class="bd-ph"><div>
+        <h2 class="bd-pt">${icon("doc", 16)} Recent clinical activity</h2>
+        <p class="bd-pn">Milestones, programming supervision notes and completed tasks on your caseload — each from the record that owns it.</p>
+      </div></div>
+      <div class="bd-body" style="padding:0;">${body}</div>
+    </div>`;
+  }
+
   // ================= supervision ==========================================
   function supervisionPanel(d) {
     const s = d.supervision || { rows: [] };
@@ -697,12 +1117,33 @@
           }).join("")}</tbody>
         </table></div>
         <div class="bd-note">${esc(s.month)} · list derived from ${esc(s.derived || "")}. The RBT Supervision tracker is the full record.</div>`
-      : `<div class="bd-empty">No supervision responsibilities recorded for you${s.derived ? " (" + esc(s.derived) + ")" : ""}.</div>`;
+      // A compact line rather than an empty card the height of a table. The
+      // sentence is the same one it always showed -- including how the list
+      // would be derived if there were one, which is the part that stops
+      // "nothing here" reading as "the tracker is broken".
+      : `<div class="bd-note" style="border-top:0;">No supervision responsibilities recorded for you${s.derived ? " — " + esc(s.derived) + "." : "."}</div>`;
+
+    // A summary of rows that already exist, counted -- NOT a second
+    // compliance calculation. Every status here was decided by the RBT
+    // Supervision tracker and passed through; this only tallies them, which
+    // is why it cannot drift from the tracker.
+    const rs = s.rows || [];
+    const okN = rs.filter((r) => r.status === "ok").length;
+    const badN = rs.length - okN;
+    const strip = rs.length ? `<div class="bd-sup">
+      <div><div class="bd-sup-n">${rs.length}</div><div class="bd-sup-l">RBTs</div></div>
+      <div><div class="bd-sup-n" style="color:#16a34a;">${okN}</div><div class="bd-sup-l">On track</div></div>
+      <div><div class="bd-sup-n" style="color:${badN ? "#b45309" : "#8b8798"};">${badN}</div><div class="bd-sup-l">Need attention</div></div>
+      <div style="margin-left:auto; font-size:11.5px; color:#767488;">${esc(s.month || "")}${
+        s.min_pct != null ? ` · ${s.min_pct}% required` : ""}</div>
+    </div>` : "";
+
     return `<div class="bd-panel">
       <div class="bd-ph"><div>
         <h2 class="bd-pt">${icon("people", 16)} Supervision</h2>
         <p class="bd-pn">Figures come from the RBT Supervision tracker, not recalculated here.</p>
       </div><a class="bd-ql" href="#/supervision">Open RBT Supervision</a></div>
+      ${strip}
       <div class="bd-body">${body}</div>
     </div>`;
   }
@@ -717,14 +1158,15 @@
       ["Policies & SOPs", "#/policies", "doc"],
       ["Billable Requirements", "#/billable", "chart"],
     ];
+    // Six full-width rows became six tiles. Same destinations, same order,
+    // about a third of the vertical space -- this sits at the bottom of the
+    // page and was taking as much room as the caseload.
     return `<div class="bd-panel">
       <div class="bd-ph"><div><h2 class="bd-pt">${icon("link", 16)} Quick Links</h2></div></div>
-      <div class="bd-body">${links.map(([l, h, ic]) => `
-        <a class="bd-linkrow" href="${h}">
-          <span style="display:flex; align-items:center; gap:9px;">
-            <span class="bd-mark" style="width:26px; height:26px; border-radius:8px; background:#eef1fb; color:#2c4bb8;">${icon(ic, 14)}</span>
-            ${esc(l)}
-          </span>${icon("chevron", 15)}
+      <div class="bd-tiles-l">${links.map(([l, h, ic]) => `
+        <a class="bd-lt" href="${h}">
+          <span class="bd-mark" style="width:26px; height:26px; border-radius:8px; background:#eef1fb; color:#2c4bb8;">${icon(ic, 14)}</span>
+          <span>${esc(l)}</span>
         </a>`).join("")}</div>
     </div>`;
   }
@@ -733,16 +1175,18 @@
   function render() {
     const d = data;
     const other = !d.bcba.is_self;
+    // ORDER IS THE DESIGN. First screen: what needs attention, and how am I
+    // doing. Then the work itself -- schedule and caseload. Then the things
+    // worth knowing but not worth interrupting for. The panels are the same
+    // panels; what changed is which one a BCBA meets first.
     mountEl.innerHTML = `<div class="bd">
       <div class="bd-head">
         <div>
-          <div class="bd-ct" style="margin-bottom:5px;">BCBA Dashboard</div>
           <h1 class="bd-hello">${esc(greeting())}, ${esc(firstName(d.bcba.name))}.</h1>
-          <p class="bd-sub">Here's what's happening with your caseload today.</p>
+          <p class="bd-sub">Here's what needs your attention today.</p>
         </div>
         <div class="bd-headmeta">
           <div>${esc(longDate())}</div>
-          <div class="q">&ldquo;Progress is progress.&rdquo;</div>
         </div>
         ${d.can_pick ? `<div class="bd-day">
           <label style="font-size:11.5px; color:#767488;">Viewing</label>
@@ -751,11 +1195,16 @@
       </div>
       ${other ? `<div class="bd-panel"><div class="bd-warn" style="border-top:0;">You are viewing <strong>${esc(d.bcba.name)}</strong>'s caseload.</div></div>` : ""}
       ${cards(d)}
-      ${authPanel(d)}
+      ${priorityPanel(d)}
+      ${taskCenterPanel() || tasksPanel(d)}
       ${schedulePanel()}
       ${caseloadPanel(d)}
+      <div class="bd-two">
+        ${winsPanel(d)}
+        ${activityPanel(d)}
+      </div>
+      ${authPanel(d)}
       ${analystPanel(d)}
-      ${taskCenterPanel() || tasksPanel(d)}
       ${supervisionPanel(d)}
       ${quickLinks()}
     </div>`;
@@ -784,10 +1233,26 @@
     mountEl.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", () => {
       caseFilter = b.dataset.filter; render();
     }));
+    // The health segments filter the caseload table that is already on the
+    // page. Pressing the one that is on turns it off, which is what a toggle
+    // that looks pressed has to do.
+    mountEl.querySelectorAll("[data-health]").forEach((b) => b.addEventListener("click", () => {
+      const k = b.dataset.health;
+      healthFilter = (!k || healthFilter === k) ? "" : k;
+      render();
+      const panel = mountEl.querySelector("#bd-caseload");
+      if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+    mountEl.querySelectorAll("[data-goto]").forEach((b) => b.addEventListener("click", () => {
+      location.hash = b.dataset.goto;
+    }));
+    // Scroll targets are named, not counted. The old fallback was
+    // ".bd-panel:nth-of-type(3)", which meant reordering the page silently
+    // sent every tile to the wrong panel.
+    const GO_TARGET = { analysts: "#bd-analysts", caseload: "#bd-caseload", schedule: "#bd-sched" };
     mountEl.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => {
-      const target = b.dataset.go === "analysts" ? "#bd-analysts" : null;
       if (b.dataset.go === "auth") { location.hash = "#/auth-alerts"; return; }
-      const el = target ? document.querySelector(target) : mountEl.querySelector(".bd-panel:nth-of-type(3)");
+      const el = document.querySelector(GO_TARGET[b.dataset.go] || "#bd-caseload");
       if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
     mountEl.querySelectorAll("[data-month]").forEach((b) => b.addEventListener("click", () => {
@@ -879,11 +1344,19 @@
       const t = v == null ? "" : String(v);
       return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
     };
-    const head = ["Client", "Status", "Payer", "Auth End", "Treatment Plan Due", "Student Analyst"];
-    const body = rows.map((c) => [
-      c.child_name, stageLabel(c), c.insurance_provider || "",
-      c.auth_expiration_date || "", c.treatment_plan_due_date || "", c.student_analyst || "Unassigned",
-    ].map(cell).join(","));
+    // The export follows the table: it exports what is on screen, including
+    // the health column and -- the part a spreadsheet is actually useful for
+    // -- the REASONS, which a coloured dot cannot carry into a CSV.
+    const head = ["Client", "Health", "Why", "Status", "Payer", "Auth End", "Treatment Plan Due", "Student Analyst"];
+    const body = rows.map((c) => {
+      const h = c.health || { key: "ok", reasons: [] };
+      return [
+        c.child_name, (HEALTH[h.key] || HEALTH.ok).label,
+        (h.reasons || []).map((r) => r.text).join(" "),
+        stageLabel(c), c.insurance_provider || "",
+        c.auth_expiration_date || "", c.treatment_plan_due_date || "", c.student_analyst || "Unassigned",
+      ].map(cell).join(",");
+    });
     const csv = [head.join(","), ...body].join("\r\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const a = document.createElement("a");
