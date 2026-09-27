@@ -616,10 +616,60 @@ const section = (t) => console.log("\n== " + t + " ==");
 
   const keys = await rubricEl.evaluate((el) =>
     [...new Set([...el.querySelectorAll("[data-fid-score]")].map((b) => b.dataset.fidScore))]);
+  // ONE CLICK AT A TIME, EACH ONE CONFIRMED.
+  //
+  // These twenty-eight used to be fired back to back with nothing between
+  // them. Every one of them saves and re-renders the rubric, so a click can
+  // land on a button the re-render has already replaced and never register at
+  // all. Instrumented on a fast local machine, one click in twenty-eight
+  // failed to land inside four seconds; on a loaded CI runner they are lost
+  // outright, the total never reaches 58, and six checks below fail together.
+  //
+  // That is what this suite has actually been failing on. The previous fix
+  // replaced the flat sleep afterwards with a wait for 58/60, which made the
+  // suite tolerate SLOWNESS -- and lost clicks are not slowness, so it came
+  // back.
+  //
+  // So each click is confirmed against the scored counter before the next one
+  // is made, and one that did not land is clicked again. A second failure is
+  // left to the assertions below, which then fail saying the total is wrong
+  // rather than timing out with nothing to point at.
+  // AT LEAST n, and the counter STOPS EXISTING when it reaches thirty.
+  //
+  // Two things are true of this panel and both broke an earlier version of
+  // this wait. Each click saves independently and the panel renders whatever
+  // the server last answered, so the responses land out of order and an exact
+  // intermediate count may never be painted -- waiting for one asserts the
+  // order of a race. And once every item has a value the panel swaps
+  // "N of 30 scored" for the rating, so on the LAST click there is no counter
+  // left to read at all. That is what an earlier version reported as a lost
+  // click on data_5, which is simply the last key in the list; the server had
+  // its 2 the whole time.
+  const scoredCount = async (n) => page.waitForFunction((want) => {
+    const el = document.querySelector("#fid-scoring #fid-live");
+    const txt = (el && el.textContent) || "";
+    const m = txt.match(/(\d+)\s*of\s*30\s*scored/);
+    if (!m) return /\d+\s*\/\s*60/.test(txt);   // no counter = all thirty scored
+    return Number(m[1]) >= want;
+  }, n, { timeout: 30000 }).then(() => true).catch(() => false);
+
+  let scored = 2;                 // prep_1 and beh_5 are already scored above
+  const missed = [];
   for (const k of keys) {
     if (k === "prep_1" || k === "beh_5") continue;
-    await rubricEl.locator(`[data-fid-score='${k}'][data-v='2']`).click();
+    const btn = rubricEl.locator(`[data-fid-score='${k}'][data-v='2']`);
+    await btn.click();
+    scored += 1;
+    // NEVER CLICKED TWICE. The score buttons toggle -- "tapping the same
+    // value again clears it", which is a real feature for a mis-tap and a
+    // trap for a test. A retry here does not recover a slow click, it undoes
+    // it: instrumented, data_5 is simply slower than the rest, and clicking
+    // it again took it from scored back to unscored and left the total two
+    // short. Waiting is the only correct response to slow.
+    if (!(await scoredCount(scored))) missed.push(k);
   }
+  check("every competency registered its score, none lost to a re-render",
+    missed.length === 0, missed);
   // WAIT FOR THE ANSWER, NOT FOR A DURATION.
   //
   // Twenty-eight scores are clicked above, and each one saves and recalculates.
