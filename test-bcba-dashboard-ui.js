@@ -170,8 +170,23 @@ const { chromium } = require("playwright");
   check("an authorization 400 days out does NOT raise an alert",
     Number(card("authorizations expiring")) === 2, cards);
   check("an overdue treatment plan is counted", Number(card("treatment plans due")) >= 1, cards);
-  check("billable says it is not available rather than showing 0%",
-    /Not available/i.test(card("billable") || ""), card("billable"));
+  // THE RULE, NOT THE WORDING.
+  //
+  // What this check exists to protect is that an unavailable billable figure
+  // is never drawn as a percentage: "0 of 25 hours" reads as a performance
+  // problem when the truth is that the figure is not in yet.
+  //
+  // It pinned the literal words "Not available", which were the headline for
+  // all five causes -- accurate and useless, since an unlinked provider, a
+  // failed sync and a week of unverified sessions have different people
+  // fixing them. The headline now names the cause, so this asserts the rule
+  // instead: a cause is named, and no percentage is shown.
+  const billableHead = card("billable") || "";
+  check("billable says WHICH thing is wrong rather than showing 0%",
+    /Not available|Waiting on verification|Not linked to Rethink|Sync failed|Not synced yet|Not configured|No weekly requirement|No staff record/i
+      .test(billableHead), billableHead);
+  check("...and the unavailable figure is never drawn as a percentage",
+    !/%/.test(billableHead), billableHead);
 
   console.log("\n== Authorizations ==");
   check("the authorizations panel is near the top",
