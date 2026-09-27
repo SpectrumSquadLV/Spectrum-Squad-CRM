@@ -62,6 +62,7 @@ function makeCtx(opts) {
       // Billable hours for a week -- a DIFFERENT source from the line above,
       // which is the supervision and payroll figure.
       billableForWeek: opts.billableForWeek || (async () => null),
+      hoursSyncState: opts.hoursSyncState || (async () => ({ configured: true, ever: true, last_ok_at: "2026-09-04T06:00:00.000Z", last_error: null })),
       supervisionMonth: opts.supervisionMonth || (async () => ({ month: "2026-09", employees: [], min_pct: 5 })),
     },
   };
@@ -497,36 +498,111 @@ const R = (n, b, ins, s, e, tp, tx, an) => `| ${n} | ${b || ""} | ${ins || ""} |
 
   // =============================================================== billable
   section("Billable says what it does not know");
-  {
-    const { mod } = load({
-      responses: [[/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 10, name: "W", email: "w@x.com", weekly_billable_target: 25 }],
-                  [/FROM clients/, []]],
-      billableForWeek: async () => null,
-    });
+  // Every unavailable case below names ITS OWN cause. They all used to share
+  // one sentence -- "not available yet from Rethink" -- which was true of an
+  // unlinked provider, a failed sync and a week of unverified paperwork alike,
+  // and sent a BCBA to look at an integration that was working.
+  const EMP = (over) => Object.assign(
+    { id: 10, name: "W", email: "w@x.com", weekly_billable_target: 25, rethink_id: "55501" }, over || {});
+  const WHO = { id: 2, role: "clinical", name: "W", email: "w@x.com" };
+  const billableOf = async (opts) => {
+    const { mod } = load(Object.assign({
+      responses: [[/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, EMP(opts.emp)], [/FROM clients/, []]],
+    }, opts));
     const res = {};
-    await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
-    const b = res.payload.summary.billable;
+    await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, WHO);
+    return res.payload.summary.billable;
+  };
+  {
+    const b = await billableOf({ billableForWeek: async () => null });
     check("UNSYNCED HOURS ARE NOT REPORTED AS ZERO", b.available === false && b.completed === undefined, b);
-    check("and the reason is given", /not available yet/.test(b.note || ""), b);
+    check("and the reason is given", /come across from Rethink yet/.test(b.note || ""), b);
     check("the requirement is still shown", b.required === 25, b);
   }
   {
-    const { mod } = load({
-      responses: [[/FROM hr_employees WHERE LOWER\(TRIM\(email\)\)/, { id: 10, name: "W", email: "w@x.com", weekly_billable_target: 25 }],
-                  [/FROM clients/, []]],
-      // 12 billable, 6 non-billable, 3 unlabelled. Only the 12 may be counted.
+    // THE ONE THAT WAS BEING MISREAD AS A BROKEN INTEGRATION. Rethink has the
+    // week; nothing in it passed the verification filter. Nobody needs to look
+    // at the sync -- somebody needs to verify their sessions.
+    const b = await billableOf({
       billableForWeek: async () => ({
-        week_start: "2026-08-03", week_end: "2026-08-09",
-        billable: 12, nonbillable: 6, unclassified: 3, billable_appointments: 4,
+        week_start: "2026-08-31", week_end: "2026-09-06",
+        billable: 0, nonbillable: 0, unclassified: 0, billable_appointments: 0,
+        appointments_seen: 18, appointments_counted: 0, unverified_appointments: 18, counted_any: false,
       }),
     });
-    const res = {};
-    await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
-    const b = res.payload.summary.billable;
+    check("SESSIONS THAT EXIST BUT DO NOT COUNT ARE NOT BLAMED ON THE INTEGRATION",
+      b.available === false && b.reason === "none_counted", b);
+    check("...the count of sessions Rethink does have is given", /18 sessions/.test(b.note || ""), b);
+    check("...and the sentence says verification is what is holding it back",
+      /staff-verified/.test(b.note || ""), b);
+    check("...still not drawn as a figure, because 0 of 25 is a performance statement",
+      b.completed === undefined && b.percent === undefined, b);
+  }
+  {
+    // A provider who was never linked is a five-minute fix by an owner, and
+    // used to be indistinguishable from a broken sync.
+    const b = await billableOf({ emp: { rethink_id: null }, billableForWeek: async () => null });
+    check("AN UNLINKED PROVIDER IS NAMED AS SUCH, not reported as a Rethink outage",
+      b.available === false && b.reason === "not_linked" && /not linked to a Rethink provider/.test(b.note || ""), b);
+    check("...and it does not blame Rethink for the absence", !/sync/i.test(b.note || ""), b);
+  }
+  {
+    const b = await billableOf({
+      billableForWeek: async () => null,
+      hoursSyncState: async () => ({ configured: true, ever: true, last_ok_at: "x", last_error: "boom" }),
+    });
+    check("A FAILED SYNC SAYS SO, rather than reading as an empty week",
+      b.available === false && b.reason === "sync_failed" && /sync failed/i.test(b.note || ""), b);
+  }
+  {
+    const b = await billableOf({
+      billableForWeek: async () => null,
+      hoursSyncState: async () => ({ configured: true, ever: false, last_ok_at: null, last_error: null }),
+    });
+    check("a sync that has never run says that instead",
+      b.available === false && b.reason === "never_synced", b);
+  }
+  {
+    const b = await billableOf({
+      billableForWeek: async () => null,
+      hoursSyncState: async () => ({ configured: false, ever: false, last_ok_at: null, last_error: null }),
+    });
+    check("and an unconfigured integration is not a missing week either",
+      b.available === false && b.reason === "not_configured", b);
+  }
+  {
+    // A REAL figure that is simply low, with sessions still pending. The
+    // number stands; the pending count is reported beside it so it can be read
+    // correctly rather than as a shortfall.
+    const b = await billableOf({
+      billableForWeek: async () => ({
+        week_start: "2026-08-31", week_end: "2026-09-06",
+        billable: 12, nonbillable: 0, unclassified: 0, billable_appointments: 4,
+        appointments_seen: 20, appointments_counted: 4, unverified_appointments: 16, counted_any: true,
+      }),
+    });
+    check("a partly-verified week still reports the hours that DID count",
+      b.available === true && b.completed === 12, b);
+    check("...and says how many sessions are not in that figure yet",
+      b.unverified_appointments === 16, b);
+  }
+  {
+    // 12 billable, 6 non-billable, 3 unlabelled. Only the 12 may be counted.
+    const b = await billableOf({
+      billableForWeek: async () => ({
+        week_start: "2026-08-03", week_end: "2026-08-09",
+        billable: 12, nonbillable: 6, unclassified: 3, billable_appointments: 4, counted_any: true,
+      }),
+    });
+    // Asserted as an equality, not as "not 18": b.completed being undefined
+    // satisfied `!== 18` and `!== 15` happily, so these two checks went on
+    // passing after the figure stopped being produced at all.
+    check("ONLY the billable hours are counted towards the requirement", b.completed === 12, b);
     check("a real figure is reported with its percentage",
       b.available === true && b.completed === 12 && b.required === 25 && b.percent === 48 && b.remaining === 13, b);
     check("non-billable hours are not counted towards the requirement", b.completed !== 18, b);
     check("unlabelled hours are not counted towards it either", b.completed !== 15 && b.completed !== 21, b);
+    check("...and neither is folded in even partly", b.completed !== 13.5 && b.completed !== 21, b);
     check("but they are reported rather than hidden",
       b.nonbillable === 6 && b.unclassified === 3, b);
     check("and the week it covers is named", b.week_start === "2026-08-03" && b.week_end === "2026-08-09", b);

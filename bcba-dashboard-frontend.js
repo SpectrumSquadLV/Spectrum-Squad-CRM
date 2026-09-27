@@ -229,11 +229,35 @@
     };
     // Billable says what it knows. An unavailable figure is named, never drawn
     // as 0% -- that would report a clinician as behind when nothing is wrong.
+    //
+    // The headline for an unavailable figure is no longer always the same two
+    // words. "Not available" was accurate and useless: it read as a broken
+    // integration whether the cause was a missing link, a failed sync or a
+    // week of sessions nobody has verified yet. Each of those has a different
+    // person fixing it, so each gets its own heading and the sentence
+    // underneath says what to do.
+    const UNAVAILABLE_HEAD = {
+      none_counted: "Waiting on verification",
+      not_linked: "Not linked to Rethink",
+      sync_failed: "Sync failed",
+      never_synced: "Not synced yet",
+      not_configured: "Not configured",
+      no_target: "No weekly requirement",
+      no_staff_record: "No staff record",
+    };
+    // Sessions that exist but are not in the figure yet, said once and in the
+    // same words whether the total is zero or twelve.
+    const pending = b.available && b.unverified_appointments
+      ? `<div class="bd-cl" style="color:#b45309;">${b.unverified_appointments} more session${
+          b.unverified_appointments === 1 ? " is" : "s are"} awaiting staff verification in Rethink.</div>`
+      : "";
     const billableBody = b.available
       ? `<div class="bd-cn">${b.percent == null ? "—" : b.percent + "%"}</div>
          <div class="bd-bar"><i style="width:${Math.max(0, Math.min(100, b.percent || 0))}%;"></i></div>
-         <div class="bd-cl">${b.completed} of ${b.required} hours · ${b.remaining} remaining</div>`
-      : `<div class="bd-cn" style="font-size:15px; line-height:1.35; padding-top:5px;">Not available</div>
+         <div class="bd-cl">${b.completed} of ${b.required} hours · ${b.remaining} remaining</div>
+         ${pending}`
+      : `<div class="bd-cn" style="font-size:15px; line-height:1.35; padding-top:5px;">${
+           esc(UNAVAILABLE_HEAD[b.reason] || "Not available")}</div>
          <div class="bd-cl">${esc(b.note || "")}</div>`;
 
     return `<div class="bd-cards">
@@ -290,7 +314,7 @@
       <div class="bd-card" data-static="1">
         <div class="bd-chead">
           <span class="bd-mark" style="background:#eeeafc; color:#5b4bbd;">${icon("chart", 20)}</span>
-          <div class="bd-ct" style="margin:0;">Monthly Billable Progress</div>
+          <div class="bd-ct" style="margin:0;">Weekly Billable Progress</div>
         </div>
         ${billableBody}
       </div>

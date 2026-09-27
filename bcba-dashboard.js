@@ -38,6 +38,9 @@ module.exports = function initBcbaDashboard(ctx) {
     // Separate from verifiedHoursForMonths above, which is the supervision and
     // payroll figure and must not move when the billable rule changes.
     billableForWeek,
+    // Whether the hours sync has ever run, and whether its last word was a
+    // failure. Read only to EXPLAIN a missing figure -- see billableFor().
+    hoursSyncState,
   } = ctx;
 
   // ---- who may see what ---------------------------------------------------
@@ -318,38 +321,96 @@ module.exports = function initBcbaDashboard(ctx) {
   // deliberately not merged.
   async function billableFor(bcba) {
     const emp = await employeeFor(bcba);
-    if (!emp) return { available: false, note: "No staff record matched this BCBA, so the weekly target could not be read." };
+    if (!emp) return { available: false, reason: "no_staff_record", note: "No staff record matched this BCBA, so the weekly target could not be read." };
     if (emp.weekly_billable_target == null || emp.weekly_billable_target === "") {
       return {
-        available: false, employee_id: emp.id,
+        available: false, employee_id: emp.id, reason: "no_target",
         note: emp.monthly_billable_target != null && emp.monthly_billable_target !== ""
           ? `No weekly billable requirement is set for this BCBA. Their old monthly figure was ${round1(num(emp.monthly_billable_target))} hours — set a weekly one to replace it.`
           : "No weekly billable requirement is set for this BCBA.",
       };
     }
-    const required = num(emp.weekly_billable_target);
+    const required = round1(num(emp.weekly_billable_target));
+
+    // NOT LINKED is a different problem from NOT SYNCED, and it is the one
+    // somebody can fix in a minute. The schedule panel next door has always
+    // said this; the billable panel said "not available yet from Rethink",
+    // which sends a BCBA to look at an integration that is working.
+    if (!emp.rethink_id || !String(emp.rethink_id).trim()) {
+      return {
+        available: false, required, employee_id: emp.id, reason: "not_linked",
+        note: "This BCBA is not linked to a Rethink provider yet, so their hours cannot be read. An owner can link them on the Rethink page.",
+      };
+    }
+
     const wk = typeof billableForWeek === "function"
       ? await billableForWeek(emp.id, today()).catch(() => null)
       : null;
+
+    // Nothing on file for the week at all. Say WHY rather than blaming
+    // Rethink: the sync may never have run, or its last attempt may have
+    // failed, and those are somebody's job to fix.
     if (!wk) {
+      const sync = typeof hoursSyncState === "function"
+        ? await hoursSyncState().catch(() => null)
+        : null;
+      let note = "No sessions for this week have come across from Rethink yet.";
+      let reason = "nothing_synced";
+      if (sync && sync.configured === false) {
+        note = "The Rethink integration is not configured on the server, so billable hours cannot be read.";
+        reason = "not_configured";
+      } else if (sync && !sync.ever) {
+        note = "Rethink hours have not synced yet, so this week's billable hours are not in.";
+        reason = "never_synced";
+      } else if (sync && sync.last_error) {
+        note = "The last Rethink hours sync failed, so this week's billable hours are not in. It is retried automatically.";
+        reason = "sync_failed";
+      }
       // Said plainly rather than shown as zero. "0 of 25 hours" reads as a
       // performance problem; the truth is that the figure is not in yet.
+      return { available: false, required, employee_id: emp.id, reason, note };
+    }
+
+    const seen = Number(wk.appointments_seen) || 0;
+    const counted = Number(wk.appointments_counted) || 0;
+    const unverified = Number(wk.unverified_appointments) || 0;
+
+    // SESSIONS ARE THERE AND NONE OF THEM COUNTED. This is the case that wore
+    // the "not available yet from Rethink" label for months and is not an
+    // integration problem at all -- it is paperwork, usually the clinician's
+    // own. Still not shown as 0%, because 0% is a performance statement and
+    // this is not one; but the sentence now names what is actually holding the
+    // figure back, and who can clear it.
+    if (seen > 0 && wk.counted_any === false) {
+      const sess = (n) => `${n} session${n === 1 ? "" : "s"}`;
       return {
-        available: false, required: round1(required), employee_id: emp.id,
-        note: "Billable hours for this week are not available yet from Rethink.",
+        available: false, required, employee_id: emp.id, reason: "none_counted",
+        week_start: wk.week_start, week_end: wk.week_end,
+        appointments_seen: seen, unverified_appointments: unverified,
+        note: unverified >= seen
+          ? `Rethink has ${sess(seen)} for this week, but ${seen === 1 ? "it is" : "none of them are"} staff-verified yet, so no billable hours can be counted. Verifying ${seen === 1 ? "it" : "them"} in Rethink brings this figure in.`
+          : `Rethink has ${sess(seen)} for this week and none of them count yet — ${unverified} ${unverified === 1 ? "is" : "are"} awaiting staff verification and the rest are not marked completed.`,
       };
     }
+
     const completed = round1(wk.billable);
     return {
       available: true, employee_id: emp.id,
       week_start: wk.week_start, week_end: wk.week_end,
-      required: round1(required), completed,
+      required, completed,
       remaining: Math.max(0, round1(required - completed)),
       percent: required > 0 ? Math.round((completed / required) * 100) : null,
       // Reported, never folded in: an hour Rethink did not label is not
       // quietly counted as billable.
       unclassified: round1(wk.unclassified),
       nonbillable: round1(wk.nonbillable),
+      // Sessions Rethink has that this figure does NOT include yet, so a
+      // number that looks low can be read correctly. A BCBA looking at 12 of
+      // 25 deserves to know whether the other 13 hours are missing or just
+      // unverified.
+      appointments_seen: seen,
+      appointments_counted: counted,
+      unverified_appointments: unverified,
     };
   }
 

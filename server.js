@@ -8973,6 +8973,10 @@ const bcbaDashboard = require("./bcba-dashboard")({
   // number and counts every delivered, verified session; this counts only the
   // ones Rethink classifies as billable.
   billableForWeek: (empId, day) => rethink.billableForWeek(empId, day),
+  // Read only to explain a MISSING billable figure: has the hours sync ever
+  // succeeded, and did its last attempt fail. The panel used to blame Rethink
+  // for every empty week; this lets it say which thing is actually wrong.
+  hoursSyncState: () => rethink.hoursSyncState(),
   // The RBT Supervision tracker's own month computation, not a second copy of
   // it: the worked-hours denominator has a precedence rule (Rethink verified
   // hours, else the uploaded payroll figure) that must exist in one place.

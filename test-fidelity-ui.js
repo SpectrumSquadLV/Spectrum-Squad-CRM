@@ -714,6 +714,43 @@ const section = (t) => console.log("\n== " + t + " ==");
     check(`...nor ${label}, which the server refuses them too`,
       await evalPage.locator("#" + id).count() === 0);
   }
+  // ================================================================
+  // A FIDELITY MANAGER WHO IS NOT THE OWNER. They run this whole page --
+  // roster, rankings, assignments, checks -- and the raise policy is still not
+  // theirs. This is the case the evaluator test above could not catch: the
+  // button was gated on can_manage, and a manager manages.
+  const mgrPw = "FidelityTest123!";
+  const mgrEmail = `fidui.mgr.${stamp}@example.invalid`;
+  const mgrUser = await api(page, "/api/admin/users", {
+    method: "POST",
+    body: { name: `FidUI Mgr ${stamp}`, email: mgrEmail, password: mgrPw, role: "clinical" },
+  });
+  check("a Fidelity manager account exists to test with", mgrUser.status === 201, mgrUser.body);
+  await api(page, `/api/admin/users/${mgrUser.body.id}`, {
+    method: "PATCH", body: { module_access: { fidelity: true } },
+  });
+  const mgrPage = await browser.newPage({ viewport: { width: 1400, height: 1100 } });
+  const mgrErrors = [];
+  mgrPage.on("pageerror", (e) => mgrErrors.push("pageerror: " + e.message));
+  await signIn(mgrPage, mgrEmail, mgrPw);
+  await mgrPage.goto(BASE + "/#/fidelity", { waitUntil: "networkidle" });
+  await mgrPage.waitForTimeout(2000);
+  check("THE RAISE SETTINGS BUTTON IS ABSENT FOR A MANAGER WHO IS NOT THE OWNER",
+    await mgrPage.locator("#fid-settings").count() === 0);
+  // The positive controls: absence has to mean "hidden", not "page failed".
+  for (const [id, label] of [
+    ["fid-random", "Select random RBT"], ["fid-new", "+ New Fidelity Check"],
+    ["fid-insights", "Training needs"], ["fid-assign", "Ask somebody to observe"],
+  ]) {
+    check(`...while ${label} is still theirs, so this is a gate and not a broken page`,
+      await mgrPage.locator("#" + id).count() === 1);
+  }
+  const mgrSettings = await api(mgrPage, "/api/fidelity/settings");
+  check("...and the server refuses them the raise settings too",
+    mgrSettings.status === 403, mgrSettings);
+  check("no uncaught JavaScript errors on the manager's page", mgrErrors.length === 0, mgrErrors.join(" | "));
+  await mgrPage.close();
+
   const evalBody = await evalPage.locator("#fid-body").innerText();
   check("...and their page is not a refusal message where the screen should be",
     !/not permitted/i.test(evalBody), evalBody.slice(0, 200));

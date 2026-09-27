@@ -45,8 +45,12 @@
   let state = { data: null, filters: {}, search: "" };
 
   // WHO IS LOOKING, asked of the server rather than worked out in the browser.
-  // Every button in this header opens a leadership-only route -- the raise
-  // settings, the rankings, the training-needs report, the assignment screen.
+  // Every button in this header opens a leadership-only route -- the rankings,
+  // the training-needs report, the assignment screen -- and one of them, the
+  // raise settings, is narrower still: owner only, because it is the pay
+  // policy rather than a Fidelity control. A Clinical Director runs Fidelity
+  // and does not set what a score is worth, so that button is asked about
+  // separately and is absent for everyone else who manages this page.
   // An evaluator is refused all of them by the server, and always was; what
   // they were still being shown was the BUTTONS. A control somebody can only
   // be refused is a statement about what they may do, and it was the wrong
@@ -60,8 +64,14 @@
   async function whoAmI() {
     try {
       const a = await api("/api/fidelity/my-assignments");
-      return { manage: a.can_manage === true, assignments: a.assignments || [] };
-    } catch (e) { return { manage: false, assignments: [] }; }
+      return {
+        manage: a.can_manage === true,
+        // Asked as its own question. Raise settings is the pay policy, and
+        // managing Fidelity does not carry it -- see canSetRaisePolicy.
+        raises: a.can_set_raise_policy === true,
+        assignments: a.assignments || [],
+      };
+    } catch (e) { return { manage: false, raises: false, assignments: [] }; }
   }
 
   async function renderFidelity(mount) {
@@ -75,7 +85,7 @@
         ${me.manage ? `
         <button class="btn secondary" id="fid-assign">Ask somebody to observe</button>
         <button class="btn secondary" id="fid-insights">Training needs</button>
-        <button class="btn secondary" id="fid-settings">Raise settings</button>
+        ${me.raises ? `<button class="btn secondary" id="fid-settings">Raise settings</button>` : ""}
         <button class="btn secondary" id="fid-random">Select random RBT</button>
         <button class="btn" id="fid-new">+ New Fidelity Check</button>` : ""}
       </div></div>
@@ -83,7 +93,7 @@
     if (me.manage) {
       mount.querySelector("#fid-new").addEventListener("click", () => openNewCheck(mount));
       mount.querySelector("#fid-random").addEventListener("click", () => pickRandom(mount));
-      mount.querySelector("#fid-settings").addEventListener("click", () => openSettings(mount));
+      if (me.raises) mount.querySelector("#fid-settings").addEventListener("click", () => openSettings(mount));
       mount.querySelector("#fid-insights").addEventListener("click", () => openInsights());
       mount.querySelector("#fid-assign").addEventListener("click", () => openAssign(mount));
     }

@@ -563,6 +563,50 @@ function scoresTotalling(total, opts = {}) {
   check("the Fidelity Management grant opens the dashboard", r.status === 200, r.data && r.data.error);
 
   // ================================================================
+  // THE RAISE POLICY IS NOT A FIDELITY SETTING.
+  //
+  // Reported from live use: the Raise settings button was on the RBT Fidelity
+  // page for a clinical user with the Fidelity grant. It was not a display
+  // bug -- the route answered them 200. Granting somebody the Fidelity module
+  // so they can run observations handed them the raise matrix, the maximum
+  // raise, the score floor below which nobody gets one, and what a Critical
+  // Fail does to eligibility. That is the pay policy, and it is what every
+  // raise recommendation the module makes is generated from.
+  section("Running Fidelity does not carry the power to set what a raise is");
+
+  r = await manager.req("/api/fidelity/settings");
+  check("A FIDELITY MANAGER WHO IS NOT THE OWNER CANNOT SEE THE RAISE SETTINGS",
+    r.status === 403, { s: r.status, d: r.data });
+  check("...and is told which permission it is, not just refused",
+    /owner/i.test((r.data && r.data.error) || ""), r.data);
+  r = await manager.req("/api/fidelity/settings", { method: "PUT", body: { max_raise_percent: 99 } });
+  check("...and certainly cannot change them", r.status === 403, { s: r.status, d: r.data });
+  const stillMax = (await owner("/api/fidelity/settings")).data || {};
+  check("...the refused write changed nothing", Number(stillMax.max_raise_percent) !== 99, stillMax.max_raise_percent);
+
+  // Everything else on that page stays theirs. The narrower gate must not
+  // quietly demote the Clinical Director out of running Fidelity.
+  for (const [label, path, opts] of [
+    ["the roster", "/api/fidelity/dashboard", null],
+    ["the RBT list", "/api/fidelity/rbts", null],
+    ["the training-needs report", "/api/fidelity/insights", null],
+    ["the random picker", "/api/fidelity/random", { method: "POST", body: {} }],
+  ]) {
+    const res = await manager.req(path, opts || {});
+    check(`...while ${label} is still theirs`, res.status === 200, { s: res.status, d: res.data });
+  }
+
+  r = await manager.req("/api/fidelity/my-assignments");
+  check("the screen is told plainly that they manage Fidelity",
+    r.status === 200 && r.data.can_manage === true, r.data);
+  check("...AND that the raise policy is not theirs, so the button is never drawn",
+    r.data.can_set_raise_policy === false, r.data);
+  const ownerMine = await owner("/api/fidelity/my-assignments");
+  check("the owner is told it IS theirs", ownerMine.data.can_set_raise_policy === true, ownerMine.data);
+  r = await owner("/api/fidelity/settings");
+  check("...and the owner can still open them", r.status === 200, { s: r.status, d: r.data });
+
+  // ================================================================
   section("An evaluator scores; an evaluator does not see pay or rankings");
 
   r = await evaluator.req("/api/fidelity/rubric");

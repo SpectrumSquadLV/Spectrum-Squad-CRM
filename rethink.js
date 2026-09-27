@@ -404,6 +404,26 @@ module.exports = function initRethink(ctx) {
       UNIQUE (rethink_staff_id, day)
     )`).catch((e) => console.error("rethink_provider_day initTables:", e.message));
 
+    // WHAT WAS SEEN, alongside what was counted. Without these a day with
+    // sessions that all failed the verification filter is indistinguishable
+    // from a day Rethink never mentioned -- both are simply an absent row --
+    // and the billable panel could only say "not available yet from Rethink"
+    // for both. That sentence sent a BCBA to look at an integration that was
+    // working perfectly while their week sat unverified in Rethink.
+    //
+    // rethink_provider_month already carries appointments_seen for exactly
+    // this reason. This is the same idea one level down, where the weekly
+    // billable requirement reads.
+    await dbRun("ALTER TABLE rethink_provider_day ADD COLUMN IF NOT EXISTS appointments_seen INTEGER DEFAULT 0")
+      .catch(() => {});
+    await dbRun("ALTER TABLE rethink_provider_day ADD COLUMN IF NOT EXISTS appointments_counted INTEGER DEFAULT 0")
+      .catch(() => {});
+    // Seen, but held back by the staff-verification test specifically. The
+    // actionable one: it is the clinician's own paperwork, and they can clear
+    // it themselves.
+    await dbRun("ALTER TABLE rethink_provider_day ADD COLUMN IF NOT EXISTS unverified_appointments INTEGER DEFAULT 0")
+      .catch(() => {});
+
     // Audit of every link an owner approved: who, when, and what it replaced.
     await dbRun(`CREATE TABLE IF NOT EXISTS rethink_client_link_log (
       id SERIAL PRIMARY KEY,
@@ -1982,6 +2002,18 @@ module.exports = function initRethink(ctx) {
     // and "which RBTs does Rethink know about" cannot be answered from it.
     const seenStaff = new Map();     // staffId -> { name, appointments }
     const perDay = new Map();        // `${staffId}|${day}` -> billable split for that day
+    const dayBucket = (staffId, day) => {
+      const dk = staffId + "|" + day;
+      let cur = perDay.get(dk);
+      if (!cur) {
+        cur = {
+          staffId, day, billable: 0, nonbillable: 0, unclassified: 0,
+          billableAppointments: 0, seen: 0, counted: 0, unverified: 0,
+        };
+        perDay.set(dk, cur);
+      }
+      return cur;
+    };
     const observed = new Map();      // `${field}|${norm}` -> { field, raw, norm, n, hours }
     let counted = 0, skippedNoDuration = 0, skippedFuture = 0;
     const cutoff = today();
@@ -2016,6 +2048,20 @@ module.exports = function initRethink(ctx) {
         }
 
         const verdict = decide(row, cfg);
+
+        // Recorded BEFORE the filter, for the same reason seenStaff is: a day
+        // whose sessions were all delivered but none verified must not look
+        // like a day nothing was synced for. dayBucket() creates the row on
+        // first sight of the provider that day, so the absence of a row keeps
+        // its one clear meaning -- Rethink did not mention this person then.
+        const seenDay = String(row.appointmentDate || "").slice(0, 10);
+        const seenStaffId = String(row.staffId == null ? "" : row.staffId).trim();
+        if (seenDay && seenStaffId) {
+          const b = dayBucket(seenStaffId, seenDay);
+          b.seen += 1;
+          if (!verdict.verifiedOk) b.unverified += 1;
+        }
+
         if (!verdict.counts) continue;
 
         // Only actual duration is ever summed. A completed, verified session
@@ -2039,14 +2085,11 @@ module.exports = function initRethink(ctx) {
         const cls = classifyBillable(billableRaw(row));
         const day = String(row.appointmentDate || "").slice(0, 10);
         if (day) {
-          const dk = staffId + "|" + day;
-          const dcur = perDay.get(dk) || {
-            staffId, day, billable: 0, nonbillable: 0, unclassified: 0, billableAppointments: 0,
-          };
+          const dcur = dayBucket(staffId, day);
+          dcur.counted += 1;
           if (cls === true) { dcur.billable += hours; dcur.billableAppointments += 1; }
           else if (cls === false) { dcur.nonbillable += hours; }
           else { dcur.unclassified += hours; }
-          perDay.set(dk, dcur);
         }
         observe("billableClassification", billableRaw(row), hours);
       } catch (e) {
@@ -2119,17 +2162,21 @@ module.exports = function initRethink(ctx) {
       await dbRun(
         `INSERT INTO rethink_provider_day
            (rethink_staff_id, day, month, employee_id, billable_hours, nonbillable_hours,
-            unclassified_hours, billable_appointments, computed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            unclassified_hours, billable_appointments, appointments_seen, appointments_counted,
+            unverified_appointments, computed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (rethink_staff_id, day) DO UPDATE SET
            month = EXCLUDED.month, employee_id = EXCLUDED.employee_id,
            billable_hours = EXCLUDED.billable_hours,
            nonbillable_hours = EXCLUDED.nonbillable_hours,
            unclassified_hours = EXCLUDED.unclassified_hours,
            billable_appointments = EXCLUDED.billable_appointments,
+           appointments_seen = EXCLUDED.appointments_seen,
+           appointments_counted = EXCLUDED.appointments_counted,
+           unverified_appointments = EXCLUDED.unverified_appointments,
            computed_at = EXCLUDED.computed_at`,
         [d.staffId, d.day, month, emp ? emp.id : null, round2(d.billable), round2(d.nonbillable),
-         round2(d.unclassified), d.billableAppointments, nowISO()]
+         round2(d.unclassified), d.billableAppointments, d.seen, d.counted, d.unverified, nowISO()]
       ).catch((e) => warnings.push(`Could not store the billable split for a provider: ${e.message}`));
     }
 
@@ -2958,6 +3005,9 @@ module.exports = function initRethink(ctx) {
               COALESCE(SUM(nonbillable_hours), 0) AS nonbillable,
               COALESCE(SUM(unclassified_hours), 0) AS unclassified,
               COALESCE(SUM(billable_appointments), 0) AS appointments,
+              COALESCE(SUM(appointments_seen), 0) AS seen,
+              COALESCE(SUM(appointments_counted), 0) AS counted,
+              COALESCE(SUM(unverified_appointments), 0) AS unverified,
               COUNT(*) AS days
          FROM rethink_provider_day
         WHERE employee_id = ? AND day >= ? AND day <= ?`,
@@ -2967,12 +3017,56 @@ module.exports = function initRethink(ctx) {
     // No rows at all is NOT zero hours -- it is "nothing has been synced for
     // that period", and the two must never be shown the same way. A person
     // reading 0 of 25 assumes a performance problem.
+    //
+    // A row now exists for every day Rethink mentioned the provider, counted
+    // or not, so this absence has narrowed to what it always claimed to mean:
+    // the sync has not covered these days. "Sessions are there but none of
+    // them counted" is a different answer, and the caller can now tell the
+    // difference from seen/counted below.
     if (!Number(row.days)) return null;
+    const billable = num(row.billable), nonbillable = num(row.nonbillable), unclassified = num(row.unclassified);
     return {
-      billable: num(row.billable),
-      nonbillable: num(row.nonbillable),
-      unclassified: num(row.unclassified),
+      billable, nonbillable, unclassified,
       billable_appointments: Number(row.appointments) || 0,
+      // What Rethink listed, what passed the filter, and how much of the gap
+      // is the clinician's own verification -- the part they can clear
+      // themselves.
+      appointments_seen: Number(row.seen) || 0,
+      appointments_counted: Number(row.counted) || 0,
+      unverified_appointments: Number(row.unverified) || 0,
+      // DID ANYTHING ACTUALLY COUNT. The one question every reader of this has
+      // to ask now that a row exists for days where nothing did: a period with
+      // sessions but none of them counted is NOT a period of zero billable
+      // hours, and must never be scored as a missed requirement.
+      //
+      // Derived from the hours as well as the counter, because the counter
+      // columns default to 0 on months that were synced before they existed.
+      // A counted session always carries positive hours -- the sync skips a
+      // verified session with no duration -- so any hours at all means
+      // something counted, and history keeps answering correctly.
+      counted_any: (billable + nonbillable + unclassified) > 0 || (Number(row.counted) || 0) > 0,
+    };
+  }
+
+  // The state of the hours sync itself, for a screen that has to explain why a
+  // figure is missing. Kept here because the sync log is this module's table;
+  // a dashboard reaching into it directly would be a second reader of a schema
+  // it does not own.
+  async function hoursSyncState() {
+    if (!client.configured()) return { configured: false, ever: false, last_ok_at: null, last_error: null };
+    const lastOk = await dbGet(
+      "SELECT finished_at FROM rethink_sync_log WHERE kind = 'supervision_hours' AND status IN ('success','partial') ORDER BY id DESC LIMIT 1"
+    ).catch(() => null);
+    const last = await dbGet(
+      "SELECT status, finished_at, error FROM rethink_sync_log WHERE kind = 'supervision_hours' ORDER BY id DESC LIMIT 1"
+    ).catch(() => null);
+    return {
+      configured: true,
+      ever: !!lastOk,
+      last_ok_at: lastOk ? lastOk.finished_at || null : null,
+      // Only a failure that is the LATEST word is worth reporting: a failure
+      // followed by a success is history, not a problem on screen.
+      last_error: last && last.status === "failed" ? (last.error || "The last sync failed.") : null,
     };
   }
 
@@ -2996,7 +3090,10 @@ module.exports = function initRethink(ctx) {
     while (cur && cur <= monthEnd) {
       const end = weekEndOf(cur);
       const got = await billableHoursBetween(employeeId, cur, end);
-      out.push({ week_start: cur, week_end: end, ...(got || { billable: null, nonbillable: null, unclassified: null, billable_appointments: 0 }) });
+      out.push({ week_start: cur, week_end: end, ...(got || {
+        billable: null, nonbillable: null, unclassified: null, billable_appointments: 0,
+        appointments_seen: 0, appointments_counted: 0, unverified_appointments: 0, counted_any: false,
+      }) });
       const nxt = new Date(cur + "T00:00:00Z");
       nxt.setUTCDate(nxt.getUTCDate() + 7);
       cur = nxt.toISOString().slice(0, 10);
@@ -3050,6 +3147,7 @@ module.exports = function initRethink(ctx) {
     billableForWeek,
     billableWeeksForMonth,
     billableHoursBetween,
+    hoursSyncState,
     _billable: { weekStartOf, weekEndOf, classifyBillable, billableRaw },
     scanStaffFromAppointments,
     staffMatchReview,
