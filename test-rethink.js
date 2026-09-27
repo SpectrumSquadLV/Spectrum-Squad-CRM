@@ -152,10 +152,22 @@ function makeDb(seed) {
       return;
     }
     if (/INSERT INTO rethink_provider_day/i.test(sql)) {
+      // BY COLUMN NAME, for the same reason as rethink_provider_month above:
+      // this fake read p[0..7] positionally, so adding a column to the write
+      // would have shifted every assertion below onto the wrong value while
+      // still reporting PASS.
+      const cols = ((sql.match(/INSERT INTO rethink_provider_day\s*\(([^)]*)\)/i) || [])[1] || "")
+        .split(",").map((c) => c.trim());
+      const row = {};
+      cols.forEach((name, i) => { row[name] = p[i]; });
       state.providerDay.push({
-        staffId: p[0], day: p[1], month: p[2], employeeId: p[3],
-        billable: Number(p[4]), nonbillable: Number(p[5]),
-        unclassified: Number(p[6]), billableAppointments: Number(p[7]),
+        staffId: row.rethink_staff_id, day: row.day, month: row.month, employeeId: row.employee_id,
+        billable: Number(row.billable_hours), nonbillable: Number(row.nonbillable_hours),
+        unclassified: Number(row.unclassified_hours),
+        billableAppointments: Number(row.billable_appointments),
+        seen: row.appointments_seen === undefined ? undefined : Number(row.appointments_seen),
+        counted: row.appointments_counted === undefined ? undefined : Number(row.appointments_counted),
+        unverified: row.unverified_appointments === undefined ? undefined : Number(row.unverified_appointments),
       });
       return;
     }
@@ -738,6 +750,70 @@ const initRethink = require("./rethink");
     check("'Billable - Direct' is billable", cls("Billable - Direct") === true);
     check("an unrecognised label is null, never assumed billable", cls("Cancellation") === null);
     check("a blank label is null", cls("") === null);
+  }
+
+  // ---- SEEN IS NOT THE SAME AS COUNTED -----------------------------------
+  // A week of delivered sessions nobody has verified used to leave NO per-day
+  // rows at all, which is exactly what a week the sync never covered leaves.
+  // The BCBA dashboard could only answer both with "not available yet from
+  // Rethink" -- so a clinician whose own paperwork was holding the figure back
+  // was sent to look at an integration that was working perfectly.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [{ id: 7, name: "Unverified BCBA", rethink_id: "S200" }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      // Delivered, with real durations, and NOT staff-verified.
+      { staffId: "S200", appointmentDate: "2026-08-03", actualDurationHours: 3, appointmentStatus: "Completed", staffVerification: false, appointmentType: "Billable - Direct" },
+      { staffId: "S200", appointmentDate: "2026-08-03", actualDurationHours: 2, appointmentStatus: "Completed", staffVerification: false, appointmentType: "Billable - Direct" },
+      // Not verified AND not completed: still seen, but not an unverified one.
+      { staffId: "S200", appointmentDate: "2026-08-04", actualDurationHours: 1, appointmentStatus: "Scheduled", staffVerification: false, appointmentType: "Billable - Direct" },
+    ], pages: 1, truncated: false });
+
+    const r = initRethink(ctx);
+    await r.syncSupervisionHours("test", "2026-08");
+
+    const d3 = state.providerDay.find((d) => d.day === "2026-08-03");
+    check("A DAY RETHINK HAS SESSIONS FOR IS RECORDED EVEN WHEN NONE OF THEM COUNT",
+      !!d3, JSON.stringify(state.providerDay));
+    check("...with no hours, because nothing passed the filter",
+      d3 && d3.billable === 0 && d3.nonbillable === 0 && d3.unclassified === 0, d3);
+    check("...but the sessions that exist are counted", d3 && d3.seen === 2, d3 && d3.seen);
+    check("...none of them as counted", d3 && d3.counted === 0, d3 && d3.counted);
+    check("...and verification is named as what is holding them back",
+      d3 && d3.unverified === 2, d3 && d3.unverified);
+    const d4 = state.providerDay.find((d) => d.day === "2026-08-04");
+    check("a session that is not completed is seen too", d4 && d4.seen === 1, d4);
+    check("...and is not blamed on verification, since it is not the reason",
+      d4 && d4.unverified === 1, d4 && d4.unverified);
+
+    // The supervision figure must be untouched by any of this: none of these
+    // hours count there either, and no row may claim they do.
+    const month = state.providerMonth.find((m) => m.staffId === "S200");
+    check("the supervision figure still counts none of the unverified hours",
+      month && Number(month.hours) === 0, month && month.hours);
+  }
+  // The counted case keeps its counters too, or the reader cannot tell a
+  // partly-verified week from a fully-verified one.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW, config: CONFIRMED,
+      employees: [{ id: 8, name: "Partly BCBA", rethink_id: "S300" }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { staffId: "S300", appointmentDate: "2026-08-03", actualDurationHours: 3, appointmentStatus: "Completed", staffVerification: true, appointmentType: "Billable - Direct" },
+      { staffId: "S300", appointmentDate: "2026-08-03", actualDurationHours: 2, appointmentStatus: "Completed", staffVerification: false, appointmentType: "Billable - Direct" },
+    ], pages: 1, truncated: false });
+    const r = initRethink(ctx);
+    await r.syncSupervisionHours("test", "2026-08");
+    const d3 = state.providerDay.find((d) => d.day === "2026-08-03");
+    check("a partly-verified day reports the hours that DID count",
+      d3 && d3.billable === 3, d3 && d3.billable);
+    check("...alongside how many sessions there were in total", d3 && d3.seen === 2, d3 && d3.seen);
+    check("...how many counted", d3 && d3.counted === 1, d3 && d3.counted);
+    check("...and how many are still waiting on verification",
+      d3 && d3.unverified === 1, d3 && d3.unverified);
   }
 
   // Weeks run Monday to Sunday, and a partial week is NOT pro-rated.

@@ -418,6 +418,27 @@ module.exports = function initFidelity(ctx) {
     return moduleGranted(user, "fidelity-evaluator");
   }
 
+  // A THIRD permission, narrower than management, for one screen: the raise
+  // policy. The raise matrix, the maximum raise, the score floor below which
+  // nobody gets one, and what a Critical Fail or an open PIP does to
+  // eligibility. That is not a Fidelity setting that happens to mention money
+  // -- it is the pay policy, written down, and every recommendation the module
+  // produces comes out of it.
+  //
+  // Managing Fidelity and setting what people are paid are different jobs. The
+  // Clinical Director runs the observations; whoever holds the budget decides
+  // what a score is worth. So this one does NOT follow the module grant:
+  // granting somebody the Fidelity module must not hand them the pay policy as
+  // a side effect, which is exactly what it did.
+  //
+  // Owner alone, deliberately narrower than the FINANCIAL_* roles elsewhere.
+  // Raise bands are not a report somebody reads -- they are the rule the
+  // recommendations are generated from, and a second person quietly widening a
+  // band changes what the whole team is offered.
+  function canSetRaisePolicy(user) {
+    return !!user && user.role === "owner";
+  }
+
   // ======================= PERFORMANCE HISTORY =======================
   // Everything leadership would otherwise work out by hand, computed from the
   // finalized checks: current, previous, the change between them, the trend,
@@ -2126,6 +2147,7 @@ module.exports = function initFidelity(ctx) {
     const actor = (user && (user.email || user.name)) || "unknown";
     const manage = canManageFidelity(user);
     const evaluate = canEvaluate(user);
+    const raisePolicy = canSetRaisePolicy(user);
     if (!evaluate) return json(res, 403, { error: "Not permitted to use RBT Fidelity." });
 
     // What the rubric IS -- needed by the scoring screen, and safe for an
@@ -2168,11 +2190,11 @@ module.exports = function initFidelity(ctx) {
       return json(res, 200, await randomPick());
     }
     if (pathname === "/api/fidelity/settings" && method === "GET") {
-      if (!manage) return json(res, 403, { error: "Not permitted." });
+      if (!raisePolicy) return json(res, 403, { error: "Only the owner can see the raise settings." });
       return json(res, 200, { ...(await getSettings()), categories: CATEGORIES, methods: FIDELITY_METHODS });
     }
     if (pathname === "/api/fidelity/settings" && method === "PUT") {
-      if (!manage) return json(res, 403, { error: "Not permitted." });
+      if (!raisePolicy) return json(res, 403, { error: "Only the owner can change the raise settings." });
       const b = await readBody(req);
       if (b.weights) {
         const problem = weightsProblem(b.weights);
@@ -2435,7 +2457,13 @@ module.exports = function initFidelity(ctx) {
       // refuses an evaluator on its own, and still does. Offering somebody a
       // "Raise settings" button that can only answer 403 is its own kind of
       // wrong -- a control on screen is a statement about what you may do.
-      return json(res, 200, { assignments: out, can_manage: manage, can_evaluate: evaluate });
+      return json(res, 200, {
+        assignments: out, can_manage: manage, can_evaluate: evaluate,
+        // Sent separately from can_manage because it is a separate question.
+        // A Fidelity manager who is not the owner runs every other control in
+        // that header and must not be shown this one.
+        can_set_raise_policy: raisePolicy,
+      });
     }
 
     if (pathname === "/api/fidelity/check" && method === "POST") {
@@ -3175,7 +3203,7 @@ module.exports = function initFidelity(ctx) {
     SECTIONS, ALL_ITEMS, MAX_SCORE, RATINGS, ACTION_PLAN_OPTIONS,
     SESSION_TYPES, OBSERVATION_LENGTHS,
     scoreOf, ratingFor, actionPlanRequired,
-    initTables, audit, canManageFidelity, canEvaluate,
+    initTables, audit, canManageFidelity, canEvaluate, canSetRaisePolicy,
     employeeSummary, summarise, trendOf, finalizedChecks, allChecksFor,
     getSettings, computeRaise, weightsProblem, bandFor, fidelityFigure, gatherCategories,
     migrateWeights, WEIGHTS_MIGRATION_KEY,

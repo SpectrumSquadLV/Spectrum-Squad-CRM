@@ -217,6 +217,50 @@ const mailsFor = async (addr) =>
     findRow(under).weeks.every((w) => w.met === false),
     JSON.stringify(findRow(under).weeks || []).slice(0, 300));
 
+  // ------------------------------------------------------------------
+  // A WEEK WAITING ON VERIFICATION IS NOT A WEEK THEY MISSED.
+  //
+  // Per-day rows are now written for every day Rethink has sessions on, even
+  // when none of them pass the verification filter, so that "nothing synced"
+  // and "nothing counted" stop looking identical on the BCBA dashboard. That
+  // makes a zero-hour row possible for the first time -- and a zero-hour row
+  // read as hours would score every one of those weeks as a miss and put a
+  // fabricated shortfall in somebody's monthly summary email.
+  section("A week Rethink has but has not verified is never scored as a miss");
+  {
+    const waiting = await mkEmp("BILL Waiting", "bill-waiting@example.invalid", 25);
+    await giveHours(waiting, 40);
+    for (const ws of WEEKS) {
+      await pool.query(
+        `INSERT INTO rethink_provider_day
+           (rethink_staff_id, day, month, employee_id, billable_hours, nonbillable_hours,
+            unclassified_hours, billable_appointments, appointments_seen, appointments_counted,
+            unverified_appointments, computed_at)
+         VALUES ($1, $2, $3, $4, 0, 0, 0, 0, 6, 0, 6, now()::text)
+         ON CONFLICT (rethink_staff_id, day) DO UPDATE SET
+           appointments_seen = EXCLUDED.appointments_seen,
+           appointments_counted = EXCLUDED.appointments_counted,
+           unverified_appointments = EXCLUDED.unverified_appointments,
+           employee_id = EXCLUDED.employee_id`,
+        [`rt-${waiting}`, ws, PERIOD, waiting]
+      );
+    }
+    const s2 = (await owner(`/api/billable/summary?month=${PERIOD}`)).data;
+    const w = (s2.staff || []).find((r) => r.employee_id === waiting) || {};
+    check("A ZERO-HOUR WEEK THAT NOTHING COUNTED IN IS NOT SCORED AT ALL",
+      w.weeks_scored === 0, { scored: w.weeks_scored, weeks: JSON.stringify(w.weeks || []).slice(0, 220) });
+    check("...so the person is not marked as having missed their requirement",
+      w.met === null, w.met);
+    check("...every week reports met as unknown rather than false",
+      (w.weeks || []).every((x) => x.met === null), JSON.stringify(w.weeks || []).slice(0, 220));
+    check("...and the figure is flagged as one nobody should be emailed",
+      w.trustworthy === false, w);
+    check("...with a note naming verification rather than blaming the sync",
+      /awaiting staff verification/i.test(w.note || ""), w.note);
+    check("...and the sessions that are waiting are counted, not hidden",
+      (w.weeks || []).some((x) => x.unverified > 0), JSON.stringify(w.weeks || []).slice(0, 220));
+  }
+
   section("Nobody is emailed a figure that cannot be stood behind");
   check("provisional hours are held back",
     findRow(prov).trustworthy === false && /provisional/i.test(findRow(prov).note || ""), findRow(prov).note);

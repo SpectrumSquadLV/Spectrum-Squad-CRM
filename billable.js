@@ -153,9 +153,17 @@ module.exports = function initBillable(ctx) {
         nonbillable_hours: w.nonbillable == null ? null : round1(w.nonbillable),
         unclassified_hours: w.unclassified == null ? null : round1(w.unclassified),
         appointments: w.billable_appointments || 0,
+        // Sessions Rethink has for that week that did not make it into the
+        // figure -- almost always waiting on the clinician's own staff
+        // verification. Reported so a low week can be read correctly.
+        seen: w.appointments_seen || 0,
+        unverified: w.unverified_appointments || 0,
         // A week with nothing synced is not a week of zero hours, and is never
-        // scored as a miss.
-        met: w.billable == null ? null : round1(w.billable) >= target,
+        // scored as a miss. Neither is a week Rethink listed sessions for but
+        // counted none of them: unverified paperwork is not a missed billable
+        // requirement, and scoring it as one would put a fabricated miss in
+        // somebody's monthly summary email.
+        met: w.billable == null || w.counted_any === false ? null : round1(w.billable) >= target,
       }));
       const scored = weeks.filter((w) => w.met !== null);
       const weeksMet = scored.filter((w) => w.met === true).length;
@@ -167,7 +175,13 @@ module.exports = function initBillable(ctx) {
       if (!syncOk) { trustworthy = false; note = `The Rethink sync for ${monthLabel(period)} has not completed successfully, so hours for this month are not final.`; }
       else if (!h) { trustworthy = false; note = "No Rethink appointments were matched to this person for this month."; }
       else if (h.provisional) { trustworthy = false; note = "These hours are still provisional — the Rethink verification filter has not been confirmed."; }
-      else if (target != null && !scored.length) { trustworthy = false; note = "No billable session hours were synced for this person in this month."; }
+      else if (target != null && !scored.length) {
+        const waiting = weeks.reduce((a, w) => a + (w.unverified || 0), 0);
+        trustworthy = false;
+        note = waiting
+          ? `No billable session hours could be counted for this person this month — ${waiting} session${waiting === 1 ? " is" : "s are"} still awaiting staff verification in Rethink.`
+          : "No billable session hours were synced for this person in this month.";
+      }
 
       rows.push({
         employee_id: e.id,
