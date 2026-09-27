@@ -415,7 +415,7 @@ module.exports = function initBcbaDashboard(ctx) {
   // Three things that are actually written down against a client, each read
   // from the table that owns it. Nothing is invented, and a source that cannot
   // be read contributes nothing rather than a placeholder.
-  async function activityFor(clientIds, bcba) {
+  async function activityFor(clientIds) {
     if (!clientIds.length) return [];
     const ph = clientIds.map(() => "?").join(",");
     const since = daysAgo(30);
@@ -455,15 +455,25 @@ module.exports = function initBcbaDashboard(ctx) {
       });
     }
 
+    // completed_at, NOT updated_at -- staff_tasks has no updated_at column, and
+    // a query naming one throws, gets swallowed by the catch below, and leaves
+    // this feed silently short of every completed task forever. The stub in
+    // the unit suite matched the query by shape and could never have caught
+    // it; the UI suite now completes a real task against a real schema.
+    //
+    // A done task with no completed_at is left out rather than dated from
+    // something else: we do not know when it was finished, and guessing puts
+    // a wrong date on a clinical activity feed.
     const done = await dbAll(
-      `SELECT t.id, t.title, t.client_id, t.updated_at, t.assigned_name, c.child_name
+      `SELECT t.id, t.title, t.client_id, t.completed_at, t.assigned_name, c.child_name
          FROM staff_tasks t LEFT JOIN clients c ON c.id = t.client_id
-        WHERE t.status = 'done' AND t.client_id IN (${ph}) AND t.updated_at >= ?
-        ORDER BY t.updated_at DESC LIMIT 10`,
+        WHERE t.status = 'done' AND t.client_id IN (${ph})
+          AND t.completed_at IS NOT NULL AND t.completed_at >= ?
+        ORDER BY t.completed_at DESC LIMIT 10`,
       [...clientIds, since]).catch(() => []);
     for (const r of done) {
       out.push({
-        kind: "task", at: r.updated_at, client_id: r.client_id, client_name: r.child_name,
+        kind: "task", at: r.completed_at, client_id: r.client_id, client_name: r.child_name,
         who: r.assigned_name || null, what: "Task completed", detail: r.title, note: null,
       });
     }
@@ -545,7 +555,7 @@ module.exports = function initBcbaDashboard(ctx) {
       all_client_count: clients.length,
       priorities: prioritiesFrom(openClients, tasksByClient, 8),
       wins: await winsFor(clientIds),
-      activity: await activityFor(clientIds, bcba),
+      activity: await activityFor(clientIds),
       summary: {
         health: healthTally,
         clients: { total: openClients.length, in_therapy: inTherapy, assessment, on_hold: onHold },

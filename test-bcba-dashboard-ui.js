@@ -73,6 +73,28 @@ const { chromium } = require("playwright");
   }, { start: iso(-120), soon: iso(4), mid: iso(20), far: iso(400), overdue: iso(-3) });
   check("test clients were created and assigned", !!made.a && !!made.b && !!made.c, made);
 
+  // A REAL COMPLETED TASK, against the real schema.
+  //
+  // The activity feed's query named staff_tasks.updated_at, which does not
+  // exist -- the column is completed_at. It threw, the catch turned it into an
+  // empty list, and completed tasks would have been missing from that panel
+  // forever with nothing on screen or in any log to say so. The unit suite
+  // stubs that query by shape and could never have caught it.
+  const doneTask = await page.evaluate(async (clientId) => {
+    const made = await (await fetch("/api/staff-tasks", {
+      method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Draft the reauthorization packet", client_id: clientId,
+                             assigned_name: "Clinical Staff" }),
+    })).json();
+    if (!made || !made.id) return { ok: false, made };
+    const r = await fetch("/api/staff-tasks/" + made.id, {
+      method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "done" }),
+    });
+    return { ok: r.ok, id: made.id };
+  }, made.a);
+  check("a task on the BCBA's client was created and completed", doneTask.ok === true, doneTask);
+
   // The Student Analyst is set through the migration's own path so the test
   // exercises what an admin will actually run, not a direct column write.
   await page.evaluate((d) => { window.__overdueDate = d; }, (() => {
@@ -432,6 +454,19 @@ const { chromium } = require("playwright");
     return [...p.querySelectorAll("tbody tr")].length;
   });
   check("search narrows it to one client", searched === 1, searched);
+
+  console.log("\n== Recent clinical activity ==");
+  // Read from the rendered panel, so this passes only if the query actually
+  // ran against the real schema and returned the row.
+  const activity = await page.evaluate(() => {
+    const p = [...document.querySelectorAll(".bd-panel")].find((t) => /Recent clinical activity/i.test(t.textContent));
+    return p ? [...p.querySelectorAll(".bd-act")].map((r) => r.innerText.replace(/\s+/g, " ").trim()) : null;
+  });
+  check("the activity panel is on the page", Array.isArray(activity), activity);
+  check("A COMPLETED TASK ON THIS CASELOAD REACHES THE ACTIVITY FEED",
+    (activity || []).some((r) => /Draft the reauthorization packet/.test(r)), activity);
+  check("...naming the client it was about",
+    (activity || []).some((r) => /Draft the reauthorization packet/.test(r) && /Caseload Alpha/.test(r)), activity);
 
   console.log("\n== Presentation ==");
   // EMOJI: NARROWED, NOT DROPPED. The rule used to be none at all, and it was
