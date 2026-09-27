@@ -1673,6 +1673,24 @@ async function assignedClientIds(user) {
 // plus the exact list of merge fields available for that template so the
 // editor can offer an "insert field" picker instead of making the admin guess.
 const EMAIL_TEMPLATE_DEFS = [
+  // The two celebration emails. Separate templates rather than one with a
+  // conditional, because the difference between them is the whole point: a
+  // SKILL is mastered, a BEHAVIOUR is not. One template with a variable verb
+  // is one edit away from telling a family their child mastered aggression.
+  {
+    key: "parent_milestone_mastery",
+    label: "Milestone — skill mastered",
+    category: "Parent Milestone Emails",
+    description: "Sent to the parent when a clinician records a mastered skill and approves the wording.",
+    fields: ["parent_first_name", "child_first_name", "skill_name", "milestone_description"],
+  },
+  {
+    key: "parent_milestone_treatment",
+    label: "Milestone — treatment milestone reached",
+    category: "Parent Milestone Emails",
+    description: "Sent for a behaviour-reduction goal. Never says 'mastered' — a behaviour is reduced, not mastered.",
+    fields: ["parent_first_name", "child_first_name", "milestone_description"],
+  },
   {
     key: "milestone_new_submission",
     label: "New Submission Received",
@@ -1867,6 +1885,30 @@ const EMAIL_TEMPLATE_DEFS = [
 // The CRM's original built-in copy -- used both as the seed data and as a
 // last-resort fallback if a template row is somehow missing.
 const EMAIL_TEMPLATE_DEFAULTS = {
+  parent_milestone_mastery: {
+    subject: "🎉 A new milestone for {{child_first_name}}!",
+    body:
+      "<p>Hi {{parent_first_name}},</p>" +
+      "<p>We have something exciting to celebrate!</p>" +
+      "<p>🎉 <strong>{{child_first_name}} just mastered a new skill: {{skill_name}}!</strong></p>" +
+      "<p>{{milestone_description}}</p>" +
+      "<p>Every new skill is another step toward greater independence, confidence, and success—and we wanted you to be part of the celebration.</p>" +
+      "<p>We are so proud of {{child_first_name}} and all the work they have been putting in!</p>" +
+      "<p>Another milestone down. 💙</p>" +
+      "<p>— The Spectrum Squad Team<br/><em>Everyone Deserves a Squad.</em></p>",
+  },
+  parent_milestone_treatment: {
+    subject: "🎉 {{child_first_name}} reached a new milestone!",
+    body:
+      "<p>Hi {{parent_first_name}},</p>" +
+      "<p>We have another win to celebrate!</p>" +
+      "<p>🎉 <strong>{{child_first_name}} reached an important treatment milestone.</strong></p>" +
+      "<p>{{milestone_description}}</p>" +
+      "<p>Progress is built one milestone at a time, and we are excited to celebrate this one with your family.</p>" +
+      "<p>We are so proud of {{child_first_name}}!</p>" +
+      "<p>Another milestone down. 💙</p>" +
+      "<p>— The Spectrum Squad Team<br/><em>Everyone Deserves a Squad.</em></p>",
+  },
   lead_checkin_7: {
     subject: "Checking in after your first week — {{org_name}}",
     body: "<p>Hi {{contact_name}},</p><p>It's been about a week since we started working together and I wanted to check in personally. How are the first few days going on your end? If anything came up or you have questions as {{org_name}} gets settled in, I'm just an email away.</p><p>Warmly,<br/>{{assigned_to}} · Spectrum Squad</p>",
@@ -8931,6 +8973,12 @@ const growth = require("./growth")({
 // from the BIP rather than duplicated: that module owns them. =====
 const clientProgramming = require("./client-programming")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, canAccessClients,
+  // The celebration emails go out through the CRM's own branded sender and
+  // are written into notifications_log like every other parent email, so the
+  // Message Outbox shows exactly what a family was told.
+  sendEmail,
+  getEmailTemplate: (key) => getEmailTemplate(key),
+  renderMergeFields: (tpl, fields) => renderMergeFields(tpl, fields),
 });
 
 const bip = require("./bip")({

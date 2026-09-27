@@ -204,6 +204,93 @@
         </div>`).join("")}</div>`;
   }
 
+  // Milestones, inside Client Programming -- not a tab of their own, and not
+  // anything a parent can open. The only parent-facing part of this feature is
+  // the celebration email, which a clinician approves and sends.
+  //
+  // WORDING IS DECIDED BY THE EVENT TYPE, never assembled. A skill is
+  // "Mastered"; a behaviour goal reached its "Treatment milestone". This file
+  // must never put the word mastered near a behaviour.
+  function statusChip(m) {
+    if (m.notification_status === "sent") {
+      return '<span class="cp-tag" style="background:#dcfce7;color:#166534;">Family told' +
+        (m.parent_notified_at ? " · " + esc(fmtDate(m.parent_notified_at)) : "") + "</span>";
+    }
+    if (m.notification_status === "failed") {
+      return '<span class="cp-tag" style="background:#fee2e2;color:#991b1b;">Email failed</span>';
+    }
+    if (m.notification_status === "ready") {
+      return '<span class="cp-tag" style="background:#eef1fb;color:#1b2a6b;">Ready to send</span>';
+    }
+    return '<span class="cp-tag" style="background:#fef3c7;color:#92400e;">Needs review</span>';
+  }
+
+  function milestoneHtml(m, canEdit) {
+    const typeChip = m.event_type === "mastery"
+      ? '<span class="cp-tag" style="background:#eef1fb;color:#1b2a6b;">Mastered</span>'
+      : '<span class="cp-tag" style="background:#f3f0fb;color:#4c1d95;">Treatment milestone</span>';
+    return `<div class="cp-behcard" data-ms="${esc(m.id)}" style="margin-bottom:8px;">
+      <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">
+        <h5 style="margin:0;">${esc(m.parent_friendly_name || m.clinical_target_name || "Milestone")}</h5>
+        ${typeChip}${statusChip(m)}
+        <div style="flex:1 1 auto;"></div>
+        <span style="font-size:12px;color:var(--text-muted);">${esc(fmtDate(m.achieved_at))}</span>
+      </div>
+      <p style="margin-top:5px;font-size:12.5px;">
+        <span class="cp-tag">Clinical</span> ${esc(m.clinical_target_name || "—")}${
+          m.clinical_program_name ? " · " + esc(m.clinical_program_name) : ""}${
+          m.assigned_bcba ? " · BCBA " + esc(m.assigned_bcba) : ""}
+      </p>
+      ${m.parent_friendly_description
+        ? `<p style="margin-top:4px;font-size:12.5px;color:var(--text-muted);">${esc(m.parent_friendly_description)}</p>`
+        : `<p style="margin-top:4px;font-size:12.5px;color:#92400e;">No parent-friendly wording yet, so nothing has been sent. Add it below to be able to send.</p>`}
+      ${m.recorded_by ? `<p style="margin-top:4px;font-size:11.5px;color:var(--text-muted);">Recorded by ${esc(m.recorded_by)}${
+        m.approved_by ? " · wording approved by " + esc(m.approved_by) : ""}</p>` : ""}
+      ${canEdit ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn small secondary" data-ms-edit="${esc(m.id)}">${m.needs_language ? "Add parent wording" : "Edit parent wording"}</button>
+        ${m.can_send ? `<button class="btn small" data-ms-send="${esc(m.id)}">Approve &amp; send to family</button>` : ""}
+      </div>` : ""}
+    </div>`;
+  }
+
+  function milestoneEditorHtml(m) {
+    const isNew = !m;
+    return `<div class="cp-behcard" data-ms-editor style="margin-bottom:10px;">
+      <h5 style="margin:0 0 8px;">${isNew ? "Record a milestone" : "Parent-friendly wording"}</h5>
+      ${isNew ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <label style="font-size:12.5px;">What kind
+          <select data-ms-f="event_type" style="display:block;margin-top:3px;padding:6px 8px;border:1px solid var(--border,#e5e7eb);border-radius:8px;">
+            <option value="mastery">A skill was mastered</option>
+            <option value="treatment_milestone">A behaviour goal reached its criterion</option>
+          </select></label>
+        <label style="font-size:12.5px;">Date reached
+          <input data-ms-f="achieved_at" type="date" value="${esc(today())}"
+            style="display:block;margin-top:3px;padding:6px 8px;border:1px solid var(--border,#e5e7eb);border-radius:8px;" /></label>
+      </div>
+      <label style="font-size:12.5px;display:block;margin-bottom:8px;">Program or goal (clinical)
+        <input data-ms-f="clinical_target_name" placeholder="e.g. Mand - Break - Independent"
+          style="display:block;width:100%;margin-top:3px;padding:6px 8px;border:1px solid var(--border,#e5e7eb);border-radius:8px;" /></label>
+      <label style="font-size:12.5px;display:block;margin-bottom:8px;">Assigned BCBA
+        <input data-ms-f="assigned_bcba"
+          style="display:block;width:100%;margin-top:3px;padding:6px 8px;border:1px solid var(--border,#e5e7eb);border-radius:8px;" /></label>` : ""}
+      <div style="background:#f8fafc;border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:9px 11px;margin-bottom:8px;font-size:12px;color:var(--text-muted);">
+        These two fields are the only words a parent sees. Nothing is emailed until both are filled in and you press send.
+      </div>
+      <label style="font-size:12.5px;display:block;margin-bottom:8px;">Parent-friendly name
+        <input data-ms-f="parent_friendly_name" value="${m ? esc(m.parent_friendly_name) : ""}"
+          placeholder="e.g. Independently Asking for a Break"
+          style="display:block;width:100%;margin-top:3px;padding:6px 8px;border:1px solid var(--border,#e5e7eb);border-radius:8px;" /></label>
+      <label style="font-size:12.5px;display:block;margin-bottom:8px;">Parent-friendly description
+        <textarea data-ms-f="parent_friendly_description" rows="3"
+          placeholder="e.g. Ellis can now independently tell us when they need a break."
+          style="display:block;width:100%;margin-top:3px;padding:6px 8px;border:1px solid var(--border,#e5e7eb);border-radius:8px;">${m ? esc(m.parent_friendly_description) : ""}</textarea></label>
+      <div style="display:flex;gap:6px;">
+        <button class="btn small" data-ms-save>${isNew ? "Record milestone" : "Save wording"}</button>
+        <button class="btn small secondary" data-ms-cancel>Cancel</button>
+      </div>
+    </div>`;
+  }
+
   window.__renderProgrammingSection = async function (container, clientId) {
     if (!container) return;
     injectStyles();
@@ -217,12 +304,28 @@
       return;
     }
 
-    let editing = null; // null = closed, "new", or a note id
+    let editing = null;   // null = closed, "new", or a note id
+    let msEditing = null; // null = closed, "new", or a milestone id
 
     function paint() {
       const note = editing && editing !== "new" ? data.notes.find((n) => String(n.id) === String(editing)) : null;
+      const milestones = data.milestones || [];
+      const canMs = !!data.can_record_milestone;
+      const msEditingRow = msEditing && msEditing !== "new"
+        ? milestones.find((x) => String(x.id) === String(msEditing)) : null;
+      const needsReview = milestones.filter((x) => x.notification_status === "needs_review").length;
+
       container.innerHTML = `<div class="cp-wrap">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+          <div style="font-size:11px;font-weight:750;letter-spacing:.09em;text-transform:uppercase;color:#1b2a6b;">${icon("program", 14)} Milestones</div>
+          ${needsReview ? `<span class="cp-tag" style="background:#fef3c7;color:#92400e;">${needsReview} awaiting wording</span>` : ""}
+          <div style="flex:1 1 auto;"></div>
+          ${canMs && !msEditing ? `<button class="btn small" data-ms-new>${icon("plus", 13)} Record a milestone</button>` : ""}
+        </div>
+        ${msEditing ? milestoneEditorHtml(msEditingRow) : ""}
+        ${milestones.length ? milestones.map((x) => milestoneHtml(x, canMs)).join("")
+          : (msEditing ? "" : `<div class="cp-none" style="border:1px dashed var(--border,#e5e7eb);border-radius:10px;">No milestones recorded for this client yet.</div>`)}
+        <div style="display:flex;align-items:center;gap:8px;margin:20px 0 10px;">
           <div style="font-size:11px;font-weight:750;letter-spacing:.09em;text-transform:uppercase;color:#1b2a6b;">${icon("behavior", 14)} Behaviors</div>
         </div>
         ${behavioursHtml(data)}
@@ -236,6 +339,69 @@
           : (editing ? "" : `<div class="cp-none" style="border:1px dashed var(--border,#e5e7eb);border-radius:10px;">No supervision notes for this client yet.</div>`)}
       </div>`;
       wire();
+    }
+
+    // Milestone wiring. Kept apart from the supervision-note editor because
+    // they are different objects with different rules, and one shared handler
+    // is how a Save on one quietly writes the other.
+    function wireMilestones() {
+      const nb = container.querySelector("[data-ms-new]");
+      if (nb) nb.addEventListener("click", () => { msEditing = "new"; paint(); });
+
+      container.querySelectorAll("[data-ms-edit]").forEach((b) =>
+        b.addEventListener("click", () => { msEditing = b.dataset.msEdit; paint(); }));
+
+      const cancel = container.querySelector("[data-ms-cancel]");
+      if (cancel) cancel.addEventListener("click", () => { msEditing = null; paint(); });
+
+      const save = container.querySelector("[data-ms-save]");
+      if (save) save.addEventListener("click", async () => {
+        const ed = container.querySelector("[data-ms-editor]");
+        const val = (k) => { const el = ed.querySelector(`[data-ms-f="${k}"]`); return el ? el.value : ""; };
+        save.disabled = true;
+        try {
+          if (msEditing === "new") {
+            const out = await api(`/api/client-programming/${clientId}/milestones`, {
+              method: "POST",
+              body: {
+                event_type: val("event_type"),
+                achieved_at: val("achieved_at"),
+                clinical_target_name: val("clinical_target_name"),
+                assigned_bcba: val("assigned_bcba"),
+                parent_friendly_name: val("parent_friendly_name"),
+                parent_friendly_description: val("parent_friendly_description"),
+              },
+            });
+            data.milestones = [out.milestone].concat(data.milestones || []);
+          } else {
+            const out = await api(`/api/client-programming/milestones/${msEditing}`, {
+              method: "PATCH",
+              body: {
+                parent_friendly_name: val("parent_friendly_name"),
+                parent_friendly_description: val("parent_friendly_description"),
+              },
+            });
+            data.milestones = (data.milestones || []).map((x) => (String(x.id) === String(out.milestone.id) ? out.milestone : x));
+          }
+          msEditing = null;
+          paint();
+        } catch (e) { alert(e.message); save.disabled = false; }
+      });
+
+      container.querySelectorAll("[data-ms-send]").forEach((b) =>
+        b.addEventListener("click", async () => {
+          const row = (data.milestones || []).find((x) => String(x.id) === String(b.dataset.msSend));
+          const who = row ? (row.parent_friendly_name || row.clinical_target_name) : "this milestone";
+          // Read it back before it goes. This is the last point at which a
+          // person sees the words a family is about to receive.
+          if (!confirm(`Email this family about "${who}"?\n\n${row ? row.parent_friendly_description : ""}\n\nThis sends once and cannot be unsent.`)) return;
+          b.disabled = true;
+          try {
+            const out = await api(`/api/client-programming/milestones/${b.dataset.msSend}/send`, { method: "POST" });
+            data.milestones = (data.milestones || []).map((x) => (String(x.id) === String(out.milestone.id) ? out.milestone : x));
+            paint();
+          } catch (e) { alert(e.message); b.disabled = false; }
+        }));
     }
 
     function collect(ed) {
@@ -255,6 +421,7 @@
     }
 
     function wire() {
+      wireMilestones();
       const nb = container.querySelector("[data-new]");
       if (nb) nb.addEventListener("click", () => { editing = "new"; paint(); });
 
