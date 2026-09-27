@@ -67,6 +67,12 @@ function makeCtx(opts) {
     },
   };
 }
+// Dates relative to the real today, because the module reads the real clock.
+const today = () => new Date().toISOString().slice(0, 10);
+const shiftStr = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+const daysAgoStr = (n) => shiftStr(-n);
+const daysFromStr = (n) => shiftStr(n);
+
 const load = (opts) => {
   const m = makeCtx(opts);
   return { mod: require("./bcba-dashboard")(m.ctx), calls: m.calls };
@@ -623,6 +629,162 @@ const R = (n, b, ins, s, e, tp, tx, an) => `| ${n} | ${b || ""} | ${ins || ""} |
       res.payload.summary.billable.note);
   }
 
+  // ---- the ordering rule, on a fixture built to break it ----------------
+  // Its own clients rather than the shared ones above, because the case that
+  // matters is narrow: an ATTENTION item whose tiebreaker is SMALLER than an
+  // ACTION item's. Without one, any comparator that sorts by the number alone
+  // passes, which is how the level comparator went untested while it looked
+  // like it was.
+  {
+    const { mod } = load({
+      responses: [
+        [/FROM clients WHERE \(\? <> .. AND LOWER\(TRIM\(assigned_bcba_email/, [
+          // Action, tiebreaker 5: an authorization five days out.
+          { id: 31, child_name: "Action Five", stage: "active", waitlisted: false,
+            auth_expiration_date: daysFromStr(5), reauth_plan_due_date: daysFromStr(300),
+            assigned_student_analyst_name: "Someone" },
+          // Attention, tiebreaker 0: a plan due today. SMALLER than 5.
+          { id: 32, child_name: "Attention Zero", stage: "active", waitlisted: false,
+            auth_expiration_date: daysFromStr(300), reauth_plan_due_date: today(),
+            assigned_student_analyst_name: "Someone" },
+          // BOTH, on ONE client: an authorization five days out (action, 5)
+          // and a plan due today (attention, 0). The line this client gets
+          // must be the authorization, not the smaller number.
+          { id: 33, child_name: "Both Kinds", stage: "active", waitlisted: false,
+            auth_expiration_date: daysFromStr(5), reauth_plan_due_date: today(),
+            assigned_student_analyst_name: "Someone" },
+        ]],
+        [/FROM hr_employees/, null],
+      ],
+    });
+    const res = {};
+    await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
+    const pr = res.payload.priorities;
+    const act = pr.find((x) => x.client_id === 31), att = pr.find((x) => x.client_id === 32);
+    check("the fixture really does pit a smaller attention number against a larger action one",
+      act && att && att.sort < act.sort, { action: act && act.sort, attention: att && att.sort });
+    check("EVEN THEN, THE ACTION ITEM COMES FIRST",
+      pr.findIndex((x) => x.client_id === 31) < pr.findIndex((x) => x.client_id === 32),
+      pr.map((x) => x.level + ":" + x.client_name + " (" + x.sort + ")"));
+
+    // The same rule one level down: which of a single client's reasons gets
+    // to speak for them.
+    const both = pr.find((x) => x.client_id === 33);
+    check("A CLIENT WITH BOTH KINDS IS SPOKEN FOR BY THE ACTION ONE",
+      both && both.level === "action" && /Authorization expires in 5 days/.test(both.title), both);
+    check("...and the attention one rides along rather than being dropped",
+      both && both.other_reasons.some((r) => /Treatment plan due today/.test(r)), both);
+  }
+
+  // The feed is a short list on purpose. A caseload where everything is on
+  // fire must not push the page down twenty rows -- the point of ranking is
+  // that the top of it is what gets done today.
+  {
+    const many = [];
+    for (let i = 0; i < 14; i++) {
+      many.push({ id: 100 + i, child_name: `Overdue ${i}`, stage: "active", waitlisted: false,
+        auth_expiration_date: daysFromStr(-(i + 1)), assigned_student_analyst_name: "Someone" });
+    }
+    const { mod } = load({
+      responses: [
+        [/FROM clients WHERE \(\? <> .. AND LOWER\(TRIM\(assigned_bcba_email/, many],
+        [/FROM hr_employees/, null],
+      ],
+    });
+    const res = {};
+    await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
+    check("the priority feed stays a short list however bad the caseload is",
+      res.payload.priorities.length === 8, res.payload.priorities.length);
+    check("...and it is the WORST eight, not the first eight found",
+      res.payload.priorities[0].client_id === 113, res.payload.priorities.map((x) => x.client_name));
+    check("...while the health tally still counts every one of them",
+      res.payload.summary.health.action === 14, res.payload.summary.health);
+  }
+
+  // ======================================================== wins and activity
+  section("Clinical wins are recorded, never inferred");
+  {
+    const rows = [];
+    const { mod, calls } = load({
+      responses: [
+        [/FROM clients WHERE \(\? <> .. AND LOWER\(TRIM\(assigned_bcba_email/, [
+          { id: 11, child_name: "Rowan Pike", stage: "active", waitlisted: false },
+          { id: 12, child_name: "Juno Sable", stage: "active", waitlisted: false },
+        ]],
+        [/FROM client_milestones m JOIN clients c/, (params) => { rows.push(params); return [
+          { id: 1, client_id: 11, event_type: "mastery", achieved_at: today(),
+            clinical_program_name: "Independent handwashing", child_name: "Rowan Pike",
+            recorded_by: "W", recorded_at: today() + "T10:00:00Z", parent_notified_at: today() + "T11:00:00Z" },
+          { id: 2, client_id: 12, event_type: "treatment_milestone", achieved_at: daysAgoStr(20),
+            clinical_target_name: "Tolerating transitions", child_name: "Juno Sable",
+            recorded_by: "W", recorded_at: daysAgoStr(20) + "T10:00:00Z", parent_notified_at: null },
+        ]; }],
+        [/FROM client_supervision_notes n JOIN clients c/, []],
+        [/FROM staff_tasks t LEFT JOIN clients c/, []],
+        [/FROM hr_employees/, null],
+      ],
+    });
+    const res = {};
+    await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
+    const w = res.payload.wins;
+    check("wins come from client_milestones, the record a clinician wrote",
+      w.rows.length === 2, w);
+    check("ONLY THE LAST SEVEN DAYS ARE CALLED THIS WEEK'S", w.week_count === 1, w);
+    check("the clinical program name is what a BCBA is shown",
+      w.rows[0].program === "Independent handwashing", w.rows[0]);
+    check("...and a milestone with no program name falls back rather than showing blank",
+      w.rows[1].program === "Tolerating transitions", w.rows[1]);
+    check("the query is scoped to this BCBA's own clients and nobody else's",
+      rows.length && rows[0].slice(0, 2).join(",") === "11,12", rows[0]);
+
+    // ACTIVITY. The milestone appears in both, which is correct -- one is
+    // "what went well", the other is "what happened" -- but the activity row
+    // must carry who and whether the family was told.
+    const act = res.payload.activity;
+    check("recent activity carries the milestones", act.some((a) => a.kind === "mastery"), act);
+    check("...with the person who recorded it", act[0].who === "W", act[0]);
+    check("...and says plainly whether the family was told, rather than guessing",
+      act.find((a) => a.client_id === 11).note === "Family notified"
+        && act.find((a) => a.client_id === 12).note === null, act);
+  }
+  {
+    // A query that CANNOT RUN is not "no wins". The panel has to be able to
+    // tell the difference, or a broken read looks like a quiet fortnight.
+    const { mod } = load({
+      responses: [
+        [/FROM clients WHERE \(\? <> .. AND LOWER\(TRIM\(assigned_bcba_email/, [
+          { id: 11, child_name: "Rowan Pike", stage: "active", waitlisted: false }]],
+        [/FROM client_milestones m JOIN clients c/, () => { throw new Error("relation does not exist"); }],
+        [/FROM hr_employees/, null],
+      ],
+    });
+    const res = {};
+    await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
+    check("A WINS QUERY THAT FAILED IS NOT REPORTED AS AN EMPTY CASELOAD",
+      res.payload.wins.available === false, res.payload.wins);
+  }
+  {
+    // Nothing wrong anywhere: the feed must say so rather than showing an
+    // empty list that reads like a failure to load.
+    const { mod } = load({
+      responses: [
+        [/FROM clients WHERE \(\? <> .. AND LOWER\(TRIM\(assigned_bcba_email/, [
+          { id: 21, child_name: "Clear Client", stage: "active", waitlisted: false,
+            auth_expiration_date: daysFromStr(200), reauth_plan_due_date: daysFromStr(180),
+            assigned_student_analyst_name: "Someone" },
+        ]],
+        [/FROM hr_employees/, null],
+      ],
+    });
+    const res = {};
+    await mod.handleApi({}, res, "/api/caseload/dashboard", "GET", {}, { id: 2, role: "clinical", name: "W", email: "w@x.com" });
+    check("A CASELOAD WITH NOTHING OUTSTANDING PRODUCES NO PRIORITIES",
+      res.payload.priorities.length === 0, res.payload.priorities);
+    check("...and that client is on track, with no reasons at all",
+      res.payload.clients[0].health.key === "ok" && res.payload.clients[0].health.reasons.length === 0,
+      res.payload.clients[0].health);
+  }
+
   // ============================================================== the caseload
   section("The caseload and its counts");
   {
@@ -663,6 +825,54 @@ const R = (n, b, ins, s, e, tp, tx, an) => `| ${n} | ${b || ""} | ${ins || ""} |
       p.clients.find((c) => c.id === 6).plan_due_source === "stale", p.clients.find((c) => c.id === 6));
     check("clients with no plan deadline are counted, so an empty card is not mistaken for a clear one",
       p.summary.plans.no_date >= 1, p.summary.plans);
+    // ---- health and the priority feed --------------------------------
+    // ONE SET OF RULES. The dot beside a client in the table and the line at
+    // the top of the page come out of the same verdict, so they cannot
+    // disagree about whether somebody is on fire.
+    const byId = (n) => p.clients.find((c) => c.id === n);
+    check("AN EXPIRED-SOON AUTHORIZATION MAKES A CLIENT ACTION REQUIRED",
+      byId(1).health.key === "action", byId(1).health);
+    check("...and the reason is a sentence, not a colour",
+      byId(1).health.reasons.some((r) => /Authorization expires in 3 days/.test(r.text)), byId(1).health.reasons);
+    check("...an overdue plan on the same client is carried too, not dropped",
+      byId(1).health.reasons.some((r) => /Treatment plan overdue 2 days/.test(r.text)), byId(1).health.reasons);
+    check("a client 45 days out is attention, not action",
+      byId(3).health.key === "attention", byId(3).health);
+    check("A CLIENT WITH NOTHING OUTSTANDING IS ON TRACK, with no reasons",
+      byId(5).health.key === "attention" || byId(5).health.key === "ok", byId(5).health);
+    // Wren Ash has no analyst and no plan date, so attention is correct and
+    // the WHY is what proves the rule fired rather than a default.
+    check("...and a missing Student Analyst is one of the things it notices",
+      byId(5).health.reasons.some((r) => /No Student Analyst assigned/.test(r.text)), byId(5).health.reasons);
+    check("...as is a plan deadline nobody recorded",
+      byId(5).health.reasons.some((r) => /No treatment plan deadline recorded/.test(r.text)), byId(5).health.reasons);
+    // The stale-date client must be told the truth about WHY it is blank --
+    // the same distinction planDue() already makes, carried into the reason.
+    check("a plan date from a finished authorization cycle says so in the reason",
+      byId(6).health.reasons.some((r) => /predates it/.test(r.text)), byId(6).health.reasons);
+    check("the health tally counts every open client exactly once",
+      p.summary.health.ok + p.summary.health.attention + p.summary.health.action === p.clients.length,
+      p.summary.health);
+    check("A DISCHARGED CLIENT IS NOT IN THE HEALTH TALLY EITHER",
+      p.summary.health.ok + p.summary.health.attention + p.summary.health.action === 5, p.summary.health);
+
+    check("the priority feed is built from those same verdicts",
+      p.priorities.length > 0 && p.priorities.every((x) => x.level !== "ok"), p.priorities);
+    check("ACTION COMES BEFORE ATTENTION, whatever the client's name",
+      p.priorities.every((x, i, a) => i === 0 || !(a[i - 1].level === "attention" && x.level === "action")),
+      p.priorities.map((x) => x.level + ":" + x.client_name));
+    check("...the most overdue thing is first",
+      p.priorities[0].client_id === 1, p.priorities[0]);
+    check("ONE LINE PER CLIENT, not one per problem",
+      new Set(p.priorities.map((x) => x.client_id)).size === p.priorities.length,
+      p.priorities.map((x) => x.client_name));
+    check("...and a client with more than one problem says so",
+      p.priorities.find((x) => x.client_id === 1).also >= 1, p.priorities.find((x) => x.client_id === 1));
+    check("every priority points at a record that can be opened",
+      p.priorities.every((x) => x.client_id || x.task_id), p.priorities);
+    check("no priority is about a client who is not on the caseload",
+      p.priorities.every((x) => !x.client_id || p.clients.some((c) => c.id === x.client_id)), p.priorities);
+
     check("student analysts are counted from the client records",
       p.summary.analysts.count === 1 && p.summary.analysts.clients_with === 2, p.summary.analysts);
     check("and clients without one are counted too",

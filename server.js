@@ -8977,6 +8977,9 @@ const bcbaDashboard = require("./bcba-dashboard")({
   // succeeded, and did its last attempt fail. The panel used to blame Rethink
   // for every empty week; this lets it say which thing is actually wrong.
   hoursSyncState: () => rethink.hoursSyncState(),
+  // The month's weeks, from the same computation the billable requirements
+  // report reads. The dashboard's month figure is not a second sum.
+  billableWeeksForMonth: (empId, month) => rethink.billableWeeksForMonth(empId, month),
   // The RBT Supervision tracker's own month computation, not a second copy of
   // it: the worked-hours denominator has a precedence rule (Rethink verified
   // hours, else the uploaded payroll figure) that must exist in one place.

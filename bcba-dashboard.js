@@ -41,6 +41,10 @@ module.exports = function initBcbaDashboard(ctx) {
     // Whether the hours sync has ever run, and whether its last word was a
     // failure. Read only to EXPLAIN a missing figure -- see billableFor().
     hoursSyncState,
+    // Every week that overlaps the month, from the SAME computation the
+    // billable requirements report reads. The month figure on this card is not
+    // a second sum of the same days.
+    billableWeeksForMonth,
   } = ctx;
 
   // ---- who may see what ---------------------------------------------------
@@ -238,6 +242,242 @@ module.exports = function initBcbaDashboard(ctx) {
     };
   }
 
+  // ---- caseload health ----------------------------------------------------
+  // ONE health verdict per client, derived from the row that was already
+  // decorated above plus the tasks that were already fetched. It runs in
+  // memory: no query is added, and nothing here is a second calculation of a
+  // deadline. auth_days and tp_days come from urgency()/tpUrgency(), which the
+  // summary cards and the caseload table already agree on -- so a client
+  // cannot be red on one panel and fine on the next.
+  //
+  // WHAT IT DELIBERATELY DOES NOT JUDGE: whether programming exists. There is
+  // no programming status in this CRM to read -- the Rethink endpoint probe
+  // established the API exposes none -- and a red dot for "missing
+  // programming" derived from the absence of a supervision note would be an
+  // accusation built on a guess. A missing PLAN DATE is judged, because that
+  // is a field somebody was supposed to fill in.
+  //
+  // Every verdict carries its reasons in words. The colour is the summary; the
+  // sentence is the thing a BCBA can act on, and it is what the table's hover
+  // and the priority feed both read.
+  const HEALTH_RANK = { action: 0, attention: 1, ok: 2 };
+
+  // `sort` orders reasons WITHIN a level and nothing else: how many days over,
+  // or how many days until. It deliberately does NOT encode the level too.
+  //
+  // It used to, with offsets like -1000 for an expired authorization, and the
+  // effect was that the level comparator below never decided anything -- the
+  // numbers happened to agree with it in every case. Two rules where one is
+  // silently unused is a rule nobody is testing, and the day somebody added a
+  // reason with the wrong offset it would have ordered an overdue plan behind
+  // a missing analyst with no test saying so. The level decides the level; the
+  // number breaks ties inside it, and the two now genuinely overlap.
+
+  function healthFor(c, tasksByClient) {
+    const reasons = [];
+    const mine = tasksByClient.get(c.id) || [];
+
+    // --- action required ---
+    if (c.auth_days !== null && c.auth_days < 0) {
+      reasons.push({ key: "auth_expired", level: "action", text: `Authorization expired ${Math.abs(c.auth_days)} days ago.`, section: "auth", sort: c.auth_days });
+    } else if (c.auth_days !== null && c.auth_days <= 7) {
+      reasons.push({ key: "auth_urgent", level: "action", text: c.auth_days === 0 ? "Authorization expires today." : `Authorization expires in ${c.auth_days} days.`, section: "auth", sort: c.auth_days });
+    }
+    if (c.tp_days !== null && c.tp_days < 0) {
+      reasons.push({ key: "plan_overdue", level: "action", text: `Treatment plan overdue ${Math.abs(c.tp_days)} days.`, section: "plan", sort: c.tp_days });
+    }
+    for (const t of mine) {
+      if (t.bucket === "overdue") {
+        reasons.push({ key: "task_overdue", level: "action", text: `Task overdue: ${t.title}.`, section: null, sort: (t.days || 0), task_id: t.id });
+      }
+    }
+
+    // --- attention ---
+    if (c.auth_days !== null && c.auth_days > 7 && c.auth_days <= 30) {
+      reasons.push({ key: "auth_soon", level: "attention", text: `Authorization expires in ${c.auth_days} days.`, section: "auth", sort: c.auth_days });
+    }
+    if (c.tp_days !== null && c.tp_days >= 0 && c.tp_days <= 30) {
+      reasons.push({ key: "plan_soon", level: "attention", text: c.tp_days === 0 ? "Treatment plan due today." : `Treatment plan due in ${c.tp_days} days.`, section: "plan", sort: c.tp_days });
+    }
+    // A plan deadline nobody recorded is not the same as a caseload that is up
+    // to date, and the difference is invisible on a card that counts what is
+    // due. planDue() has already worked out that a date from a finished
+    // authorization cycle does not count.
+    if (c.tp_days === null) {
+      reasons.push({ key: "plan_missing", level: "attention", text: c.plan_due_source === "stale"
+        ? "No treatment plan deadline for this authorization period — the only date on record predates it."
+        : "No treatment plan deadline recorded.", section: "plan", sort: 900 });
+    }
+    if (!c.student_analyst) {
+      reasons.push({ key: "no_analyst", level: "attention", text: "No Student Analyst assigned.", section: null, sort: 1000 });
+    }
+    for (const t of mine) {
+      if (t.bucket === "today") {
+        reasons.push({ key: "task_today", level: "attention", text: `Task due today: ${t.title}.`, section: null, sort: 0, task_id: t.id });
+      }
+    }
+
+    // Level first here too, for the same reason the feed does it: reasons[0]
+    // is what the client's line says, and an attention reason must never
+    // speak for a client who has an action one.
+    reasons.sort((a, b) => (HEALTH_RANK[a.level] - HEALTH_RANK[b.level]) || (a.sort - b.sort));
+    const level = reasons.some((r) => r.level === "action") ? "action"
+                : reasons.length ? "attention" : "ok";
+    return { key: level, reasons };
+  }
+
+  const HEALTH_LABEL = { action: "Action required", attention: "Needs attention", ok: "On track" };
+
+  // ---- the priority feed --------------------------------------------------
+  // The same reasons, flattened and ranked across the whole caseload. Built
+  // from healthFor() rather than from its own rules, so the dot beside a
+  // client on the table and the item at the top of the page can never
+  // disagree about why they are red.
+  //
+  // One line per client, not one per reason: a client with an expired
+  // authorization AND an overdue plan is one person to deal with, and three
+  // rows about the same child pushes somebody else's emergency off the screen.
+  // Their other reasons ride along so the line can say "and 2 more".
+  function prioritiesFrom(decorated, tasksByClient, limit) {
+    const items = [];
+    for (const c of decorated) {
+      const h = c.health;
+      if (!h || h.key === "ok" || !h.reasons.length) continue;
+      const top = h.reasons[0];
+      items.push({
+        client_id: c.id,
+        client_name: c.child_name,
+        level: top.level,
+        reason_key: top.key,
+        title: top.text,
+        section: top.section || null,
+        also: h.reasons.length - 1,
+        other_reasons: h.reasons.slice(1).map((r) => r.text),
+        sort: top.sort,
+      });
+    }
+    // Overdue tasks that are not about a client still belong here: they are
+    // this BCBA's own work and nothing else on the page carries them.
+    for (const t of (tasksByClient.get(null) || [])) {
+      if (t.bucket !== "overdue") continue;
+      items.push({
+        client_id: null, client_name: null, level: "action", reason_key: "task_overdue",
+        title: `Task overdue: ${t.title}`, section: null, also: 0, other_reasons: [],
+        task_id: t.id, sort: (t.days || 0),
+      });
+    }
+    items.sort((a, b) => (HEALTH_RANK[a.level] - HEALTH_RANK[b.level]) || (a.sort - b.sort)
+      || String(a.client_name || "").localeCompare(String(b.client_name || "")));
+    return items.slice(0, limit || 8);
+  }
+
+  // ---- clinical wins ------------------------------------------------------
+  // Milestones a clinician RECORDED on one of this BCBA's clients. Read from
+  // client_milestones, which is the record Client Programming writes; nothing
+  // is inferred and nothing is derived from Rethink, which exposes no mastery
+  // data to derive it from.
+  //
+  // Internal only. The parent-facing side of a milestone is the celebration
+  // email, and this panel neither sends nor re-sends one -- it reports what
+  // was already recorded.
+  async function winsFor(clientIds) {
+    const empty = { week_count: 0, rows: [], available: true };
+    if (!clientIds.length) return empty;
+    const since = daysAgo(30), weekAgo = daysAgo(7);
+    const ph = clientIds.map(() => "?").join(",");
+    const rows = await dbAll(
+      `SELECT m.id, m.client_id, m.event_type, m.achieved_at, m.parent_friendly_name,
+              m.clinical_program_name, m.clinical_target_name, c.child_name
+         FROM client_milestones m
+         JOIN clients c ON c.id = m.client_id
+        WHERE m.client_id IN (${ph}) AND m.achieved_at >= ?
+        ORDER BY m.achieved_at DESC, m.id DESC
+        LIMIT 12`,
+      [...clientIds, since]
+    ).catch(() => null);
+    // A query that could not run is NOT "no wins". The panel says which.
+    if (!rows) return { week_count: 0, rows: [], available: false };
+    return {
+      available: true,
+      week_count: rows.filter((r) => String(r.achieved_at || "") >= weekAgo).length,
+      rows: rows.map((r) => ({
+        id: r.id, client_id: r.client_id, client_name: r.child_name,
+        event_type: r.event_type, achieved_at: r.achieved_at,
+        // The clinical name is what a clinician recorded and what this screen
+        // shows. The parent-friendly wording exists for the family's email and
+        // is not what a BCBA is looking for here.
+        program: r.clinical_program_name || r.clinical_target_name || r.parent_friendly_name || null,
+      })),
+    };
+  }
+
+  // ---- recent clinical activity -------------------------------------------
+  // Three things that are actually written down against a client, each read
+  // from the table that owns it. Nothing is invented, and a source that cannot
+  // be read contributes nothing rather than a placeholder.
+  async function activityFor(clientIds, bcba) {
+    if (!clientIds.length) return [];
+    const ph = clientIds.map(() => "?").join(",");
+    const since = daysAgo(30);
+    const out = [];
+
+    const ms = await dbAll(
+      `SELECT m.id, m.client_id, m.event_type, m.recorded_by, m.recorded_at, m.parent_notified_at,
+              m.clinical_program_name, m.clinical_target_name, c.child_name
+         FROM client_milestones m JOIN clients c ON c.id = m.client_id
+        WHERE m.client_id IN (${ph}) AND COALESCE(m.recorded_at, m.achieved_at) >= ?
+        ORDER BY COALESCE(m.recorded_at, m.achieved_at) DESC LIMIT 10`,
+      [...clientIds, since]).catch(() => []);
+    for (const r of ms) {
+      out.push({
+        kind: r.event_type === "mastery" ? "mastery" : "milestone",
+        at: r.recorded_at, client_id: r.client_id, client_name: r.child_name,
+        who: r.recorded_by || null,
+        what: r.event_type === "mastery" ? "Skill mastered" : "Treatment milestone reached",
+        detail: r.clinical_program_name || r.clinical_target_name || null,
+        // Said plainly, because "was the family told" is the question somebody
+        // asks about a milestone and guessing it is worse than not showing it.
+        note: r.parent_notified_at ? "Family notified" : null,
+      });
+    }
+
+    const notes = await dbAll(
+      `SELECT n.id, n.client_id, n.session_date, n.bcba_name, n.created_at, c.child_name
+         FROM client_supervision_notes n JOIN clients c ON c.id = n.client_id
+        WHERE n.client_id IN (${ph}) AND COALESCE(n.created_at, n.session_date) >= ?
+        ORDER BY COALESCE(n.created_at, n.session_date) DESC LIMIT 10`,
+      [...clientIds, since]).catch(() => []);
+    for (const r of notes) {
+      out.push({
+        kind: "programming", at: r.created_at || r.session_date, client_id: r.client_id,
+        client_name: r.child_name, who: r.bcba_name || null,
+        what: "Programming supervision note", detail: null, note: null,
+      });
+    }
+
+    const done = await dbAll(
+      `SELECT t.id, t.title, t.client_id, t.updated_at, t.assigned_name, c.child_name
+         FROM staff_tasks t LEFT JOIN clients c ON c.id = t.client_id
+        WHERE t.status = 'done' AND t.client_id IN (${ph}) AND t.updated_at >= ?
+        ORDER BY t.updated_at DESC LIMIT 10`,
+      [...clientIds, since]).catch(() => []);
+    for (const r of done) {
+      out.push({
+        kind: "task", at: r.updated_at, client_id: r.client_id, client_name: r.child_name,
+        who: r.assigned_name || null, what: "Task completed", detail: r.title, note: null,
+      });
+    }
+
+    out.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+    return out.slice(0, 12);
+  }
+
+  function daysAgo(n) {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - n);
+    return d.toISOString().slice(0, 10);
+  }
+
   // ---- the payload --------------------------------------------------------
   async function buildDashboard(user, wantedBcba) {
     const bcba = await resolveBcba(user, wantedBcba);
@@ -276,6 +516,26 @@ module.exports = function initBcbaDashboard(ctx) {
     }
     const analysts = [...analystMap.values()].sort((a, b) => a.name.localeCompare(b.name));
 
+    // ---- health, priorities, wins, activity -----------------------------
+    // Tasks are fetched ONCE and shared: the task panel, every client's health
+    // verdict and the priority feed all read the same list, so a task cannot
+    // be overdue in one place and not in another, and the page does not ask
+    // for them three times.
+    const tasks = await tasksFor(user, bcba);
+    const tasksByClient = new Map();
+    for (const t of tasks) {
+      const k = t.client_id || null;
+      if (!tasksByClient.has(k)) tasksByClient.set(k, []);
+      tasksByClient.get(k).push(t);
+    }
+    for (const c of openClients) c.health = healthFor(c, tasksByClient);
+    const healthTally = {
+      ok: openClients.filter((c) => c.health.key === "ok").length,
+      attention: openClients.filter((c) => c.health.key === "attention").length,
+      action: openClients.filter((c) => c.health.key === "action").length,
+    };
+    const clientIds = openClients.map((c) => c.id);
+
     return {
       bcba,
       can_pick: canPick(user),
@@ -283,7 +543,11 @@ module.exports = function initBcbaDashboard(ctx) {
       today: today(),
       clients: openClients,
       all_client_count: clients.length,
+      priorities: prioritiesFrom(openClients, tasksByClient, 8),
+      wins: await winsFor(clientIds),
+      activity: await activityFor(clientIds, bcba),
       summary: {
+        health: healthTally,
         clients: { total: openClients.length, in_therapy: inTherapy, assessment, on_hold: onHold },
         authorizations: { ...authBands, attention: authBands.expired + authBands.d7 + authBands.d30 + authBands.d60 },
         treatment_plans: { ...tpBands, attention: tpBands.expired + tpBands.d7 + tpBands.d30 + tpBands.d60 },
@@ -299,7 +563,7 @@ module.exports = function initBcbaDashboard(ctx) {
         billable: await billableFor(bcba),
       },
       analysts,
-      tasks: await tasksFor(user, bcba),
+      tasks,
       supervision: await supervisionFor(bcba),
     };
   }
@@ -398,6 +662,11 @@ module.exports = function initBcbaDashboard(ctx) {
       available: true, employee_id: emp.id,
       week_start: wk.week_start, week_end: wk.week_end,
       required, completed,
+      // The month so far, beside the week. Same weekly requirement, so the
+      // month's target is the weeks that have actually been measured -- not
+      // required x 4.33, which would invent a figure for weeks nobody has
+      // reached yet and report everybody as behind on the 3rd.
+      month: await billableMonthFor(emp.id, required),
       remaining: Math.max(0, round1(required - completed)),
       percent: required > 0 ? Math.round((completed / required) * 100) : null,
       // Reported, never folded in: an hour Rethink did not label is not
@@ -411,6 +680,25 @@ module.exports = function initBcbaDashboard(ctx) {
       appointments_seen: seen,
       appointments_counted: counted,
       unverified_appointments: unverified,
+    };
+  }
+
+  // MONTH TO DATE, built from the weeks the requirements report already
+  // computes. Only weeks that actually counted something contribute, for the
+  // same reason a week waiting on verification is never scored as a miss: a
+  // zero from unverified paperwork is not a zero from a quiet week.
+  async function billableMonthFor(employeeId, weeklyRequired) {
+    if (typeof billableWeeksForMonth !== "function") return null;
+    const weeks = await billableWeeksForMonth(employeeId, today().slice(0, 7)).catch(() => []);
+    const scored = (weeks || []).filter((w) => w.billable != null && w.counted_any !== false);
+    if (!scored.length) return null;
+    const completed = round1(scored.reduce((a, w) => a + num(w.billable), 0));
+    const required = round1(weeklyRequired * scored.length);
+    return {
+      weeks_counted: scored.length,
+      completed, required,
+      remaining: Math.max(0, round1(required - completed)),
+      percent: required > 0 ? Math.round((completed / required) * 100) : null,
     };
   }
 

@@ -142,16 +142,20 @@ const { chromium } = require("playwright");
   check("THE DASHBOARD ROUTE DRAWS THE CASELOAD, not the generic dashboard",
     await page.locator(".bd").count() === 1, await page.locator(".bd").count());
   check("greeted by first name", /Good (morning|afternoon|evening), Clinical\./.test(text), text.slice(0, 200));
-  check("and told what the page is for", /what's happening with your caseload today/i.test(text));
+  check("and told what the page is for", /what needs your attention today/i.test(text));
   check("THERE IS NO 'PICK YOURSELF' DROPDOWN", await page.locator("#bd-pick").count() === 0);
   check("no separate BCBA Dashboard nav item was added",
     await page.locator('[data-nav="bcba-dashboard"]').count() === 0);
 
-  console.log("\n== The summary cards ==");
+  console.log("\n== The clinical week ==");
+  // The seven identical cards became a billable hero plus four compact tiles.
+  // EVERY ASSERTION BELOW IS THE ONE IT ALWAYS WAS -- the same figures, the
+  // same "not available rather than 0%" rule. Only where they are read from
+  // moved, which is what a redesign is.
   const cards = await page.evaluate(() => {
     const out = {};
-    document.querySelectorAll(".bd-card").forEach((c) => {
-      const t = c.querySelector(".bd-ct"), n = c.querySelector(".bd-cn");
+    document.querySelectorAll(".bd-tile").forEach((c) => {
+      const t = c.querySelector(".bd-tile-t"), n = c.querySelector(".bd-tile-n");
       if (t && n) out[t.textContent.trim()] = n.textContent.trim();
     });
     return out;
@@ -160,33 +164,88 @@ const { chromium } = require("playwright");
   // the element rather than on rendered innerText.
   const cardKeys = Object.keys(cards).map((k) => k.toLowerCase());
   // Matched on a distinctive fragment, not the whole label: the wording is a
-  // design decision that will keep moving, but "there is a card about
+  // design decision that will keep moving, but "there is a tile about
   // authorizations" is the thing worth pinning.
-  for (const t of ["clients", "authorizations expiring", "treatment plans due", "student analysts", "billable"]) {
-    check(`the ${t} card is there`, cardKeys.some((k) => k.includes(t)), cardKeys);
+  for (const t of ["caseload", "authorizations", "treatment plans", "student analysts"]) {
+    check(`the ${t} tile is there`, cardKeys.some((k) => k.includes(t)), cardKeys);
   }
   const card = (name) => cards[Object.keys(cards).find((k) => k.toLowerCase().includes(name))];
-  check("My Clients counts the assigned caseload", Number(card("clients")) >= 3, cards);
+  check("My Clients counts the assigned caseload", Number(card("caseload")) >= 3, cards);
   check("an authorization 400 days out does NOT raise an alert",
-    Number(card("authorizations expiring")) === 2, cards);
-  check("an overdue treatment plan is counted", Number(card("treatment plans due")) >= 1, cards);
-  // THE RULE, NOT THE WORDING.
-  //
-  // What this check exists to protect is that an unavailable billable figure
-  // is never drawn as a percentage: "0 of 25 hours" reads as a performance
-  // problem when the truth is that the figure is not in yet.
-  //
-  // It pinned the literal words "Not available", which were the headline for
-  // all five causes -- accurate and useless, since an unlinked provider, a
-  // failed sync and a week of unverified sessions have different people
-  // fixing them. The headline now names the cause, so this asserts the rule
-  // instead: a cause is named, and no percentage is shown.
-  const billableHead = card("billable") || "";
-  check("billable says WHICH thing is wrong rather than showing 0%",
-    /Not available|Waiting on verification|Not linked to Rethink|Sync failed|Not synced yet|Not configured|No weekly requirement|No staff record/i
-      .test(billableHead), billableHead);
-  check("...and the unavailable figure is never drawn as a percentage",
-    !/%/.test(billableHead), billableHead);
+    Number(card("authorizations")) === 2, cards);
+  check("an overdue treatment plan is counted", Number(card("treatment plans")) >= 1, cards);
+
+  const hero = await page.evaluate(() => {
+    const h = document.querySelector(".bd-hero");
+    return h ? { text: h.innerText, ring: h.querySelector(".bd-ring-n").textContent.trim(),
+                 sweeps: h.querySelectorAll(".bd-ring svg circle").length } : null;
+  });
+  check("the billable figure has its own place at the top of the page", !!hero, hero);
+  // THE RULE THAT SURVIVES EVERY REDESIGN. An unavailable figure is never
+  // drawn as a percentage, and the ring gets no coloured sweep -- a full grey
+  // circle at 0% says "you have done none of it", which is not what is true.
+  check("billable says what is wrong rather than showing 0%",
+    /Waiting on verification|Not linked|Not synced|Sync failed|Not configured|No weekly requirement|No staff record|Not available/i.test(hero.text),
+    hero.text);
+  check("...and its ring shows no percentage at all", hero.ring === "\u2014", hero.ring);
+  // Folded in from the fix this branch is stacked on: the ring is not the
+  // only place a percentage could appear, and the headline is the thing
+  // somebody reads first.
+  check("...nor does the headline beside it", !/%/.test(hero.text), hero.text);
+  check("...drawn as an empty track, not a zero-length sweep", hero.sweeps === 1, hero.sweeps);
+
+  console.log("\n== Priority for you ==");
+  const prio = await page.evaluate(() => {
+    const p = [...document.querySelectorAll(".bd-panel")].find((t) => /Priority for you/i.test(t.textContent));
+    if (!p) return null;
+    return {
+      rows: [...p.querySelectorAll(".bd-prio")].map((r) => r.innerText.replace(/\s+/g, " ").trim()),
+      calm: !!p.querySelector(".bd-calm"),
+    };
+  });
+  check("the priority feed is on the page", !!prio, prio);
+  // These fixtures carry an expired authorization and an overdue plan, so the
+  // feed must not be empty -- an "all clear" on a caseload that is not clear
+  // is the worst thing this panel could do.
+  check("a caseload with an expired authorization is NOT reported as all clear",
+    prio.rows.length > 0 && !prio.calm, prio);
+  check("...and the reason is in words, not only a colour",
+    prio.rows.some((r) => /expired|overdue|due in|no treatment plan|no student analyst/i.test(r)), prio.rows);
+  check("...each one offers a way into the record it is about",
+    await page.evaluate(() => [...document.querySelectorAll(".bd-prio")].every(
+      (r) => r.hasAttribute("data-client") || r.hasAttribute("data-goto"))));
+
+  console.log("\n== Caseload health ==");
+  const health = await page.evaluate(() => {
+    const segs = [...document.querySelectorAll("[data-health]")].map((b) => b.innerText.replace(/\s+/g, " ").trim());
+    return { segs, dots: document.querySelectorAll(".bd-hcell").length };
+  });
+  check("the three health segments are offered", health.segs.length >= 3, health.segs);
+  check("...they are labelled in words, not only coloured",
+    health.segs.join(" ").match(/On track/i) && health.segs.join(" ").match(/attention/i)
+      && health.segs.join(" ").match(/Action required/i), health.segs);
+  check("every client row carries a health verdict", health.dots >= 3, health.dots);
+  check("...and each explains itself on hover rather than leaving a bare dot",
+    await page.evaluate(() => [...document.querySelectorAll(".bd-hcell")].every(
+      (h) => (h.getAttribute("title") || "").length > 10)));
+
+  // Pressing a segment filters the table that is already there. It must not
+  // open a second caseload, and pressing it again must clear it.
+  const filtered = await page.evaluate(async () => {
+    const before = document.querySelectorAll("#bd-caseload tbody tr").length;
+    const seg = document.querySelector('[data-health="action"]');
+    seg.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const after = document.querySelectorAll("#bd-caseload tbody tr").length;
+    const tables = document.querySelectorAll("#bd-caseload table").length;
+    document.querySelector('[data-health="action"]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    return { before, after, tables, restored: document.querySelectorAll("#bd-caseload tbody tr").length };
+  });
+  check("a health segment narrows the caseload already on the page",
+    filtered.after <= filtered.before && filtered.tables === 1, filtered);
+  check("...and pressing it again clears the filter",
+    filtered.restored === filtered.before, filtered);
 
   console.log("\n== Authorizations ==");
   check("the authorizations panel is near the top",
@@ -375,9 +434,42 @@ const { chromium } = require("playwright");
   check("search narrows it to one client", searched === 1, searched);
 
   console.log("\n== Presentation ==");
-  const html = await page.innerHTML(".bd");
-  const emoji = html.match(/[\u{1F300}-\u{1FAFF}]/gu) || [];
-  check("no emoji on the dashboard", emoji.length === 0, emoji);
+  // EMOJI: NARROWED, NOT DROPPED. The rule used to be none at all, and it was
+  // a good rule -- emoji scattered through deadlines and percentages make a
+  // clinical screen look like a chat app. What was asked for is positive
+  // reinforcement on the two panels that are about something going right.
+  //
+  // So the rule now says WHERE, which is the part that was actually load
+  // bearing. A 🎉 beside a met weekly goal is what was asked for; a 🎉 in the
+  // caseload table is the thing the original check existed to stop.
+  const emojiRe = /[\u{1F300}-\u{1FAFF}\u{2728}\u{2B50}\u{1F3C6}]/gu;
+  const stray = await page.evaluate((src) => {
+    const re = new RegExp(src, "gu");
+    const zones = [
+      ["the caseload table", "#bd-caseload table"],
+      ["the priority feed", ".bd-prio"],
+      ["the summary tiles", ".bd-tile"],
+      ["the authorizations panel", ".bd-panel table"],
+      ["the calendar", ".bd-cal"],
+    ];
+    const out = [];
+    for (const [label, sel] of zones) {
+      document.querySelectorAll(sel).forEach((el) => {
+        const m = (el.textContent || "").match(re);
+        if (m) out.push(label + ": " + m.join(""));
+      });
+    }
+    return out;
+  }, emojiRe.source);
+  check("NO EMOJI ANYWHERE CLINICAL DATA IS READ — tables, priorities, tiles, calendar",
+    stray.length === 0, stray);
+
+  // And where they ARE allowed, they are a fixed short list rather than
+  // whatever anybody felt like adding.
+  const allEmoji = [...new Set((await page.innerHTML(".bd")).match(emojiRe) || [])];
+  const ALLOWED = ["🎉", "✨", "🌟", "🏆", "🌱", "📋"];
+  check("...and the ones that are used are from the approved set",
+    allEmoji.every((e) => ALLOWED.includes(e)), allEmoji);
   const wide = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, win: window.innerWidth }));
   check("nothing overflows horizontally", wide.doc <= wide.win + 1, wide);
   await page.setViewportSize({ width: 480, height: 900 });
