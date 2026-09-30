@@ -521,6 +521,117 @@ async function pdfBytes(text, pages = 1) {
   }
 
   // ==================================================================
+  section("A document that arrived already knowing what it is");
+  {
+    // What the SignNow import now writes: a clinical type, plus how it got
+    // there. The point of typing at import is that this attaches by itself
+    // instead of waiting for somebody to confirm a filename.
+    const cidS = await mkClient(`AR SignNow ${stamp}`, "Aetna");
+    const imported = (await pool.query(
+      `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, uploaded_at,
+                                     clinical_type, clinical_type_source, document_date)
+       VALUES ($1,$2,$3,'application/pdf',$4,'hosted',now()::text,$5,$6,$7) RETURNING id`,
+      [cidS, "Diagnostic Evaluation (from SignNow)", "DiagnosticEvaluation.pdf",
+       `arsn_${stamp}.pdf`, "diagnostic_evaluation", "signnow_title", "2026-09-01"]
+    )).rows[0].id;
+    fs.writeFileSync(path.join(DOCS_DIR, `arsn_${stamp}.pdf`), await pdfBytes("Diagnostic Evaluation", 1));
+
+    const pv = await owner(`/api/authorization-requests/preview?client_id=${cidS}&request_type=assessment`);
+    const de = pv.data.items.find((i) => i.key === "diagnostic_evaluation");
+    check("AN IMPORTED DOCUMENT MATCHES BY TYPE, not as a filename guess",
+      de.found && de.candidates[0].match_source === "type", de.candidates && de.candidates[0]);
+    check("...and the record says the type came from its SignNow title",
+      de.candidates[0].type_source === "signnow_title", de.candidates[0].type_source);
+
+    const c = await owner("/api/authorization-requests", { method: "POST", body: { client_id: cidS, request_type: "assessment" } });
+    const doc = c.data.documents.find((d) => d.requirement_key === "diagnostic_evaluation");
+    check("it attaches on its own, with nobody confirming anything",
+      doc.document && doc.document.id === imported && doc.status === "ready", doc);
+
+    const evs = (await pool.query(
+      "SELECT action, notes FROM auth_request_events WHERE request_id = $1 AND action = 'document_matched'", [c.data.id])).rows;
+    const note = (evs.find((e) => /Diagnostic/i.test(e.notes || "")) || {}).notes || "";
+    check("THE AUDIT DOES NOT CALL IT SOMEBODY'S DECISION",
+      /from its SignNow title/i.test(note), note);
+
+    // A document a human typed must still read as a human's choice.
+    const cidH = await mkClient(`AR Handpicked ${stamp}`, "Aetna");
+    await mkDoc(cidH, "Diagnostic Evaluation", "diagnostic_evaluation");
+    const pvH = await owner(`/api/authorization-requests/preview?client_id=${cidH}&request_type=assessment`);
+    const deH = pvH.data.items.find((i) => i.key === "diagnostic_evaluation");
+    check("...while a type somebody picked still reads as picked",
+      deH.candidates[0].type_source === "picked", deH.candidates[0].type_source);
+  }
+
+  // ==================================================================
+  section("The back catalogue, filled in without trampling anything");
+  {
+    // Documents imported from SignNow before the type was read at import. The
+    // backfill reaches them; everything else it must leave alone.
+    const cidB = await mkClient(`AR Backfill ${stamp}`, "Aetna");
+    const mkSignNow = async (label, title, type) => {
+      const stored = `signnow_bf_${stamp}_${Math.random().toString(36).slice(2, 8)}.pdf`;
+      fs.writeFileSync(path.join(DOCS_DIR, stored), await pdfBytes(label, 1));
+      const docId = (await pool.query(
+        `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, uploaded_at, clinical_type)
+         VALUES ($1,$2,$3,'application/pdf',$4,'hosted',now()::text,$5) RETURNING id`,
+        [cidB, label, "d.pdf", stored, type || null])).rows[0].id;
+      await pool.query(
+        `INSERT INTO signnow_imported (signnow_id, target_type, target_id, document_row_id, title, imported_at)
+         VALUES ($1,'client',$2,$3,$4,now()::text)`,
+        [`sn_${stamp}_${docId}`, cidB, docId, title]);
+      return docId;
+    };
+
+    const untyped = await mkSignNow("Vineland-3 (from SignNow)", "Vineland-3", null);
+    const ambiguous = await mkSignNow("Notes (from SignNow)", "Vineland and SRS summary", null);
+    const alreadyTyped = await mkSignNow("Whatever (from SignNow)", "Vineland-3", "srs");
+    // An ordinary upload whose FILENAME says Vineland. Never a SignNow import,
+    // so the backfill must not touch it: a user's filename is a guess, and
+    // confirming it is the point of that step.
+    const plainUpload = await mkDoc(cidB, "Vineland-3", null);
+
+    const typeOf = async (id) => (await pool.query(
+      "SELECT clinical_type, clinical_type_source FROM client_documents WHERE id = $1", [id])).rows[0];
+
+    const before = await typeOf(untyped);
+    check("it starts untyped, so the run below is doing something", before.clinical_type === null, before);
+
+    const sn = require("./signnow-import.js")({
+      dbGet: async (q, p2) => (await pool.query(q.replace(/\?/g, (() => { let i = 0; return () => `$${++i}`; })()), p2 || [])).rows[0] || null,
+      dbAll: async (q, p2) => (await pool.query(q.replace(/\?/g, (() => { let i = 0; return () => `$${++i}`; })()), p2 || [])).rows,
+      dbRun: async (q, p2) => await pool.query(q.replace(/\?/g, (() => { let i = 0; return () => `$${++i}`; })()), p2 || []),
+      nowISO: () => new Date().toISOString(), crypto: require("crypto"),
+      json: () => {}, readBody: async () => ({}),
+      signNowRequest: async () => ({}), signNowConfigured: () => false, signNowFetchRaw: async () => Buffer.from(""),
+      DOCS_DIR, RESUME_DIR: DOCS_DIR, logAudit: async () => {},
+    });
+    const out = await sn._internal.backfillClinicalTypes();
+    check("the backfill reports what it did", out.ok === true && out.filled >= 1, out);
+
+    check("A DOCUMENT THAT ARRIVED UNTYPED IS FILLED IN FROM ITS SIGNNOW TITLE",
+      (await typeOf(untyped)).clinical_type === "vineland", await typeOf(untyped));
+    check("...and is marked as a backfill, not as somebody's choice",
+      (await typeOf(untyped)).clinical_type_source === "signnow_title_backfill", await typeOf(untyped));
+
+    check("AN AMBIGUOUS TITLE IS STILL LEFT ALONE",
+      (await typeOf(ambiguous)).clinical_type === null, await typeOf(ambiguous));
+
+    // The one that would be real damage.
+    check("A TYPE ALREADY ON A DOCUMENT IS NEVER OVERWRITTEN, even a contradictory one",
+      (await typeOf(alreadyTyped)).clinical_type === "srs", await typeOf(alreadyTyped));
+
+    check("AN ORDINARY UPLOAD IS NOT TOUCHED, however much its filename suggests",
+      (await typeOf(plainUpload)).clinical_type === null, await typeOf(plainUpload));
+
+    // Boot happens more than once.
+    const again = await sn._internal.backfillClinicalTypes();
+    check("running it a second time changes nothing", again.filled === 0, again);
+    check("...and the first run's work is still there",
+      (await typeOf(untyped)).clinical_type === "vineland");
+  }
+
+  // ==================================================================
   section("Starting points, and the edit they must never touch");
   {
     const get = async (payer, type) => (await pool.query(
