@@ -213,6 +213,27 @@ module.exports = function initRethink(ctx) {
     // Distinct values seen in the two fields that drive the filter. This is the
     // whole point of the confirm-before-finalise design: it shows the operator
     // what production actually returns.
+    // What a probe for client DOCUMENTS found. One row per endpoint name tried,
+    // plus one per document-shaped field spotted on a record we already fetch.
+    //
+    // SHAPE ONLY. Field NAMES, HTTP statuses and integer counts go in here; a
+    // value never does. These are clinical records, and the question being
+    // answered -- "does Rethink expose documents at all" -- is answerable from
+    // the shape alone. schemaOf() is used for exactly this reason.
+    await dbRun(`CREATE TABLE IF NOT EXISTS rethink_document_probe (
+      id SERIAL PRIMARY KEY,
+      kind TEXT NOT NULL,               -- endpoint | nested_field
+      name TEXT NOT NULL,               -- the endpoint tried, or owning endpoint
+      http_status INTEGER,              -- null when the call never completed
+      verdict TEXT,                     -- found | empty | absent | refused | error
+      row_count INTEGER,
+      counters TEXT,                    -- JSON of the envelope's own integers
+      fields TEXT,                      -- JSON array of FIELD NAMES, never values
+      note TEXT,
+      at TEXT,
+      UNIQUE (kind, name)
+    )`).catch((e) => console.error("rethink_document_probe initTables:", e.message));
+
     await dbRun(`CREATE TABLE IF NOT EXISTS rethink_observed_values (
       id SERIAL PRIMARY KEY,
       field TEXT NOT NULL,              -- appointmentStatus | staffVerification | clientVerification
@@ -635,6 +656,146 @@ module.exports = function initRethink(ctx) {
 
   // Pull the Rethink client list, compare against active CRM clients, and store
   // proposals. Writes nothing to clients.rethink_client_id -- ever.
+  // ---- does Rethink expose client documents at all? -----------------------
+  //
+  // The Authorization Request searches the CRM's own document store, and the
+  // honest answer to "can it pull from Rethink" has been "the integration has
+  // no documents endpoint" -- which is a fact about US, not about Rethink. This
+  // settles the question about THEM, with evidence rather than a reading of
+  // Swagger nobody has.
+  //
+  // The DWH names things inconsistently enough to matter: Clients and
+  // Appointments are plural, ClientAuthorization is singular. So both forms are
+  // tried, and a 404 on a name is a real answer about that name, not a failure.
+  const DOC_ENDPOINT_CANDIDATES = [
+    "ClientDocument", "ClientDocuments", "Document", "Documents",
+    "ClientAttachment", "ClientAttachments", "Attachment", "Attachments",
+    "ClientFile", "ClientFiles", "File", "Files",
+    "ClientForm", "ClientForms", "ClientAssessment", "ClientAssessments",
+    "Assessment", "Assessments", "ClientNote", "ClientNotes",
+  ];
+
+  // A document may not have an endpoint of its own -- it may hang off a record
+  // we already pull. These are the field names that would say so.
+  const DOC_FIELD_HINT = /(document|attach|upload|file|url|link|assessment|report|evaluation|signed)/i;
+
+  // Names that match the hint but are known NOT to be documents, so the report
+  // does not send somebody chasing an identifier.
+  const DOC_FIELD_EXCLUDE = /(fileNumber|fileId|profileUrl|urlSlug)/i;
+
+  async function probeClientDocuments() {
+    if (!client.configured()) {
+      return { ok: false, error: "Rethink credentials are not configured.", configured: false };
+    }
+    const at = nowISO();
+    const tried = [];
+
+    const record = async (kind, name, row) => {
+      await dbRun(
+        `INSERT INTO rethink_document_probe (kind, name, http_status, verdict, row_count, counters, fields, note, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (kind, name) DO UPDATE SET
+           http_status = EXCLUDED.http_status, verdict = EXCLUDED.verdict,
+           row_count = EXCLUDED.row_count, counters = EXCLUDED.counters,
+           fields = EXCLUDED.fields, note = EXCLUDED.note, at = EXCLUDED.at`,
+        [kind, name, row.http_status == null ? null : Number(row.http_status), row.verdict,
+         row.row_count == null ? null : Number(row.row_count),
+         JSON.stringify(row.counters || {}), JSON.stringify(row.fields || []),
+         row.note || null, at]
+      ).catch(() => {});
+    };
+
+    for (const name of DOC_ENDPOINT_CANDIDATES) {
+      let out = { verdict: "error", http_status: null, row_count: null, counters: {}, fields: [] };
+      try {
+        // One page, small. This is a question about existence, not a sync, and
+        // pulling clinical documents in bulk to answer it would be wrong.
+        const payload = await client.dwhGet(name, { PageSize: 5, Page: 1 }, { nowMs: nowMs() });
+        const rows = client.extractRows(payload, name) || [];
+        out.http_status = 200;
+        out.row_count = rows.length;
+        out.counters = (function () {
+          const c = {};
+          if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+            for (const k of ["totalCount", "count", "totalPages", "pageSize", "total", "recordCount"]) {
+              if (typeof payload[k] === "number" && isFinite(payload[k])) c[k] = payload[k];
+            }
+          }
+          return c;
+        })();
+        // FIELD NAMES ONLY. schemaOf walks the keys and never returns a value.
+        out.fields = rows.length ? client.schemaOf(rows[0]).sort() : [];
+        out.verdict = rows.length ? "found" : "empty";
+        if (!rows.length) {
+          out.note = Object.keys(out.counters).length
+            ? "answered, no rows for this query"
+            : "answered, no rows and no counters -- cannot tell empty from wrongly asked";
+        }
+      } catch (e) {
+        const st = Number(e && e.status) || null;
+        out.http_status = st;
+        // 404 is the useful one: a definite "no such endpoint". 401/403 mean it
+        // may well exist and our credentials simply do not reach it, which is a
+        // different conversation and must not be reported as absent.
+        out.verdict = st === 404 ? "absent" : (st === 401 || st === 403) ? "refused" : "error";
+        out.note = client.safeMessage ? client.safeMessage(e) : String((e && e.message) || "").slice(0, 200);
+      }
+      await record("endpoint", name, out);
+      tried.push({ name, ...out });
+    }
+
+    // And the records we ALREADY pull, in case a document hangs off one.
+    const nested = [];
+    for (const src of [DWH_CLIENTS, DWH_AUTHORIZATIONS, DWH_APPOINTMENTS]) {
+      let fields = [];
+      let out = { verdict: "error", http_status: null, row_count: null, counters: {}, fields: [] };
+      try {
+        const params = src === DWH_CLIENTS ? { From: CLIENTS_FROM, To: today() }
+          : src === DWH_AUTHORIZATIONS ? { From: AUTH_FROM, To: authWindowTo() }
+          : { From: today(), To: today() };
+        const payload = await client.dwhGet(src, { ...params, PageSize: 5, Page: 1 }, { nowMs: nowMs() });
+        const rows = client.extractRows(payload, src) || [];
+        fields = rows.length ? client.schemaOf(rows[0]) : [];
+        const hits = fields.filter((f) => DOC_FIELD_HINT.test(f) && !DOC_FIELD_EXCLUDE.test(f)).sort();
+        out = {
+          http_status: 200, row_count: rows.length, counters: {},
+          fields: hits, verdict: hits.length ? "found" : "empty",
+          note: rows.length ? null : "no rows came back, so nothing could be inspected",
+        };
+        if (hits.length) nested.push({ endpoint: src, fields: hits });
+      } catch (e) {
+        out.http_status = Number(e && e.status) || null;
+        out.verdict = "error";
+        out.note = client.safeMessage ? client.safeMessage(e) : String((e && e.message) || "").slice(0, 200);
+      }
+      await record("nested_field", src, out);
+    }
+
+    const endpointsFound = tried.filter((t) => t.verdict === "found");
+    const refused = tried.filter((t) => t.verdict === "refused");
+    client.log("document_probe", {
+      tried: tried.length,
+      found: endpointsFound.map((t) => t.name).join(",") || "none",
+      refused: refused.map((t) => t.name).join(",") || "none",
+      nested: nested.map((n) => n.endpoint).join(",") || "none",
+    });
+
+    return {
+      ok: true,
+      // The headline, in the same words a person would use.
+      answer: endpointsFound.length
+        ? `Rethink exposes documents: ${endpointsFound.map((t) => t.name).join(", ")}.`
+        : nested.length
+          ? "No documents endpoint, but records we already pull carry document-shaped fields."
+          : refused.length
+            ? "No documents endpoint reached. Some names refused our credentials rather than saying they do not exist."
+            : "Rethink exposes no client documents on any name tried.",
+      endpoints: tried,
+      nested,
+      checked_at: at,
+    };
+  }
+
   async function scanClientMatches() {
     if (!client.configured()) {
       return { ok: false, error: "Rethink credentials are not configured.", kind: "config" };
@@ -2870,6 +3031,31 @@ module.exports = function initRethink(ctx) {
       return true;
     }
 
+    // The probe is a read against Rethink, but it is an ADMIN diagnostic and it
+    // reaches for clinical records, so it is gated like sync-now rather than
+    // like a status read.
+    if (pathname === "/api/rethink/document-probe" && method === "POST") {
+      if (!canManage(user)) { json(res, 403, { error: "Owner or super admin only." }); return true; }
+      const out = await probeClientDocuments();
+      json(res, out.ok ? 200 : 502, out);
+      return true;
+    }
+    if (pathname === "/api/rethink/document-probe" && method === "GET") {
+      const rows = await dbAll(
+        "SELECT kind, name, http_status, verdict, row_count, counters, fields, note, at FROM rethink_document_probe ORDER BY kind, name"
+      ).catch(() => []);
+      json(res, 200, {
+        ran: rows.length > 0,
+        checked_at: rows.length ? rows[0].at : null,
+        rows: rows.map((r) => ({
+          ...r,
+          counters: JSON.parse(r.counters || "{}"),
+          fields: JSON.parse(r.fields || "[]"),
+        })),
+      });
+      return true;
+    }
+
     if (pathname === "/api/rethink/sync-log" && method === "GET") {
       json(res, 200, {
         rows: await dbAll("SELECT * FROM rethink_sync_log ORDER BY id DESC LIMIT 25").catch(() => []),
@@ -3158,6 +3344,7 @@ module.exports = function initRethink(ctx) {
     clientMatchReview,
     approveClientLink,
     _demographics: { resolveDemographicMap, composeAddress, fillDemographics, autoCreateActiveClients, DEMOGRAPHIC_CANDIDATES, AUTO_CREATE_CAP },
+    _documentProbe: { probeClientDocuments, DOC_ENDPOINT_CANDIDATES, DOC_FIELD_HINT, DOC_FIELD_EXCLUDE },
     _activity: { scanAppointmentActivity, ACTIVITY_DAYS },
     _internal: { decide, norm, monthWindow, standingOf, is97153, dateOnly, normName, splitName, validateClientFields, CLIENT_FIELDS },
   };
