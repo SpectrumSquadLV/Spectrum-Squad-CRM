@@ -45,11 +45,65 @@
       <div style="display:flex; gap:8px; align-items:center;">
         <button class="btn secondary" id="rm-scan">⟳ Scan Rethink clients</button>
         <button class="btn secondary" id="rm-activity">⟳ Check appointment activity</button>
+        <button class="btn secondary" id="rm-docprobe">⟳ Check for documents</button>
       </div></div>
+      <div id="rm-docprobe-out"></div>
       <div id="rm-body"><div class="empty-state">Loading…</div></div>`;
     mount.querySelector("#rm-scan").addEventListener("click", () => runScan(mount));
     mount.querySelector("#rm-activity").addEventListener("click", () => runActivityScan(mount));
+    mount.querySelector("#rm-docprobe").addEventListener("click", () => runDocProbe(mount));
+    await showDocProbe(mount);
     await fill(mount);
+  }
+
+  // Whether Rethink exposes client documents at all. The Authorization Request
+  // searches the CRM's own store, and "we have no documents endpoint" was only
+  // ever a fact about us -- this asks them. Shape only: names, statuses, counts.
+  function docProbeHtml(d) {
+    if (!d || !d.ran) return "";
+    var rows = (d.rows || []);
+    var found = rows.filter(function (r) { return r.verdict === "found"; });
+    var refused = rows.filter(function (r) { return r.verdict === "refused"; });
+    var absent = rows.filter(function (r) { return r.verdict === "absent"; });
+    var line = found.length
+      ? "Rethink answered on: " + found.map(function (r) { return esc(r.name); }).join(", ")
+      : refused.length
+        ? "Nothing found, but " + refused.length + " name(s) refused our credentials rather than saying they do not exist."
+        : "No client documents on any name tried (" + absent.length + " checked).";
+    return '<div class="card" style="margin-bottom:16px;">' +
+      '<div class="section-title" style="margin-top:0;">Documents in Rethink</div>' +
+      '<p style="font-size:13px; margin-top:0;">' + line + "</p>" +
+      (found.length
+        ? '<div style="font-size:12.5px; color:var(--text-muted);">Fields seen: ' +
+          found.map(function (r) { return esc(r.name) + " → " + (r.fields || []).join(", "); }).join(" &bull; ") +
+          "</div>"
+        : "") +
+      '<p style="font-size:12px; color:var(--text-muted); margin-bottom:0;">' +
+      "Field names, HTTP statuses and counts only &mdash; no record content is read or stored. " +
+      (d.checked_at ? "Checked " + esc(String(d.checked_at).slice(0, 10)) + "." : "") +
+      "</p></div>";
+  }
+
+  async function showDocProbe(mount) {
+    var box = mount.querySelector("#rm-docprobe-out");
+    if (!box) return;
+    try { box.innerHTML = docProbeHtml(await api("/api/rethink/document-probe")); }
+    catch (e) { box.innerHTML = ""; }
+  }
+
+  async function runDocProbe(mount) {
+    var btn = mount.querySelector("#rm-docprobe");
+    var was = btn.textContent;
+    btn.disabled = true; btn.textContent = "Checking…";
+    try {
+      await api("/api/rethink/document-probe", { method: "POST", body: {} });
+      await showDocProbe(mount);
+    } catch (e) {
+      mount.querySelector("#rm-docprobe-out").innerHTML =
+        '<div class="card" style="margin-bottom:16px;"><strong>Could not check.</strong> ' +
+        esc((e && e.message) || "") + "</div>";
+    }
+    btn.disabled = false; btn.textContent = was;
   }
 
   async function runScan(mount) {

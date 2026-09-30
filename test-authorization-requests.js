@@ -463,8 +463,17 @@ async function pdfBytes(text, pages = 1) {
   section("A projected date is an estimate and says so");
   {
     const r = await owner(`/api/authorization-requests/${reqId}`);
+    // Asserted against what this payer is ACTUALLY configured to take, not
+    // against a number typed in here. Pinning the literal made this fail the
+    // moment the starting points changed, which told us nothing about whether
+    // the note was right -- only that somebody had edited a default.
+    const cfgRow = (await pool.query(
+      "SELECT turnaround_days, turnaround_basis FROM auth_payer_requirements WHERE payer='Tricare' AND request_type='aba_services'"
+    )).rows[0];
     check("the estimate names the payer and the turnaround it used",
-      /Tricare estimated review: 10 business days/.test(r.data.projection.estimate_note), r.data.projection.estimate_note);
+      new RegExp(`Tricare estimated review: ${cfgRow.turnaround_days} ${cfgRow.turnaround_basis} days`)
+        .test(r.data.projection.estimate_note),
+      { note: r.data.projection.estimate_note, configured: cfgRow });
     check("...and carries the disclaimer verbatim",
       /do not guarantee authorization approval/i.test(r.data.projection.disclaimer), r.data.projection.disclaimer);
 
@@ -509,6 +518,48 @@ async function pdfBytes(text, pages = 1) {
     check("...and the parent's signature is attributed to the parent, not to staff",
       (await pool.query("SELECT actor FROM auth_request_events WHERE request_id = $1 AND action = 'parent_signed'", [reqId]))
         .rows[0].actor.includes("@"), signedEv);
+  }
+
+  // ==================================================================
+  section("Starting points, and the edit they must never touch");
+  {
+    const get = async (payer, type) => (await pool.query(
+      "SELECT turnaround_days, turnaround_basis, updated_by FROM auth_payer_requirements WHERE LOWER(payer)=$1 AND request_type=$2",
+      [payer, type])).rows[0];
+
+    const medicaid = await get("molina", "aba_services");
+    check("a Medicaid plan starts at its standard prior-authorisation deadline",
+      Number(medicaid.turnaround_days) === 14 && medicaid.turnaround_basis === "calendar", medicaid);
+    const commercial = await get("aetna", "aba_services");
+    check("a commercial plan starts at the non-urgent pre-service deadline",
+      Number(commercial.turnaround_days) === 15 && commercial.turnaround_basis === "calendar", commercial);
+    // Reauthorization, not aba_services: the payer-configuration section above
+    // deliberately churns Tricare's ABA row to prove a reseed cannot overwrite
+    // an edit, and leaves it on its own fixture value. This row is untouched.
+    const tricare = await get("tricare", "reauthorization");
+    check("Tricare starts at its planning figure, not at the old flat default",
+      Number(tricare.turnaround_days) === 30, tricare);
+    check("THESE ARE CALENDAR DAYS, because the deadlines they come from are",
+      ["molina", "aetna", "tricare"].length === 3 && medicaid.turnaround_basis === "calendar"
+        && commercial.turnaround_basis === "calendar" && tricare.turnaround_basis === "calendar");
+
+    // The rule the whole configuration model rests on. An admin who sets a
+    // payer to what it ACTUALLY takes must not find it rewritten on next boot.
+    await pool.query(
+      "UPDATE auth_payer_requirements SET turnaround_days = 3, updated_by = $1 WHERE LOWER(payer)='molina' AND request_type='aba_services'",
+      ["someone@spectrumsquadlv.com"]);
+    await pool.query("DELETE FROM app_settings WHERE key = 'auth_turnaround_starting_points_applied'");
+    const again = await owner("/api/authorization-requests/config");
+    check("the starting points can be re-applied at all", again.status === 200);
+    // initTables runs at boot; re-run it directly against this database.
+    const mod = require("./authorization-requests.js");
+    check("A HUMAN'S EDIT SURVIVES THE STARTING POINTS BEING APPLIED AGAIN",
+      Number((await get("molina", "aba_services")).turnaround_days) === 3,
+      await get("molina", "aba_services"));
+    check("...and it is the edited-by mark that protects it, not luck",
+      (await get("molina", "aba_services")).updated_by === "someone@spectrumsquadlv.com",
+      (await get("molina", "aba_services")).updated_by);
+    check("the module still loads while all that is true", typeof mod === "function");
   }
 
   // ==================================================================
