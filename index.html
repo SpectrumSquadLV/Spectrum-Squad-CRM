@@ -6829,6 +6829,36 @@ async function renderAdmin(mount) {
       </p>
       <a class="btn small secondary" href="#/drive-notes-import">Open the notes import</a>
     </div>
+    <div class="card" style="margin-bottom:20px;" id="authreq-card">
+      <div class="section-title" style="margin-top:0;">Authorization Request</div>
+      <p style="font-size:13px; color:var(--text-muted); margin-top:0;">
+        What each payer asks for, and how long they take. Turnaround drives the projected start date a BCBA
+        sees on a request &mdash; it is an estimate, never a promise, and it is only as good as what you put here.
+        Changing a payer never rewrites a request already in flight; each one keeps the settings it was created with.
+      </p>
+      <div class="task-row">
+        <div class="info">
+          <strong>Authorization Request email</strong>
+          <div class="due">Where a completed request and its documents are sent. Submission refuses to send until this is set, rather than guessing an address.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="authreq-email" type="text" placeholder="authorizations@spectrumsquadlv.com" style="width:260px;" />
+          <button class="btn small secondary" id="save-authreq-email">Save</button>
+        </div>
+      </div>
+      <div class="task-row">
+        <div class="info">
+          <strong>Attachment size limit</strong>
+          <div class="due">A package over this is refused loudly and the BCBA is told, rather than failing silently at the mail provider.</div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input id="authreq-limit" type="number" min="1" step="1" style="width:90px;" />
+          <span style="font-size:13px; color:var(--text-muted);">MB</span>
+          <button class="btn small secondary" id="save-authreq-limit">Save</button>
+        </div>
+      </div>
+      <div id="authreq-payers" style="margin-top:18px; font-size:13px; color:var(--text-muted);">Loading&hellip;</div>
+    </div>
     <div class="card" style="margin-bottom:20px;">
       <div class="section-title" style="margin-top:0;">Departments</div>
       <div id="departments-mount"></div>
@@ -6840,6 +6870,109 @@ async function renderAdmin(mount) {
       <span id="sweep-result" style="margin-left:10px; font-size:13px; color:var(--text-muted);"></span>
     </div>
   `;
+
+  // ---- Authorization Request settings -------------------------------------
+  // The PUT upserts a WHOLE row, so every field a payer has must go back with
+  // the save. Sending only the turnaround would blank that payer's document
+  // list, which is the sort of quiet data loss a settings screen must not do.
+  (async () => {
+    const card = mount.querySelector("#authreq-card");
+    const box = mount.querySelector("#authreq-payers");
+    if (!card || !box) return;
+    let cfg = null;
+    try { cfg = await api("/api/authorization-requests/config"); }
+    catch (e) { card.remove(); return; }
+    if (!cfg || cfg.can_configure === false) { card.remove(); return; }
+
+    const emailInput = mount.querySelector("#authreq-email");
+    if (emailInput) emailInput.value = cfg.auth_email || "";
+    const limitInput = mount.querySelector("#authreq-limit");
+    if (limitInput) limitInput.value = cfg.attachment_limit_mb || "";
+
+    const save = async (body, btn, okText) => {
+      const was = btn.textContent;
+      btn.disabled = true; btn.textContent = "Saving…";
+      try { await api("/api/authorization-requests/config", { method: "PUT", body });
+            btn.textContent = okText || "Saved"; }
+      catch (e) { btn.textContent = "Did not save"; }
+      setTimeout(() => { btn.disabled = false; btn.textContent = was; }, 1600);
+    };
+    mount.querySelector("#save-authreq-email").addEventListener("click", function () {
+      save({ auth_email: emailInput.value.trim() }, this);
+    });
+    mount.querySelector("#save-authreq-limit").addEventListener("click", function () {
+      save({ attachment_limit_mb: Number(limitInput.value) || 0 }, this);
+    });
+
+    const typeLabel = {};
+    (cfg.request_types || []).forEach((t) => { typeLabel[t.key] = t.label; });
+    const docLabel = {};
+    (cfg.doc_types || []).forEach((d) => { docLabel[d.key] = d.label; });
+    const rows = (cfg.payers || []).slice();
+    if (!rows.length) { box.textContent = "No payers configured yet."; return; }
+
+    const byPayer = {};
+    rows.forEach((r) => { (byPayer[r.payer] = byPayer[r.payer] || []).push(r); });
+
+    box.innerHTML = Object.keys(byPayer).sort().map((payer) => {
+      const body = byPayer[payer].map((r) => {
+        const i = rows.indexOf(r);
+        const docs = (r.required_docs || []).map((k) => docLabel[k] || k).join(", ") || "none";
+        return '<tr>' +
+          '<td style="padding:6px 10px 6px 0;">' + adminEsc(typeLabel[r.request_type] || r.request_type) + '</td>' +
+          '<td style="padding:6px 10px 6px 0;"><input type="number" min="0" step="1" data-ar-days="' + i + '" value="' +
+            adminEsc(String(r.turnaround_days)) + '" style="width:70px;" /></td>' +
+          '<td style="padding:6px 10px 6px 0;"><select data-ar-basis="' + i + '" style="width:110px;">' +
+            '<option value="business"' + (r.turnaround_basis === "business" ? " selected" : "") + '>business</option>' +
+            '<option value="calendar"' + (r.turnaround_basis === "calendar" ? " selected" : "") + '>calendar</option>' +
+            '</select></td>' +
+          '<td style="padding:6px 10px 6px 0;"><input type="number" min="0" step="1" data-ar-internal="' + i + '" value="' +
+            adminEsc(String(r.internal_processing_days)) + '" style="width:70px;" /></td>' +
+          '<td style="padding:6px 10px 6px 0;"><label style="font-weight:400;"><input type="checkbox" data-ar-sig="' + i + '"' +
+            (r.parent_signature_required ? " checked" : "") + ' /> parent signs</label></td>' +
+          '<td style="padding:6px 0; color:var(--text-muted);">' + adminEsc(docs) + '</td>' +
+          '</tr>';
+      }).join("");
+      return '<div style="margin-bottom:16px;">' +
+        '<strong style="color:var(--text);">' + adminEsc(payer) + '</strong>' +
+        '<table style="width:100%; border-collapse:collapse; margin-top:4px;">' +
+        '<tr style="text-align:left; color:var(--text-muted); font-size:12px;">' +
+        '<th style="font-weight:600; padding:0 10px 4px 0;">Request type</th>' +
+        '<th style="font-weight:600; padding:0 10px 4px 0;">Payer takes</th>' +
+        '<th style="font-weight:600; padding:0 10px 4px 0;">Counted as</th>' +
+        '<th style="font-weight:600; padding:0 10px 4px 0;">Our prep</th>' +
+        '<th style="font-weight:600; padding:0 10px 4px 0;">Signature</th>' +
+        '<th style="font-weight:600; padding:0 0 4px;">Required documents</th></tr>' +
+        body + '</table></div>';
+    }).join("") +
+      '<button class="btn small" id="save-authreq-payers" style="margin-top:4px;">Save payer settings</button>' +
+      '<span id="authreq-payers-msg" style="margin-left:10px; font-size:13px;"></span>';
+
+    mount.querySelector("#save-authreq-payers").addEventListener("click", async function () {
+      const payers = rows.map((r, i) => {
+        const d = box.querySelector('[data-ar-days="' + i + '"]');
+        const b = box.querySelector('[data-ar-basis="' + i + '"]');
+        const n = box.querySelector('[data-ar-internal="' + i + '"]');
+        const g = box.querySelector('[data-ar-sig="' + i + '"]');
+        // Everything the row already had, carried through untouched.
+        return Object.assign({}, r, {
+          turnaround_days: Number(d && d.value) || 0,
+          turnaround_basis: b ? b.value : r.turnaround_basis,
+          internal_processing_days: Number(n && n.value) || 0,
+          parent_signature_required: g ? g.checked : r.parent_signature_required,
+        });
+      });
+      const msg = mount.querySelector("#authreq-payers-msg");
+      this.disabled = true; this.textContent = "Saving…";
+      try {
+        await api("/api/authorization-requests/config", { method: "PUT", body: { payers } });
+        msg.textContent = "Saved."; msg.style.color = "var(--text-muted)";
+      } catch (e) {
+        msg.textContent = "Did not save."; msg.style.color = "var(--danger, #b91c1c)";
+      }
+      this.disabled = false; this.textContent = "Save payer settings";
+    });
+  })();
 
   if (window.PeopleUI) window.PeopleUI.renderDepartmentsAdmin(mount.querySelector("#departments-mount"));
 
