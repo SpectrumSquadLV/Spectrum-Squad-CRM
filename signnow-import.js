@@ -32,6 +32,7 @@
 "use strict";
 
 const fs = require("fs");
+const { classifyTitle } = require("./clinical-type.js");
 const path = require("path");
 
 module.exports = function initSignNowImport(ctx) {
@@ -389,10 +390,18 @@ module.exports = function initSignNowImport(ctx) {
       const client = await dbGet("SELECT id FROM clients WHERE id = ?", [target.id]);
       if (!client) return { ok: false, error: "That client no longer exists." };
       fs.writeFileSync(path.join(DOCS_DIR, stored), buffer);
+      // What KIND of document this is, decided here rather than left for a
+      // BCBA to confirm later. The title comes from the practice's own SignNow
+      // envelope, so it is better evidence than an arbitrary upload filename --
+      // but it is still a title, so the source is recorded alongside it and an
+      // ambiguous one is left untyped rather than guessed at.
+      const clinicalType = classifyTitle(inv.name);
       const row = await dbGet(
-        `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url, uploaded_at)
-         VALUES (?, ?, ?, 'application/pdf', ?, 'hosted', NULL, ?) RETURNING id`,
-        [target.id, label, `${safe}.pdf`, stored, nowISO()]
+        `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, external_url,
+                                       uploaded_at, clinical_type, clinical_type_source)
+         VALUES (?, ?, ?, 'application/pdf', ?, 'hosted', NULL, ?, ?, ?) RETURNING id`,
+        [target.id, label, `${safe}.pdf`, stored, nowISO(),
+         clinicalType, clinicalType ? "signnow_title" : null]
       );
       docRowId = row.id;
     } else if (target.type === "employee") {

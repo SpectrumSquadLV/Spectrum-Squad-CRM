@@ -521,6 +521,49 @@ async function pdfBytes(text, pages = 1) {
   }
 
   // ==================================================================
+  section("A document that arrived already knowing what it is");
+  {
+    // What the SignNow import now writes: a clinical type, plus how it got
+    // there. The point of typing at import is that this attaches by itself
+    // instead of waiting for somebody to confirm a filename.
+    const cidS = await mkClient(`AR SignNow ${stamp}`, "Aetna");
+    const imported = (await pool.query(
+      `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, uploaded_at,
+                                     clinical_type, clinical_type_source, document_date)
+       VALUES ($1,$2,$3,'application/pdf',$4,'hosted',now()::text,$5,$6,$7) RETURNING id`,
+      [cidS, "Diagnostic Evaluation (from SignNow)", "DiagnosticEvaluation.pdf",
+       `arsn_${stamp}.pdf`, "diagnostic_evaluation", "signnow_title", "2026-09-01"]
+    )).rows[0].id;
+    fs.writeFileSync(path.join(DOCS_DIR, `arsn_${stamp}.pdf`), await pdfBytes("Diagnostic Evaluation", 1));
+
+    const pv = await owner(`/api/authorization-requests/preview?client_id=${cidS}&request_type=assessment`);
+    const de = pv.data.items.find((i) => i.key === "diagnostic_evaluation");
+    check("AN IMPORTED DOCUMENT MATCHES BY TYPE, not as a filename guess",
+      de.found && de.candidates[0].match_source === "type", de.candidates && de.candidates[0]);
+    check("...and the record says the type came from its SignNow title",
+      de.candidates[0].type_source === "signnow_title", de.candidates[0].type_source);
+
+    const c = await owner("/api/authorization-requests", { method: "POST", body: { client_id: cidS, request_type: "assessment" } });
+    const doc = c.data.documents.find((d) => d.requirement_key === "diagnostic_evaluation");
+    check("it attaches on its own, with nobody confirming anything",
+      doc.document && doc.document.id === imported && doc.status === "ready", doc);
+
+    const evs = (await pool.query(
+      "SELECT action, notes FROM auth_request_events WHERE request_id = $1 AND action = 'document_matched'", [c.data.id])).rows;
+    const note = (evs.find((e) => /Diagnostic/i.test(e.notes || "")) || {}).notes || "";
+    check("THE AUDIT DOES NOT CALL IT SOMEBODY'S DECISION",
+      /from its SignNow title/i.test(note), note);
+
+    // A document a human typed must still read as a human's choice.
+    const cidH = await mkClient(`AR Handpicked ${stamp}`, "Aetna");
+    await mkDoc(cidH, "Diagnostic Evaluation", "diagnostic_evaluation");
+    const pvH = await owner(`/api/authorization-requests/preview?client_id=${cidH}&request_type=assessment`);
+    const deH = pvH.data.items.find((i) => i.key === "diagnostic_evaluation");
+    check("...while a type somebody picked still reads as picked",
+      deH.candidates[0].type_source === "picked", deH.candidates[0].type_source);
+  }
+
+  // ==================================================================
   section("Starting points, and the edit they must never touch");
   {
     const get = async (payer, type) => (await pool.query(

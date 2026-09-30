@@ -71,18 +71,11 @@ module.exports = function initAuthorizationRequests(ctx) {
   // Filename patterns, used ONLY when a document carries no clinical type --
   // the back-catalogue predates the field. A name match is never silently
   // accepted as fact: it is offered, and the row says it was matched by name.
-  const NAME_HINTS = {
-    diagnosis: /\b(diagnosis|dx)\b/i,
-    diagnostic_evaluation: /diagnostic|psych(ological)?\s*eval|eval(uation)?\b/i,
-    vineland: /vineland|vabs/i,
-    srs: /\bsrs\b|social responsiveness/i,
-    pddbi: /\bpddbi\b|pdd[-\s]?bi/i,
-    parent_stress_index: /parent(ing)?\s*stress|\bpsi\b/i,
-    treatment_plan: /treatment\s*plan|\btx\s*plan\b/i,
-    signed_treatment_plan: /signed.*treatment\s*plan|treatment\s*plan.*signed/i,
-    authorization_approval: /auth.*approv|approv.*auth/i,
-    authorization_denial: /auth.*deni|deni.*auth/i,
-  };
+  //
+  // Shared with the SignNow import, which decides what a document is as it
+  // arrives. One vocabulary, so a document the importer calls a Vineland is
+  // one this will accept as a Vineland.
+  const { NAME_HINTS } = require("./clinical-type.js");
 
   // §15. Everything before `submitted` is DERIVED; everything after is
   // recorded by a person, because the payer owns it and we cannot observe it.
@@ -160,6 +153,11 @@ module.exports = function initAuthorizationRequests(ctx) {
     // that distinction visible at every call site.
     await dbRun("ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS clinical_type TEXT").catch(() => {});
     await dbRun("ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS document_date TEXT").catch(() => {});
+    // HOW the clinical type got there. A human picking it from the list is a
+    // fact; a type derived from a SignNow title is a good guess wearing the
+    // same clothes. Recorded so the audit trail can say which it was rather
+    // than reporting every auto-attach as "matched by type".
+    await dbRun("ALTER TABLE client_documents ADD COLUMN IF NOT EXISTS clinical_type_source TEXT").catch(() => {});
     await dbRun("CREATE INDEX IF NOT EXISTS idx_cdoc_clinical ON client_documents (client_id, clinical_type)").catch(() => {});
 
     // WHAT A PAYER WANTS. One row per payer per request type. Seeded once with
@@ -455,7 +453,7 @@ module.exports = function initAuthorizationRequests(ctx) {
   // year's Vineland.
   async function candidatesFor(clientId, requirementKey) {
     const docs = await dbAll(
-      `SELECT id, label, filename, clinical_type, document_date, uploaded_at, doc_type, file_path
+      `SELECT id, label, filename, clinical_type, clinical_type_source, document_date, uploaded_at, doc_type, file_path
          FROM client_documents WHERE client_id = ? ORDER BY COALESCE(document_date, uploaded_at) DESC, id DESC`,
       [clientId]
     ).catch(() => []);
@@ -470,7 +468,12 @@ module.exports = function initAuthorizationRequests(ctx) {
       id: d.id, label: d.label, filename: d.filename,
       clinical_type: d.clinical_type || null,
       document_date: d.document_date || (d.uploaded_at || "").slice(0, 10) || null,
-      has_file: !!d.file_path, match_source: source,
+      has_file: !!d.file_path,
+      // A type somebody chose and a type derived from a SignNow title are both
+      // "type" for matching -- they are both filed facts about the document --
+      // but the audit trail should not call the second one somebody's decision.
+      match_source: source,
+      type_source: source === "type" ? (clean(d.clinical_type_source) || "picked") : null,
     });
     return typed.map((d) => shape(d, "type")).concat(named.map((d) => shape(d, "filename")));
   }
@@ -673,7 +676,8 @@ module.exports = function initAuthorizationRequests(ctx) {
       ).catch(() => {});
       if (best) {
         await logEvent(id, "system", "document_matched", { documentId: best.id,
-          notes: `${DOC_TYPE_LABEL[r.key] || r.key} matched by ${best.match_source}` });
+          notes: `${DOC_TYPE_LABEL[r.key] || r.key} matched by ${
+            best.type_source === "signnow_title" ? "type, filed from its SignNow title" : best.match_source}` });
       }
     }
     await recompute(id, user.email || user.name);
