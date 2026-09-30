@@ -674,6 +674,70 @@ async function pdfBytes(text, pages = 1) {
   }
 
   // ==================================================================
+  section("A migration that cannot finish says so, and tries again");
+  {
+    // The failure that prompted this: each UPDATE was swallowed and the
+    // done-flag set regardless, so one failing payer stayed on the old flat
+    // default forever while the log said nothing. Driven through the module
+    // directly with a database that refuses the UPDATE, because the real one
+    // has no way to fail on demand.
+    const FLAG = "auth_turnaround_starting_points_applied";
+    const settings = {};
+    const logged = { err: [], out: [] };
+    const realErr = console.error, realLog = console.log;
+    // Recorded AND forwarded. Swallowing the stream entirely also swallows
+    // check()'s own output, so a failure inside this section would print
+    // nothing at all -- which is precisely the kind of silence being fixed here.
+    console.error = (...a) => { logged.err.push(a.join(" ")); realErr(...a); };
+    console.log = (...a) => { logged.out.push(a.join(" ")); realLog(...a); };
+
+    const load = (updateBehaviour) => require("./authorization-requests.js")({
+      dbGet: async () => null,
+      dbAll: async () => [],
+      dbRun: async (q) => {
+        if (/UPDATE auth_payer_requirements\s+SET turnaround_days/i.test(q)) return updateBehaviour();
+        return { rowCount: 0 };
+      },
+      nowISO: () => "2026-09-30T12:00:00.000Z",
+      readBody: async () => ({}), json: () => {},
+      sendEmail: async () => ({ ok: true }),
+      getSetting: async (k) => settings[k] || null,
+      setSetting: async (k, v) => { settings[k] = v; },
+      appBaseUrl: () => "http://localhost",
+      canAccessClients: () => true, isOwnerOrAdmin: () => true,
+      documentPath: () => "", saveGeneratedPdf: async () => ({}),
+    });
+
+    try {
+      const failing = load(() => { throw new Error("connection reset"); });
+      await failing.initTables();
+      check("A FAILED MIGRATION DOES NOT MARK ITSELF DONE",
+        !settings[FLAG], settings[FLAG]);
+      check("...and it says so loudly, naming the payers",
+        logged.err.some((l) => /DID NOT FULLY APPLY/.test(l) && /tricare/i.test(l)),
+        logged.err.slice(0, 2));
+
+      // The next boot, with the database working.
+      logged.out.length = 0;
+      const working = load(() => ({ rowCount: 1 }));
+      await working.initTables();
+      check("THE NEXT BOOT RETRIES, because the flag was never set",
+        !!settings[FLAG], settings);
+      check("...and a successful run is visible in the log, not silent",
+        logged.out.some((l) => /turnaround starting points applied to \d+ payer row/.test(l)),
+        logged.out.filter((l) => /turnaround/.test(l)));
+
+      // And having succeeded, it stops.
+      logged.out.length = 0;
+      const third = load(() => { throw new Error("should never be called"); });
+      await third.initTables();
+      check("once applied it does not run again", logged.err.every((l) => !/should never be called/.test(l)));
+    } finally {
+      console.error = realErr; console.log = realLog;
+    }
+  }
+
+  // ==================================================================
   section("The audit trail actually reaches the screen");
   {
     // The list is deliberately the cheap shape. That is fine, but it means the

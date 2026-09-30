@@ -389,15 +389,40 @@ module.exports = function initAuthorizationRequests(ctx) {
     // straight past it. The run-once flag then stops it reconsidering a row an
     // admin might later set back to 10 on purpose.
     if (!clean(await getSetting(TURNAROUND_SEED_KEY))) {
+      // The flag is set ONLY IF EVERY PAYER LANDED. An earlier version swallowed
+      // each failure and marked itself done regardless, which made a failure both
+      // permanent and invisible: the payer would sit on the old flat default
+      // forever, projecting dates from a number nobody chose, and no boot after
+      // would try again. A run that did not finish leaves the flag alone and the
+      // next boot retries -- the update is idempotent, so retrying costs nothing.
+      const failed = [];
+      let changed = 0;
       for (const [payerKey, t] of Object.entries(PAYER_TURNAROUND)) {
-        await dbRun(
-          `UPDATE auth_payer_requirements
-              SET turnaround_days = ?, turnaround_basis = ?, updated_at = ?
-            WHERE LOWER(TRIM(payer)) = ? AND updated_by = 'seed'`,
-          [t.days, t.basis, nowISO(), payerKey]
-        ).catch(() => {});
+        try {
+          const r = await dbRun(
+            `UPDATE auth_payer_requirements
+                SET turnaround_days = ?, turnaround_basis = ?, updated_at = ?
+              WHERE LOWER(TRIM(payer)) = ? AND updated_by = 'seed'`,
+            [t.days, t.basis, nowISO(), payerKey]
+          );
+          changed += r && (r.rowCount != null ? r.rowCount : (r.changes || 0));
+        } catch (e) {
+          failed.push(`${payerKey}: ${e.message}`);
+        }
       }
-      await setSetting(TURNAROUND_SEED_KEY, nowISO());
+      if (failed.length) {
+        // Loud, and named. Whoever reads this log should know which payer is
+        // still on a number nobody chose.
+        console.error(
+          `[authorization-requests] TURNAROUND STARTING POINTS DID NOT FULLY APPLY. ` +
+          `${failed.length} payer(s) failed and will be retried on the next boot: ${failed.join(" | ")}`
+        );
+      } else {
+        // Said out loud on success too. A migration that runs silently cannot be
+        // confirmed afterwards from anything but the screen.
+        console.log(`[authorization-requests] turnaround starting points applied to ${changed} payer row(s).`);
+        await setSetting(TURNAROUND_SEED_KEY, nowISO());
+      }
     }
   }
 
