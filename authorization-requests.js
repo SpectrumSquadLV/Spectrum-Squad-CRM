@@ -326,7 +326,33 @@ module.exports = function initAuthorizationRequests(ctx) {
   // function again -- ON CONFLICT DO NOTHING is the whole point. An
   // administrator who corrects TRICARE's turnaround keeps that correction
   // through every deploy that follows.
+  const TURNAROUND_SEED_KEY = "auth_turnaround_starting_points_applied";
   const DEFAULT_PAYERS = ["Tricare", "TriWest", "Molina", "Aetna", "Anthem BCBS", "SilverSummit", "CareSource"];
+
+  // STARTING POINTS, AND ONLY THAT. Each is the decision deadline the payer's
+  // plan type is held to, so a projection errs long rather than promising a
+  // parent a start date that slips. They are ceilings, not observed experience:
+  // the moment somebody here knows what a payer ACTUALLY takes, that number is
+  // better than this one and belongs in Settings.
+  //
+  //   Medicaid managed care  14 calendar days, standard prior authorisation
+  //                          (42 CFR 438.210(d)(1); expedited is 72 hours)
+  //   Commercial             15 calendar days, non-urgent pre-service
+  //                          (29 CFR 2560.503-1(f)(2)(iii)(B))
+  //   Tricare / TriWest      the soft one. The Autism Care Demonstration has
+  //                          no single published clock, and authorisation runs
+  //                          through an assessment and then a plan review, so
+  //                          30 is a planning figure rather than a rule. It is
+  //                          the first number to correct with real experience.
+  const PAYER_TURNAROUND = {
+    "tricare":      { days: 30, basis: "calendar" },
+    "triwest":      { days: 30, basis: "calendar" },
+    "molina":       { days: 14, basis: "calendar" },
+    "silversummit": { days: 14, basis: "calendar" },
+    "caresource":   { days: 14, basis: "calendar" },
+    "aetna":        { days: 15, basis: "calendar" },
+    "anthem bcbs":  { days: 15, basis: "calendar" },
+  };
   const DEFAULT_REQS = {
     assessment: { required: ["diagnosis", "diagnostic_evaluation"], optional: ["vineland"], sig: false, days: 10 },
     aba_services: { required: ["treatment_plan"], optional: [], sig: true, days: 10 },
@@ -346,12 +372,34 @@ module.exports = function initAuthorizationRequests(ctx) {
              (payer, request_type, required_docs, optional_docs, parent_signature_required,
               parent_signature_doc, turnaround_days, turnaround_basis, internal_processing_days,
               active, updated_by, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'business', 2, TRUE, 'seed', ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, TRUE, 'seed', ?)
            ON CONFLICT (payer, request_type) DO NOTHING`,
           [payer, type, JSON.stringify(required), JSON.stringify(d.optional),
-           d.sig, d.sig ? "treatment_plan" : null, d.days, nowISO()]
+           d.sig, d.sig ? "treatment_plan" : null,
+           (PAYER_TURNAROUND[lower(payer)] || {}).days || d.days,
+           (PAYER_TURNAROUND[lower(payer)] || {}).basis || "business", nowISO()]
         ).catch(() => {});
       }
+    }
+
+    // The seed above only inserts. Installs that already ran it carry the old
+    // flat 10 business days, so those rows are brought up to the same starting
+    // points -- ONCE, and only where nobody has touched the row.
+    //
+    // `updated_by = 'seed'` is the whole safety of this. The moment an admin
+    // saves a payer, that column carries their address instead, and this walks
+    // straight past it. The run-once flag then stops it reconsidering a row an
+    // admin might later set back to 10 on purpose.
+    if (!clean(await getSetting(TURNAROUND_SEED_KEY))) {
+      for (const [payerKey, t] of Object.entries(PAYER_TURNAROUND)) {
+        await dbRun(
+          `UPDATE auth_payer_requirements
+              SET turnaround_days = ?, turnaround_basis = ?, updated_at = ?
+            WHERE LOWER(TRIM(payer)) = ? AND updated_by = 'seed'`,
+          [t.days, t.basis, nowISO(), payerKey]
+        ).catch(() => {});
+      }
+      await setSetting(TURNAROUND_SEED_KEY, nowISO());
     }
   }
 
