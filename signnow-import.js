@@ -72,6 +72,74 @@ module.exports = function initSignNowImport(ctx) {
       imported_by TEXT,
       imported_at TEXT
     )`).catch((e) => console.error("signnow_imported initTables:", e.message));
+
+    await backfillClinicalTypes();
+  }
+
+  // Documents imported before the type was read at import landed untyped, so
+  // the Authorization Request could only offer them as filename guesses for
+  // somebody to confirm. This fills those in from the title SignNow gave them.
+  //
+  // The title comes from signnow_imported, not from the document's label: that
+  // row holds the ENVELOPE'S OWN NAME, while the label is a display string this
+  // module built and could change. Classifying the real thing costs nothing and
+  // survives a change of wording here.
+  //
+  // Three properties make it safe to run on every boot rather than once behind
+  // a flag:
+  //
+  //   It only ever fills a BLANK. A type already on a document -- picked by a
+  //   person or read at import -- is never touched, so this cannot overwrite
+  //   somebody's decision.
+  //
+  //   It only looks at documents SignNow actually delivered, joined through
+  //   signnow_imported. An arbitrary upload whose filename happens to say
+  //   "Vineland" is left exactly as it was, because a user's filename is a
+  //   guess and confirming it is the whole point of that step.
+  //
+  //   It uses the same classifier as the importer, so an ambiguous title stays
+  //   blank here for the same reason it would there.
+  //
+  // Running every boot also means a later improvement to the classifier reaches
+  // the back catalogue without anybody remembering to ask.
+  async function backfillClinicalTypes() {
+    let rows = [];
+    try {
+      rows = await dbAll(
+        `SELECT d.id AS doc_id, si.title AS title
+           FROM client_documents d
+           JOIN signnow_imported si ON si.document_row_id = d.id
+          WHERE d.clinical_type IS NULL AND si.title IS NOT NULL`
+      );
+    } catch (e) {
+      // The column belongs to the Authorization Request, which initialises
+      // first at boot. If it is somehow not there, this is not worth failing a
+      // boot over -- the documents stay exactly as they were.
+      return { ok: false, error: e.message, filled: 0 };
+    }
+    if (!rows || !rows.length) return { ok: true, filled: 0, considered: 0, by_type: {} };
+
+    let filled = 0;
+    const byType = {};
+    for (const r of rows) {
+      const type = classifyTitle(r.title);
+      if (!type) continue;
+      // The IS NULL in the WHERE is not redundant with the SELECT above: it is
+      // what makes a concurrent boot, or a person typing the document while
+      // this runs, win instead of being overwritten.
+      const res = await dbRun(
+        `UPDATE client_documents SET clinical_type = ?, clinical_type_source = 'signnow_title_backfill'
+          WHERE id = ? AND clinical_type IS NULL`,
+        [type, r.doc_id]
+      ).catch(() => null);
+      const n = res && (res.rowCount != null ? res.rowCount : (res.changes || 0));
+      if (n) { filled += n; byType[type] = (byType[type] || 0) + n; }
+    }
+    if (filled) {
+      console.log(`[signnow] filed a clinical type on ${filled} previously untyped document(s): ` +
+        Object.keys(byType).sort().map((k) => `${k}=${byType[k]}`).join(" "));
+    }
+    return { ok: true, filled, considered: rows.length, by_type: byType };
   }
 
   // ---------------------------------------------------------------- helpers
@@ -480,5 +548,5 @@ module.exports = function initSignNowImport(ctx) {
     return false;
   }
 
-  return { initTables, handleApi, refreshInventory, buildPreview, importOne, canImport, _internal: { matchOne, docKind, looksLikeTest, initialsOf, buildIndex } };
+  return { initTables, handleApi, refreshInventory, buildPreview, importOne, canImport, _internal: { matchOne, docKind, looksLikeTest, initialsOf, buildIndex, backfillClinicalTypes } };
 };
