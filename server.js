@@ -1407,7 +1407,7 @@ async function saveClientDocument(opts) {
 // came later. Its token opens the whole assessment -- every item and every
 // score -- with no CRM session at all, and acknowledges it as that RBT. It
 // belongs here as much as any of the others.
-const TOKEN_PATH_ROUTES = ["verify-timecard", "offer", "screener", "schedule", "apply", "new-hire", "fidelity-ack"];
+const TOKEN_PATH_ROUTES = ["verify-timecard", "offer", "screener", "schedule", "apply", "new-hire", "fidelity-ack", "authorization-sign"];
 const TOKEN_PATH_RE = new RegExp("(/(?:" + TOKEN_PATH_ROUTES.join("|") + ")/)[A-Za-z0-9._~+-]{6,}", "g");
 function redactSecretLinks(html) {
   if (html == null) return html;
@@ -5146,6 +5146,14 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Authorization Request. The /api/authorization-sign/ prefix is the
+  // PARENT's, and carries no session -- the module checks the token itself and
+  // it reaches exactly one signature request.
+  if (pathname.startsWith("/api/authorization-requests") || pathname.startsWith("/api/authorization-sign/")) {
+    const handled = await authorizationRequests.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   if (pathname.startsWith("/api/caseload")) {
     const handled = await bcbaDashboard.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
@@ -8536,6 +8544,7 @@ const PUBLIC_FILES = new Set([
   "/owner-financials.js",
   "/pipeline-v2.js",
   "/bcba-hub-frontend.js",
+  "/authorization-requests-frontend.js",
   "/bcba-dashboard-frontend.js",
   "/screener-admin.js",
   "/hr-recruiting.js",
@@ -8994,6 +9003,41 @@ const bcbaHub = require("./bcba-hub")({
   dbGet, dbAll, dbRun, nowISO, readBody, json,
 });
 
+// ===== AUTHORIZATION REQUEST: one workflow from "what are you requesting" to
+// a start date. Documents, the parent signature when the payer's own
+// configuration asks for one, submission to the configured address, payer
+// review and approval are STAGES of a request rather than features beside it.
+//
+// What a payer wants, how long they take, and where a request is sent are all
+// rows an administrator owns -- payer rules change without warning and a
+// deploy is the wrong unit of change for them.
+const authorizationRequests = require("./authorization-requests")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json,
+  sendEmail,
+  getSetting: (k) => getAppSetting(k),
+  setSetting: (k, v) => setAppSetting(k, v),
+  appBaseUrl: () => APP_BASE_URL,
+  canAccessClients,
+  isOwnerOrAdmin: (u) => !!u && ["owner", "super_admin", "admin"].includes(u.role),
+  // Documents live on the Railway volume and are reached by stored name. The
+  // module never learns the directory, so it cannot be talked into reading
+  // outside it.
+  documentPath: (storedName) => path.join(DOCS_DIR, path.basename(String(storedName || ""))),
+  // A generated PDF becomes an ordinary client document, so it is served by
+  // the authenticated route every other document already uses.
+  saveGeneratedPdf: async ({ clientId, filename, buffer, label, clinicalType, documentDate }) => {
+    const safeName = String(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+    const storedName = `authsig_${crypto.randomBytes(6).toString("hex")}_${safeName}`;
+    fs.writeFileSync(path.join(DOCS_DIR, storedName), buffer);
+    const row = await dbGet(
+      `INSERT INTO client_documents (client_id, label, filename, mime_type, file_path, doc_type, uploaded_at, clinical_type, document_date)
+       VALUES (?, ?, ?, 'application/pdf', ?, 'hosted', ?, ?, ?) RETURNING id`,
+      [clientId, label, safeName, storedName, nowISO(), clinicalType || null, documentDate || null]
+    );
+    return row ? row.id : null;
+  },
+});
+
 // ===== BCBA DASHBOARD: the caseload landing screen for the clinical (BCBA)
 // role, and the one-time BCBA / Student Analyst assignment migration. Owns
 // /api/caseload/*. It READS the systems that already own each fact -- clients,
@@ -9189,6 +9233,12 @@ const server = http.createServer(async (req, res) => {
     if (await fidelity.servePage(req, res, pathname)) return;
   }
 
+  // The parent's Review & Sign page for a treatment plan inside an
+  // Authorization Request. No CRM session: a parent is not a user.
+  if (pathname.startsWith("/authorization-sign/")) {
+    if (await authorizationRequests.servePage(req, res, pathname)) return;
+  }
+
   // Client-facing form pages (financial responsibility, schedule picker, etc.)
   if (
     pathname === "/financial-form" || pathname.startsWith("/financial-form/") ||
@@ -9274,6 +9324,7 @@ async function start() {
   await finLedger.initTables().catch((e) => console.error("Financial ledger initTables failed:", e));
   await bip.initTables().catch((e) => console.error("BIP initTables failed:", e));
   await bcbaHub.initTables().catch((e) => console.error("BCBA Hub initTables failed:", e));
+  await authorizationRequests.initTables().catch((e) => console.error("Authorization Request initTables failed:", e));
   await bcbaDashboard.initTables().catch((e) => console.error("BCBA dashboard initTables failed:", e));
   await driveNotes.initTables().catch((e) => console.error("Drive notes initTables failed:", e));
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
@@ -9382,6 +9433,16 @@ async function start() {
   // freshly synced 97153 dates rather than yesterday's. Both are no-ops with a
   // recorded reason when credentials are absent, so a CRM without the
   // integration configured boots exactly as it did before.
+  // §8. Daily parent-signature reminders. Runs on boot and every 24 hours,
+  // and is safe to run more often than that: the send is claimed by a unique
+  // (signature, day) row, so a second sweep the same day sends nothing.
+  const authReminderSweep = () =>
+    authorizationRequests.sendDailyReminders()
+      .then((r) => { if (r && r.sent) console.log(`[authorization] ${r.sent} parent signature reminder(s) sent`); })
+      .catch((e) => console.error("Authorization reminder sweep failed:", e.message));
+  await authReminderSweep();
+  setInterval(authReminderSweep, 24 * 60 * 60 * 1000);
+
   const rethinkSweep = () => {
     rethink.syncSupervisionHours("scheduled").catch((e) => console.error("Rethink hours sync failed:", e.message));
     rethink.syncAuthorizations("scheduled").catch((e) => console.error("Rethink authorization sync failed:", e.message));

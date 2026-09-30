@@ -1053,6 +1053,10 @@
   // ================= shell ================================================
   const TABS = [
     { key: "cheatsheet", label: "Treatment Plan Cheat Sheet", icon: "clipboard" },
+    // Authorization Request. One tab, one name -- the parent signature,
+    // the documents, the submission and the payer's answer are stages
+    // inside it, not siblings of it.
+    { key: "authorization", label: "Authorization Request", icon: "clipboard" },
     { key: "forms", label: "Form Library", icon: "folder" },
     { key: "resources", label: "Clinical Resources", icon: "book" },
     { key: "student", label: "Student Analyst", icon: "people", soon: true },
@@ -1080,6 +1084,11 @@
         (state.compare ? compareHtml() : "") +
         (p ? cheatsheetLayoutHtml(p)
            : '<div class="bh-card"><div class="bh-empty">Pick a payer above to see what they require.</div></div>');
+    } else if (state.tab === "authorization") {
+      // Mounted rather than rendered here: the Authorization Request owns its
+      // own markup and its own fetches, and the hub only gives it somewhere
+      // to live.
+      body = '<div id="bh-auth"></div>';
     } else if (state.tab === "forms") {
       body = formsHtml("forms");
     } else if (state.tab === "resources") {
@@ -1093,6 +1102,14 @@
       "<p>Clinical reference, tools and forms in one place.</p></div>" +
       '<div class="bh-tabs bh-noprint">' + tabs + "</div>" + body + "</div>";
     wire();
+    if (state.tab === "authorization") {
+      const host = mountEl.querySelector("#bh-auth");
+      if (host && typeof window.__renderAuthorizationRequests === "function") {
+        window.__renderAuthorizationRequests(host);
+      } else if (host) {
+        host.innerHTML = '<div class="bh-card"><div class="bh-empty">Authorization Request could not be loaded.</div></div>';
+      }
+    }
   }
 
   function wire() {
