@@ -30,6 +30,9 @@
   var mountEl = null, state = { requests: [], open: {}, docTypes: [], types: [], config: null };
 
   function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+  // Status keys and action names are snake_case on the wire; this is the one
+  // place they are turned into something a person reads.
+  function human(s) { return String(s == null ? "" : s).replace(/_/g, " "); }
   function api(path, opts) {
     opts = opts || {};
     return fetch(path, {
@@ -310,8 +313,12 @@
     h += '<div class="ar-sec">Activity</div><div class="ar-tl">';
     (r.events || []).forEach(function (e) {
       var good = /signed|submitted|matched|approved|ready/.test(e.action);
+      // A bare "status changed" is not an audit trail. The row already stores
+      // both sides of the move, so say which way it went.
+      var detail = e.notes ? String(e.notes)
+        : (e.new_status ? (e.prev_status ? human(e.prev_status) + " → " : "") + human(e.new_status) : "");
       h += '<div class="ar-ev' + (good ? " good" : "") + '"><time>' + esc(shortDate(e.at)) + "</time>" +
-        esc(String(e.action).replace(/_/g, " ")) + (e.notes ? " — " + esc(e.notes) : "") + "</div>";
+        esc(String(e.action).replace(/_/g, " ")) + (detail ? " — " + esc(detail) : "") + "</div>";
     });
     h += "</div>";
 
@@ -565,17 +572,34 @@
       b.addEventListener("click", function () {
         var id = b.dataset.toggle;
         state.open[id] = !state.open[id];
+        var r = state.requests.filter(function (x) { return String(x.id) === String(id); })[0];
         // Re-render only this card, so opening one does not scroll the page
         // out from under somebody reading another.
-        var r = state.requests.filter(function (x) { return String(x.id) === String(id); })[0];
-        var card = mountEl.querySelector('[data-req="' + id + '"]');
-        if (r && card) {
+        var paint = function () {
+          var card = mountEl.querySelector('[data-req="' + id + '"]');
+          var row = state.requests.filter(function (x) { return String(x.id) === String(id); })[0];
+          if (!row || !card) { render(); return; }
           var holder = document.createElement("div");
-          holder.innerHTML = cardHtml(r);
+          holder.innerHTML = cardHtml(row);
           var fresh = holder.firstElementChild;
           card.replaceWith(fresh);
           wire(fresh);
-        } else { render(); }
+        };
+        paint();
+        // The list is deliberately the cheap shape -- it carries no history,
+        // because loading every request's events to draw a collapsed row would
+        // be three extra queries per card. The detail is fetched the moment a
+        // card is actually opened, so Activity shows the audit trail instead of
+        // an empty panel. Fetched once; after that the row already has it.
+        if (state.open[id] && r && !r.events) {
+          api("/api/authorization-requests/" + id).then(function (full) {
+            if (!full || !full.id) return;
+            var i = state.requests.findIndex(function (x) { return String(x.id) === String(id); });
+            if (i < 0) return;
+            state.requests[i] = full;
+            if (state.open[id]) paint();
+          }).catch(function () {});
+        }
       });
     });
     q("[data-review]", function (b) { b.addEventListener("click", function () { openReview(b.dataset.review); }); });

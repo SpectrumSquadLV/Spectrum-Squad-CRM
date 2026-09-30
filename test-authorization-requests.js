@@ -512,6 +512,36 @@ async function pdfBytes(text, pages = 1) {
   }
 
   // ==================================================================
+  section("The audit trail actually reaches the screen");
+  {
+    // The list is deliberately the cheap shape. That is fine, but it means the
+    // detail endpoint is the ONLY thing that can fill the Activity panel, and
+    // a list row rendered on expand would show an empty history while the
+    // database was full of it. Both halves are asserted so neither can drift.
+    const list = await owner("/api/authorization-requests");
+    const row = ((list.data && list.data.requests) || []).find((r) => String(r.id) === String(reqId));
+    check("the list stays cheap and carries no history", !!row && row.events === undefined, row && Object.keys(row).length);
+    const full = await owner(`/api/authorization-requests/${reqId}`);
+    check("THE DETAIL CARRIES THE HISTORY, which is what the open card draws",
+      Array.isArray(full.data.events) && full.data.events.length > 0, full.data.events && full.data.events.length);
+
+    // The parent page is one big template literal, so a regex written with a
+    // single backslash arrives in the browser as a bare letter and silently
+    // never matches. It failed exactly that way once.
+    const sigRow = await pool.query("SELECT token FROM auth_signature_requests WHERE request_id = $1 ORDER BY id LIMIT 1", [reqId]);
+    const page = await fetch(`${BASE}/authorization-sign/${sigRow.rows[0].token}`).then((r) => r.text());
+    check("the signing page reaches the browser with a REAL regex, not a de-escaped one",
+      page.includes("\\d{4}") && !/[^\\]d\{4\}/.test(page), page.slice(page.indexOf("function longDate"), page.indexOf("function longDate") + 80));
+    // Asserted on the CALL, not on the served text: the date is inserted in the
+    // browser, so the raw page never contains it either way and a check against
+    // the text would pass no matter what. This fails if the formatting is
+    // dropped and the parent is handed the raw value again.
+    check("...and the signing date is put through that formatter, not printed raw",
+      /Signing on '\s*\+\s*esc\(longDate\(d\.today\)\)/.test(page),
+      (page.match(/Signing on[^+]*\+[^+]*\+/) || [])[0]);
+  }
+
+  // ==================================================================
   section("Who may see it, and who may configure it");
   {
     const anon = client();

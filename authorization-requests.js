@@ -1306,6 +1306,13 @@ module.exports = function initAuthorizationRequests(ctx) {
 var TOKEN = location.pathname.split("/").filter(Boolean).pop();
 var app = document.getElementById("app");
 function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
+// A parent should not be shown an ISO timestamp. Formatted here, in the page,
+// because the date arrives as data and this is the only place it is read.
+// The backslashes are doubled: this whole page is a template literal, and a
+// single \d would reach the browser as a bare "d" and quietly never match.
+var MONTHS=["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+function longDate(iso){var m=/^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(String(iso||"").slice(0,10));
+  return m?MONTHS[Number(m[2])-1]+" "+Number(m[3])+", "+m[1]:String(iso||"");}
 function card(h){return '<div class="card">'+h+'</div>';}
 function render(d){
   if(d.signed){
@@ -1323,7 +1330,7 @@ function render(d){
                   : '<div class="note">This document cannot be previewed here. Your clinician can send you a copy.</div>')) +
     card('<label for="nm">Type your full name to sign</label>'+
       '<input id="nm" type="text" autocomplete="name" placeholder="Your full name" />'+
-      '<div class="muted" style="margin-top:10px">Signing on '+esc(d.today)+' as the parent or guardian of '+esc(d.client_name)+'.</div>'+
+      '<div class="muted" style="margin-top:10px">Signing on '+esc(longDate(d.today))+' as the parent or guardian of '+esc(d.client_name)+'.</div>'+
       '<button id="go">Sign Treatment Plan</button><div id="err"></div>');
   var btn=document.getElementById("go"), nm=document.getElementById("nm");
   btn.addEventListener("click", function(){
