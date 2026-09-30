@@ -12,19 +12,19 @@
 (function () {
   "use strict";
 
-  // ○ not started · ◐ in progress · ✓ complete · ! action needed · ⏳ waiting · ✕ denied
+  // ○ not started · ◐ in progress · ✓ complete · ! action needed · … waiting · ✕ denied
   var NODE = {
     not_started:   { glyph: "○", cls: "ns",   title: "Not started" },
     in_progress:   { glyph: "◐", cls: "ip",   title: "In progress" },
     complete:      { glyph: "✓", cls: "done", title: "Complete" },
     action_needed: { glyph: "!", cls: "act",  title: "Action needed" },
-    waiting:       { glyph: "⏳", cls: "wait", title: "Waiting" },
+    waiting:       { glyph: "…", cls: "wait", title: "Waiting" },
     denied:        { glyph: "✕", cls: "den",  title: "Denied" },
   };
   var DOC_STATE = {
     ready: { glyph: "✓", cls: "ok", label: "Ready" },
     missing: { glyph: "!", cls: "act", label: "Missing" },
-    awaiting_parent_signature: { glyph: "⏳", cls: "wait", label: "Parent Signature" },
+    awaiting_parent_signature: { glyph: "…", cls: "wait", label: "Parent Signature" },
   };
 
   var mountEl = null, state = { requests: [], open: {}, docTypes: [], types: [], config: null };
@@ -180,9 +180,9 @@
         ? "Needs " + miss[0].label
         : miss.length + " required documents missing" };
     }
-    if (s === "awaiting_parent_signature") return { g: "⏳", t: "Waiting on Parent Signature" };
+    if (s === "awaiting_parent_signature") return { g: "…", t: "Waiting on Parent Signature" };
     if (s === "ready_to_submit") return { g: "✓", t: "Ready to submit" };
-    if (s === "submitted" || s === "pending_payer") return { g: "⏳", t: "With " + (r.payer || "the payer") + " for review" };
+    if (s === "submitted" || s === "pending_payer") return { g: "…", t: "With " + (r.payer || "the payer") + " for review" };
     if (s === "info_requested") return { g: "!", t: "Payer asked for more information" };
     if (s === "approved") return { g: "✓", t: "Approved" + (r.authorization_number ? " · " + r.authorization_number : "") };
     if (s === "partially_approved") return { g: "✓", t: "Partially approved" };

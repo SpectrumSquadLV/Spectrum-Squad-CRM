@@ -69,6 +69,12 @@ module.exports = function initUserEmail(ctx) {
     { table: "bip_notes", column: "author_email", label: "BIP notes they wrote" },
     { table: "bip_behavior_notes", column: "author_email", label: "behaviour notes they wrote" },
     { table: "bip_questions", column: "asked_by_email", label: "BIP questions they asked" },
+
+    // The BCBA who raised an authorisation request. Same reasoning as the
+    // supervision notes above: this is who owns the request, not where
+    // something was posted, and a request is worked for weeks. Leaving it
+    // behind would detach them from their own in-flight authorisations.
+    { table: "auth_requests", column: "bcba_email", label: "authorization requests they raised" },
   ];
 
   // Columns that hold an email address but are NOT this person's identity, and
@@ -92,6 +98,9 @@ module.exports = function initUserEmail(ctx) {
     "events.public_contact_email", "event_outreach_messages.to_email",
     "event_outreach_suppression.email", "signnow_inventory.signer_emails",
     "newhire_packets.recipient_email", "ot_clients.eligibility_email_to",
+    // The parent who signs a treatment plan. A parent is not a CRM user, and a
+    // staff rename must never reach across to them.
+    "auth_signature_requests.parent_email",
     // A shared destination, not a person: a department mailbox may happen to
     // equal somebody's address without being their identity.
     "departments.notify_email",
@@ -102,6 +111,9 @@ module.exports = function initUserEmail(ctx) {
     "event_community_partners.email_families",
     "fidelity_checks.email_status", "fidelity_checks.emailed_at",
     "hr_attendance_reviews.emailed_to", "hr_supervision_logs.emailed_at",
+    // Where a submission was actually sent. Rewriting it would falsify the
+    // record of what left the building and when.
+    "auth_submissions.to_email",
     "rethink_verification_runs.email_status", "rethink_verification_runs.emailed_to",
     // This module's own audit trail. Emphatically history: rewriting the record
     // of a rename to use the renamed address would erase the only evidence of
