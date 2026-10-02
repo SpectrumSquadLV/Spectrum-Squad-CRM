@@ -1,0 +1,35 @@
+<!--
+  THE SITE MARK: the vessel, and the one warm dot.
+
+  Not one of the four archetype sigils. Sigil.tsx documents what the four
+  share - "ONE VESSEL. A 44-unit circle in a 120 box, in every one" and "ONE
+  WARM MARK... the only colour in the system" - so the closed vessel holding a
+  single gilt dot is the root of that system and belongs to none of its four
+  branches. Putting the Commander's shield or the Watcher's threshold in the
+  browser tab would quietly brand the whole platform as one archetype, which
+  is the opposite of what the quiz is for.
+
+  Same 120 box and same centre as the sigils, so this sits in the same
+  geometry rather than merely resembling it.
+
+  Drawn for 16px, which means it follows the `mark` rule from Sigil.tsx: the
+  reduced form is a different drawing, not the full one scaled down. The
+  vessel's 1.5 hairline would vanish at tab size, so it is thickened to 9 -
+  about 1.2px once a 120 box lands in 16 - and the gilt dot is enlarged to
+  match. Nothing else survives at this size, and nothing else is needed.
+
+  The plum-deep ground is deliberate. A bone tile disappears into the light
+  chrome of every browser; the dark surface is already the site's own (it is
+  what the oracle cards are printed on), so the mark reads at a glance in a
+  crowded tab strip without introducing a colour the system does not have.
+
+  Colours are literal rather than var(--color-*): this file is served as a
+  standalone image and never sees globals.css. They are plum-deep #35202f,
+  bone #faf7f2 and gilt #b2914f, and they must be changed here by hand if the
+  tokens ever move.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <rect width="120" height="120" rx="26" fill="#35202f" />
+  <circle cx="60" cy="60" r="40" fill="none" stroke="#faf7f2" stroke-width="9" />
+  <circle cx="60" cy="60" r="9" fill="#b2914f" />
+</svg>

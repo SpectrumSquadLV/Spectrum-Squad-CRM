@@ -120,6 +120,11 @@ export const days: DaySeed[] = [
       {
         type: 'rich_text',
         config: {
+          // The day opens. Oversized title, and ME's list of ways of moving
+          // through the world falls out as a stacked litany rather than a
+          // paragraph - compressed, repetitive, which is ME before anybody
+          // has explained what ME is.
+          scene: 'chapter',
           heading: 'MEET ME',
           body: `Before we can talk about HER, I need you to meet ME.
 
@@ -227,6 +232,15 @@ What did ME do?`,
       {
         type: 'rich_text',
         config: {
+          /*
+           * The confrontation, and the reason the scene system exists.
+           *
+           * She typed the trigger ninety seconds ago. Here it is read back to
+           * her at display scale, edge to edge, on near-black, with "That's
+           * her." underneath - the whole page darkens for it. As a paragraph
+           * on cream this screen passed by; it is the hinge of Day 1.
+           */
+          scene: 'confront',
           heading: 'REFLECTION',
           body: `THIS HAPPENED:
 
@@ -250,8 +264,15 @@ ME showed up.`,
         },
       },
       {
+        type: 'founder_note',
+        config: { note: 'before-the-first-mirror', portrait: true },
+      },
+      {
         type: 'rich_text',
         config: {
+          // The one line she has to carry into sixty seconds of silence. It
+          // gets the screen; the instructions sit small underneath it.
+          scene: 'declaration',
           heading: 'LOOK AT HER.',
           body: `For one minute, look into your own eyes.
 
@@ -280,6 +301,18 @@ Today, you're simply learning to see ME.`,
       {
         type: 'rich_text',
         config: {
+          /*
+           * The day goes quiet, and then HER speaks for the first time.
+           *
+           * Day 1 is about meeting ME, so this is not a reveal. The last line
+           * of the curriculum promises that tomorrow we understand her, and
+           * then a hand she has never seen writes "you already know"
+           * underneath it. Nothing asks her to do anything about it. By Day 7
+           * she should know that handwriting on sight - which only works if
+           * it stays this rare.
+           */
+          scene: 'close',
+          herVoice: 'you-already-know',
           body: `Today, you met ME.
 
 Not the whole of you.
@@ -373,6 +406,10 @@ And sometimes the things we do today began as ways of protecting ourselves much 
       {
         type: 'rich_text',
         config: {
+          // The screen before a mirror is always a declaration. By Day 6 a
+          // woman has met this shape five times and knows, before reading a
+          // word, that she is about to be asked to go and look at herself.
+          scene: 'declaration',
           heading: 'LOOK AT HER AGAIN.',
           body: `Yesterday, you saw ME.
 
@@ -579,8 +616,16 @@ Today, we’re going to look at what ME has been creating.`,
         },
       },
       {
+        type: 'founder_note',
+        config: { note: 'before-the-hardest-mirror', portrait: true },
+      },
+      {
         type: 'rich_text',
         config: {
+          // The screen before a mirror is always a declaration. By Day 6 a
+          // woman has met this shape five times and knows, before reading a
+          // word, that she is about to be asked to go and look at herself.
+          scene: 'declaration',
           heading: 'LOOK AT HER WITHOUT JUDGING HER.',
           body: `Today, you saw how some of ME’s choices have been showing up in your life.
 
@@ -606,6 +651,11 @@ Awareness changes what becomes possible.`,
       {
         type: 'rich_text',
         config: {
+          // Day 4's pivot, and the hardest sentence in the challenge. It
+          // gets the dark, the same as Day 1's REFLECTION - the two screens
+          // that ask a woman to look straight at something are the two that
+          // turn the lights down.
+          scene: 'confront',
           body: `If ME's choices have been helping create my current reality, different choices can help create a different one.
 
 But first, you need to know who's making them.
@@ -661,6 +711,9 @@ Today, you're going to meet her.`,
       {
         type: 'rich_text',
         config: {
+          // HER's first appearance, and the first time the ground goes warm.
+          // Four days on bone, one day in the dark, and then this.
+          scene: 'her',
           heading: 'WHO IS HER?',
           body: `HER isn't the richer you.
 
@@ -686,6 +739,7 @@ I just want you to let yourself see her.`,
       {
         type: 'rich_text',
         config: {
+          scene: 'her',
           heading: 'LET YOURSELF DESIRE',
           body: `Yesterday, you looked at what ME has been creating in your life.
 
@@ -775,6 +829,10 @@ You gave yourself permission to see her.`,
       {
         type: 'rich_text',
         config: {
+          // The screen before a mirror is always a declaration. By Day 6 a
+          // woman has met this shape five times and knows, before reading a
+          // word, that she is about to be asked to go and look at herself.
+          scene: 'declaration',
           heading: 'TODAY, LOOK FOR HER.',
           body: `You’ve spent the last few days learning to see ME.
 
@@ -808,6 +866,10 @@ There she is.`,
       {
         type: 'rich_text',
         config: {
+          // The day she meets HER. The hand from Day 1 returns, and this time
+          // a woman half-remembers it.
+          scene: 'close',
+          herVoice: 'there-you-are',
           body: `You've spent four days getting to know ME.
 
 Today, you met HER.
@@ -872,6 +934,7 @@ She's revealed in the small moments when you have an opportunity to choose diffe
       {
         type: 'rich_text',
         config: {
+          scene: 'chapter',
           heading: 'THE CHOICE POINT',
           body: `There are moments in your life when something happens...
 
@@ -1009,6 +1072,7 @@ That pause is where something new becomes possible.`,
       {
         type: 'rich_text',
         config: {
+          scene: 'her',
           heading: 'REMEMBER HER',
           body: `Yesterday, you met HER.
 
@@ -1086,6 +1150,10 @@ What is YOUR one choice?`,
       {
         type: 'rich_text',
         config: {
+          // The screen before a mirror is always a declaration. By Day 6 a
+          // woman has met this shape five times and knows, before reading a
+          // word, that she is about to be asked to go and look at herself.
+          scene: 'declaration',
           heading: 'LOOK AT THE WOMAN WHO GETS TO CHOOSE.',
           body: `Today, you learned something important.
 
@@ -1138,6 +1206,7 @@ you stopped letting an automatic response make the decision for you.`,
         // The day must end in anticipation. Do not resolve ME vs HER here.
         type: 'rich_text',
         config: {
+          scene: 'close',
           body: `Six days ago, you met ME.
 
 Yesterday, you met HER.
@@ -1188,6 +1257,7 @@ tomorrow, you'll know exactly what to do when she does.`,
       {
         type: 'rich_text',
         config: {
+          scene: 'chapter',
           heading: 'ME VS. HER',
           body: `For the last six days, you've been meeting two versions of yourself.
 
@@ -1210,6 +1280,8 @@ Today, they meet.`,
       {
         type: 'rich_text',
         config: {
+          // The stakes of the last day, stated in the dark.
+          scene: 'confront',
           heading: 'THIS IS WHERE IT MATTERS',
           body: `Knowing HER exists isn't enough.
 
@@ -1306,6 +1378,16 @@ let ME answer first.`,
       {
         type: 'rich_text',
         config: {
+          /*
+           * Her own words, in the dark, for the second time in seven days.
+           *
+           * Day 1 did this with a trigger she barely understood. Day 7 does
+           * it with a decision she is actually facing - and then the very
+           * next screen asks the same question of HER and the room goes warm.
+           * That pair is the entire argument of the challenge, made without
+           * a sentence explaining it.
+           */
+          scene: 'confront',
           heading: 'LET HER SEE ME',
           body: `ME WOULD:
 {{me_would}}
@@ -1334,6 +1416,8 @@ ME.`,
       {
         type: 'rich_text',
         config: {
+          // The other half of the pair above. Same question, warm ground.
+          scene: 'her',
           heading: 'NOW, HER',
           body: `Now we're going to ask the same woman...
 
@@ -1496,6 +1580,15 @@ and still not hand her the decision.`,
       {
         type: 'rich_text',
         config: {
+          /*
+           * The last screen of the seven days.
+           *
+           * Third and final appearance of the hand. She knows it on sight by
+           * now, which is the only reason this line can carry what it has to
+           * carry - and it is why there were only two before it.
+           */
+          scene: 'close',
+          herVoice: 'i-was-waiting-for-you',
           body: `ME protected me.
 
 HER leads me.
