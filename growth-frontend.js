@@ -393,17 +393,17 @@
             <h1>${esc(thisKind.plural)}</h1><p>${esc(thisKind.lede || "")}</p>
           </div>
           <div style="display:flex; gap:8px; align-items:center;">
-            ${d.can_manage ? `<button class="btn" id="pol-add">+ New ${esc(thisKind.label)}</button>
+            ${d.can_edit ? `<button class="btn" id="pol-add">+ New ${esc(thisKind.label)}</button>
             <button class="btn secondary" id="pol-doc-upload">⇧ Upload source document</button>
-            <button class="btn secondary" id="pol-import">Import</button>
-            <button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
+            <button class="btn secondary" id="pol-import">Import</button>` : ""}
+            ${d.can_manage ? `<button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
           </div>
         </div>`
       : `<div class="page-header">
           <div><h1>Policies &amp; SOPs</h1><p>The rules we work to, and how the work is done.</p></div>
           <div style="display:flex; gap:8px; align-items:center;">
-            ${d.can_manage ? `<button class="btn secondary" id="pol-doc-upload">⇧ Upload source document</button>
-            <button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
+            ${d.can_edit ? `<button class="btn secondary" id="pol-doc-upload">⇧ Upload source document</button>` : ""}
+            ${d.can_manage ? `<button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
           </div>
         </div>`;
 
@@ -884,11 +884,12 @@
           : `<div style="margin-bottom:8px;">This policy requires your acknowledgment${pol.version ? ` (version ${esc(pol.version)})` : ""}.</div>
              <button class="btn small" id="pol-ack-btn">I have read and acknowledge this policy</button>`}
       </div>` : ""}
-      ${d.can_manage ? memoAdmin(pol) : ""}
+      ${d.can_edit ? memoAdmin(pol) : ""}
       <div style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;">
-        ${d.can_manage ? `<button class="btn" id="pol-r-amend">+ Amendment memo</button>` : ""}
-        ${d.can_manage ? `<button class="btn secondary" id="pol-r-link">Link ${isSop ? "a policy" : "an SOP"}</button>` : ""}
-        ${d.can_manage ? `<button class="btn secondary" id="pol-r-edit">Edit</button>` : ""}
+        ${d.can_edit ? `<button class="btn" id="pol-r-amend">+ Amendment memo</button>` : ""}
+        ${d.can_edit ? `<button class="btn secondary" id="pol-r-link">Link ${isSop ? "a policy" : "an SOP"}</button>` : ""}
+        ${d.can_edit ? `<button class="btn secondary" id="pol-r-edit">Edit</button>` : ""}
+        ${d.can_manage && (pol.status || "Active") === "Active" ? `<button class="btn secondary" id="pol-r-send">✉ Send to staff</button>` : ""}
         ${pol.document ? `<button class="btn secondary" id="pol-r-doc">View full source document</button>` : ""}
         <a class="btn secondary" href="/policies/${esc(pol.slug)}" target="_blank" rel="noopener">Open public page</a>
       </div>
@@ -917,6 +918,7 @@
     }));
     rOn("#pol-r-link", () => { close(); linkModal(pol, d, mount); });
     rOn("#pol-r-amend", () => { close(); amendmentModal(pol, null, mount); });
+    rOn("#pol-r-send", () => { close(); sendToStaffModal(pol, mount); });
     bd.querySelectorAll("[data-amend-edit]").forEach((b) => b.addEventListener("click", () => {
       const all = [...(pol.amendments_in_force || []), ...(pol.amendments_scheduled || []), ...(pol.amendments_drafts || [])];
       const a = all.find((x) => String(x.id) === b.dataset.amendEdit);
@@ -1090,6 +1092,103 @@
   // Joining a rule to the procedure that carries it out. Only the OTHER kind is
   // offered: a link means "this is how that rule is done", and two policies
   // pointing at each other is a cross-reference in the text, not that.
+  // SEND A POLICY TO EVERY EMPLOYEE.
+  //
+  // The endpoint for this has existed since the policy library was built and
+  // has never had a button, so the only way to use it was to call the API by
+  // hand. This is that button.
+  //
+  // It names every recipient before anything is sent rather than reporting a
+  // number afterwards. A send to "all employees" that you cannot inspect is a
+  // send you cannot check: an address that is wrong, or a person with no
+  // address on file at all, is invisible until a policy quietly fails to reach
+  // somebody. Everyone is ticked by default -- "send it to everyone" is the
+  // common case -- and anybody with no address on file is listed separately,
+  // because they are the ones this will miss.
+  async function sendToStaffModal(pol, mount) {
+    let d;
+    try { d = await api("/api/policies/" + pol.id + "/distribute"); }
+    catch (e) { alert(e.message); return; }
+
+    const rows = (d.targets || []).map((t) =>
+      `<label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13.5px;border-bottom:1px solid #f3f1ea;">
+        <input type="checkbox" class="pol-send-who" value="${t.id}" checked />
+        <span style="font-weight:600;">${esc(t.name || "—")}</span>
+        <span style="color:var(--text-muted);font-size:12.5px;">${esc(t.email)}</span>
+      </label>`).join("") ||
+      `<div style="padding:10px 0;color:#a3282e;">Nobody on staff has an email address on file, so there is nobody to send to.</div>`;
+
+    const missing = (d.no_email || []).length
+      ? `<div style="background:#fff4dd;border:1px solid #f1d9a0;border-radius:10px;padding:10px 12px;margin:10px 0;font-size:12.5px;color:#a56b00;">
+          <b>${d.no_email.length} ${d.no_email.length === 1 ? "person has" : "people have"} no email address on file and will not receive this:</b>
+          ${esc(d.no_email.map((x) => x.name).join(", "))}
+         </div>`
+      : "";
+
+    const last = d.last_distributed_at
+      ? `<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px;">Last sent ${esc(new Date(d.last_distributed_at).toLocaleString())}${d.last_distributed_by ? " by " + esc(d.last_distributed_by) : ""}.</div>`
+      : "";
+
+    const bd = document.createElement("div");
+    bd.className = "modal-backdrop";
+    bd.innerHTML = `<div class="modal" style="max-width:640px;">
+      <div class="modal-header"><div>
+        <h2>Send to staff</h2>
+        <div style="font-size:12.5px;color:var(--text-muted);">${esc(pol.title)}${pol.version ? " · version " + esc(pol.version) : ""}</div>
+      </div><button class="close-btn">✕</button></div>
+      ${last}
+      ${d.policy && d.policy.requires_acknowledgment
+        ? `<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:12.5px;color:#3730a3;">This policy asks for acknowledgment, so the email will tell people to open it in the CRM and sign.</div>`
+        : ""}
+      <div class="field"><label>Add a note (optional)</label>
+        <textarea id="pol-send-note" rows="2" placeholder="Anything you want them to know alongside the policy."></textarea></div>
+      ${missing}
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 4px;">
+        <label style="font-weight:700;font-size:13px;">Who it goes to</label>
+        <div style="display:flex;gap:8px;">
+          <button class="btn small secondary" id="pol-send-all">Select all</button>
+          <button class="btn small secondary" id="pol-send-none">Select none</button>
+        </div>
+      </div>
+      <div style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:4px 12px;">${rows}</div>
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
+        <button class="btn" id="pol-send-go">Send</button>
+        <span id="pol-send-res" style="font-size:12.5px;color:var(--text-muted);"></span>
+      </div>
+    </div>`;
+    document.body.appendChild(bd);
+    const close = () => bd.remove();
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+    const boxes = () => Array.from(bd.querySelectorAll(".pol-send-who"));
+    bd.querySelector("#pol-send-all").addEventListener("click", () => boxes().forEach((b) => { b.checked = true; }));
+    bd.querySelector("#pol-send-none").addEventListener("click", () => boxes().forEach((b) => { b.checked = false; }));
+
+    const go = bd.querySelector("#pol-send-go");
+    go.addEventListener("click", async () => {
+      const res = bd.querySelector("#pol-send-res");
+      const chosen = boxes().filter((b) => b.checked).map((b) => Number(b.value));
+      if (!chosen.length) { res.textContent = "Pick at least one person."; return; }
+      // Named, not counted. "Send to 47 people" is not something anybody can
+      // sanity-check; the number plus the policy's name is.
+      if (!confirm(`Email "${pol.title}" to ${chosen.length} ${chosen.length === 1 ? "person" : "people"}?`)) return;
+      go.disabled = true; res.textContent = "Sending…";
+      try {
+        const r = await api("/api/policies/" + pol.id + "/distribute", {
+          method: "POST",
+          body: { employee_ids: chosen, message: bd.querySelector("#pol-send-note").value.trim() },
+        });
+        // Failures are named rather than folded into the total, because "sent
+        // 45" when 2 bounced reads as success.
+        res.innerHTML = `Sent to ${r.sent} of ${r.recipients}.` +
+          ((r.failed || []).length
+            ? ` <span style="color:#a3282e;">Did not reach: ${esc((r.failed || []).map((f) => f.name).join(", "))}.</span>`
+            : " ✓");
+        go.disabled = false;
+      } catch (e) { go.disabled = false; res.textContent = e.message || "Could not send."; }
+    });
+  }
+
   function linkModal(pol, d, mount) {
     const isSop = (pol.kind || "policy") === "sop";
     const wantKind = isSop ? "policy" : "sop";
