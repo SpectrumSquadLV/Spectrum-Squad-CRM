@@ -5239,6 +5239,16 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Report a Concern owns /api/concerns/*. Dispatched above the sign-in gate
+  // because its public submit page carries no session at all -- deliberately,
+  // since a session is exactly what makes anonymity impossible. Every other
+  // route in it refuses an unauthenticated caller of its own accord, and the
+  // review routes are gated on a NAMED permission rather than on a job title.
+  if (pathname.startsWith("/api/concerns")) {
+    const handled = await concerns.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // Policy change requests and the policy exception log. Owns
   // /api/policy-changes/* and /api/policy-exceptions/*. Its own four
   // permission tiers -- submit, review, decide, except -- are enforced
@@ -7571,8 +7581,17 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
       //    never returned to them).
       //  - anyone without client access is refused outright.
       if (canSeeAllMessages(user)) {
+        // Concern alerts are filtered out for anybody who is not a concern
+        // reviewer, because this screen shows the whole outbox to every
+        // admin -- and "admin" is deliberately NOT a concern permission. The
+        // alert bodies carry no detail either (see notifyReviewers), so this
+        // is the second of two locks rather than the only one; what it stops
+        // leaking here is the fact and timing of a concern, and who was told.
         const all = await dbAll("SELECT * FROM notifications_log ORDER BY sent_at DESC LIMIT 100");
-        return json(res, 200, all.map(shapeNotificationForDisplay));
+        const visible = concerns.canSeeConcernMail(user)
+          ? all
+          : all.filter((n) => !String(n.type || "").startsWith("concern_"));
+        return json(res, 200, visible.map(shapeNotificationForDisplay));
       }
       if (!canAccessClients(user)) {
         return json(res, 403, { error: "Not permitted to view the message outbox" });
@@ -8576,6 +8595,8 @@ const PUBLIC_FILES = new Set([
   "/events-frontend.js",
   "/supply-requests-frontend.js",
   "/maintenance-requests-frontend.js",
+  "/concerns-frontend.js",
+  "/report-concern.html",
   "/policy-change-requests-frontend.js",
   "/geo-map-frontend.js",
   "/bip-frontend.js",
@@ -8860,6 +8881,14 @@ const supply = require("./supply-requests")({
 // safety escalation the supply flow has no need for. Owns /api/maintenance/*. =====
 const maintenance = require("./maintenance-requests")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
+});
+// ===== REPORT A CONCERN add-on: a neutral route for raising something that
+// looks inconsistent with policy, safety or fair treatment -- applying to
+// everyone, leadership included. Its confidentiality rules are the feature;
+// see the header of concerns.js. Owns /api/concerns/*. =====
+const concerns = require("./concerns")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile,
+  moduleGranted, moduleDenied,
 });
 // ===== POLICY CHANGE REQUESTS + POLICY EXCEPTION LOG add-on: the monthly
 // review cycle for changing a rule, and the record of departing from one.
@@ -9287,6 +9316,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Public supply/shopping request submit + tracking page.
+  // The open Report a Concern page. No token, deliberately: a tokenised link
+  // would create a record of who asked for one, which is the first thing an
+  // anonymous route must not do.
+  if (pathname === "/report-concern" || pathname.startsWith("/report-concern/")) {
+    if (concerns.servePage(req, res, pathname)) return;
+  }
+
   if (pathname === "/supply-request" || pathname.startsWith("/supply-request/")) {
     if (await supply.servePage(req, res, pathname)) return;
     if (await maintenance.servePage(req, res, pathname)) return;
@@ -9351,6 +9387,7 @@ async function start() {
   await squad.initTables().catch((e) => console.error("Squad attendance initTables failed:", e));
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
   await maintenance.initTables().catch((e) => console.error("Maintenance initTables failed:", e));
+  await concerns.initTables().catch((e) => console.error("Concerns initTables failed:", e));
   await policyChanges.initTables().catch((e) => console.error("Policy change requests initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
   await fidelity.initTables().catch((e) => console.error("Fidelity initTables failed:", e));
