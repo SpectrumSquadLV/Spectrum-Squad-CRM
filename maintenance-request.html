@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Report something broken — Spectrum Squad</title>
+<style>
+  :root { --navy:#1b2a6b; --gold:#d9a233; --line:#e6e8f0; --muted:#6b7280; --bg:#f7f6f1; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:#1f2430;
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:620px; margin:0 auto; padding:22px 16px 64px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; padding:20px; margin-bottom:14px; }
+  h1 { font-size:21px; margin:0 0 6px; color:var(--navy); }
+  .muted { color:var(--muted); font-size:14px; line-height:1.5; }
+  label { display:block; font-weight:700; font-size:14px; margin:16px 0 6px; }
+  input[type=text], input[type=email], select, textarea {
+    width:100%; padding:13px; border:1px solid var(--line); border-radius:10px;
+    font-size:16px; font-family:inherit; background:#fff; }
+  textarea { min-height:120px; resize:vertical; }
+  button { width:100%; background:var(--gold); color:var(--navy); font-weight:800; border:0;
+    border-radius:999px; padding:16px; font-size:17px; cursor:pointer; font-family:inherit; margin-top:20px; }
+  button:disabled { opacity:.55; cursor:default; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media (max-width:520px) { .row { grid-template-columns:1fr; } }
+  .note { background:#fff8e6; border:1px solid #f3e0b0; border-radius:10px; padding:12px 14px; font-size:14px; margin-top:14px; }
+  .safety { background:#fef2f2; border:1px solid #fecaca; color:#991b1b; border-radius:10px; padding:12px 14px; font-size:14px; margin-top:14px; display:none; }
+  .ok { background:#e9f9ee; border:1px solid #bfe6cd; color:#166534; border-radius:12px; padding:20px; text-align:center; }
+  .err { background:#fee2e2; border:1px solid #fca5a5; color:#991b1b; border-radius:10px; padding:12px 14px; font-size:14px; margin-top:12px; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <div class="card">
+    <h1>Report something broken</h1>
+    <p class="muted">Tell us what needs fixing and we will take it from there. You do not need a login.</p>
+  </div>
+  <div class="card">
+    <div class="row">
+      <div><label for="loc">Location</label><input type="text" id="loc" placeholder="Which site" /></div>
+      <div><label for="area">Area or room</label><input type="text" id="area" placeholder="e.g. Room 3" /></div>
+    </div>
+    <div class="row">
+      <div><label for="cat">What kind of thing is it?</label><select id="cat"></select></div>
+      <div><label for="pri">How urgent?</label><select id="pri"></select></div>
+    </div>
+    <label for="desc">What needs fixing?</label>
+    <textarea id="desc" placeholder="Describe what is wrong, and where exactly."></textarea>
+    <label for="name">Your name</label>
+    <input type="text" id="name" placeholder="So we know who to come back to" />
+    <label for="email">Your email</label>
+    <input type="email" id="email" placeholder="We will tell you what happens to this" />
+    <div class="safety" id="safety">
+      A safety issue is sent to leadership as soon as you submit it, without waiting for anyone to open the queue.
+      If somebody is in danger right now, deal with that first.
+    </div>
+    <div class="note">We will email you when this is picked up and when it is finished.</div>
+    <div id="err"></div>
+    <button id="go">Submit</button>
+  </div>
+</div>
+<script>
+(function () {
+  var app = document.getElementById("app");
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
+  var cat = document.getElementById("cat"), pri = document.getElementById("pri");
+  var safety = document.getElementById("safety");
+
+  // The vocabulary comes from the server rather than being written twice. A
+  // category list that drifts from the one the queue filters on is a category
+  // that quietly becomes "Other".
+  fetch("/api/maintenance/options").then(function(r){return r.json();}).then(function(d){
+    (d.categories||[]).forEach(function(c){ var o=document.createElement("option"); o.textContent=c; cat.appendChild(o); });
+    (d.priorities||[]).forEach(function(p){ var o=document.createElement("option"); o.textContent=p; pri.appendChild(o); });
+    sync();
+  }).catch(function(){});
+
+  function sync(){ safety.style.display = /Safety Issue|Urgent/.test(pri.value) ? "block" : "none"; }
+  pri.addEventListener("change", sync);
+
+  document.getElementById("go").addEventListener("click", function () {
+    var btn = this, errEl = document.getElementById("err");
+    errEl.innerHTML = "";
+    var body = {
+      location: document.getElementById("loc").value.trim(),
+      area: document.getElementById("area").value.trim(),
+      category: cat.value, priority: pri.value,
+      description: document.getElementById("desc").value.trim(),
+      requester_name: document.getElementById("name").value.trim(),
+      requester_email: document.getElementById("email").value.trim()
+    };
+    if (!body.description) { errEl.innerHTML = '<div class="err">Please describe what needs fixing.</div>'; return; }
+    btn.disabled = true; btn.textContent = "Submitting…";
+    fetch("/api/maintenance/public/submit", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (out) {
+        if (!out.ok) throw new Error(out.j && out.j.error || "That did not go through.");
+        app.innerHTML = '<div class="card"><div class="ok"><h1 style="margin-top:0;">Thank you</h1>' +
+          '<p class="muted" style="margin-bottom:0;">We have your request and will email you as it moves along.</p></div></div>';
+        window.scrollTo(0, 0);
+      })
+      .catch(function (e) {
+        errEl.innerHTML = '<div class="err">' + esc(e.message) + '</div>';
+        btn.disabled = false; btn.textContent = "Submit";
+      });
+  });
+})();
+</script>
+</body>
+</html>

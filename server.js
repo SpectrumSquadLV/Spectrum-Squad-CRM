@@ -5230,6 +5230,15 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Maintenance owns /api/maintenance/* and gates itself, including the one
+  // route that takes no session at all. It sits ABOVE the sign-in gate below
+  // for that reason -- the public submit page has no login to offer -- and the
+  // module refuses every other route without a user of its own accord.
+  if (pathname.startsWith("/api/maintenance")) {
+    const handled = await maintenance.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // Policy change requests and the policy exception log. Owns
   // /api/policy-changes/* and /api/policy-exceptions/*. Its own four
   // permission tiers -- submit, review, decide, except -- are enforced
@@ -8566,6 +8575,7 @@ const PUBLIC_FILES = new Set([
   "/growth-frontend.js",
   "/events-frontend.js",
   "/supply-requests-frontend.js",
+  "/maintenance-requests-frontend.js",
   "/policy-change-requests-frontend.js",
   "/geo-map-frontend.js",
   "/bip-frontend.js",
@@ -8843,6 +8853,12 @@ try {
 // ===== CLINIC SUPPLY / SHOPPING REQUESTS add-on: public submit link, tokenized
 // tracking, full status flow with requester email updates. Owns /api/supply/*. =====
 const supply = require("./supply-requests")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
+});
+// ===== MAINTENANCE REQUESTS add-on: something is broken. Same shape as supply
+// requests -- a queue with a history and a tokenised public page -- with a
+// safety escalation the supply flow has no need for. Owns /api/maintenance/*. =====
+const maintenance = require("./maintenance-requests")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
 });
 // ===== POLICY CHANGE REQUESTS + POLICY EXCEPTION LOG add-on: the monthly
@@ -9273,6 +9289,7 @@ const server = http.createServer(async (req, res) => {
   // Public supply/shopping request submit + tracking page.
   if (pathname === "/supply-request" || pathname.startsWith("/supply-request/")) {
     if (await supply.servePage(req, res, pathname)) return;
+    if (await maintenance.servePage(req, res, pathname)) return;
   }
 
   // Public employee attendance-acknowledgment signing page.
@@ -9333,6 +9350,7 @@ async function start() {
   await attendance.initTables().catch((e) => console.error("Attendance initTables failed:", e));
   await squad.initTables().catch((e) => console.error("Squad attendance initTables failed:", e));
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
+  await maintenance.initTables().catch((e) => console.error("Maintenance initTables failed:", e));
   await policyChanges.initTables().catch((e) => console.error("Policy change requests initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
   await fidelity.initTables().catch((e) => console.error("Fidelity initTables failed:", e));
