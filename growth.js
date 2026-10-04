@@ -624,6 +624,27 @@ module.exports = function initGrowth(ctx) {
   // role-gated.
   const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
   function canLeads(u) { return ["owner", "super_admin", "admin", "intake", "scheduling"].includes(role(u)) || granted(u, "leads"); }
+  // Two permissions, because "may run the policy library" and "may change what
+  // a rule says" are different answers and one flag could only express one of
+  // them.
+  //
+  // WHO MAY CHANGE A RULE. Narrowed to executive leadership on the owner's
+  // instruction -- nobody edits policies but her. Everything that alters what
+  // the rule says or which records exist is behind this: writing, editing and
+  // deleting a policy or SOP, uploading and importing a source document,
+  // writing, amending and rescinding an amendment memo (the fastest way to
+  // change the rule in force), and linking or attaching.
+  //
+  // The named grant stays, and is the point: it lets her hand editing to one
+  // specific person later without handing over the whole operational tier.
+  function canPolicyEdit(u) { return ["owner", "super_admin"].includes(role(u)) || granted(u, "policy_edit"); }
+
+  // WHO MAY RUN THE LIBRARY WITHOUT CHANGING A RULE. Deliberately still the
+  // operational tier: the acknowledgment report is how HR knows who has signed
+  // what, previewing how a document would split decides nothing, and announcing
+  // a policy that is already active and already on the public QR page is not
+  // an edit. Narrowing these would take compliance reporting away from the
+  // people whose job it is.
   function canPolicyManage(u) { return ["owner", "super_admin", "admin", "hr_admin"].includes(role(u)) || granted(u, "policies"); }
   function num(v) { const n = parseFloat(v); return isFinite(n) ? n : null; }
   function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
@@ -1164,7 +1185,7 @@ module.exports = function initGrowth(ctx) {
             amendments_in_force: g.in_force,
             amendments_scheduled: g.scheduled,
             amendments_rescinded: g.rescinded,
-            amendments_drafts: canPolicyManage(user) ? g.drafts : [],
+            amendments_drafts: canPolicyEdit(user) ? g.drafts : [],
             amended: g.in_force.length > 0,
             kind: p.doc_kind || "policy",
             doc_number: p.doc_number || null,
@@ -1214,6 +1235,7 @@ module.exports = function initGrowth(ctx) {
           statuses: POLICY_STATUSES,
           category_colors: CATEGORY_COLORS,
           can_manage: canPolicyManage(user),
+          can_edit: canPolicyEdit(user),
           kinds: DOC_KINDS,
           counts,
           departments: Array.from(deptSet).sort(),
@@ -1363,7 +1385,7 @@ module.exports = function initGrowth(ctx) {
         const groups = groupAmendments(rows);
         // A draft is not the rule and is nobody's business but the people who
         // can write one. Everything that has been in force is everybody's.
-        const manage = canPolicyManage(user);
+        const manage = canPolicyEdit(user);
         return json(res, 200, {
           policy: { id: pol.id, title: pol.title, version: versionOf(pol) },
           in_force: groups.in_force,
@@ -1376,7 +1398,7 @@ module.exports = function initGrowth(ctx) {
       }
 
       if (amendList && method === "POST") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const pid = Number(amendList[1]);
         const pol = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [pid]);
         if (!pol) return json(res, 404, { error: "Policy not found." });
@@ -1422,7 +1444,7 @@ module.exports = function initGrowth(ctx) {
 
       const amendOne = pathname.match(/^\/api\/policies\/amendments\/(\d+)$/);
       if (amendOne && method === "PATCH") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const id = Number(amendOne[1]);
         const before = await dbGet("SELECT * FROM crm_policy_amendments WHERE id = ?", [id]);
         if (!before) return json(res, 404, { error: "Memo not found." });
@@ -1467,7 +1489,7 @@ module.exports = function initGrowth(ctx) {
 
       const amendRescind = pathname.match(/^\/api\/policies\/amendments\/(\d+)\/rescind$/);
       if (amendRescind && method === "POST") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const id = Number(amendRescind[1]);
         const a = await dbGet("SELECT * FROM crm_policy_amendments WHERE id = ?", [id]);
         if (!a) return json(res, 404, { error: "Memo not found." });
@@ -1493,7 +1515,7 @@ module.exports = function initGrowth(ctx) {
       }
 
       if (amendOne && method === "DELETE") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const a = await dbGet("SELECT * FROM crm_policy_amendments WHERE id = ?", [Number(amendOne[1])]);
         if (!a) return json(res, 404, { error: "Memo not found." });
         // A draft was never the rule, so deleting one destroys no record. A memo
@@ -1531,7 +1553,7 @@ module.exports = function initGrowth(ctx) {
       // rewriting, no summarising, no AI touching the approved language. It is
       // the operator who later decides which policies live inside it.
       if (pathname === "/api/policies/documents" && method === "POST") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
         if (!b.content_base64) return json(res, 400, { error: "No file provided." });
         const name = String(b.filename || "document");
@@ -1579,7 +1601,7 @@ module.exports = function initGrowth(ctx) {
       }
 
       if (docOne && method === "PATCH") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
         const allowed = ["title", "doc_type", "version", "effective_date", "status"];
         const fields = Object.keys(b).filter((k) => allowed.includes(k));
@@ -1619,7 +1641,7 @@ module.exports = function initGrowth(ctx) {
       // and every one points back at the source document rather than copying it.
       const impMatch = pathname.match(/^\/api\/policies\/documents\/(\d+)\/import$/);
       if (impMatch && method === "POST") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const d = await dbGet("SELECT * FROM crm_policy_documents WHERE id = ?", [Number(impMatch[1])]);
         if (!d) return json(res, 404, { error: "Document not found." });
         const b = await readBody(req);
@@ -1668,6 +1690,29 @@ module.exports = function initGrowth(ctx) {
       // a policy exists and requiring them to sign for it are different acts,
       // and most policies only need the first.
       const distMatch = pathname.match(/^\/api\/policies\/(\d+)\/distribute$/);
+      // WHO IT WOULD GO TO, before it goes. A send to "all employees" that only
+      // reports a number afterwards is a send nobody can check: an address that
+      // is wrong, missing or belongs to somebody who left is invisible until a
+      // policy fails to reach them. This names every recipient first, and says
+      // who is being skipped for having no address on file.
+      if (distMatch && method === "GET") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const p = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [Number(distMatch[1])]);
+        if (!p) return json(res, 404, { error: "Policy not found." });
+        const all = await dbAll(
+          "SELECT id, name, email FROM hr_employees WHERE COALESCE(status,'active') <> 'terminated' ORDER BY name"
+        ).catch(() => []);
+        const has = (s) => String(s.email || "").trim() !== "";
+        return json(res, 200, {
+          policy: { id: p.id, title: p.title, kind: p.doc_kind || "policy", version: p.version,
+            status: p.status || "Active",
+            requires_acknowledgment: p.requires_acknowledgment === true || p.requires_acknowledgment === "t" },
+          targets: all.filter(has).map((s) => ({ id: s.id, name: s.name, email: s.email })),
+          no_email: all.filter((s) => !has(s)).map((s) => ({ id: s.id, name: s.name })),
+          last_distributed_at: p.last_distributed_at || null,
+          last_distributed_by: p.last_distributed_by || null,
+        });
+      }
       if (distMatch && method === "POST") {
         if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
         const p = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [Number(distMatch[1])]);
@@ -1791,7 +1836,7 @@ module.exports = function initGrowth(ctx) {
         return json(res, 200, { policies: rows, categories: POLICY_CATEGORIES, category_colors: CATEGORY_COLORS });
       }
       if (pathname === "/api/policies/upload" && method === "POST") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
         if (!b.content_base64) return json(res, 400, { error: "No file provided." });
         const name = String(b.filename || "policy");
@@ -1843,7 +1888,7 @@ module.exports = function initGrowth(ctx) {
       }
 
       if (pathname === "/api/policies" && method === "POST") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
         if (!b.title) return json(res, 400, { error: "Title is required." });
         let slug = slugify(b.title);
@@ -1884,7 +1929,7 @@ module.exports = function initGrowth(ctx) {
       // the policy and the same link made from the SOP are the same row.
       const linkMatch = pathname.match(/^\/api\/policies\/(\d+)\/links$/);
       if (linkMatch && method === "POST") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
         const a = await dbGet("SELECT id, doc_kind FROM crm_policies WHERE id = ?", [Number(linkMatch[1])]);
         const other = await dbGet("SELECT id, doc_kind FROM crm_policies WHERE id = ?", [Number(b.other_id)]);
@@ -1909,7 +1954,7 @@ module.exports = function initGrowth(ctx) {
         return json(res, 200, { ok: true, policy_id: policyId, sop_id: sopId });
       }
       if (linkMatch && method === "DELETE") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req).catch(() => ({}));
         const id = Number(linkMatch[1]);
         const other = Number(b.other_id || (query && query.other_id));
@@ -1921,7 +1966,7 @@ module.exports = function initGrowth(ctx) {
       // ---- attachments ----------------------------------------------------
       const attachMatch = pathname.match(/^\/api\/policies\/(\d+)\/attachments$/);
       if (attachMatch && method === "POST") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
         const doc = await dbGet("SELECT id FROM crm_policy_documents WHERE id = ?", [Number(b.document_id)]);
         if (!doc) return json(res, 404, { error: "That document no longer exists." });
@@ -1933,7 +1978,7 @@ module.exports = function initGrowth(ctx) {
         return json(res, 200, { ok: true });
       }
       if (attachMatch && method === "DELETE") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req).catch(() => ({}));
         await dbRun("DELETE FROM crm_policy_attachments WHERE policy_id = ? AND document_id = ?",
           [Number(attachMatch[1]), Number(b.document_id || (query && query.document_id))]);
@@ -1942,7 +1987,7 @@ module.exports = function initGrowth(ctx) {
 
       const polMatch = pathname.match(/^\/api\/policies\/(\d+)$/);
       if (polMatch && method === "PATCH") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
         const allowed = [
           "title", "category", "body", "published", "color", "summary",
@@ -2007,7 +2052,7 @@ module.exports = function initGrowth(ctx) {
         });
       }
       if (polMatch && method === "DELETE") {
-        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
         await dbRun("DELETE FROM crm_policies WHERE id = ?", [Number(polMatch[1])]);
         return json(res, 200, { ok: true });
       }
