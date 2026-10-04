@@ -52,6 +52,12 @@ module.exports = function initUserEmail(ctx) {
     // "My requests" on the supply screen is this column matched to the login.
     { table: "supply_requests", column: "requester_email", label: "supply requests they raised" },
 
+    // The same reasoning for a policy change request: the list a staff member
+    // sees is their own address matched to this column, so leaving it behind
+    // would detach them from the requests they raised -- and the decision
+    // email is addressed from here too.
+    { table: "policy_change_requests", column: "requester_email", label: "policy change requests they raised" },
+
     // Their own record of what they have signed and what they own.
     { table: "crm_policy_acknowledgments", column: "employee_email", label: "policy acknowledgements" },
     { table: "grant_applications", column: "owner_email", label: "grants they own" },
