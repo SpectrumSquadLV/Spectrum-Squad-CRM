@@ -51,6 +51,11 @@ module.exports = function initUserEmail(ctx) {
 
     // "My requests" on the supply screen is this column matched to the login.
     { table: "supply_requests", column: "requester_email", label: "supply requests they raised" },
+    // Maintenance works the same way, and for the same reason: this column is
+    // what decides whether somebody can still open the request they raised. Not
+    // carrying it would lock them out of their own reports the day they change
+    // their address.
+    { table: "maintenance_requests", column: "requester_email", label: "maintenance requests they raised" },
 
     // Their own record of what they have signed and what they own.
     { table: "crm_policy_acknowledgments", column: "employee_email", label: "policy acknowledgements" },

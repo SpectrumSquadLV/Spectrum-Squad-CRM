@@ -51,16 +51,30 @@
   function injectNav() {
     if (!canSee()) return;
     const nav = document.querySelector(".sidebar nav");
-    if (!nav || document.getElementById("maintenance-nav-btn")) return;
-    const btn = document.createElement("button");
-    btn.className = "nav-item";
-    btn.id = "maintenance-nav-btn";
-    btn.dataset.nav = "maintenance";
-    btn.innerHTML = "Maintenance";
-    btn.addEventListener("click", () => { location.hash = HASH; });
+    if (!nav) return;
     const anchor = document.querySelector('[data-nav="supply"]');
-    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(btn, anchor.nextSibling);
-    else nav.appendChild(btn);
+    let btn = document.getElementById("maintenance-nav-btn");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.className = "nav-item";
+      btn.id = "maintenance-nav-btn";
+      btn.dataset.nav = "maintenance";
+      btn.innerHTML = "Maintenance";
+      btn.addEventListener("click", () => { location.hash = HASH; });
+      if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(btn, anchor.nextSibling);
+      else nav.appendChild(btn);
+    }
+    // THE SHELL MAKES NAV ITEMS DRAGGABLE WHEN REORDER MODE STARTS, and it does
+    // that to the buttons that exist at the time. This one is injected, so it
+    // can arrive after that moment and be the single entry in the sidebar that
+    // will not move -- which reads as the reorder being broken rather than as
+    // one button having missed a flag. Mirrored from the neighbour it sits
+    // beside, every pass, so it matches whatever mode the sidebar is in.
+    if (anchor) {
+      const d = anchor.getAttribute("draggable");
+      if (d === null) btn.removeAttribute("draggable");
+      else if (btn.getAttribute("draggable") !== d) btn.setAttribute("draggable", d);
+    }
   }
 
   function tile(label, n, tone) {
