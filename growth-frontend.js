@@ -247,7 +247,10 @@
   // ============================ POLICIES ============================
   // Library filters. Module-level so they survive a re-render after an edit or
   // an acknowledgment, rather than snapping back to "everything".
-  let polQ = "", polCat = "", polStatus = "";
+  // "" means the landing page: two doors, and a search that spans both. A kind
+  // is only set once the reader has chosen a library, or searched from the
+  // landing and asked to see everything that matched.
+  let polKind = "", polQ = "", polCat = "", polStatus = "", polDept = "", polRole = "", polSince = "";
   // The question and its answers survive a re-render too -- acknowledging a
   // policy you were pointed at should not throw away what you asked.
   let polAsk = "", polAnswers = null, polAsking = false, polAskErr = "";
@@ -290,13 +293,26 @@
     let d;
     const qs = new URLSearchParams();
     if (polQ) qs.set("q", polQ);
+    if (polKind) qs.set("kind", polKind);
     if (polCat) qs.set("category", polCat);
     if (polStatus) qs.set("status", polStatus);
+    if (polDept) qs.set("department", polDept);
+    if (polRole) qs.set("role", polRole);
+    if (polSince) qs.set("updated_since", polSince);
     try { d = await api("/api/policies/library" + (qs.toString() ? "?" + qs.toString() : "")); }
     catch (e) { mount.innerHTML = `<div class="page-header"><div><h1>Policies &amp; SOPs</h1></div></div><div class="empty-state">${esc(e.message)}</div>`; return; }
     const publicUrl = location.origin + "/policies";
     const qr = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=" + encodeURIComponent(publicUrl);
     const COLORS = d.category_colors || {};
+    const KINDS = d.kinds || [
+      { key: "policy", label: "Policy", plural: "Policies", lede: "" },
+      { key: "sop", label: "SOP", plural: "Standard Operating Procedures", lede: "" },
+    ];
+    const counts = d.counts || {};
+    // Declared up here because the card list below reads it. It was first
+    // written next to the markup that uses it, which put it after its own first
+    // use and threw before a single pixel rendered.
+    const thisKind = KINDS.filter((k) => k.key === polKind)[0] || null;
     const colorOf = (p) => (p.color && /^#[0-9a-fA-F]{6}$/.test(p.color) ? p.color : (COLORS[p.category] || "#6b7280"));
     const byCat = {}; d.policies.forEach((p) => { (byCat[p.category || "Other"] = byCat[p.category || "Other"] || []).push(p); });
     const snippet = (p) => {
@@ -317,8 +333,13 @@
         : p.my_acknowledgment
           ? `<span class="pol-badge" style="background:#dcfce7; color:#166534;">✓ acknowledged v${esc(p.my_acknowledgment.version)}</span>`
           : `<span class="pol-badge" style="background:#fee2e2; color:#991b1b;">acknowledgment needed</span>`;
+      const kind = p.kind || "policy";
       return `<button class="pol-card" data-pol-open="${p.id}" style="--pc:${c};">
         <span class="pol-stripe"></span>
+        <span class="pol-kindrow">
+          <span class="pol-kind pol-kind-${kind}">${kind === "sop" ? "SOP" : "POLICY"}</span>
+          ${p.doc_number ? `<span class="pol-num">${esc(p.doc_number)}</span>` : ""}
+        </span>
         <span class="pol-cat">${esc(p.category || "Other")}</span>
         <span class="pol-title">${esc(p.title)}</span>
         <span class="pol-badges">
@@ -335,20 +356,60 @@
           p.effective_date ? " · eff. " + esc(String(p.effective_date).slice(0, 10)) : ""}</span>
       </button>`;
     };
-    const list = Object.keys(byCat).sort().map((cat) => `
+    const grouped = Object.keys(byCat).sort().map((cat) => `
       <div class="pol-cat-head"><span class="pol-dot" style="background:${COLORS[cat] || "#6b7280"}"></span>${esc(cat)} <span class="pol-count">${byCat[cat].length}</span></div>
       <div class="pol-grid">${byCat[cat].map(card).join("")}</div>`).join("")
-      || `<div class="empty-state">No policies yet — upload a PDF or Word doc to make your first card.</div>`;
+      || `<div class="empty-state">${polQ || polCat || polDept || polRole || polStatus || polSince
+            ? "Nothing matches those filters."
+            : "Nothing here yet — upload a PDF or Word doc, or write one."}</div>`;
+    // ON THE LANDING PAGE THE GRID STAYS SHUT UNTIL ASKED FOR. Showing every
+    // record underneath the two doors would rebuild the undifferentiated list
+    // the doors exist to replace. A search is a different matter: somebody
+    // typing a word has said what they want and does not care which library it
+    // lives in, so results span both.
+    const list = (thisKind || polQ || polCat || polDept || polRole || polStatus || polSince)
+      ? grouped
+      : `<div class="empty-state" style="padding:26px 18px;">Choose <strong>Policies</strong> or
+           <strong>Standard Operating Procedures</strong> above, or search to look across both.</div>`;
+    // THE TWO DOORS. A member of staff arrives with one of two questions --
+    // "what is the rule?" or "how do I do this?" -- and the point of the
+    // landing page is that they answer that question by choosing, not by
+    // reading past the half of the library that cannot help them.
+    const doors = `
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px,1fr)); gap:16px; margin-bottom:22px;">
+        ${KINDS.map((k) => `
+          <button class="pol-door" data-pol-kind="${k.key}">
+            <span class="pol-door-k pol-kind-${k.key}">${k.key === "sop" ? "SOP" : "POLICY"}</span>
+            <h2>${esc(k.plural)}</h2>
+            <p>${esc(k.lede || "")}</p>
+            <span class="pol-door-n">${counts[k.key] || 0} document${(counts[k.key] || 0) === 1 ? "" : "s"}</span>
+          </button>`).join("")}
+      </div>`;
+
+    const header = thisKind
+      ? `<div class="page-header">
+          <div>
+            <button class="pol-back" id="pol-back">← Policies &amp; SOPs</button>
+            <h1>${esc(thisKind.plural)}</h1><p>${esc(thisKind.lede || "")}</p>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            ${d.can_manage ? `<button class="btn" id="pol-add">+ New ${esc(thisKind.label)}</button>
+            <button class="btn secondary" id="pol-doc-upload">⇧ Upload source document</button>
+            <button class="btn secondary" id="pol-import">Import</button>
+            <button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
+          </div>
+        </div>`
+      : `<div class="page-header">
+          <div><h1>Policies &amp; SOPs</h1><p>The rules we work to, and how the work is done.</p></div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            ${d.can_manage ? `<button class="btn secondary" id="pol-doc-upload">⇧ Upload source document</button>
+            <button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
+          </div>
+        </div>`;
+
     mount.innerHTML = `
-      <div class="page-header">
-        <div><h1>Policies, SOPs &amp; Procedures</h1><p>Staff can scan the QR code to read any policy. Print it and post it around the clinic.</p></div>
-        <div style="display:flex; gap:8px; align-items:center;">
-          ${d.can_manage ? `<button class="btn" id="pol-doc-upload">⇧ Upload source document</button>
-          <button class="btn secondary" id="pol-add">+ Write one</button>
-          <button class="btn secondary" id="pol-import">Import policies</button>
-          <button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
-        </div>
-      </div>
+      ${header}
+      ${thisKind ? "" : doors}
       <div class="card" style="margin:0 0 16px; padding:16px 18px;">
         <div style="font-weight:700; font-size:14px; margin-bottom:3px;">Ask a question</div>
         <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:10px;">
@@ -364,18 +425,31 @@
         <div id="pol-ask-out" style="margin-top:14px;">${askResultsHTML(COLORS)}</div>
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
-        <input id="pol-q" placeholder="Search policies by keyword…" value="${esc(polQ)}"
-          style="flex:1; min-width:200px; padding:8px 11px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;" />
+        <input id="pol-q" placeholder="${thisKind ? "Search " + esc(thisKind.plural).toLowerCase() + "…" : "Search every policy and SOP…"}" value="${esc(polQ)}"
+          style="flex:1; min-width:220px; padding:8px 11px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;" />
         <select id="pol-cat" style="padding:8px 10px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;">
           <option value="">All categories</option>
           ${(d.categories || []).map((c) => `<option value="${esc(c)}"${c === polCat ? " selected" : ""}>${esc(c)}</option>`).join("")}
+        </select>
+        <select id="pol-dept" style="padding:8px 10px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;">
+          <option value="">All departments</option>
+          ${(d.departments || []).map((c) => `<option value="${esc(c)}"${c === polDept ? " selected" : ""}>${esc(c)}</option>`).join("")}
+        </select>
+        <select id="pol-role" style="padding:8px 10px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;">
+          <option value="">All roles</option>
+          ${(d.roles || []).map((c) => `<option value="${esc(c)}"${c === polRole ? " selected" : ""}>${esc(c)}</option>`).join("")}
         </select>
         <select id="pol-status" style="padding:8px 10px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;">
           <option value="">All statuses</option>
           ${(d.statuses || []).map((s) => `<option value="${esc(s)}"${s === polStatus ? " selected" : ""}>${esc(s)}</option>`).join("")}
         </select>
-        ${polQ || polCat || polStatus ? `<button class="btn small secondary" id="pol-clear">Clear</button>` : ""}
-        <span style="font-size:12px; color:var(--text-muted);">${d.policies.length} of ${d.total}</span>
+        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text-muted);">
+          Updated since
+          <input type="date" id="pol-since" value="${esc(polSince)}"
+            style="padding:7px 9px; border:1px solid var(--border,#e5e7eb); border-radius:8px; font-size:13px;" />
+        </label>
+        ${polQ || polCat || polStatus || polDept || polRole || polSince ? `<button class="btn small secondary" id="pol-clear">Clear</button>` : ""}
+        <span style="font-size:12px; color:var(--text-muted);">${d.policies.length} of ${thisKind ? (counts[thisKind.key] || 0) : d.total}</span>
       </div>
       <style>
         .pol-cat-head { display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px; letter-spacing:.02em; text-transform:uppercase; color:var(--text-muted,#6b7280); margin:18px 0 10px; }
@@ -393,6 +467,19 @@
         .pol-foot { font-size:11px; color:#9aa0ad; margin-top:auto; word-break:break-all; }
         .pol-read { white-space:pre-wrap; font-size:13.5px; line-height:1.62; color:#2b2f3a; max-height:56vh; overflow:auto; padding-right:6px; }
         .pol-badges { display:flex; flex-wrap:wrap; gap:4px; }
+        .pol-kindrow { display:flex; align-items:center; gap:6px; }
+        .pol-kind { border-radius:4px; padding:1.5px 7px; font-size:10px; font-weight:800; letter-spacing:.06em; }
+        .pol-kind-policy { background:#1b2a6b; color:#fff; }
+        .pol-kind-sop { background:#0f6b4f; color:#fff; }
+        .pol-num { font-size:10.5px; font-weight:700; color:#9aa0ad; letter-spacing:.03em; }
+        .pol-door { text-align:left; background:#fff; border:1px solid #e6e8f0; border-radius:16px; padding:22px 24px; cursor:pointer; font:inherit; display:flex; flex-direction:column; gap:8px; transition:transform .12s ease, box-shadow .12s ease; }
+        .pol-door:hover { transform:translateY(-2px); box-shadow:0 10px 26px rgba(27,42,107,.14); }
+        .pol-door-k { align-self:flex-start; border-radius:4px; padding:2px 8px; font-size:10.5px; font-weight:800; letter-spacing:.06em; }
+        .pol-door h2 { margin:0; font-size:19px; color:#1f2430; }
+        .pol-door p { margin:0; font-size:13px; color:#6b7280; line-height:1.5; }
+        .pol-door-n { font-size:12px; color:#9aa0ad; font-weight:600; margin-top:4px; }
+        .pol-back { background:none; border:0; color:var(--text-muted,#6b7280); font:inherit; font-size:13px; cursor:pointer; padding:0; margin-bottom:6px; }
+        .pol-back:hover { color:#1b2a6b; text-decoration:underline; }
         .pol-badge { border-radius:5px; padding:1px 6px; font-size:10px; font-weight:700; }
         ${AMEND_CSS}
       </style>
@@ -448,11 +535,28 @@
 
     on("#pol-cat", "change", (e) => { polCat = e.target.value; renderPolicies(mount); });
     on("#pol-status", "change", (e) => { polStatus = e.target.value; renderPolicies(mount); });
-    on("#pol-clear", "click", () => { polQ = polCat = polStatus = ""; renderPolicies(mount); });
+    on("#pol-dept", "change", (e) => { polDept = e.target.value; renderPolicies(mount); });
+    on("#pol-role", "change", (e) => { polRole = e.target.value; renderPolicies(mount); });
+    on("#pol-since", "change", (e) => { polSince = e.target.value; renderPolicies(mount); });
+    on("#pol-clear", "click", () => { polQ = polCat = polStatus = polDept = polRole = polSince = ""; renderPolicies(mount); });
+    // Choosing a door, and going back out of one. Filters are dropped on the
+    // way in and out: a status filter left over from the other library is
+    // invisible from here and reads as "that library is empty".
+    mount.querySelectorAll("[data-pol-kind]").forEach((b) =>
+      b.addEventListener("click", () => {
+        polKind = b.dataset.polKind;
+        polQ = polCat = polStatus = polDept = polRole = polSince = "";
+        renderPolicies(mount);
+      }));
+    on("#pol-back", "click", () => {
+      polKind = "";
+      polQ = polCat = polStatus = polDept = polRole = polSince = "";
+      renderPolicies(mount);
+    });
     on("#pol-acks", "click", () => ackReport(mount));
     on("#pol-import", "click", () => importModal(d, mount));
 
-    on("#pol-add", "click", () => policyModal(null, d, mount));
+    on("#pol-add", "click", () => policyModal(null, d, mount, polKind || "policy"));
     mount.querySelectorAll("[data-pol-open]").forEach((b) =>
       b.addEventListener("click", () => policyReader(d.policies.find((x) => String(x.id) === b.dataset.polOpen), d, mount, colorOf)));
     on("#pol-doc-upload", "click", () => {
@@ -721,6 +825,8 @@
   function policyReader(pol, d, mount, colorOf) {
     if (!pol) return;
     const c = colorOf(pol);
+    const isSop = (pol.kind || "policy") === "sop";
+    const related = pol.related || [];
     const bd = document.createElement("div"); bd.className = "modal-backdrop";
     bd.innerHTML = `<div class="modal" style="width:720px; max-width:94vw; border-top:6px solid ${c};">
       <div class="modal-header">
@@ -728,13 +834,47 @@
         <button class="close-btn">✕</button>
       </div>
       <div style="font-size:12px; color:var(--text-muted); margin:-6px 0 12px;">
+        <span class="pol-kind pol-kind-${isSop ? "sop" : "policy"}">${isSop ? "SOP" : "POLICY"}</span>
+        ${pol.doc_number ? " <strong>" + esc(pol.doc_number) + "</strong> ·" : ""}
         ${esc(pol.category || "Other")} · ${esc(pol.status || "Active")} · v${esc(pol.version || "1")}${
           pol.effective_date ? " · effective " + esc(String(pol.effective_date).slice(0, 10)) : ""}${
           pol.updated_at ? " · updated " + esc(new Date(pol.updated_at).toLocaleDateString()) : ""}
+        <div style="margin-top:4px;">
+          ${pol.department ? "Department: <strong>" + esc(pol.department) + "</strong>" : ""}
+          ${pol.owner_name ? " · Owner: <strong>" + esc(pol.owner_name) + "</strong>" : ""}
+          ${(pol.applicable_roles || []).length
+            ? " · Applies to: <strong>" + pol.applicable_roles.map(esc).join(", ") + "</strong>"
+            : " · Applies to <strong>everyone</strong>"}
+        </div>
         ${pol.document ? `<div style="margin-top:3px;">From <strong>${esc(pol.document.title)}</strong>${pol.section_ref ? " · " + esc(pol.section_ref) : ""}</div>` : ""}
       </div>
+      ${pol.purpose ? `<div style="font-size:13px; color:#2b2f3a; background:#f6f7fb; border-radius:9px; padding:10px 13px; margin-bottom:12px;">
+        <strong style="font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:#6b7280; display:block; margin-bottom:3px;">Purpose</strong>
+        ${esc(pol.purpose)}</div>` : ""}
       ${memoBlocks(pol)}
+      <div style="font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:#6b7280; font-weight:700; margin-bottom:5px;">
+        ${isSop ? "Procedure" : "Policy statement, requirements and standards"}</div>
       <div class="pol-read">${esc(pol.body || "")}</div>
+      ${related.length ? `<div style="margin-top:16px;">
+        <div style="font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:#6b7280; font-weight:700; margin-bottom:6px;">
+          ${isSop ? "Governed by" : "How this is carried out"}</div>
+        <div style="display:flex; flex-wrap:wrap; gap:7px;">
+          ${related.map((r) => `<button class="btn small secondary" data-rel-open="${r.id}" style="font-weight:600;">
+            <span class="pol-kind pol-kind-${r.kind}" style="margin-right:6px;">${r.kind === "sop" ? "SOP" : "POLICY"}</span>${esc(r.title)}</button>`).join("")}
+        </div></div>` : ""}
+      ${(pol.attachments || []).length ? `<div style="margin-top:16px;">
+        <div style="font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:#6b7280; font-weight:700; margin-bottom:6px;">Attachments</div>
+        <div style="display:flex; flex-direction:column; gap:4px; font-size:12.5px;">
+          ${pol.attachments.map((a) => `<div>▤ ${esc(a.title)}${a.filename ? ` <span style="color:#9aa0ad;">${esc(a.filename)}</span>` : ""}</div>`).join("")}
+        </div></div>` : ""}
+      ${(pol.revisions || []).length ? `<details style="margin-top:16px;">
+        <summary style="font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:#6b7280; font-weight:700; cursor:pointer;">
+          Revision history (${pol.revisions.length})</summary>
+        <div style="margin-top:8px; display:flex; flex-direction:column; gap:5px; font-size:12.5px; color:#4b5563;">
+          ${pol.revisions.map((r) => `<div><span style="color:#9aa0ad;">${esc(String(r.changed_at).slice(0, 10))}</span>
+            ${r.version ? ` <strong>v${esc(r.version)}</strong>` : ""} — ${esc(r.summary)}${
+            r.changed_by ? ` <span style="color:#9aa0ad;">(${esc(r.changed_by)})</span>` : ""}</div>`).join("")}
+        </div></details>` : ""}
       ${pol.requires_acknowledgment ? `<div id="pol-ack-box" style="margin-top:14px; padding:11px 13px; border-radius:9px; ${
         pol.my_acknowledgment
           ? `background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46;`
@@ -747,6 +887,7 @@
       ${d.can_manage ? memoAdmin(pol) : ""}
       <div style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;">
         ${d.can_manage ? `<button class="btn" id="pol-r-amend">+ Amendment memo</button>` : ""}
+        ${d.can_manage ? `<button class="btn secondary" id="pol-r-link">Link ${isSop ? "a policy" : "an SOP"}</button>` : ""}
         ${d.can_manage ? `<button class="btn secondary" id="pol-r-edit">Edit</button>` : ""}
         ${pol.document ? `<button class="btn secondary" id="pol-r-doc">View full source document</button>` : ""}
         <a class="btn secondary" href="/policies/${esc(pol.slug)}" target="_blank" rel="noopener">Open public page</a>
@@ -758,6 +899,23 @@
     bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
     const rOn = (sel, fn) => { const el = bd.querySelector(sel); if (el) el.addEventListener("click", fn); };
     rOn("#pol-r-edit", () => { close(); policyModal(pol, d, mount); });
+    // A related record opens in place of this one rather than on top of it:
+    // stacked modals leave somebody three deep with no idea which is which.
+    bd.querySelectorAll("[data-rel-open]").forEach((b) => b.addEventListener("click", () => {
+      const target = (d.policies || []).filter((x) => String(x.id) === b.dataset.relOpen)[0];
+      close();
+      if (target) policyReader(target, d, mount, colorOf);
+      // The related record may be filtered out of the current view -- it is in
+      // the OTHER library, and that is the normal case. Fetch it directly
+      // rather than failing silently.
+      else {
+        api("/api/policies/library").then(function (fresh) {
+          const got = (fresh.policies || []).filter((x) => String(x.id) === b.dataset.relOpen)[0];
+          if (got) policyReader(got, fresh, mount, colorOf);
+        }).catch(function () {});
+      }
+    }));
+    rOn("#pol-r-link", () => { close(); linkModal(pol, d, mount); });
     rOn("#pol-r-amend", () => { close(); amendmentModal(pol, null, mount); });
     bd.querySelectorAll("[data-amend-edit]").forEach((b) => b.addEventListener("click", () => {
       const all = [...(pol.amendments_in_force || []), ...(pol.amendments_scheduled || []), ...(pol.amendments_drafts || [])];
@@ -929,12 +1087,97 @@
     bd.addEventListener("click", (e) => { if (e.target === bd) bd.remove(); });
   }
 
-  function policyModal(pol, d, mount) {
-    pol = pol || {};
+  // Joining a rule to the procedure that carries it out. Only the OTHER kind is
+  // offered: a link means "this is how that rule is done", and two policies
+  // pointing at each other is a cross-reference in the text, not that.
+  function linkModal(pol, d, mount) {
+    const isSop = (pol.kind || "policy") === "sop";
+    const wantKind = isSop ? "policy" : "sop";
+    const already = new Set((pol.related || []).map((r) => String(r.id)));
     const bd = document.createElement("div"); bd.className = "modal-backdrop";
-    bd.innerHTML = `<div class="modal" style="width:680px; max-width:94vw;">
-      <div class="modal-header"><h2>${pol.id ? "Edit policy" : "Add policy"}</h2><button class="close-btn">✕</button></div>
-      <div class="field"><label>Title</label><input data-f="title" value="${esc(pol.title || "")}" /></div>
+    bd.innerHTML = `<div class="modal" style="width:560px; max-width:94vw;">
+      <div class="modal-header"><h2>Link ${isSop ? "a policy" : "an SOP"}</h2><button class="close-btn">✕</button></div>
+      <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:10px;">
+        ${isSop ? "Which policy governs this procedure?" : "Which procedure explains how this policy is carried out?"}
+      </div>
+      <div id="link-list" style="max-height:48vh; overflow:auto; display:flex; flex-direction:column; gap:5px;">
+        <div style="font-size:12.5px; color:var(--text-muted);">Loading…</div>
+      </div>
+      <div style="margin-top:12px;"><span id="link-msg" style="font-size:12.5px; color:var(--text-muted);"></span></div>
+    </div>`;
+    document.body.appendChild(bd);
+    const close = () => bd.remove();
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+
+    // Fetched unfiltered: the record being linked lives in the other library,
+    // which the current view is by definition not showing.
+    api("/api/policies/library?kind=" + wantKind).then(function (fresh) {
+      const rows = (fresh.policies || []).filter((x) => String(x.id) !== String(pol.id));
+      const list = bd.querySelector("#link-list");
+      if (!rows.length) {
+        list.innerHTML = `<div style="font-size:12.5px; color:var(--text-muted);">There are no ${
+          wantKind === "sop" ? "SOPs" : "policies"} to link to yet.</div>`;
+        return;
+      }
+      list.innerHTML = rows.map((r) => `<label style="display:flex; gap:8px; align-items:center; font-size:13px; padding:5px 2px;">
+        <input type="checkbox" data-link="${r.id}"${already.has(String(r.id)) ? " checked" : ""} />
+        <span>${r.doc_number ? `<strong>${esc(r.doc_number)}</strong> · ` : ""}${esc(r.title)}</span></label>`).join("");
+      list.querySelectorAll("[data-link]").forEach((cb) => cb.addEventListener("change", async () => {
+        const msg = bd.querySelector("#link-msg");
+        cb.disabled = true;
+        try {
+          await api("/api/policies/" + pol.id + "/links", {
+            method: cb.checked ? "POST" : "DELETE",
+            body: { other_id: Number(cb.dataset.link) },
+          });
+          msg.textContent = cb.checked ? "Linked." : "Unlinked.";
+        } catch (e) {
+          cb.checked = !cb.checked;
+          msg.textContent = e.message || "That did not work.";
+        }
+        cb.disabled = false;
+        renderPolicies(mount);
+      }));
+    }).catch(function (e) {
+      bd.querySelector("#link-list").innerHTML = `<div style="font-size:12.5px; color:#b91c1c;">${esc(e.message || "Could not load.")}</div>`;
+    });
+  }
+
+  function policyModal(pol, d, mount, defaultKind) {
+    pol = pol || {};
+    const kind = pol.kind || defaultKind || "policy";
+    const isSop = kind === "sop";
+    const noun = isSop ? "SOP" : "Policy";
+    const roleList = d.roles || [];
+    const chosenRoles = pol.applicable_roles || [];
+    const bd = document.createElement("div"); bd.className = "modal-backdrop";
+    bd.innerHTML = `<div class="modal" style="width:720px; max-width:94vw;">
+      <div class="modal-header"><h2>${pol.id ? "Edit " + noun : "New " + noun}</h2><button class="close-btn">✕</button></div>
+      <div class="field"><label>This record is a</label><select data-f="doc_kind">
+        <option value="policy"${!isSop ? " selected" : ""}>Policy — a rule, standard or expectation</option>
+        <option value="sop"${isSop ? " selected" : ""}>SOP — how a process is carried out</option>
+      </select></div>
+      <div style="display:grid; grid-template-columns:2fr 1fr; gap:10px;">
+        <div class="field"><label>Title</label><input data-f="title" value="${esc(pol.title || "")}" /></div>
+        <div class="field"><label>${noun} number</label><input data-f="doc_number" value="${esc(pol.doc_number || "")}" placeholder="${isSop ? "SOP-012" : "POL-004"}" /></div>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <div class="field"><label>Department</label><input data-f="department" list="pol-dept-list" value="${esc(pol.department || "")}" placeholder="e.g. Clinical" />
+          <datalist id="pol-dept-list">${(d.departments || []).map((x) => `<option value="${esc(x)}"></option>`).join("")}</datalist>
+        </div>
+        <div class="field"><label>${noun} owner</label><input data-f="owner_name" value="${esc(pol.owner_name || "")}" placeholder="Who is accountable for it" /></div>
+      </div>
+      <div class="field"><label>Applicable roles</label>
+        <div style="display:flex; flex-wrap:wrap; gap:6px 12px; padding:8px 2px;">
+          ${roleList.length
+            ? roleList.map((r) => `<label style="display:flex; gap:5px; align-items:center; font-size:12.5px; font-weight:400;">
+                <input type="checkbox" data-role="${esc(r)}"${chosenRoles.indexOf(r) >= 0 ? " checked" : ""} /> ${esc(r)}</label>`).join("")
+            : `<span style="font-size:12px; color:var(--text-muted);">No role titles on file yet — leave blank and this applies to everyone.</span>`}
+        </div>
+        <div style="font-size:11.5px; color:var(--text-muted);">Leave every box unticked and it applies to everyone.</div>
+      </div>
+      <div class="field"><label>Purpose</label><input data-f="purpose" value="${esc(pol.purpose || "")}" placeholder="Why this ${noun.toLowerCase()} exists, in a sentence" /></div>
       <div class="field"><label>Category</label><select data-f="category">${d.categories.map((c) => `<option ${pol.category === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>
       <div class="field"><label>Card colour</label>
         <div style="display:flex; gap:8px; align-items:center;">
@@ -942,7 +1185,8 @@
           <span style="font-size:12px; color:var(--text-muted);">Defaults to the category colour — change it to make a card stand out.</span>
         </div>
       </div>
-      <div class="field"><label>Body (the policy text)</label><textarea data-f="body" rows="12" style="width:100%; font-family:inherit;">${esc(pol.body || "")}</textarea></div>
+      <div class="field"><label>${isSop ? "Procedure — the steps, in order" : "Policy statement, requirements and standards"}</label>
+        <textarea data-f="body" rows="12" style="width:100%; font-family:inherit;" placeholder="${isSop ? "1. …&#10;2. …" : ""}">${esc(pol.body || "")}</textarea></div>
       <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:6px;">
         <div class="field"><label>Status</label><select data-f="status">
           ${(d.statuses || ["Active", "Draft", "Archived"]).map((s) => `<option ${(pol.status || "Active") === s ? "selected" : ""}>${esc(s)}</option>`).join("")}
@@ -968,10 +1212,31 @@
     const close = () => bd.remove();
     bd.querySelector(".close-btn").addEventListener("click", close);
     bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+    // Switching between policy and SOP changes what the fields are ASKING FOR
+    // -- a policy statement is not a list of steps -- so the form is redrawn
+    // rather than left with labels that describe the other kind. What has been
+    // typed is carried across; nobody retypes a title because they re-filed it.
+    bd.querySelector('[data-f="doc_kind"]').addEventListener("change", (e) => {
+      const draft = { ...pol, kind: e.target.value };
+      ["title", "doc_number", "department", "owner_name", "purpose", "body", "version", "section_ref"].forEach((f) => {
+        const el = bd.querySelector(`[data-f="${f}"]`); if (el) draft[f] = el.value;
+      });
+      draft.applicable_roles = [...bd.querySelectorAll("[data-role]")].filter((c) => c.checked).map((c) => c.dataset.role);
+      const st = bd.querySelector('[data-f="status"]'); if (st) draft.status = st.value;
+      const ed = bd.querySelector('[data-f="effective_date"]'); if (ed) draft.effective_date = ed.value;
+      close();
+      policyModal(draft, d, mount, e.target.value);
+    });
     bd.querySelector("#pol-save").addEventListener("click", async () => {
       const body = {
         title: bd.querySelector('[data-f="title"]').value.trim(),
         category: bd.querySelector('[data-f="category"]').value,
+        doc_kind: bd.querySelector('[data-f="doc_kind"]').value,
+        doc_number: bd.querySelector('[data-f="doc_number"]').value.trim() || null,
+        department: bd.querySelector('[data-f="department"]').value.trim() || null,
+        owner_name: bd.querySelector('[data-f="owner_name"]').value.trim() || null,
+        purpose: bd.querySelector('[data-f="purpose"]').value.trim() || null,
+        applicable_roles: [...bd.querySelectorAll("[data-role]")].filter((c) => c.checked).map((c) => c.dataset.role),
         body: bd.querySelector('[data-f="body"]').value,
         color: bd.querySelector('[data-f="color"]').value,
         published: bd.querySelector('[data-f="published"]').checked,

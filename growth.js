@@ -464,6 +464,74 @@ module.exports = function initGrowth(ctx) {
     )`).catch((e) => console.error("crm_policy_amendments:", e.message));
     await dbRun(`ALTER TABLE crm_policy_amendments ADD COLUMN IF NOT EXISTS applied_at TEXT`).catch(() => {});
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_policy_amend_policy ON crm_policy_amendments(policy_id)`).catch(() => {});
+
+    // ---- Policies and SOPs are two different questions ------------------
+    // "What is the rule?" and "How do I do it?" are asked by different people
+    // at different moments, and a single undifferentiated list answers neither
+    // well. Both still live in one library, because a policy and the SOP that
+    // carries it out reference each other and splitting the storage would make
+    // that link a join across two tables for no gain.
+    //
+    // DEFAULT 'policy' is deliberate. Every existing row was written before the
+    // distinction existed, and the overwhelming majority of them are policies;
+    // calling them that is right far more often than it is wrong, and an admin
+    // re-files the exceptions in one click. The alternative -- NULL, meaning
+    // "unclassified" -- would put every existing record in neither library,
+    // which is the one outcome the split must not produce.
+    for (const [col, type] of [
+      ["doc_kind", "TEXT DEFAULT 'policy'"],   // policy | sop
+      ["doc_number", "TEXT"],                  // POL-004, SOP-012 -- theirs, not generated
+      ["department", "TEXT"],
+      ["applicable_roles", "TEXT"],            // JSON array of hr_employees.role_title
+      ["owner_name", "TEXT"],                  // the person accountable for it
+      ["purpose", "TEXT"],                     // why it exists, in a sentence
+    ]) {
+      await dbRun(`ALTER TABLE crm_policies ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
+    }
+    // Rows that predate the column have it NULL rather than the default.
+    await dbRun("UPDATE crm_policies SET doc_kind = 'policy' WHERE doc_kind IS NULL").catch(() => {});
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_crm_policies_kind ON crm_policies(doc_kind)`).catch(() => {});
+
+    // A policy and an SOP reference each other. ONE ROW PER PAIR, with the
+    // policy and the SOP each named by their own column, so the relationship
+    // reads the same from either side and cannot be stored twice in opposite
+    // directions. The unique index is what guarantees that.
+    await dbRun(`CREATE TABLE IF NOT EXISTS crm_policy_links (
+      id SERIAL PRIMARY KEY,
+      policy_id INTEGER NOT NULL,
+      sop_id INTEGER NOT NULL,
+      created_by TEXT,
+      created_at TEXT,
+      UNIQUE (policy_id, sop_id)
+    )`).catch((e) => console.error("crm_policy_links:", e.message));
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_pol_links_policy ON crm_policy_links(policy_id)`).catch(() => {});
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_pol_links_sop ON crm_policy_links(sop_id)`).catch(() => {});
+
+    // Several attachments per record, reusing the documents already uploaded
+    // rather than starting a second file pipeline beside the first.
+    await dbRun(`CREATE TABLE IF NOT EXISTS crm_policy_attachments (
+      id SERIAL PRIMARY KEY,
+      policy_id INTEGER NOT NULL,
+      document_id INTEGER NOT NULL,
+      added_by TEXT,
+      added_at TEXT,
+      UNIQUE (policy_id, document_id)
+    )`).catch((e) => console.error("crm_policy_attachments:", e.message));
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_pol_attach_policy ON crm_policy_attachments(policy_id)`).catch(() => {});
+
+    // What changed, when, and who did it. Distinct from an amendment memo:
+    // a memo changes the RULE and is published to staff, while a revision is
+    // the editorial record of the document itself -- including the typo fix
+    // that a memo would be absurd for. Both appear in a record's history.
+    await dbRun(`CREATE TABLE IF NOT EXISTS crm_policy_revisions (
+      id SERIAL PRIMARY KEY,
+      policy_id INTEGER NOT NULL,
+      version TEXT,
+      summary TEXT NOT NULL,
+      changed_by TEXT,
+      changed_at TEXT NOT NULL
+    )`).catch((e) => console.error("crm_policy_revisions:", e.message));
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_pol_rev_policy ON crm_policy_revisions(policy_id)`).catch(() => {});
   }
 
   // Postgres text columns cannot hold a NUL byte, and a failed PDF extraction
@@ -528,6 +596,23 @@ module.exports = function initGrowth(ctx) {
   // acknowledgment can still be tied to something stable.
   const versionOf = (p) => String((p && p.version) || "1").trim() || "1";
   const POLICY_STATUSES = ["Active", "Draft", "Archived"];
+
+  // The two halves of the library. A policy says what the rule is; an SOP says
+  // how the work is done. Everything else about a record is shared.
+  const DOC_KINDS = [
+    { key: "policy", label: "Policy", plural: "Policies",
+      lede: "The rules, standards and expectations of Spectrum Squad." },
+    { key: "sop", label: "SOP", plural: "Standard Operating Procedures",
+      lede: "How a specific process or responsibility is carried out, step by step." },
+  ];
+  const DOC_KIND_KEYS = DOC_KINDS.map((k) => k.key);
+  const normalizeKind = (v) => (DOC_KIND_KEYS.includes(String(v || "").toLowerCase())
+    ? String(v).toLowerCase() : "policy");
+  const parseRoles = (v) => {
+    if (Array.isArray(v)) return v.map((r) => String(r || "").trim()).filter(Boolean);
+    try { const a = JSON.parse(v || "[]"); return Array.isArray(a) ? a.map(String).filter(Boolean) : []; }
+    catch (e) { return []; }
+  };
   const DOC_TYPES = ["Employee Handbook", "Policy Document", "SOP", "Other"];
   // How long a pending acknowledgment may sit before it reads as overdue.
   const ACK_OVERDUE_DAYS = Number(process.env.POLICY_ACK_OVERDUE_DAYS || 14);
@@ -973,6 +1058,14 @@ module.exports = function initGrowth(ctx) {
         const q = String((query && query.q) || "").trim().toLowerCase();
         const cat = String((query && query.category) || "").trim();
         const st = String((query && query.status) || "").trim();
+        // `kind` narrows to one library. Left off, the search spans BOTH, which
+        // is what the search bar on the landing page needs: somebody who does
+        // not know whether the answer is a rule or a procedure should not have
+        // to guess before they are allowed to look.
+        const kind = String((query && query.kind) || "").trim().toLowerCase();
+        const dept = String((query && query.department) || "").trim();
+        const roleFilter = String((query && query.role) || "").trim();
+        const since = String((query && query.updated_since) || "").trim();
 
         const policies = await dbAll(
           `SELECT p.*, d.title AS document_title, d.doc_type AS document_type, d.filename AS document_filename
@@ -998,13 +1091,60 @@ module.exports = function initGrowth(ctx) {
           amendBy.get(a.policy_id).push(a);
         });
 
+        const links = await dbAll("SELECT policy_id, sop_id FROM crm_policy_links").catch(() => []);
+        const byId = new Map(policies.map((p) => [p.id, p]));
+        const relatedOf = (p) => {
+          // Read from whichever side this record sits on, so the pair shows up
+          // on both the policy and the SOP without being stored twice.
+          const ids = p.doc_kind === "sop"
+            ? links.filter((l) => l.sop_id === p.id).map((l) => l.policy_id)
+            : links.filter((l) => l.policy_id === p.id).map((l) => l.sop_id);
+          return ids.map((id) => byId.get(id)).filter(Boolean)
+            .map((r) => ({ id: r.id, title: r.title, kind: r.doc_kind || "policy",
+                           doc_number: r.doc_number || null, status: r.status || "Active" }));
+        };
+
+        const attachRows = await dbAll(
+          `SELECT a.policy_id, d.id, d.title, d.filename, d.doc_type
+             FROM crm_policy_attachments a JOIN crm_policy_documents d ON d.id = a.document_id`
+        ).catch(() => []);
+        const attachBy = new Map();
+        attachRows.forEach((a) => {
+          if (!attachBy.has(a.policy_id)) attachBy.set(a.policy_id, []);
+          attachBy.get(a.policy_id).push({ id: a.id, title: a.title, filename: a.filename, type: a.doc_type });
+        });
+
+        const revRows = await dbAll(
+          "SELECT policy_id, version, summary, changed_by, changed_at FROM crm_policy_revisions ORDER BY changed_at DESC, id DESC"
+        ).catch(() => []);
+        const revBy = new Map();
+        revRows.forEach((r) => {
+          if (!revBy.has(r.policy_id)) revBy.set(r.policy_id, []);
+          revBy.get(r.policy_id).push(r);
+        });
+
         const filtered = policies.filter((p) => {
           const status = p.status || "Active";
+          if (kind && (p.doc_kind || "policy") !== kind) return false;
           if (cat && p.category !== cat) return false;
           if (st && status !== st) return false;
+          if (dept && String(p.department || "") !== dept) return false;
+          // A record with NO roles set applies to everybody, so it must not be
+          // filtered out when somebody narrows to a role -- "applies to all" is
+          // a match for "applies to an RBT", not the absence of one.
+          if (roleFilter) {
+            const roles = parseRoles(p.applicable_roles);
+            if (roles.length && !roles.includes(roleFilter)) return false;
+          }
+          if (since) {
+            const stamp = String(p.updated_at || p.created_at || "").slice(0, 10);
+            if (!stamp || stamp < since) return false;
+          }
           if (!q) return true;
           const memos = (amendBy.get(p.id) || []).map((a) => a.title + " " + a.body).join(" ");
-          return [p.title, p.category, p.summary, p.body, p.document_title, memos]
+          return [p.title, p.category, p.summary, p.body, p.document_title, memos,
+                  p.doc_number, p.department, p.owner_name, p.purpose,
+                  parseRoles(p.applicable_roles).join(" ")]
             .some((f) => String(f || "").toLowerCase().includes(q));
         }).map((p) => {
           const v = versionOf(p);
@@ -1026,6 +1166,15 @@ module.exports = function initGrowth(ctx) {
             amendments_rescinded: g.rescinded,
             amendments_drafts: canPolicyManage(user) ? g.drafts : [],
             amended: g.in_force.length > 0,
+            kind: p.doc_kind || "policy",
+            doc_number: p.doc_number || null,
+            department: p.department || null,
+            applicable_roles: parseRoles(p.applicable_roles),
+            owner_name: p.owner_name || null,
+            purpose: p.purpose || null,
+            related: relatedOf(p),
+            attachments: attachBy.get(p.id) || [],
+            revisions: revBy.get(p.id) || [],
           };
         });
 
@@ -1037,6 +1186,26 @@ module.exports = function initGrowth(ctx) {
         const documents = await dbAll(
           "SELECT id, title, doc_type FROM crm_policy_documents ORDER BY title"
         ).catch(() => []);
+        // Departments and role titles come from what the practice actually
+        // has, not from a list invented here: the same reasoning the category
+        // picker already follows. A filter offering a department nobody is in
+        // is a filter that returns nothing and teaches the reader to distrust
+        // it.
+        const deptRows = await dbAll("SELECT name FROM departments ORDER BY name").catch(() => []);
+        const deptSet = new Set(deptRows.map((d) => d.name).filter(Boolean));
+        policies.forEach((p) => { if (p.department) deptSet.add(p.department); });
+        const roleRows = await dbAll(
+          "SELECT DISTINCT role_title FROM hr_employees WHERE role_title IS NOT NULL AND role_title <> '' ORDER BY role_title"
+        ).catch(() => []);
+        const roleSet = new Set(roleRows.map((r) => r.role_title));
+        policies.forEach((p) => parseRoles(p.applicable_roles).forEach((r) => roleSet.add(r)));
+
+        // Counts for BOTH libraries, unaffected by the kind filter -- the
+        // landing page shows how much is in each door, and that number must not
+        // change depending on which door the reader last opened.
+        const counts = { policy: 0, sop: 0 };
+        policies.forEach((p) => { counts[(p.doc_kind || "policy")] = (counts[(p.doc_kind || "policy")] || 0) + 1; });
+
         return json(res, 200, {
           policies: filtered,
           documents,
@@ -1045,6 +1214,10 @@ module.exports = function initGrowth(ctx) {
           statuses: POLICY_STATUSES,
           category_colors: CATEGORY_COLORS,
           can_manage: canPolicyManage(user),
+          kinds: DOC_KINDS,
+          counts,
+          departments: Array.from(deptSet).sort(),
+          roles: Array.from(roleSet).sort(),
         });
       }
 
@@ -1686,20 +1859,87 @@ module.exports = function initGrowth(ctx) {
         // A policy record may point at a source document -- that is how one
         // uploaded handbook yields many separately findable policies.
         const requiresAck = b.requires_acknowledgment === true;
+        if (b.doc_kind !== undefined && !DOC_KIND_KEYS.includes(String(b.doc_kind).toLowerCase())) {
+          return json(res, 400, { error: "A record is either a policy or an SOP." });
+        }
         const row = await dbRun(
           `INSERT INTO crm_policies
              (title, category, body, slug, published, updated_by, created_at, updated_at,
-              document_id, section_ref, status, version, effective_date, requires_acknowledgment, ack_required_since)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+              document_id, section_ref, status, version, effective_date, requires_acknowledgment, ack_required_since,
+              doc_kind, doc_number, department, applicable_roles, owner_name, purpose)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
           [b.title, b.category || "Other", b.body || "", slug, b.published === false ? false : true,
            user.name || null, nowISO(), nowISO(),
            b.document_id ? Number(b.document_id) : null, b.section_ref || null,
            POLICY_STATUSES.includes(b.status) ? b.status : "Active",
            b.version ? String(b.version) : "1", b.effective_date || null,
-           requiresAck, requiresAck ? nowISO() : null]
+           requiresAck, requiresAck ? nowISO() : null,
+           normalizeKind(b.doc_kind), b.doc_number || null, b.department || null,
+           JSON.stringify(parseRoles(b.applicable_roles)), b.owner_name || null, b.purpose || null]
         );
         return json(res, 201, { ok: true, id: row.rows[0].id, slug });
       }
+      // ---- linking a policy to the SOP that carries it out ---------------
+      // Stored once per pair, keyed by which side is which, so a link made from
+      // the policy and the same link made from the SOP are the same row.
+      const linkMatch = pathname.match(/^\/api\/policies\/(\d+)\/links$/);
+      if (linkMatch && method === "POST") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const a = await dbGet("SELECT id, doc_kind FROM crm_policies WHERE id = ?", [Number(linkMatch[1])]);
+        const other = await dbGet("SELECT id, doc_kind FROM crm_policies WHERE id = ?", [Number(b.other_id)]);
+        if (!a || !other) return json(res, 404, { error: "That record no longer exists." });
+        const aKind = a.doc_kind || "policy";
+        const bKind = other.doc_kind || "policy";
+        // A policy links to an SOP, not to another policy. Two rules that
+        // mention each other are a cross-reference in the text; this link means
+        // "this is the procedure for that rule", and it only has that meaning
+        // with one of each.
+        if (aKind === bKind) {
+          const plural = aKind === "sop" ? "SOPs" : "policies";
+          return json(res, 400, { error: "A link joins a policy to an SOP. Those are both " + plural + "." });
+        }
+        const policyId = aKind === "policy" ? a.id : other.id;
+        const sopId = aKind === "sop" ? a.id : other.id;
+        await dbRun(
+          `INSERT INTO crm_policy_links (policy_id, sop_id, created_by, created_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT (policy_id, sop_id) DO NOTHING`,
+          [policyId, sopId, user.name || user.email || null, nowISO()]
+        );
+        return json(res, 200, { ok: true, policy_id: policyId, sop_id: sopId });
+      }
+      if (linkMatch && method === "DELETE") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req).catch(() => ({}));
+        const id = Number(linkMatch[1]);
+        const other = Number(b.other_id || (query && query.other_id));
+        await dbRun("DELETE FROM crm_policy_links WHERE (policy_id = ? AND sop_id = ?) OR (policy_id = ? AND sop_id = ?)",
+          [id, other, other, id]);
+        return json(res, 200, { ok: true });
+      }
+
+      // ---- attachments ----------------------------------------------------
+      const attachMatch = pathname.match(/^\/api\/policies\/(\d+)\/attachments$/);
+      if (attachMatch && method === "POST") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const doc = await dbGet("SELECT id FROM crm_policy_documents WHERE id = ?", [Number(b.document_id)]);
+        if (!doc) return json(res, 404, { error: "That document no longer exists." });
+        await dbRun(
+          `INSERT INTO crm_policy_attachments (policy_id, document_id, added_by, added_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT (policy_id, document_id) DO NOTHING`,
+          [Number(attachMatch[1]), doc.id, user.name || user.email || null, nowISO()]
+        );
+        return json(res, 200, { ok: true });
+      }
+      if (attachMatch && method === "DELETE") {
+        if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req).catch(() => ({}));
+        await dbRun("DELETE FROM crm_policy_attachments WHERE policy_id = ? AND document_id = ?",
+          [Number(attachMatch[1]), Number(b.document_id || (query && query.document_id))]);
+        return json(res, 200, { ok: true });
+      }
+
       const polMatch = pathname.match(/^\/api\/policies\/(\d+)$/);
       if (polMatch && method === "PATCH") {
         if (!canPolicyManage(user)) return json(res, 403, { error: "Not permitted" });
@@ -1707,6 +1947,7 @@ module.exports = function initGrowth(ctx) {
         const allowed = [
           "title", "category", "body", "published", "color", "summary",
           "document_id", "section_ref", "status", "version", "effective_date", "requires_acknowledgment",
+          "doc_kind", "doc_number", "department", "applicable_roles", "owner_name", "purpose",
         ];
         const fields = Object.keys(b).filter((k) => allowed.includes(k));
         if (!fields.length) return json(res, 400, { error: "Nothing to update." });
@@ -1716,6 +1957,15 @@ module.exports = function initGrowth(ctx) {
         if (b.status !== undefined && !POLICY_STATUSES.includes(b.status)) {
           return json(res, 400, { error: "Status must be Active, Draft or Archived." });
         }
+        // Refused rather than coerced. normalizeKind() quietly turns anything
+        // it does not recognise into "policy", which is right when reading a
+        // legacy row and wrong when somebody is writing: a typo would silently
+        // file an SOP among the rules.
+        if (b.doc_kind !== undefined && !DOC_KIND_KEYS.includes(String(b.doc_kind).toLowerCase())) {
+          return json(res, 400, { error: "A record is either a policy or an SOP." });
+        }
+        if (b.doc_kind !== undefined) b.doc_kind = String(b.doc_kind).toLowerCase();
+        if (b.applicable_roles !== undefined) b.applicable_roles = JSON.stringify(parseRoles(b.applicable_roles));
 
         const id = Number(polMatch[1]);
         const before = await dbGet("SELECT * FROM crm_policies WHERE id = ?", [id]);
@@ -1737,10 +1987,23 @@ module.exports = function initGrowth(ctx) {
           }, updated_by = ?, updated_at = ? WHERE id = ?`,
           [...fields.map((f) => b[f]), ...extra.map(([, v]) => v), user.name || null, nowISO(), id]
         );
+        // The editorial record. Says WHICH fields moved rather than just that
+        // something did, because "updated" on its own tells a reader nothing
+        // about whether the rule they follow has changed.
+        const changed = fields.filter((f) => String(b[f] == null ? "" : b[f]) !== String(before[f] == null ? "" : before[f]));
+        if (changed.length) {
+          await dbRun(
+            "INSERT INTO crm_policy_revisions (policy_id, version, summary, changed_by, changed_at) VALUES (?, ?, ?, ?, ?)",
+            [id, b.version !== undefined ? String(b.version) : versionOf(before),
+             (versionChanged ? "Re-issued. " : "") + "Updated: " + changed.join(", "),
+             user.name || user.email || null, nowISO()]
+          ).catch(() => {});
+        }
         return json(res, 200, {
           ok: true,
           reissued: versionChanged || ackTurnedOn,
           previous_version: versionChanged ? versionOf(before) : null,
+          revision_logged: changed.length > 0,
         });
       }
       if (polMatch && method === "DELETE") {

@@ -5239,6 +5239,16 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Policy change requests and the policy exception log. Owns
+  // /api/policy-changes/* and /api/policy-exceptions/*. Its own four
+  // permission tiers -- submit, review, decide, except -- are enforced
+  // inside it, because "can review" and "can approve" are different answers
+  // and a single gate here could only express one of them.
+  if (pathname.startsWith("/api/policy-changes") || pathname.startsWith("/api/policy-exceptions")) {
+    const handled = await policyChanges.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // Clients & Clinicians Map add-on owns /api/geo/* (owner/admin/scheduling only,
   // enforced internally).
   if (pathname.startsWith("/api/geo/")) {
@@ -8566,6 +8576,7 @@ const PUBLIC_FILES = new Set([
   "/events-frontend.js",
   "/supply-requests-frontend.js",
   "/maintenance-requests-frontend.js",
+  "/policy-change-requests-frontend.js",
   "/geo-map-frontend.js",
   "/bip-frontend.js",
   "/client-programming-frontend.js",
@@ -8849,6 +8860,12 @@ const supply = require("./supply-requests")({
 // safety escalation the supply flow has no need for. Owns /api/maintenance/*. =====
 const maintenance = require("./maintenance-requests")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile, moduleGranted,
+});
+// ===== POLICY CHANGE REQUESTS + POLICY EXCEPTION LOG add-on: the monthly
+// review cycle for changing a rule, and the record of departing from one.
+// Owns /api/policy-changes/* and /api/policy-exceptions/*. =====
+const policyChanges = require("./policy-change-requests")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, moduleGranted,
 });
 // ===== CLIENTS & CLINICIANS MAP add-on: geocodes existing client + employee
 // addresses (OpenStreetMap) and pairs nearest clinicians for in-homes. =====
@@ -9334,6 +9351,7 @@ async function start() {
   await squad.initTables().catch((e) => console.error("Squad attendance initTables failed:", e));
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
   await maintenance.initTables().catch((e) => console.error("Maintenance initTables failed:", e));
+  await policyChanges.initTables().catch((e) => console.error("Policy change requests initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
   await fidelity.initTables().catch((e) => console.error("Fidelity initTables failed:", e));
   await pto.initTables().catch((e) => console.error("PTO initTables failed:", e));
