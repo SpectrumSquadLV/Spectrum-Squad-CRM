@@ -63,6 +63,13 @@ const QUESTION = "how long do BCBAs have to finish a treatment plan?";
     await page.evaluate(() => { location.hash = "#/policies"; });
     await page.waitForSelector("#pol-ask", { timeout: 20000 });
     await page.waitForTimeout(700);
+    // Policies and SOPs are two libraries now, and the landing page is the
+    // choice between them: the card grid lives behind a door. The question box
+    // this suite is about stays on the landing and is unaffected -- but every
+    // step here that goes on to click a CARD needs the door opened first, so it
+    // is done once, here, rather than at each of them.
+    const door = await page.$('[data-pol-kind="policy"]');
+    if (door) { await door.click(); await page.waitForTimeout(800); }
   };
   const askIt = async (q) => {
     await page.fill("#pol-ask", q);
