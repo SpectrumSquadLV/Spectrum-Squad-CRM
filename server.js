@@ -8772,6 +8772,11 @@ const hr = require("./hr")({
 // staff_time_off table (which already records leave taken) =====
 const pto = require("./pto")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting,
+  // The ONE source of worked hours for accrual: Rethink's per-provider,
+  // per-day billable/non-billable split. A lazy closure because `rethink` is
+  // constructed further down, and because PTO must read it at call time
+  // rather than capture whatever it was at boot.
+  rethinkHoursBetween: (employeeId, from, to) => rethink.billableHoursBetween(employeeId, from, to),
 });
 // ===== BILLABLE add-on: per-BCBA monthly requirements + the monthly email =====
 // ===== RBT FIDELITY add-on: fidelity checks, performance history, action
