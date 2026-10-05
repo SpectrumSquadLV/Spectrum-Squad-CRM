@@ -395,7 +395,8 @@
           <div style="display:flex; gap:8px; align-items:center;">
             ${d.can_edit ? `<button class="btn" id="pol-add">+ New ${esc(thisKind.label)}</button>
             <button class="btn secondary" id="pol-doc-upload">⇧ Upload source document</button>
-            <button class="btn secondary" id="pol-import">Import</button>` : ""}
+            <button class="btn secondary" id="pol-import">Import</button>
+            <button class="btn secondary" id="pol-sort">Sort policies &amp; SOPs</button>` : ""}
             ${d.can_manage ? `<button class="btn secondary" id="pol-acks">Acknowledgments</button>` : ""}
           </div>
         </div>`
@@ -555,6 +556,7 @@
     });
     on("#pol-acks", "click", () => ackReport(mount));
     on("#pol-import", "click", () => importModal(d, mount));
+    on("#pol-sort", "click", () => sortModal(mount));
 
     on("#pol-add", "click", () => policyModal(null, d, mount, polKind || "policy"));
     mount.querySelectorAll("[data-pol-open]").forEach((b) =>
@@ -1186,6 +1188,120 @@
             : " ✓");
         go.disabled = false;
       } catch (e) { go.disabled = false; res.textContent = e.message || "Could not send."; }
+    });
+  }
+
+  // SORTING AN EXISTING LIBRARY INTO ITS TWO HALVES.
+  //
+  // The split added doc_kind and set every existing record to 'policy',
+  // because that is what the column had always implicitly meant. In a library
+  // built before the split, that leaves SOPs filed as policies -- 70 records
+  // in one list, which is the thing the split existed to end.
+  //
+  // This screen is a PROPOSAL, not a conversion. Every row shows the reason
+  // the classifier reached its verdict, every row can be flipped or left
+  // alone, and nothing is written until Apply. The high-confidence ones (the
+  // document named itself, or somebody filed it under a category that says
+  // SOP) are pre-ticked and grouped first so they can be confirmed in a block;
+  // the arguable ones sit below and ask to be read.
+  async function sortModal(mount) {
+    let d;
+    try { d = await api("/api/policies/sort-proposal"); } catch (e) { alert(e.message); return; }
+    const c = d.counts || {};
+    const changing = (d.records || []).filter((r) => r.changes);
+
+    const rowHtml = (r) => {
+      const to = r.proposed_kind === "sop" ? "SOP" : "Policy";
+      const from = r.current_kind === "sop" ? "SOP" : "Policy";
+      return `<label class="pol-sort-row" style="display:grid;grid-template-columns:28px 1fr auto;gap:10px;
+          align-items:start;padding:9px 0;border-bottom:1px solid #f3f1ea;cursor:pointer;">
+        <input type="checkbox" class="pol-sort-pick" value="${r.id}" data-kind="${esc(r.proposed_kind)}"
+          ${r.confidence === "high" ? "checked" : ""} style="margin-top:3px;" />
+        <div>
+          <div style="font-weight:700;font-size:13.5px;">${esc(r.title)}</div>
+          <div style="font-size:11.5px;color:var(--text-muted);">${esc(r.category || "—")} · ${esc(r.why)}</div>
+        </div>
+        <div style="white-space:nowrap;font-size:12px;font-weight:700;color:var(--text-muted);">
+          ${esc(from)} <span style="color:#16a34a;">&rarr;</span>
+          <span style="color:${r.proposed_kind === "sop" ? "#0f766e" : "#1b2a6b"};">${esc(to)}</span>
+        </div>
+      </label>`;
+    };
+
+    const high = changing.filter((r) => r.confidence === "high");
+    const med = changing.filter((r) => r.confidence !== "high");
+
+    const bd = document.createElement("div");
+    bd.className = "modal-backdrop";
+    bd.innerHTML = `<div class="modal" style="max-width:820px;">
+      <div class="modal-header"><div>
+        <h2>Sort policies and SOPs</h2>
+        <div style="font-size:12.5px;color:var(--text-muted);">
+          ${c.total} record${c.total === 1 ? "" : "s"} · ${c.to_sop} proposed as SOPs · ${c.to_policy} proposed as policies
+        </div>
+      </div><button class="close-btn">&times;</button></div>
+
+      <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:10px 12px;
+        margin-bottom:12px;font-size:12.5px;color:#4c1d95;line-height:1.55;">
+        When the two libraries were split, every record already in here was filed as a policy &mdash; that is
+        what the field had always meant, and guessing during the migration would have been worse than
+        admitting there was no answer yet. This is the guess, made now, with its reasons shown.
+        <b>Nothing changes until you press Apply</b>, and anything you untick keeps the kind it has.
+      </div>
+
+      ${changing.length === 0
+        ? `<p style="font-size:13.5px;color:var(--text-muted);">Nothing looks misfiled. All ${c.total} records
+           are already on the side the titles, categories and text suggest.</p>`
+        : `
+        ${high.length ? `<div style="font-weight:800;font-size:13px;margin:4px 0 2px;">Clear-cut (${high.length})</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">The document named itself, or
+            somebody filed it under a category that says SOP. Ticked for you.</div>
+          <div style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:10px;
+            padding:2px 12px;margin-bottom:14px;">${high.map(rowHtml).join("")}</div>` : ""}
+        ${med.length ? `<div style="font-weight:800;font-size:13px;margin:4px 0 2px;">Worth a look (${med.length})</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">The signal is weaker &mdash;
+            a word in the title, or the text opening with numbered steps. Left unticked.</div>
+          <div style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:10px;
+            padding:2px 12px;margin-bottom:14px;">${med.map(rowHtml).join("")}</div>` : ""}
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+          <button class="btn small secondary" id="pol-sort-all">Tick all</button>
+          <button class="btn small secondary" id="pol-sort-none">Untick all</button>
+        </div>`}
+
+      ${c.unclassified ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+        ${c.unclassified} record${c.unclassified === 1 ? "" : "s"} gave no signal at all and
+        ${c.unclassified === 1 ? "was" : "were"} left exactly where ${c.unclassified === 1 ? "it is" : "they are"}.
+        You can set those one at a time by editing them.</div>` : ""}
+
+      <div style="display:flex;gap:10px;align-items:center;">
+        <button class="btn" id="pol-sort-apply"${changing.length ? "" : " disabled"}>Apply</button>
+        <span id="pol-sort-res" style="font-size:12.5px;color:var(--text-muted);"></span>
+      </div>
+    </div>`;
+    document.body.appendChild(bd);
+    const close = () => bd.remove();
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+
+    const picks = () => Array.from(bd.querySelectorAll(".pol-sort-pick"));
+    const all = bd.querySelector("#pol-sort-all");
+    const none = bd.querySelector("#pol-sort-none");
+    if (all) all.addEventListener("click", () => picks().forEach((p) => { p.checked = true; }));
+    if (none) none.addEventListener("click", () => picks().forEach((p) => { p.checked = false; }));
+
+    const apply = bd.querySelector("#pol-sort-apply");
+    if (apply) apply.addEventListener("click", async () => {
+      const res = bd.querySelector("#pol-sort-res");
+      const chosen = picks().filter((p) => p.checked)
+        .map((p) => ({ id: Number(p.value), kind: p.getAttribute("data-kind") }));
+      if (!chosen.length) { res.textContent = "Tick at least one record."; return; }
+      if (!confirm(`Move ${chosen.length} record${chosen.length === 1 ? "" : "s"} into the other library?`)) return;
+      apply.disabled = true; res.textContent = "Sorting\u2026";
+      try {
+        const out = await api("/api/policies/sort-apply", { method: "POST", body: { changes: chosen } });
+        res.textContent = `Moved ${out.moved}.` + (out.failed ? ` ${out.failed} could not be moved.` : "");
+        setTimeout(() => { close(); renderPolicies(mount); }, 900);
+      } catch (e) { apply.disabled = false; res.textContent = e.message; }
     });
   }
 
