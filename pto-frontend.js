@@ -46,10 +46,22 @@
     // hours -- so what the badge has to say now is whether Rethink has sent
     // everything for the period, because an unsynced month is the one thing
     // that can still move a balance.
+    // A MONTH WITH NO WORK IS NOT A MONTH WITH NO DATA, and the amber badge
+    // used to claim both. Rethink returns nothing for somebody on leave, not
+    // yet carrying clients, or doing a month of admin -- indistinguishable,
+    // per person, from a month nobody fetched. It is distinguishable
+    // practice-wide, so it is now distinguished: amber only where the hours
+    // are genuinely unknown, and a quiet grey note where they are known to be
+    // none. Warning about something nobody can act on is how a real warning
+    // stops being read.
     var basis = r.unsynced_months
       ? '<span title="' + esc(r.hours_basis_detail || "") + '" style="background:#fef3c7;color:#92400e;font-weight:700;font-size:11px;padding:2px 8px;border-radius:999px;">'
         + r.unsynced_months + ' month(s) not synced</span>'
-      : '<span title="' + esc(r.hours_basis_detail || "") + '" style="background:#dcfce7;color:#166534;font-weight:700;font-size:11px;padding:2px 8px;border-radius:999px;">Rethink</span>';
+      : '<span title="' + esc(r.hours_basis_detail || "") + '" style="background:#dcfce7;color:#166534;font-weight:700;font-size:11px;padding:2px 8px;border-radius:999px;">Rethink</span>'
+        + (r.no_work_months
+          ? '<div title="Rethink has these months and lists no days for this person." style="font-size:11px;color:var(--text-muted);margin-top:3px;">'
+            + r.no_work_months + ' month(s) with no hours worked</div>'
+          : '');
 
     if (r.not_yet_eligible) {
       return '<tr style="border-top:1px solid var(--border,#eef0f4);">'
@@ -219,6 +231,17 @@
         + '<span id="pto-status" style="font-size:12.5px;color:var(--text-muted);"></span>'
       + '</div>'
 
+      // THE PRIMARY ACTION, ABOVE THE TABLE. It sat underneath the roster
+      // until the owner went looking for it and could not find it: on a
+      // practice with forty staff that is the length of the page away from
+      // where anybody would look for the one button that does something.
+      + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#f8fafc;'
+        + 'border:1px solid var(--border,#e5e7eb);border-radius:10px;padding:12px 14px;margin:0 0 16px;">'
+        + '<button class="btn" id="pto-preview">Recalculate from source…</button>'
+        + '<span style="font-size:12.5px;color:#6b7280;">Rebuilds every balance from Rethink hours, the 90-day rule '
+          + 'and the 1 March 2026 start. <strong>Shows what would change before anything is written.</strong></span>'
+      + '</div>'
+
       // overflow-x:auto, NOT hidden. The audit view needs eight columns and
       // `hidden` does exactly what it says -- on a narrow window the right-hand
       // columns are clipped away with no scrollbar to reveal them, and the
@@ -242,8 +265,7 @@
       + '<p style="font-size:12px;color:var(--text-muted);margin-top:12px;max-width:800px;">'
       + 'A balance is accrued − taken + adjustments. Nothing here writes to payroll; it is a record for a person to act on. '
       + 'Use an adjustment to carry in an opening balance or correct a figure — every adjustment needs a reason.</p>'
-      + '<div style="margin-top:12px;"><button class="btn secondary" id="pto-preview">Recalculate from source…</button>'
-        + '<span style="font-size:11.5px;color:#6b7280;margin-left:8px;">Shows what would change before anything is written.</span></div>';
+      ;
 
     wire();
   }

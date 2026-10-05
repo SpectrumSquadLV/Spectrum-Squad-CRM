@@ -65,6 +65,7 @@ module.exports = function initPto(ctx) {
   // server without the integration degrades to "nothing synced" instead of
   // falling back to a number it made up.
   const rethinkHoursBetween = ctx.rethinkHoursBetween || null;
+  const rethinkCoversRange = ctx.rethinkCoversRange || null;
 
   const today = () => new Date().toISOString().slice(0, 10);
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -313,6 +314,29 @@ module.exports = function initPto(ctx) {
     }
     const got = await rethinkHoursBetween(empId, from, to).catch(() => null);
     if (!got) {
+      // NO ROWS FOR THIS PERSON HAS TWO CAUSES, AND THEY ARE OPPOSITES.
+      //
+      // Either the month was never fetched -- hours unknown -- or it was
+      // fetched and Rethink has no days for this person in it, which means
+      // they worked none. Before the backfill nearly every case was the
+      // first; after it, nearly every case is the second, and reporting them
+      // identically turned the warning into noise on exactly the screens
+      // where it mattered.
+      //
+      // The practice-wide answer settles it. A month that came back for
+      // anybody came back.
+      const covered = rethinkCoversRange
+        ? await rethinkCoversRange(from, to).catch(() => false)
+        : false;
+      if (covered) {
+        // A measurement of zero, not an absence of one. It accrues nothing --
+        // identical arithmetic to the unsynced branch -- but it is a KNOWN
+        // nothing, so it does not make the balance provisional and does not
+        // raise a warning somebody cannot act on.
+        return { hours: 0, billable: 0, nonbillable: 0, unclassified: 0,
+                 synced: true, no_days: true,
+                 detail: "Rethink has this period and lists no days for this person — no hours worked." };
+      }
       return { hours: null, billable: null, nonbillable: null, unclassified: 0,
                synced: false, detail: "No days in this period have been synced from Rethink yet." };
     }
@@ -432,6 +456,10 @@ module.exports = function initPto(ctx) {
     let nonbillableTotal = 0;
     let unclassifiedTotal = 0;
     let unsyncedMonths = 0;
+    // Months Rethink has, in which this person has no days. Counted apart
+    // from unsynced ones because they are the opposite fact: measured, not
+    // missing.
+    let noWorkMonths = 0;
     // The cap, where one is set, is a per-benefit-year ceiling, so accrual has
     // to be tallied per year even though it is earned per month.
     const yearTally = new Map();
@@ -451,6 +479,7 @@ module.exports = function initPto(ctx) {
         periods.push({ from: ps, to: pe, synced: false, hours: null, earned: null, detail: w.detail });
         continue;
       }
+      if (w.no_days) noWorkMonths++;
       workedTotal += w.hours;
       billableTotal += w.billable;
       nonbillableTotal += w.nonbillable;
@@ -476,6 +505,7 @@ module.exports = function initPto(ctx) {
         // and the total is the one that is right.
         hours: round2(w.hours), billable: round2(w.billable), nonbillable: round2(w.nonbillable),
         unclassified: round2(w.unclassified),
+        no_days: w.no_days === true,
         rate, earned: round2(allowed),
         earned_exact: allowed,
         forfeited_to_cap: round2(raw - allowed),
@@ -522,6 +552,10 @@ module.exports = function initPto(ctx) {
       // trust. This is the audit trail the screen renders.
       periods,
       unsynced_months: unsyncedMonths,
+      // Months with nothing to accrue on because nothing was worked. Not a
+      // warning -- shown so a short balance can be explained rather than
+      // merely noticed.
+      no_work_months: noWorkMonths,
       accrued,
       annual_cap: cap,
       // Hours the cap prevented accruing. Shown rather than dropped: somebody
@@ -699,6 +733,7 @@ module.exports = function initPto(ctx) {
         delta: r.delta,
         ledger_rows: r.ledger_rows || 0,
         unsynced_months: r.unsynced_months || 0,
+        no_work_months: r.no_work_months || 0,
         not_yet_eligible: r.not_yet_eligible === true,
         error: r.error || null,
       });

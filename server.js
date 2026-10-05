@@ -8791,6 +8791,10 @@ const pto = require("./pto")({
   // constructed further down, and because PTO must read it at call time
   // rather than capture whatever it was at boot.
   rethinkHoursBetween: (employeeId, from, to) => rethink.billableHoursBetween(employeeId, from, to),
+  // Practice-wide month coverage, so PTO can tell "never fetched" from
+  // "fetched, and this person has no days in it". Lazy like the line above:
+  // rethink is constructed after this object.
+  rethinkCoversRange: (from, to) => rethink.practiceCoversRange(from, to),
 });
 // ===== BILLABLE add-on: per-BCBA monthly requirements + the monthly email =====
 // ===== RBT FIDELITY add-on: fidelity checks, performance history, action

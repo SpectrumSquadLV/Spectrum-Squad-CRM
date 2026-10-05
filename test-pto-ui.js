@@ -105,6 +105,20 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false }
 
   console.log("\n== Recalculating: shown before it runs ==");
   check("there is a recalculate button", await page.locator("#pto-preview").count() === 1);
+  // ABOVE THE ROSTER. It was underneath it, which on a practice with forty
+  // staff puts the page's only action a full screen-height below where
+  // anybody looks for it -- the owner went to find it and could not.
+  const placing = await page.evaluate(() => {
+    const btn = document.querySelector("#pto-preview");
+    const table = document.querySelector("#view-mount table");
+    if (!btn || !table) return null;
+    return { btnTop: Math.round(btn.getBoundingClientRect().top),
+             tableTop: Math.round(table.getBoundingClientRect().top) };
+  });
+  check("AND IT SITS ABOVE THE STAFF TABLE, not buried under it",
+    !!placing && placing.btnTop < placing.tableTop, placing);
+  check("reachable without scrolling the roster",
+    !!placing && placing.btnTop < 900, placing);
   await page.click("#pto-preview");
   await page.waitForSelector("#pto-apply", { timeout: 20000 });
   const prev = (await page.innerText(".modal-backdrop")).replace(/\s+/g, " ");
