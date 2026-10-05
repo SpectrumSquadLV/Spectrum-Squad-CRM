@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Spectrum Squad — Staff</title>
+<style>
+  :root { --indigo:#1b2a6b; --ink:#1e293b; --muted:#64748b; --line:#e2e8f0; --bg:#f5f6fb; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+         background:var(--bg); color:var(--ink); }
+  body::before { content:""; position:fixed; inset:0; background-image:url("/logo.png");
+                 background-repeat:no-repeat; background-position:center; background-size:min(70vw,420px);
+                 opacity:.05; pointer-events:none; z-index:0; }
+  .wrap { max-width:560px; margin:0 auto; padding:20px 16px 60px; position:relative; z-index:1; }
+  .page-logo { display:block; max-width:190px; width:60%; height:auto; margin:10px auto 16px; }
+  h1 { font-size:22px; margin:0 0 4px; text-align:center; }
+  .sub { color:var(--muted); font-size:14px; margin:0 0 22px; text-align:center; }
+  a.tile { display:flex; align-items:center; gap:14px; text-decoration:none; color:inherit;
+           background:#fff; border:1px solid var(--line); border-radius:16px; padding:18px;
+           margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+  a.tile:active { transform:scale(.99); }
+  .ic { width:46px; height:46px; flex:0 0 auto; border-radius:12px; display:flex; align-items:center;
+        justify-content:center; font-size:23px; }
+  .tt { font-size:16px; font-weight:700; margin:0 0 2px; }
+  .td { font-size:13px; color:var(--muted); margin:0; line-height:1.35; }
+  .foot { text-align:center; color:var(--muted); font-size:12px; margin-top:26px; line-height:1.5; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <img src="/logo.png" alt="Spectrum Squad" class="page-logo" />
+    <h1>Hi — what do you need?</h1>
+    <p class="sub">Pick one. Nothing here needs an app.</p>
+
+    <a class="tile" href="/supply-request">
+      <div class="ic" style="background:#eef2ff;color:#1b2a6b;">📦</div>
+      <div>
+        <p class="tt">I need supplies</p>
+        <p class="td">Anything for your sessions or the office. You get a link to track it.</p>
+      </div>
+    </a>
+
+    <a class="tile" href="/maintenance-request">
+      <div class="ic" style="background:#fff7ed;color:#c2410c;">🔧</div>
+      <div>
+        <p class="tt">Something is broken</p>
+        <p class="td">A room, a door, a light, anything that needs fixing. Add a photo if it helps.</p>
+      </div>
+    </a>
+
+    <a class="tile" href="/my-pto">
+      <div class="ic" style="background:#ecfdf5;color:#047857;">🌴</div>
+      <div>
+        <p class="tt">My PTO</p>
+        <p class="td">See your balance and ask for time off. We email you a code first, so only you can see yours.</p>
+      </div>
+    </a>
+
+    <a class="tile" href="/report-concern">
+      <div class="ic" style="background:#fef2f2;color:#b91c1c;">🛡️</div>
+      <div>
+        <p class="tt">I need to report a concern</p>
+        <p class="td">Safety, conduct, ethics or anything that worries you. Handled confidentially.</p>
+      </div>
+    </a>
+
+    <p class="foot">
+      Supplies, repairs and concerns do not ask who you are.<br />
+      PTO does, because it shows your own information.
+    </p>
+  </div>
+</body>
+</html>

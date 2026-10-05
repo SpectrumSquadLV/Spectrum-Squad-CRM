@@ -5249,6 +5249,18 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // THE STAFF PORTAL owns /api/portal/*. Dispatched above the sign-in gate
+  // because none of its callers hold a CRM session -- they hold a PORTAL
+  // session, which is a different token in a different table under a
+  // different cookie, and which this dispatch deliberately does not resolve.
+  // `user` is not passed in at all: a CRM login must not become a way into
+  // somebody else's portal, and the only way to be inside the portal is to
+  // have handed back a code emailed to that person's own address.
+  if (pathname.startsWith("/api/portal/")) {
+    const handled = await staffPortal.handleApi(req, res, pathname, method);
+    if (handled) return true;
+  }
+
   // Policy change requests and the policy exception log. Owns
   // /api/policy-changes/* and /api/policy-exceptions/*. Its own four
   // permission tiers -- submit, review, decide, except -- are enforced
@@ -8574,6 +8586,8 @@ const PUBLIC_FILES = new Set([
   "/clinical-screener.html",
   "/ot-intake.html",
   "/supply-request.html",
+  "/staff-hub.html",
+  "/my-pto.html",
   // Front-end bundles loaded by index.html
   "/theme.js",
   "/attendance.js",
@@ -8771,7 +8785,7 @@ const hr = require("./hr")({
 // ===== PTO add-on: accrual per hour worked, on top of the existing
 // staff_time_off table (which already records leave taken) =====
 const pto = require("./pto")({
-  dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting,
+  dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting, sendEmail,
   // The ONE source of worked hours for accrual: Rethink's per-provider,
   // per-day billable/non-billable split. A lazy closure because `rethink` is
   // constructed further down, and because PTO must read it at call time
@@ -8892,6 +8906,23 @@ const maintenance = require("./maintenance-requests")({
 // looks inconsistent with policy, safety or fair treatment -- applying to
 // everyone, leadership included. Its confidentiality rules are the feature;
 // see the header of concerns.js. Owns /api/concerns/*. =====
+// ===== THE STAFF PORTAL add-on: one QR code, four doors. Supply, maintenance
+// and concerns are anonymous and write-only; PTO is neither, so it carries its
+// own one-time-code sign-in and its own session. Owns /api/portal/* and serves
+// /staff and /my-pto. =====
+const staffPortal = require("./staff-portal")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, readBody, json,
+  // Delivery WITHOUT the notifications_log body, for the one-time code. See
+  // sendCode() in the module: logging a live credential into a table the
+  // Message Outbox renders to every admin would defeat the feature.
+  deliverEmail, brandedEmail,
+  ownerEmail: () => hr._internal.ownerEmail(),
+  // The balance comes from pto.js so there is exactly one implementation of
+  // the accrual rules in the codebase.
+  ptoBalanceFor: (emp) => pto.balanceFor(emp, {}),
+  // Approved-but-not-yet-taken leave, by the ledger's own arithmetic.
+  ptoHoursTaken: (id, from, to, weekly) => pto.hoursTaken(id, from, to, weekly),
+});
 const concerns = require("./concerns")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile,
   moduleGranted, moduleDenied,
@@ -9329,6 +9360,14 @@ const server = http.createServer(async (req, res) => {
     if (concerns.servePage(req, res, pathname)) return;
   }
 
+  // The staff portal: the QR landing page, and the PTO page behind it. Both
+  // are served to anybody; the PTO one is a shell with no data in it until a
+  // code has been handed back, so serving it reveals nothing.
+  if (pathname === "/staff" || pathname.startsWith("/staff/")
+      || pathname === "/my-pto" || pathname.startsWith("/my-pto/")) {
+    if (staffPortal.servePage(req, res, pathname)) return;
+  }
+
   if (pathname === "/supply-request" || pathname.startsWith("/supply-request/")) {
     if (await supply.servePage(req, res, pathname)) return;
     if (await maintenance.servePage(req, res, pathname)) return;
@@ -9394,6 +9433,7 @@ async function start() {
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
   await maintenance.initTables().catch((e) => console.error("Maintenance initTables failed:", e));
   await concerns.initTables().catch((e) => console.error("Concerns initTables failed:", e));
+  await staffPortal.initTables().catch((e) => console.error("Staff portal initTables failed:", e));
   await policyChanges.initTables().catch((e) => console.error("Policy change requests initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
   await fidelity.initTables().catch((e) => console.error("Fidelity initTables failed:", e));
@@ -9613,9 +9653,13 @@ async function start() {
   // never rescinds an offer -- it tells a person the clock ran out.
   hirePacket.sweep().catch((e) => console.error("Hire packet sweep failed:", e));
   onboarding.deadlineSweep().catch((e) => console.error("Onboarding sweep failed:", e));
+  // Expired portal codes and sessions are rubbish with somebody's email
+  // address on it. Swept rather than kept.
+  staffPortal.sweep().catch((e) => console.error("Staff portal sweep failed:", e));
   setInterval(() => {
     hirePacket.sweep().catch((e) => console.error("Hire packet sweep failed:", e));
     onboarding.deadlineSweep().catch((e) => console.error("Onboarding sweep failed:", e));
+    staffPortal.sweep().catch((e) => console.error("Staff portal sweep failed:", e));
   }, 60 * 60 * 1000);
 
   // RBT Fidelity: checks that have come due, Action Plans past their date,

@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Spectrum Squad — My PTO</title>
+<style>
+  :root { --indigo:#1b2a6b; --ink:#1e293b; --muted:#64748b; --line:#e2e8f0; --bg:#f5f6fb; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+         background:var(--bg); color:var(--ink); }
+  body::before { content:""; position:fixed; inset:0; background-image:url("/logo.png");
+                 background-repeat:no-repeat; background-position:center; background-size:min(70vw,420px);
+                 opacity:.05; pointer-events:none; z-index:0; }
+  .wrap { max-width:560px; margin:0 auto; padding:20px 16px 60px; position:relative; z-index:1; }
+  .page-logo { display:block; max-width:170px; width:55%; height:auto; margin:8px auto 14px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; padding:22px;
+          box-shadow:0 1px 3px rgba(0,0,0,.04); margin-bottom:14px; }
+  h1 { font-size:21px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:14px; margin:2px 0 18px; }
+  label { display:block; font-size:13px; font-weight:600; margin:14px 0 5px; }
+  input, textarea, select { width:100%; padding:11px 12px; border:1px solid var(--line);
+         border-radius:10px; font-size:15px; font-family:inherit; background:#fff; }
+  input:focus, textarea:focus { outline:2px solid #c7d2fe; border-color:var(--indigo); }
+  .row { display:flex; gap:10px; } .row > div { flex:1; }
+  .hint { font-size:12px; color:var(--muted); margin-top:4px; line-height:1.4; }
+  button.primary { width:100%; margin-top:18px; background:var(--indigo); color:#fff; border:0;
+         border-radius:10px; padding:14px; font-size:16px; font-weight:700; cursor:pointer; }
+  button.primary:disabled { opacity:.55; cursor:default; }
+  .linkbtn { background:none; border:0; color:var(--indigo); font-weight:600; cursor:pointer;
+         font-size:14px; padding:0; text-decoration:underline; }
+  .msg { padding:12px 14px; border-radius:10px; font-size:14px; margin-top:14px; display:none; }
+  .msg.err { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; display:block; }
+  .msg.ok  { background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; display:block; }
+  .msg.info{ background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; display:block; }
+  .big { font-size:40px; font-weight:800; color:var(--indigo); line-height:1.1; }
+  .unit { font-size:15px; font-weight:600; color:var(--muted); margin-left:4px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
+  .stat { background:var(--bg); border-radius:10px; padding:10px 12px; }
+  .stat .k { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
+  .stat .v { font-size:17px; font-weight:700; }
+  .req { border-top:1px solid var(--line); padding:11px 0; display:flex; justify-content:space-between;
+         align-items:flex-start; gap:10px; }
+  .pill { display:inline-block; font-weight:700; padding:3px 10px; border-radius:999px; font-size:11px; }
+  .p-requested { background:#fef3c7; color:#92400e; }
+  .p-approved  { background:#dcfce7; color:#166534; }
+  .p-denied    { background:#fee2e2; color:#991b1b; }
+  .muted { color:var(--muted); font-size:12.5px; }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <img src="/logo.png" alt="Spectrum Squad" class="page-logo" />
+
+  <!-- ============ STEP 1: who are you ============ -->
+  <div class="card" id="step-email">
+    <h1>My PTO</h1>
+    <p class="sub">So only you can see your own balance, we email you a code first.</p>
+    <label for="email">Your work email</label>
+    <input type="email" id="email" autocomplete="email" inputmode="email" placeholder="you@spectrumsquadlv.com" />
+    <p class="hint">Use the address the office has for you.</p>
+    <button class="primary" id="send-code">Email me a code</button>
+    <div class="msg" id="email-msg"></div>
+  </div>
+
+  <!-- ============ STEP 2: the code ============ -->
+  <div class="card hide" id="step-code">
+    <h1>Check your email</h1>
+    <p class="sub" id="code-sub">Enter the 6-digit code we just sent.</p>
+    <label for="code">Code</label>
+    <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+           style="font-size:26px; letter-spacing:8px; text-align:center; font-weight:700;" />
+    <button class="primary" id="verify">See my PTO</button>
+    <div class="msg" id="code-msg"></div>
+    <p class="hint" style="margin-top:14px;">
+      <button class="linkbtn" id="back">Use a different email</button>
+    </p>
+  </div>
+
+  <!-- ============ STEP 3: the balance ============ -->
+  <div class="hide" id="step-pto">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+        <div>
+          <h1 id="hello">My PTO</h1>
+          <p class="sub" id="asof"></p>
+        </div>
+        <button class="linkbtn" id="logout">Sign out</button>
+      </div>
+      <div id="balance-box"></div>
+    </div>
+
+    <div class="card" id="ask-card">
+      <h1 style="font-size:18px;">Ask for time off</h1>
+      <p class="sub">The office decides every request. Nothing comes off your balance until it is approved.</p>
+      <div class="row">
+        <div><label for="from">First day</label><input type="date" id="from" /></div>
+        <div><label for="to">Last day</label><input type="date" id="to" /></div>
+      </div>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:600; margin-top:14px;">
+        <input type="checkbox" id="partial" style="width:auto; margin:0;" /> Only part of one day
+      </label>
+      <div class="row hide" id="times">
+        <div><label for="t-from">From</label><input type="time" id="t-from" /></div>
+        <div><label for="t-to">To</label><input type="time" id="t-to" /></div>
+      </div>
+      <label for="notes">Anything the office should know (optional)</label>
+      <textarea id="notes" rows="3" placeholder="Family trip, appointment, …"></textarea>
+      <button class="primary" id="submit">Send the request</button>
+      <div class="msg" id="ask-msg"></div>
+    </div>
+
+    <div class="card">
+      <h1 style="font-size:18px;">My requests</h1>
+      <div id="requests"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) { return String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); };
+  var show = function (el, on) { el.classList[on ? "remove" : "add"]("hide"); };
+  var say = function (el, text, kind) {
+    el.className = "msg " + (kind || "info");
+    el.textContent = text;
+    if (!text) el.className = "msg";
+  };
+  var EMAIL = "";
+
+  function api(path, opts) {
+    opts = opts || {};
+    return fetch(path, {
+      method: opts.method || "GET",
+      headers: opts.body ? { "Content-Type": "application/json" } : {},
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      credentials: "same-origin"
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (!r.ok) throw new Error(d.error || "Something went wrong.");
+        return d;
+      });
+    });
+  }
+
+  // ---- step 1 -------------------------------------------------------------
+  $("send-code").addEventListener("click", function () {
+    var email = $("email").value.trim();
+    if (!email) { say($("email-msg"), "Put your work email in first.", "err"); return; }
+    $("send-code").disabled = true;
+    say($("email-msg"), "Sending…", "info");
+    api("/api/portal/code", { method: "POST", body: { email: email } })
+      .then(function (d) {
+        EMAIL = email;
+        $("send-code").disabled = false;
+        say($("email-msg"), "");
+        $("code-sub").textContent = d.message || "Enter the 6-digit code we just sent.";
+        show($("step-email"), false);
+        show($("step-code"), true);
+        $("code").focus();
+      })
+      .catch(function (e) {
+        $("send-code").disabled = false;
+        say($("email-msg"), e.message, "err");
+      });
+  });
+  $("email").addEventListener("keydown", function (e) { if (e.key === "Enter") $("send-code").click(); });
+
+  // ---- step 2 -------------------------------------------------------------
+  $("back").addEventListener("click", function () {
+    show($("step-code"), false); show($("step-email"), true); say($("code-msg"), "");
+  });
+  $("verify").addEventListener("click", function () {
+    var code = $("code").value.replace(/\D/g, "");
+    if (!code) { say($("code-msg"), "Type the code from your email.", "err"); return; }
+    $("verify").disabled = true;
+    api("/api/portal/verify", { method: "POST", body: { email: EMAIL, code: code } })
+      .then(function () { $("verify").disabled = false; say($("code-msg"), ""); load(); })
+      .catch(function (e) { $("verify").disabled = false; say($("code-msg"), e.message, "err"); });
+  });
+  $("code").addEventListener("keydown", function (e) { if (e.key === "Enter") $("verify").click(); });
+
+  // ---- step 3 -------------------------------------------------------------
+  $("logout").addEventListener("click", function () {
+    api("/api/portal/logout", { method: "POST" }).catch(function () {}).then(function () {
+      location.reload();
+    });
+  });
+  $("partial").addEventListener("change", function () {
+    show($("times"), this.checked);
+    if (this.checked) $("to").value = $("from").value;
+  });
+  $("from").addEventListener("change", function () {
+    if (!$("to").value || $("to").value < this.value) $("to").value = this.value;
+  });
+
+  function money(n) { return (Math.round(Number(n || 0) * 100) / 100).toFixed(2); }
+
+  function paintBalance(p) {
+    if (!p) { $("balance-box").innerHTML = '<p class="muted">Your balance is not available right now.</p>'; return; }
+    if (p.not_yet_eligible) {
+      $("balance-box").innerHTML =
+        '<div class="msg info" style="display:block;margin-top:0;">You are not accruing PTO yet. '
+        + 'It starts on <strong>' + esc(p.accrual_start) + '</strong>'
+        + (p.accrual_reason ? ' — ' + esc(p.accrual_reason) : '') + '.</div>';
+      show($("ask-card"), false);
+      return;
+    }
+    $("balance-box").innerHTML =
+      '<div><span class="big">' + money(p.free != null ? p.free : p.balance) + '</span>'
+        + '<span class="unit">hours free to book</span></div>'
+      + (Number(p.booked) > 0
+          ? '<p class="muted" style="margin-top:6px;">' + money(p.balance) + ' h earned, '
+            + money(p.booked) + ' h already booked for time off that has not happened yet.</p>'
+          : '')
+      + (p.estimated
+          ? '<p class="muted" style="margin-top:6px;">This can still go up — some of your hours have not come through yet.</p>'
+          : '')
+      + '<div class="grid">'
+        + '<div class="stat"><div class="k">Earned</div><div class="v">' + money(p.earned) + ' h</div></div>'
+        + '<div class="stat"><div class="k">Used</div><div class="v">' + money(p.used) + ' h</div></div>'
+        + (Number(p.booked) > 0
+            ? '<div class="stat"><div class="k">Booked ahead</div><div class="v">' + money(p.booked) + ' h</div></div>'
+            : '')
+        + '<div class="stat"><div class="k">Hours worked</div><div class="v">' + money(p.hours_worked) + ' h</div></div>'
+        + '<div class="stat"><div class="k">Accruing since</div><div class="v" style="font-size:14px;">'
+          + esc(p.accrual_start || "—") + '</div></div>'
+      + '</div>'
+      + '<p class="muted" style="margin-top:12px;">You earn ' + esc(String(p.rate))
+        + ' hours of PTO for every hour you work.</p>';
+  }
+
+  function paintRequests(rows) {
+    if (!rows || !rows.length) {
+      $("requests").innerHTML = '<p class="muted">You have not asked for any time off yet.</p>';
+      return;
+    }
+    $("requests").innerHTML = rows.map(function (r) {
+      var when = esc(r.start_date) + (r.end_date !== r.start_date ? " to " + esc(r.end_date) : "");
+      if (r.all_day === false && r.start_time) when += ", " + esc(r.start_time) + "–" + esc(r.end_time);
+      var st = String(r.status || "requested");
+      return '<div class="req"><div><div style="font-weight:600;">' + when + '</div>'
+        + (r.notes ? '<div class="muted">' + esc(r.notes) + '</div>' : '')
+        + '</div><div style="text-align:right;">'
+        + '<span class="pill p-' + esc(st) + '">' + esc(st) + '</span>'
+        + (st === "requested"
+            ? '<div style="margin-top:6px;"><button class="linkbtn" data-cancel="' + r.id + '"'
+              + ' style="font-size:12px;">withdraw</button></div>'
+            : '')
+        + '</div></div>';
+    }).join("");
+    Array.prototype.forEach.call($("requests").querySelectorAll("[data-cancel]"), function (b) {
+      b.addEventListener("click", function () {
+        api("/api/portal/pto-request/" + b.getAttribute("data-cancel"), { method: "DELETE" })
+          .then(load).catch(function (e) { alert(e.message); });
+      });
+    });
+  }
+
+  function load() {
+    api("/api/portal/me").then(function (d) {
+      show($("step-email"), false); show($("step-code"), false); show($("step-pto"), true);
+      show($("ask-card"), true);
+      $("hello").textContent = (d.employee && d.employee.name) ? d.employee.name.split(" ")[0] + "’s PTO" : "My PTO";
+      $("asof").textContent = d.pto && d.pto.as_of ? "As of " + d.pto.as_of : "";
+      paintBalance(d.pto);
+      paintRequests(d.requests);
+    }).catch(function () {
+      show($("step-pto"), false); show($("step-code"), false); show($("step-email"), true);
+    });
+  }
+
+  $("submit").addEventListener("click", function () {
+    var body = {
+      start_date: $("from").value,
+      end_date: $("partial").checked ? $("from").value : $("to").value,
+      all_day: !$("partial").checked,
+      start_time: $("t-from").value || null,
+      end_time: $("t-to").value || null,
+      notes: $("notes").value.trim() || null
+    };
+    if (!body.start_date || !body.end_date) { say($("ask-msg"), "Pick the days you want off.", "err"); return; }
+    $("submit").disabled = true;
+    api("/api/portal/pto-request", { method: "POST", body: body })
+      .then(function (d) {
+        $("submit").disabled = false;
+        say($("ask-msg"), "Sent — about " + money(d.hours) + " hours. The office will let you know.", "ok");
+        $("notes").value = "";
+        load();
+      })
+      .catch(function (e) { $("submit").disabled = false; say($("ask-msg"), e.message, "err"); });
+  });
+
+  // Somebody who still has a live session skips straight past the code.
+  load();
+})();
+</script>
+</body>
+</html>
