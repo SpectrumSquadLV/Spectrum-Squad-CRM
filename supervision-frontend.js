@@ -147,6 +147,44 @@
         </div>
       </details>
 
+      ${vals("billableClassification").length ? `<details style="margin-top:12px;"${(s.filter.billable_values || []).length || (s.filter.nonbillable_values || []).length ? "" : " open"}>
+        <summary style="cursor:pointer; font-size:12.5px; font-weight:600;">Which appointment types are billable${(s.filter.billable_values || []).length || (s.filter.nonbillable_values || []).length ? " ✓ set" : " — not set"}</summary>
+        <div style="margin-top:8px; font-size:12px;">
+          <div style="color:var(--text-muted); margin-bottom:6px;">
+            Every value Rethink has sent in its appointment-type fields, with the hours behind each.
+            A type left as <strong>unclassified</strong> is counted neither way and is excluded from PTO accrual —
+            so anything here with real hours against it is worth answering.</div>
+          <div id="rt-billable-rows">${vals("billableClassification").map((o) => {
+            const raw = o.value_raw == null ? "" : String(o.value_raw);
+            const key = String(o.value_norm == null ? "" : o.value_norm);
+            const isB = (s.filter.billable_values || []).map((x) => String(x).trim().toLowerCase()).includes(key);
+            const isN = (s.filter.nonbillable_values || []).map((x) => String(x).trim().toLowerCase()).includes(key);
+            const pick = (val, label, on, colour) => `<label style="display:inline-flex; align-items:center; gap:4px; cursor:pointer;
+                background:${on ? colour : "var(--bg,#f7f8fb)"}; border:1px solid ${on ? "transparent" : "var(--border,#e5e7eb)"};
+                border-radius:999px; padding:2px 9px; font-size:11.5px; font-weight:${on ? "700" : "400"};">
+              <input type="radio" name="rtb-${key}" value="${val}" data-rtb="${esc(raw)}" ${on ? "checked" : ""} style="margin:0; width:auto;" />${label}</label>`;
+            return `<div style="display:flex; align-items:center; justify-content:space-between; gap:10px;
+                 flex-wrap:wrap; padding:6px 0; border-top:1px solid var(--border,#eef0f4);">
+              <div><strong>${esc(raw || "(blank)")}</strong>
+                <span style="color:var(--text-muted);"> ${o.occurrences}× · ${o.hours_sum}h</span></div>
+              <div style="display:flex; gap:5px;">
+                ${pick("billable", "Billable", isB, "#dcfce7")}
+                ${pick("nonbillable", "Non-billable", isN, "#e0e7ff")}
+                ${pick("", "Leave", !isB && !isN, "#fef3c7")}
+              </div></div>`;
+          }).join("")}</div>
+          <div style="margin-top:10px;">
+            <button class="btn small" id="rt-billable-save">Save which types are billable</button>
+            <span id="rt-billable-msg" style="color:var(--text-muted); margin-left:8px; font-size:11.5px;"></span>
+          </div>
+          <div style="color:var(--text-muted); margin-top:8px; font-size:11.5px;">
+            Saving records the answer. The hours already stored were classified under the old one, so the
+            months they are in have to be fetched again before the figures move — the PTO screen's
+            <strong>Fetch the missing months</strong> button does that, and re-fetching a month replaces it
+            rather than adding to it, so it is safe to run.</div>
+        </div>
+      </details>` : ""}
+
       ${(s.providers || []).length ? `<details style="margin-top:12px;" open>
         <summary style="cursor:pointer; font-size:12.5px; font-weight:600;">Verify the calculation — per-provider appointment counts and hours (${s.providers.length})</summary>
         <div style="font-size:11.5px; color:var(--text-muted); margin:6px 0;">
@@ -186,6 +224,34 @@
         await renderSupervision(mount);
       } catch (e) { alert(e.message); }
     };
+    // Saving which appointment types are billable. Read off the radios rather
+    // than tracked in a variable, so what is sent is exactly what is on screen.
+    const bBtn = box.querySelector("#rt-billable-save");
+    if (bBtn) bBtn.addEventListener("click", async () => {
+      const msg = box.querySelector("#rt-billable-msg");
+      const billable = [], nonbillable = [];
+      box.querySelectorAll("#rt-billable-rows input[type=radio]:checked").forEach((r) => {
+        const raw = r.getAttribute("data-rtb");
+        if (r.value === "billable") billable.push(raw);
+        else if (r.value === "nonbillable") nonbillable.push(raw);
+      });
+      bBtn.disabled = true;
+      if (msg) msg.textContent = "Saving…";
+      try {
+        const d = await api("/api/rethink/billable-map", {
+          method: "PUT", body: { billable_values: billable, nonbillable_values: nonbillable } });
+        const n = (d && d.months_to_resync || []).length;
+        if (msg) {
+          msg.textContent = n
+            ? `Saved. ${n} month(s) still hold unclassified hours — fetch them again to apply this.`
+            : "Saved.";
+        }
+      } catch (e) {
+        if (msg) msg.textContent = e.message || "Could not save.";
+      }
+      bBtn.disabled = false;
+    });
+
     const cBtn = box.querySelector("#rt-confirm");
     if (cBtn) cBtn.addEventListener("click", () => saveFilter(true));
     const uBtn = box.querySelector("#rt-unconfirm");

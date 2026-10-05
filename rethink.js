@@ -165,6 +165,18 @@ module.exports = function initRethink(ctx) {
     // 27 linked clients. Recorded here instead, where approving cannot erase it.
     await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS last_client_scan_at TEXT").catch(() => {});
 
+    // WHICH APPOINTMENT TYPES ARE BILLABLE, said out loud rather than guessed.
+    //
+    // classifyBillable could only ever recognise a label containing the word
+    // "billable". Real appointment types are called "Parent Training",
+    // "Supervision", "Drive Time" -- none of which contain it -- so every one
+    // of those hours landed in the unclassified bucket and was excluded from
+    // accrual. The guess was right to refuse: an unlabelled hour counted as
+    // billable inflates somebody's requirement figure. What was missing was
+    // any way to answer it.
+    await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS billable_values TEXT").catch(() => {});
+    await dbRun("ALTER TABLE rethink_config ADD COLUMN IF NOT EXISTS nonbillable_values TEXT").catch(() => {});
+
     // Every sync attempt, success or failure, so the panel can always show
     // last-attempted, last-successful, and why a run failed.
     await dbRun(`CREATE TABLE IF NOT EXISTS rethink_sync_log (
@@ -1556,6 +1568,8 @@ module.exports = function initRethink(ctx) {
       sync_interval_minutes: (row && Number(row.sync_interval_minutes)) || 240,
       confirmed_by: (row && row.confirmed_by) || null,
       confirmed_at: (row && row.confirmed_at) || null,
+      billable_values: parse(row && row.billable_values),
+      nonbillable_values: parse(row && row.nonbillable_values),
     };
   }
 
@@ -1619,9 +1633,27 @@ module.exports = function initRethink(ctx) {
     }
     return null;
   }
-  function classifyBillable(raw) {
+  // THE MAP WINS, THEN THE WORD, THEN NOTHING.
+  //
+  // An explicit answer from the owner beats any inference: "Parent Training"
+  // is billable because somebody who knows said so, and no amount of reading
+  // the string will ever discover that. The word-matching stays underneath
+  // for the labels that do say it, so an install that has never opened the
+  // picker behaves exactly as before.
+  //
+  // And where neither fires the answer is still `null` -- unclassified,
+  // excluded, reported. Guessing is what this was built to stop.
+  function classifyBillable(raw, cfg) {
     const t = String(raw == null ? "" : raw).trim();
     if (!t) return null;
+    if (cfg) {
+      const key = norm(t);
+      // Non-billable is checked FIRST. A value somehow present in both lists
+      // must not be counted as billable on a tie: the direction that costs
+      // somebody their requirement figure is the one to avoid.
+      if ((cfg.nonbillable_values || []).map(norm).includes(key)) return false;
+      if ((cfg.billable_values || []).map(norm).includes(key)) return true;
+    }
     if (/non[-\s_]*billable/i.test(t)) return false;
     if (/billable/i.test(t)) return true;
     return null;
@@ -2243,7 +2275,7 @@ module.exports = function initRethink(ctx) {
         // them. Unclassified hours are held in their own bucket rather than
         // being counted either way: an unlabelled hour silently treated as
         // billable would inflate somebody's requirement figure.
-        const cls = classifyBillable(billableRaw(row));
+        const cls = classifyBillable(billableRaw(row), cfg);
         const day = String(row.appointmentDate || "").slice(0, 10);
         if (day) {
           const dcur = dayBucket(staffId, day);
@@ -2994,6 +3026,8 @@ module.exports = function initRethink(ctx) {
         confirmed: cfg.filter_confirmed,
         completed_statuses: cfg.completed_statuses,
         verified_values: cfg.verified_values,
+        billable_values: cfg.billable_values,
+        nonbillable_values: cfg.nonbillable_values,
         require_staff_verification: cfg.require_staff_verification,
         confirmed_by: cfg.confirmed_by,
         confirmed_at: cfg.confirmed_at,
@@ -3099,6 +3133,51 @@ module.exports = function initRethink(ctx) {
           ORDER BY a.standing, a.end_date DESC LIMIT 500`
       ).catch(() => []);
       json(res, 200, { rows });
+      return true;
+    }
+
+    // WHICH APPOINTMENT TYPES COUNT AS BILLABLE.
+    //
+    // Separate from the completed/verified filter next door, because they
+    // answer different questions and one being wrong should not require
+    // re-confirming the other. Same shape though: the screen lists the values
+    // production actually returned, and this records which of them mean what.
+    if (pathname === "/api/rethink/billable-map" && method === "PUT") {
+      if (!canManage(user)) { json(res, 403, { error: "Owner or super admin only." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const clean = (v) => (Array.isArray(v) ? v.map((x) => String(x == null ? "" : x).trim()).filter(Boolean) : []);
+      const billable = clean(b.billable_values);
+      const nonbillable = clean(b.nonbillable_values);
+
+      // A VALUE CANNOT BE BOTH. Saving a contradiction would leave the answer
+      // depending on which list the classifier happened to read first, and a
+      // rule nobody can predict is worse than no rule.
+      const overlap = billable.map(norm).filter((v) => nonbillable.map(norm).includes(v));
+      if (overlap.length) {
+        json(res, 400, { error: `Each type is billable or non-billable, not both: ${overlap.join(", ")}` });
+        return true;
+      }
+
+      await dbRun(
+        "UPDATE rethink_config SET billable_values = ?, nonbillable_values = ?, updated_at = ? WHERE id = 1",
+        [JSON.stringify(billable), JSON.stringify(nonbillable), nowISO()]
+      );
+
+      // SAVING CHANGES NOTHING ON ITS OWN, and the screen has to say so.
+      // Classification happens while a month is synced and is written into
+      // rethink_provider_day; the rows already there were classified under
+      // the old answer. Re-fetching those months is what applies it, and the
+      // reply carries the months that would change so the caller can offer
+      // that rather than leaving somebody to wonder why the figures are the
+      // same.
+      const months = await dbAll(
+        `SELECT DISTINCT month FROM rethink_provider_day
+          WHERE COALESCE(unclassified_hours, 0) > 0 ORDER BY month`
+      ).catch(() => []);
+      json(res, 200, {
+        ok: true, billable_values: billable, nonbillable_values: nonbillable,
+        months_to_resync: months.map((m) => m.month),
+      });
       return true;
     }
 
