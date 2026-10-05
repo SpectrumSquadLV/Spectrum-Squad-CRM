@@ -6,6 +6,10 @@
 // /api/leads/* and /api/policies/*, and a PUBLIC page at /policies for the
 // printable QR code. Reuses nothing existing.
 
+// Telling a policy from an SOP, for records created before the two-library
+// split, which set every one of them to 'policy'. Proposes; never writes.
+const policyKind = require("./policy-kind");
+
 module.exports = function initGrowth(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, extractPdfLines, unzip } = ctx;
   // Optional deps for contract management (item 10/11). Fall back gracefully so
@@ -1964,6 +1968,81 @@ module.exports = function initGrowth(ctx) {
       }
 
       // ---- attachments ----------------------------------------------------
+      // ---- SORTING AN EXISTING LIBRARY INTO POLICIES AND SOPS -------------
+      //
+      // The two-library migration set every existing record to 'policy',
+      // because that is what the column had always implicitly meant. For a
+      // library built before the split that leaves a lot of SOPs filed as
+      // policies -- the undifferentiated list the split existed to end.
+      //
+      // This PROPOSES a kind per record with the reason it reached, and
+      // changes nothing. The apply below takes an explicit list, so a record
+      // nobody looked at keeps the kind it has.
+      if (pathname === "/api/policies/sort-proposal" && method === "GET") {
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
+        const rows = await dbAll(
+          "SELECT id, title, category, doc_kind, body, status FROM crm_policies ORDER BY category, title"
+        ).catch(() => []);
+        const out = [];
+        for (const r of rows) {
+          const current = r.doc_kind || "policy";
+          const v = policyKind.classify({ title: r.title, category: r.category, body: r.body });
+          out.push({
+            id: r.id, title: r.title, category: r.category, status: r.status || "Active",
+            current_kind: current,
+            proposed_kind: v ? v.kind : current,
+            // The two things the screen sorts and groups on.
+            changes: !!v && v.kind !== current,
+            confidence: v ? v.confidence : null,
+            why: v ? v.why : "nothing in the title, category or text said which it is",
+          });
+        }
+        return json(res, 200, {
+          records: out,
+          counts: {
+            total: out.length,
+            to_sop: out.filter((r) => r.changes && r.proposed_kind === "sop").length,
+            to_policy: out.filter((r) => r.changes && r.proposed_kind === "policy").length,
+            unchanged: out.filter((r) => !r.changes).length,
+            unclassified: out.filter((r) => !r.confidence).length,
+          },
+        });
+      }
+
+      if (pathname === "/api/policies/sort-apply" && method === "POST") {
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const changes = Array.isArray(b.changes) ? b.changes : [];
+        if (!changes.length) return json(res, 400, { error: "Nothing to sort." });
+        let moved = 0;
+        const failed = [];
+        for (const c of changes.slice(0, 500)) {
+          const id = Number(c && c.id);
+          // Strict, NOT normalizeKind: that one falls back to "policy" for
+          // anything it does not recognise, which in a bulk sort would quietly
+          // flip an SOP the wrong way on a typo. A kind this does not know is
+          // a refusal, not a default.
+          const kind = DOC_KIND_KEYS.includes(String((c && c.kind) || "").toLowerCase())
+            ? String(c.kind).toLowerCase() : null;
+          if (!Number.isInteger(id) || id <= 0 || !kind) { failed.push(c); continue; }
+          const before = await dbGet("SELECT id, doc_kind FROM crm_policies WHERE id = ?", [id]).catch(() => null);
+          if (!before) { failed.push(c); continue; }
+          if ((before.doc_kind || "policy") === kind) continue;
+          await dbRun("UPDATE crm_policies SET doc_kind = ?, updated_at = ? WHERE id = ?", [kind, nowISO(), id]);
+          // On the record's own revision history, like any other edit. A
+          // record that silently changed library would be a record nobody
+          // could account for.
+          await dbRun(
+            `INSERT INTO crm_policy_revisions (policy_id, summary, changed_by, changed_at)
+             VALUES (?, ?, ?, ?)`,
+            [id, `Sorted from ${before.doc_kind || "policy"} into ${kind === "sop" ? "SOPs" : "policies"}`,
+             (user && user.name) || null, nowISO()]
+          ).catch(() => {});
+          moved++;
+        }
+        return json(res, 200, { ok: true, moved, failed: failed.length });
+      }
+
       const attachMatch = pathname.match(/^\/api\/policies\/(\d+)\/attachments$/);
       if (attachMatch && method === "POST") {
         if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });

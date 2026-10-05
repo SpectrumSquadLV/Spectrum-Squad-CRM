@@ -8596,6 +8596,7 @@ const PUBLIC_FILES = new Set([
   "/supply-requests-frontend.js",
   "/maintenance-requests-frontend.js",
   "/concerns-frontend.js",
+  "/requests-hub-frontend.js",
   "/report-concern.html",
   "/policy-change-requests-frontend.js",
   "/geo-map-frontend.js",
