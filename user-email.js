@@ -140,6 +140,12 @@ module.exports = function initUserEmail(ctx) {
     "user_email_changes.old_email", "user_email_changes.new_email",
     // Handled on its own terms: revoked rather than rewritten (see below).
     "password_reset_tokens.requested_email",
+    // The staff portal's one-time codes and sessions. Same reasoning as the
+    // reset tokens above and the same treatment: a live code sitting in the
+    // old mailbox is a key to somebody's PTO, and the usual reason for a
+    // rename is that the old mailbox is no longer theirs.
+    "portal_login_codes.email",
+    "portal_sessions.email",
     // The login itself, updated first inside the transaction.
     "users.email",
   ];
@@ -235,6 +241,35 @@ module.exports = function initUserEmail(ctx) {
       );
       if (t.rowCount > 0) {
         moved.push({ table: "password_reset_tokens", column: "requested_email", label: "password reset links revoked", rows: t.rowCount });
+      }
+
+      // The staff portal, same reasoning. Revoked rather than carried: the
+      // portal identifies people by their hr_employees address rather than
+      // this one, so carrying would be wrong anyway -- but a pending code or
+      // a live session that was issued to an address somebody no longer reads
+      // should not outlive the rename either way.
+      //
+      // These tables belong to an add-on, so a CRM that has never booted the
+      // portal does not have them. EXISTENCE IS CHECKED RATHER THAN CAUGHT:
+      // in Postgres a failed statement poisons the whole transaction, so a
+      // try/catch around a DELETE on a missing table would still roll the
+      // rename back -- silently, which is worse than failing loudly.
+      const hasTable = async (name) =>
+        !!(await client.query("SELECT to_regclass($1) AS t", ["public." + name])).rows[0].t;
+
+      if (await hasTable("portal_login_codes")) {
+        const pc = await client.query(
+          "DELETE FROM portal_login_codes WHERE LOWER(TRIM(email)) = $1 AND consumed_at IS NULL", [old]);
+        if (pc.rowCount > 0) {
+          moved.push({ table: "portal_login_codes", column: "email", label: "staff portal codes revoked", rows: pc.rowCount });
+        }
+      }
+      if (await hasTable("portal_sessions")) {
+        const ps = await client.query(
+          "DELETE FROM portal_sessions WHERE LOWER(TRIM(email)) = $1", [old]);
+        if (ps.rowCount > 0) {
+          moved.push({ table: "portal_sessions", column: "email", label: "staff portal sessions ended", rows: ps.rowCount });
+        }
       }
 
       await client.query(
