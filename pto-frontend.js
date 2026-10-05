@@ -39,17 +39,47 @@
     if (r.error) {
       return '<tr style="border-top:1px solid var(--border,#eef0f4);">'
         + '<td style="padding:9px 12px;"><strong>' + esc(r.name) + '</strong></td>'
-        + '<td colspan="5" style="padding:9px 12px;color:#92400e;">' + esc(r.error) + '</td></tr>';
+        + '<td colspan="7" style="padding:9px 12px;color:#92400e;">' + esc(r.error) + '</td></tr>';
     }
-    var basis = r.hours_basis === "timecards"
-      ? '<span title="' + esc(r.hours_basis_detail || "") + '" style="background:#dcfce7;color:#166534;font-weight:700;font-size:11px;padding:2px 8px;border-radius:999px;">Measured</span>'
-      : '<span title="' + esc(r.hours_basis_detail || "") + '" style="background:#fef3c7;color:#92400e;font-weight:700;font-size:11px;padding:2px 8px;border-radius:999px;">Estimated</span>';
+    // The old badge said "Measured" for timecards and "Estimated" for anything
+    // else. There is no estimate any more -- accrual reads only real synced
+    // hours -- so what the badge has to say now is whether Rethink has sent
+    // everything for the period, because an unsynced month is the one thing
+    // that can still move a balance.
+    var basis = r.unsynced_months
+      ? '<span title="' + esc(r.hours_basis_detail || "") + '" style="background:#fef3c7;color:#92400e;font-weight:700;font-size:11px;padding:2px 8px;border-radius:999px;">'
+        + r.unsynced_months + ' month(s) not synced</span>'
+      : '<span title="' + esc(r.hours_basis_detail || "") + '" style="background:#dcfce7;color:#166534;font-weight:700;font-size:11px;padding:2px 8px;border-radius:999px;">Rethink</span>';
 
+    if (r.not_yet_eligible) {
+      return '<tr style="border-top:1px solid var(--border,#eef0f4);">'
+        + '<td style="padding:9px 12px;"><strong>' + esc(r.name) + '</strong>'
+          + (r.role_title ? '<div style="font-size:12px;color:#6b7280;">' + esc(r.role_title) + '</div>' : "")
+        + '</td>'
+        + '<td colspan="7" style="padding:9px 12px;color:#6b7280;">' + esc(r.hours_basis_detail || "Not yet accruing.") + '</td></tr>';
+    }
+
+    var el = r.eligibility || {};
     return '<tr style="border-top:1px solid var(--border,#eef0f4);">'
       + '<td style="padding:9px 12px;"><strong>' + esc(r.name) + '</strong>'
         + (r.role_title ? '<div style="font-size:12px;color:#6b7280;">' + esc(r.role_title) + '</div>' : "")
+        + '<button class="pto-audit" data-id="' + r.employee_id + '" style="all:unset;cursor:pointer;color:#1b2a6b;'
+          + 'font-size:11.5px;font-weight:700;text-decoration:underline;margin-top:3px;display:block;">See the working</button>'
       + '</td>'
-      + '<td style="padding:9px 12px;">' + h(r.hours_worked) + '<div style="margin-top:3px;">' + basis + '</div></td>'
+      // Hire date, the 90-day date and the accrual start, side by side. These
+      // three are the first thing anybody asks about a PTO figure, and deriving
+      // them by hand from a hire date is how disputes start.
+      + '<td style="padding:9px 12px;font-size:12.5px;">' + esc(el.hire || "—")
+        + '<div style="color:#6b7280;">+90: ' + esc(el.waiting_ends || "—") + '</div></td>'
+      + '<td style="padding:9px 12px;font-size:12.5px;font-weight:700;">' + esc(el.start || "—")
+        + '<div style="font-weight:400;color:#6b7280;font-size:11px;">' + esc(el.reason || "") + '</div></td>'
+      + '<td style="padding:9px 12px;">' + h(r.hours_worked)
+        + '<div style="font-size:11.5px;color:#6b7280;">' + h(r.hours_billable) + ' billable · '
+          + h(r.hours_nonbillable) + ' non-billable</div>'
+        + (r.hours_unclassified > 0
+            ? '<div style="font-size:11.5px;color:#92400e;" title="Rethink could not classify these, so they are not accrued on.">'
+              + h(r.hours_unclassified) + ' unclassified, excluded</div>' : "")
+        + '<div style="margin-top:3px;">' + basis + '</div></td>'
       + '<td style="padding:9px 12px;">' + h(r.accrued)
         + '<div style="font-size:11.5px;color:#6b7280;">at ' + r.rate + '/h'
           + (r.annual_cap > 0 ? ', cap ' + r.annual_cap + '/yr' : '') + '</div>'
@@ -69,10 +99,75 @@
       + '</td></tr>';
   }
 
+  // THE WORKING BEHIND ONE BALANCE.
+  //
+  // The roster answers "how much"; this answers "why", which is the question
+  // that actually arrives. Every row the ledger holds, in date order, with the
+  // running balance beside it -- so a figure can be walked back to the month
+  // of hours that produced it rather than taken on trust.
+  function auditModal(id) {
+    fetch("/api/pto/ledger/" + id).then(function (r) { return r.json(); }).then(function (d) {
+      var bd = document.createElement("div");
+      bd.className = "modal-backdrop";
+      var el = d.eligibility || {};
+      var rows = (d.rows || []).map(function (r) {
+        var kindColor = r.kind === "accrual" ? "#166534" : (r.kind === "usage" ? "#b91c1c" : "#92400e");
+        var amount = r.kind === "accrual" ? "+" + h(r.pto_earned)
+          : (r.kind === "usage" ? "−" + h(r.pto_used)
+            : (Number(r.adjustment) >= 0 ? "+" : "−") + h(Math.abs(Number(r.adjustment))));
+        return '<tr style="border-top:1px solid #f0ede3;">'
+          + '<td style="padding:7px 10px;font-size:12.5px;">' + esc(r.transaction_date || "")
+            + (r.period_start ? '<div style="color:#6b7280;font-size:11px;">' + esc(r.period_start) + ' → ' + esc(r.period_end) + '</div>' : "")
+          + '</td>'
+          + '<td style="padding:7px 10px;"><span style="color:' + kindColor + ';font-weight:700;font-size:11.5px;text-transform:uppercase;">'
+            + esc(r.kind) + '</span></td>'
+          + '<td style="padding:7px 10px;font-size:12.5px;">'
+            + (r.eligible_hours == null ? "—" : h(r.eligible_hours)
+                + (r.billable_hours != null ? '<div style="color:#6b7280;font-size:11px;">'
+                    + h(r.billable_hours) + ' b · ' + h(r.nonbillable_hours) + ' nb</div>' : ""))
+          + '</td>'
+          + '<td style="padding:7px 10px;font-size:12.5px;">' + (r.accrual_rate == null ? "—" : r.accrual_rate) + '</td>'
+          + '<td style="padding:7px 10px;font-size:12.5px;font-weight:700;color:' + kindColor + ';">' + amount + '</td>'
+          + '<td style="padding:7px 10px;font-size:12.5px;font-weight:700;">' + h(r.balance_after) + '</td>'
+          + '<td style="padding:7px 10px;font-size:11.5px;color:#6b7280;">' + esc(r.reason || "")
+            + '<div style="font-size:10.5px;">' + esc(r.source || "") + '</div></td>'
+          + '</tr>';
+      }).join("");
+
+      bd.innerHTML = '<div class="modal" style="max-width:900px;">'
+        + '<div class="modal-header"><div><h2>' + esc((d.employee || {}).name || "PTO") + '</h2>'
+          + '<div style="font-size:12.5px;color:#6b7280;">Hired ' + esc(el.hire || "—")
+            + ' · 90 days complete ' + esc(el.waiting_ends || "—")
+            + ' · accrual starts <strong>' + esc(el.start || "—") + '</strong></div>'
+        + '</div><button class="close-btn">✕</button></div>'
+        + '<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:10px 12px;'
+          + 'margin-bottom:12px;font-size:12.5px;color:#312e81;">' + esc(el.reason || "")
+          + ' Accrual is ' + ((d.policy || {}).rate || "0.038") + ' h per hour actually worked,'
+          + ' on billable and non-billable hours combined.</div>'
+        + (d.built
+          ? '<div style="background:#fff;border:1px solid #e6e1d4;border-radius:10px;overflow:auto;max-height:440px;">'
+            + '<table style="width:100%;border-collapse:collapse;"><thead><tr style="background:#faf9f5;text-align:left;color:#6b7280;font-size:11.5px;">'
+              + '<th style="padding:7px 10px;">Date</th><th style="padding:7px 10px;">Kind</th>'
+              + '<th style="padding:7px 10px;">Eligible hours</th><th style="padding:7px 10px;">Rate</th>'
+              + '<th style="padding:7px 10px;">Change</th><th style="padding:7px 10px;">Balance</th>'
+              + '<th style="padding:7px 10px;">Why</th>'
+            + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+          // Never built is not the same as nothing earned, and the screen must
+          // not let somebody read it that way.
+          : '<div style="background:#fff8e6;border:1px solid #f3e0b0;border-radius:10px;padding:14px;font-size:13px;color:#92400e;">'
+            + '<strong>No ledger has been built for this person yet.</strong> That is not a balance of zero — '
+            + 'it means the historical recalculation has not been run. Preview it first from the PTO screen.</div>')
+        + '</div>';
+      document.body.appendChild(bd);
+      bd.querySelector(".close-btn").addEventListener("click", function () { bd.remove(); });
+      bd.addEventListener("click", function (e) { if (e.target === bd) bd.remove(); });
+    }).catch(function (e) { alert(e.message || "Could not load the ledger."); });
+  }
+
   function render(data) {
     DATA = data;
     var rows = data.staff || [];
-    var estimated = rows.filter(function (r) { return !r.error && r.estimated; }).length;
+    var unsynced = (data.staff || []).filter(function (x) { return x.unsynced_months > 0; }).length;
 
     MOUNT.innerHTML =
       '<h1 style="margin:0 0 4px;">PTO Balances</h1>'
@@ -89,11 +184,16 @@
           : 'Accrual is <strong>not capped</strong>.')
       + '</p>'
 
-      + (estimated
+      // This banner used to explain the assumed standard week. That mechanism
+      // is gone -- nothing is assumed any more -- so the warning had to change
+      // with it rather than keep describing a behaviour the code no longer
+      // has. What can still move a balance now is a month Rethink has not
+      // sent, and that is what it says.
+      + (unsynced
         ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:11px 13px;margin:12px 0;font-size:13px;color:#92400e;">'
-          + '⚠ <strong>' + estimated + ' balance' + (estimated === 1 ? " is" : "s are") + ' an estimate.</strong> '
-          + 'Accrual is per hour worked, and salaried staff do not clock hours — where there are no approved timecards, '
-          + 'their standard week is assumed instead. Those rows are marked. Treat them as indicative, not as a figure to quote at somebody.'
+          + '⚠ <strong>' + unsynced + ' ' + (unsynced === 1 ? "person has" : "people have") + ' months that have not been synced from Rethink.</strong> '
+          + 'Those hours are not counted, so these balances can still rise once the sync catches up. '
+          + 'A month with nothing synced is not a month with no work in it.'
           + '</div>'
         : "")
 
@@ -108,27 +208,114 @@
         + '<span id="pto-status" style="font-size:12.5px;color:var(--text-muted);"></span>'
       + '</div>'
 
-      + '<div style="border:1px solid var(--border,#e5e7eb);border-radius:10px;overflow:hidden;">'
-      + '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+      // overflow-x:auto, NOT hidden. The audit view needs eight columns and
+      // `hidden` does exactly what it says -- on a narrow window the right-hand
+      // columns are clipped away with no scrollbar to reveal them, and the
+      // column that disappears first is Balance, which is the one number
+      // anybody came to the screen for.
+      + '<div style="border:1px solid var(--border,#e5e7eb);border-radius:10px;overflow-x:auto;">'
+      + '<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1040px;">'
       + '<thead><tr style="background:#f8fafc;">'
         + '<th style="text-align:left;padding:9px 12px;">Staff</th>'
-        + '<th style="text-align:left;padding:9px 12px;">Hours worked</th>'
-        + '<th style="text-align:left;padding:9px 12px;">Accrued</th>'
-        + '<th style="text-align:left;padding:9px 12px;">Taken</th>'
+        + '<th style="text-align:left;padding:9px 12px;">Hired / +90 days</th>'
+        + '<th style="text-align:left;padding:9px 12px;">Accrual starts</th>'
+        + '<th style="text-align:left;padding:9px 12px;">Eligible hours worked</th>'
+        + '<th style="text-align:left;padding:9px 12px;">Gross earned</th>'
+        + '<th style="text-align:left;padding:9px 12px;">Used</th>'
         + '<th style="text-align:left;padding:9px 12px;">Adjustments</th>'
         + '<th style="text-align:left;padding:9px 12px;">Balance</th>'
       + '</tr></thead><tbody>'
-      + (rows.length ? rows.map(rowHtml).join("") : '<tr><td colspan="6" style="padding:16px;color:#6b7280;">No staff on file.</td></tr>')
+      + (rows.length ? rows.map(rowHtml).join("") : '<tr><td colspan="8" style="padding:16px;color:#6b7280;">No staff on file.</td></tr>')
       + '</tbody></table></div>'
 
       + '<p style="font-size:12px;color:var(--text-muted);margin-top:12px;max-width:800px;">'
       + 'A balance is accrued − taken + adjustments. Nothing here writes to payroll; it is a record for a person to act on. '
-      + 'Use an adjustment to carry in an opening balance or correct a figure — every adjustment needs a reason.</p>';
+      + 'Use an adjustment to carry in an opening balance or correct a figure — every adjustment needs a reason.</p>'
+      + '<div style="margin-top:12px;"><button class="btn secondary" id="pto-preview">Recalculate from source…</button>'
+        + '<span style="font-size:11.5px;color:#6b7280;margin-left:8px;">Shows what would change before anything is written.</span></div>';
 
     wire();
   }
 
+  // THE HISTORICAL RECALCULATION, SHOWN BEFORE IT RUNS.
+  //
+  // The policy is explicit that the recalculation must be visible before any
+  // destructive historical update executes, so the button PREVIEWS. Applying
+  // is a second, deliberate click against a list of who moves and by how much.
+  // Every applied run is snapshotted and can be put back.
+  function recalcModal() {
+    var bd = document.createElement("div");
+    bd.className = "modal-backdrop";
+    bd.innerHTML = '<div class="modal" style="max-width:820px;">'
+      + '<div class="modal-header"><div><h2>Recalculate PTO from source</h2>'
+      + '<div style="font-size:12.5px;color:#6b7280;">Rebuilds every balance from Rethink hours, the 90-day rule and the 1 March 2026 start.</div>'
+      + '</div><button class="close-btn">✕</button></div>'
+      + '<div id="pto-recalc-body" style="font-size:13px;color:#6b7280;">Working out what would change…</div>'
+      + '</div>';
+    document.body.appendChild(bd);
+    bd.querySelector(".close-btn").addEventListener("click", function () { bd.remove(); });
+    bd.addEventListener("click", function (e) { if (e.target === bd) bd.remove(); });
+    var body = bd.querySelector("#pto-recalc-body");
+
+    api("/api/pto/rebuild", { method: "POST", body: {} }).then(function (d) {
+      var sum = d.summary || {};
+      var moved = (d.employees || []).filter(function (e) { return e.delta != null && Math.abs(e.delta) >= 0.01; });
+      var fresh = (d.employees || []).filter(function (e) { return e.delta == null; });
+      var rows = (d.employees || []).map(function (e) {
+        var delta = e.delta == null ? '<span style="color:#6b7280;">new</span>'
+          : (e.delta > 0 ? '<span style="color:#166534;font-weight:700;">+' + h(e.delta) + '</span>'
+            : (e.delta < 0 ? '<span style="color:#b91c1c;font-weight:700;">' + h(e.delta) + '</span>'
+              : '<span style="color:#6b7280;">no change</span>'));
+        return '<tr style="border-top:1px solid #f0ede3;">'
+          + '<td style="padding:6px 10px;font-size:12.5px;">' + esc(e.name) + '</td>'
+          + '<td style="padding:6px 10px;font-size:12px;color:#6b7280;">' + esc(e.accrual_start || "—") + '</td>'
+          + '<td style="padding:6px 10px;font-size:12.5px;">' + (e.hours == null ? "—" : h(e.hours)) + '</td>'
+          + '<td style="padding:6px 10px;font-size:12.5px;">' + (e.prior_balance == null ? "—" : h(e.prior_balance)) + '</td>'
+          + '<td style="padding:6px 10px;font-size:12.5px;font-weight:700;">' + (e.balance == null ? "—" : h(e.balance)) + '</td>'
+          + '<td style="padding:6px 10px;">' + delta + '</td>'
+          + '<td style="padding:6px 10px;font-size:11.5px;color:#92400e;">'
+            + (e.not_yet_eligible ? "inside 90 days" : (e.unsynced_months ? e.unsynced_months + " month(s) unsynced" : "")) + '</td>'
+          + '</tr>';
+      }).join("");
+
+      body.innerHTML =
+        '<div style="background:#fff8e6;border:1px solid #f3e0b0;border-radius:10px;padding:10px 12px;'
+          + 'margin-bottom:12px;font-size:12.5px;color:#92400e;"><strong>Nothing has changed yet.</strong> '
+          + 'This is what applying would do. ' + (sum.changed || 0) + ' of ' + (sum.employees || 0)
+          + ' balance(s) would move' + (fresh.length ? ', and ' + fresh.length + ' would be built for the first time' : '')
+          + '. ' + (sum.with_unsynced_months ? sum.with_unsynced_months + ' person(s) have months Rethink has not sent, which are not counted.' : '')
+        + '</div>'
+        + '<div style="border:1px solid #e6e1d4;border-radius:10px;overflow:auto;max-height:360px;margin-bottom:12px;">'
+        + '<table style="width:100%;border-collapse:collapse;"><thead><tr style="background:#faf9f5;text-align:left;color:#6b7280;font-size:11.5px;">'
+          + '<th style="padding:6px 10px;">Staff</th><th style="padding:6px 10px;">Accrual starts</th>'
+          + '<th style="padding:6px 10px;">Eligible hours</th><th style="padding:6px 10px;">Was</th>'
+          + '<th style="padding:6px 10px;">Becomes</th><th style="padding:6px 10px;">Change</th><th style="padding:6px 10px;"></th>'
+        + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+        + '<div style="display:flex;gap:10px;align-items:center;">'
+          + '<button class="btn" id="pto-apply">Apply to all ' + (sum.employees || 0) + '</button>'
+          + '<span id="pto-apply-res" style="font-size:12.5px;color:#6b7280;">Every applied run is saved and can be put back.</span>'
+        + '</div>';
+
+      bd.querySelector("#pto-apply").addEventListener("click", function () {
+        if (!confirm("Replace " + (sum.employees || 0) + " PTO balance(s) with the recalculated figures?\n\n"
+          + "The current ledger is saved first, so this can be undone.")) return;
+        var res = bd.querySelector("#pto-apply-res");
+        res.textContent = "Applying…";
+        api("/api/pto/rebuild", { method: "POST", body: { apply: true, note: "Historical recalculation" } })
+          .then(function (out) {
+            res.innerHTML = 'Done. Batch <code style="user-select:all;">' + esc(out.batch_id || "") + '</code> — quote it to undo.';
+            load();
+          }).catch(function (e) { res.textContent = e.message || "Could not apply."; });
+      });
+    }).catch(function (e) { body.textContent = e.message || "Could not work out the change."; });
+  }
+
   function wire() {
+    MOUNT.querySelectorAll(".pto-audit").forEach(function (b) {
+      b.addEventListener("click", function () { auditModal(b.getAttribute("data-id")); });
+    });
+    var prev = MOUNT.querySelector("#pto-preview");
+    if (prev) prev.addEventListener("click", function () { recalcModal(); });
     var save = MOUNT.querySelector("#pto-save");
     if (save) save.addEventListener("click", function () {
       var status = MOUNT.querySelector("#pto-status");
