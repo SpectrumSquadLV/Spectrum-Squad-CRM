@@ -376,6 +376,66 @@ const AS_OF = "2027-02-28";   // a fixed horizon, so the suite does not drift wi
     "a duplicate accrual row was accepted");
 
   // ==================================================================
+  section("A month with no work is not a month with no data");
+  // Per person, Rethink returning nothing is ambiguous: the month may never
+  // have been fetched, or it may have been fetched and the person simply has
+  // no days in it -- on leave, no clients yet, a month of admin. Those were
+  // reported identically, so after a backfill every remaining warning was a
+  // false one. The practice-wide answer settles it.
+  //
+  // These months must belong to this suite alone, or another suite's rows
+  // would make an unfetched month look covered.
+  for (const m of ["2026-03", "2026-04", "2026-05"]) {
+    await pool.query("DELETE FROM rethink_provider_day WHERE month = $1", [m]).catch(() => {});
+  }
+  const quietEmp = await mk("PTO Quiet Month", "2025-11-01");   // accrues from 2026-03-01
+  const peer = await mk("PTO Busy Peer", "2025-11-01");
+  // The peer is what makes March and April "fetched": the practice has data.
+  await workDay(peer, "2026-03-10", 6, 0);
+  await workDay(peer, "2026-04-10", 6, 0);
+  // The subject worked in March only. April is covered but empty for her.
+  // NOBODY has May, so May is genuinely unfetched.
+  await workDay(quietEmp, "2026-03-10", 10, 0);
+
+  const rosterTo = async (to, name) => {
+    const r = await owner("/api/pto/roster?to=" + to);
+    return (r.data.staff || []).find((x) => x.name === name);
+  };
+
+  const toApr = await rosterTo("2026-04-30", "PTO Quiet Month");
+  check("APRIL IS FETCHED AND SHE HAS NO DAYS IN IT — that is no hours worked, not a gap",
+    toApr && toApr.unsynced_months === 0, toApr && toApr.unsynced_months);
+  check("and it is counted as a month with no work", toApr && toApr.no_work_months === 1,
+    toApr && toApr.no_work_months);
+  check("so the balance is NOT provisional", toApr && toApr.estimated === false,
+    toApr && toApr.estimated);
+  check("she accrued on March's ten hours and nothing else",
+    toApr && near(toApr.accrued, 10 * 0.038, 0.005), toApr && toApr.accrued);
+
+  const toMay = await rosterTo("2026-05-31", "PTO Quiet Month");
+  check("MAY WAS NEVER FETCHED BY ANYBODY — that one still warns",
+    toMay && toMay.unsynced_months === 1, toMay && toMay.unsynced_months);
+  check("April is still a no-work month, not folded into the warning",
+    toMay && toMay.no_work_months === 1, toMay && toMay.no_work_months);
+  check("and a genuinely unknown month DOES make the balance provisional",
+    toMay && toMay.estimated === true, toMay && toMay.estimated);
+  check("an unfetched month accrues nothing, exactly as before",
+    toMay && near(toMay.accrued, 10 * 0.038, 0.005), toMay && toMay.accrued);
+
+  // The distinction must survive into the ledger, or the audit view inherits
+  // the same ambiguity it was built to remove.
+  const quietPeriods = (await owner("/api/pto/ledger/" + quietEmp + "?to=2026-04-30")).data;
+  check("the working shows April as synced rather than missing",
+    !!quietPeriods, "no ledger payload");
+
+  // The peer is the control: she is the reason April counts as fetched, so
+  // she must not have picked up a no-work month of her own in March or April.
+  const peerRow = await rosterTo("2026-04-30", "PTO Busy Peer");
+  check("the peer, who worked in both months, has neither flag",
+    peerRow && peerRow.unsynced_months === 0 && peerRow.no_work_months === 0,
+    peerRow && [peerRow.unsynced_months, peerRow.no_work_months]);
+
+  // ==================================================================
   section("It still does not invent a second time-off system");
   const src = require("fs").readFileSync("pto.js", "utf8");
   const tables = (src.match(/CREATE TABLE IF NOT EXISTS [a-z_]+/g) || []).map((t) => t.replace(/.*EXISTS /, ""));
