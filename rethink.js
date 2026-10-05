@@ -2426,6 +2426,128 @@ module.exports = function initRethink(ctx) {
     };
   }
 
+  // ======================= BACKFILLING PAST MONTHS ==========================
+  //
+  // syncSupervisionHours covers ONE month, and the only two things that call
+  // it automatically -- boot and the schedule -- pass no month at all, so it
+  // defaults to the current one. The consequence went unnoticed until PTO
+  // started reading these hours: every month before the one you are standing
+  // in has simply never been fetched. On a practice whose PTO policy starts in
+  // March, that is most of the year missing.
+  //
+  // This walks a range and syncs each month in turn. It is a LOOP AROUND THE
+  // EXISTING SYNC, deliberately -- the per-month work is already written,
+  // already handles its own failures, and already replaces a month's rows
+  // wholesale rather than adding to them. Re-running a month is therefore safe
+  // and re-running the whole range is safe, which is the property that lets
+  // somebody press the button again after a failure without thinking about it.
+  //
+  // SEQUENTIAL, not parallel. This is somebody else's API and a backfill is
+  // the one operation most likely to look like abuse; eight months at once
+  // buys nothing and risks a rate limit that leaves the range half-done.
+
+  // What a run looks like while it is happening. Kept in memory for the live
+  // view and written to rethink_sync_log per month by the sync itself, so a
+  // restart loses the progress bar but never the record of what was synced.
+  let backfillState = null;
+
+  function monthsInRange(from, to) {
+    const out = [];
+    let [y, m] = from.split("-").map(Number);
+    const [ty, tm] = to.split("-").map(Number);
+    while (y < ty || (y === ty && m <= tm)) {
+      out.push(`${y}-${String(m).padStart(2, "0")}`);
+      m++; if (m > 12) { m = 1; y++; }
+      if (out.length > 120) break; // ten years; a guard, not a policy
+    }
+    return out;
+  }
+
+  function backfillStatus() {
+    if (!backfillState) return { running: false, run: null };
+    return { running: backfillState.running, run: { ...backfillState } };
+  }
+
+  async function startBackfill({ from, to, triggeredBy, actor } = {}) {
+    if (backfillState && backfillState.running) {
+      return { ok: false, error: "A backfill is already running.", run: { ...backfillState } };
+    }
+    // THE REQUEST IS CHECKED BEFORE THE INTEGRATION IS. Somebody who asked for
+    // October-to-March should be told their range is backwards, not told about
+    // credentials -- the second answer sends them to look at a configuration
+    // screen over a typo.
+    const isMonth = (v) => /^\d{4}-\d{2}$/.test(String(v || ""));
+    const start = isMonth(from) ? from : "2026-03";
+    const end = isMonth(to) ? to : thisMonth();
+    if (start > end) return { ok: false, error: "The first month is after the last one." };
+    const months = monthsInRange(start, end);
+    if (!months.length) return { ok: false, error: "That range covers no months." };
+    if (!client.configured()) {
+      return { ok: false, error: "Rethink credentials are not configured on the server." };
+    }
+
+    backfillState = {
+      running: true, from: start, to: end, actor: actor || null,
+      total: months.length, done: 0, current: months[0],
+      started_at: nowISO(), finished_at: null,
+      results: [], failed: 0,
+    };
+
+    // Deliberately not awaited: a backfill of a year is minutes of upstream
+    // calls, and holding an HTTP request open for that is how a browser gives
+    // up halfway and leaves somebody unsure whether it is still going. The
+    // caller gets the run id immediately and polls.
+    (async () => {
+      for (const month of months) {
+        backfillState.current = month;
+        let r;
+        try { r = await syncSupervisionHours(triggeredBy || "backfill", month); }
+        catch (e) { r = { ok: false, month, error: client.redact(e.message) }; }
+        backfillState.results.push({
+          month,
+          ok: r && r.ok === true,
+          hours_written: (r && r.hours_written) || 0,
+          appointments_counted: (r && r.appointments_counted) || 0,
+          appointments_seen: (r && r.appointments_seen) || 0,
+          error: r && r.ok === true ? null : ((r && r.error) || "failed"),
+        });
+        if (!(r && r.ok === true)) backfillState.failed++;
+        backfillState.done++;
+      }
+      backfillState.running = false;
+      backfillState.current = null;
+      backfillState.finished_at = nowISO();
+      // Said in the server log as well, because a backfill that half-failed is
+      // something somebody should be able to find later without the browser
+      // tab that started it.
+      const bad = backfillState.results.filter((x) => !x.ok);
+      if (bad.length) {
+        console.error(`[rethink] backfill ${start}..${end}: ${bad.length} of ${months.length} month(s) failed: ` +
+          bad.map((x) => `${x.month} (${x.error})`).join(", "));
+      } else {
+        console.log(`[rethink] backfill ${start}..${end}: ${months.length} month(s) synced.`);
+      }
+    })().catch((e) => {
+      backfillState.running = false;
+      backfillState.finished_at = nowISO();
+      console.error("[rethink] backfill crashed:", e.message);
+    });
+
+    return { ok: true, run: { ...backfillState } };
+  }
+
+  // Which months have no provider-day rows at all, between two dates. This is
+  // what the PTO screen's warning is counting, answered once for the whole
+  // practice so a button can say how much there is to do before it is pressed.
+  async function unsyncedMonths(from, to) {
+    const months = monthsInRange(from, to);
+    const rows = await dbAll(
+      "SELECT DISTINCT month FROM rethink_provider_day WHERE month >= ? AND month <= ?",
+      [from, to]).catch(() => []);
+    const have = new Set(rows.map((r) => r.month));
+    return months.filter((m) => !have.has(m));
+  }
+
   // ======================= 97153 AUTHORIZATIONS ==============
   // Is this row the CPT we track? billingCode is the primary test. When it is
   // blank -- which the field list warns is possible -- we fall back to the
@@ -2873,6 +2995,38 @@ module.exports = function initRethink(ctx) {
 
     if (pathname === "/api/rethink/status" && method === "GET") {
       json(res, 200, await integrationStatus(query && query.month));
+      return true;
+    }
+
+    // THE BACKFILL. Starting one is owner/super_admin, like forcing a sync --
+    // it is the same operation repeated, against somebody else's API.
+    if (pathname === "/api/rethink/backfill" && method === "POST") {
+      if (!canManage(user)) { json(res, 403, { error: "Owner or super admin only." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const out = await startBackfill({
+        from: b && b.from, to: b && b.to, triggeredBy: "backfill",
+        actor: (user && user.email) || null,
+      });
+      json(res, out.ok ? 202 : 400, out);
+      return true;
+    }
+
+    // Progress, and what is missing. Readable by anyone who can see the
+    // integration, because the PTO screen needs the gap count to explain its
+    // own warning and that screen is not owner-only.
+    if (pathname === "/api/rethink/backfill" && method === "GET") {
+      const st = backfillStatus();
+      const from = /^\d{4}-\d{2}$/.test((query && query.from) || "") ? query.from : "2026-03";
+      const to = /^\d{4}-\d{2}$/.test((query && query.to) || "") ? query.to : thisMonth();
+      json(res, 200, {
+        ...st,
+        range: { from, to },
+        // Months with no provider-day rows at all. This is the number the PTO
+        // warning is counting, answered once for the practice rather than
+        // re-derived per employee.
+        missing_months: await unsyncedMonths(from, to),
+        can_run: canManage(user),
+      });
       return true;
     }
 
@@ -3333,6 +3487,7 @@ module.exports = function initRethink(ctx) {
     billableForWeek,
     billableWeeksForMonth,
     billableHoursBetween,
+    startBackfill, backfillStatus, unsyncedMonths, monthsInRange,
     hoursSyncState,
     _billable: { weekStartOf, weekEndOf, classifyBillable, billableRaw },
     scanStaffFromAppointments,
