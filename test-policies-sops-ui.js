@@ -160,6 +160,40 @@ function api(cookie) {
   }
 
   // ------------------------------------------------------------------
+  section("Photos on an SOP");
+  // Asserted while the OWNER is still signed in -- the upload door is behind
+  // canPolicyEdit, so checking it from the staff session below would prove
+  // only that it is absent, which is a different claim.
+  await openPolicies();
+  const sopDoor = await page.$('[data-pol-kind="sop"]');
+  if (sopDoor) { await sopDoor.click(); await page.waitForTimeout(900); }
+  const firstSop = await page.$("[data-pol-open]");
+  if (firstSop) {
+    await firstSop.click();
+    await page.waitForSelector(".pol-read", { timeout: 10000 });
+    const reader = (await page.innerText(".modal-backdrop")).replace(/\s+/g, " ");
+    check("the reader has a Photos section", /Photos/i.test(reader), reader.slice(0, 700));
+    check("AND THE OWNER IS OFFERED A WAY TO ADD THEM", !!(await page.$("#pol-r-photo")));
+    check("with a line saying why a photo earns its place in a procedure",
+      /worth a paragraph|makes the rule clearer/i.test(reader), reader.slice(0, 1000));
+    await page.click("#pol-r-photo");
+    await page.waitForSelector("#pol-ph-files", { timeout: 10000 });
+    const up = (await page.innerText(".modal-backdrop")).replace(/\s+/g, " ");
+    check("THE UPLOAD SCREEN ASKS WHICH STEP EACH PHOTO BELONGS TO, not just for files",
+      /step/i.test(up), up.slice(0, 600));
+    check("and says that is what makes it part of the procedure",
+      /part of the procedure|rather than as a gallery/i.test(up), up.slice(0, 700));
+    check("the file input takes images only",
+      ((await page.getAttribute("#pol-ph-files", "accept")) || "").includes("image"),
+      await page.getAttribute("#pol-ph-files", "accept"));
+    check("and more than one at a time",
+      (await page.getAttribute("#pol-ph-files", "multiple")) !== null);
+    await page.evaluate(() => { const b = document.querySelector(".modal-backdrop .close-btn"); if (b) b.click(); });
+    await page.waitForTimeout(400);
+  } else {
+    check("an SOP exists to illustrate", false, "no SOP card found behind the SOP door");
+  }
+
   section("Staff read, admins write");
   {
     await page.keyboard.press("Escape").catch(() => {});
@@ -174,6 +208,7 @@ function api(cookie) {
     await page.waitForTimeout(1000);
     check("...nor to edit the one they opened", !(await page.$("#pol-r-edit")));
     check("...nor to link it", !(await page.$("#pol-r-link")));
+    check("...NOR TO ADD PHOTOS, which is editing the procedure", !(await page.$("#pol-r-photo")));
   }
 
   check("no page errors anywhere in this run", errors.length === 0, errors.join(" | "));

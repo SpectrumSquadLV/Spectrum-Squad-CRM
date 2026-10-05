@@ -869,6 +869,26 @@
         <div style="display:flex; flex-direction:column; gap:4px; font-size:12.5px;">
           ${pol.attachments.map((a) => `<div>▤ ${esc(a.title)}${a.filename ? ` <span style="color:#9aa0ad;">${esc(a.filename)}</span>` : ""}</div>`).join("")}
         </div></div>` : ""}
+      ${(pol.photos || []).length || d.can_edit ? `<div style="margin-top:16px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+          <div style="font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:#6b7280; font-weight:700;">
+            Photos${(pol.photos || []).length ? ` (${pol.photos.length})` : ""}</div>
+          ${d.can_edit ? `<button class="btn small secondary" id="pol-r-photo">+ Add photos</button>` : ""}
+        </div>
+        ${(pol.photos || []).length ? `<div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px;">
+          ${pol.photos.map((ph) => `<figure style="margin:0;">
+            <img src="/api/policies/photo/${ph.id}" alt="${esc(ph.caption || ph.step_ref || "SOP photo")}"
+              data-photo-open="${ph.id}"
+              style="width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:8px; border:1px solid var(--border); cursor:zoom-in; background:#f3f4f6;" />
+            ${ph.step_ref ? `<figcaption style="font-size:11px; font-weight:700; color:#0f766e; margin-top:4px;">${esc(ph.step_ref)}</figcaption>` : ""}
+            ${ph.caption ? `<figcaption style="font-size:11.5px; color:#6b7280; line-height:1.4;">${esc(ph.caption)}</figcaption>` : ""}
+            ${d.can_edit ? `<button class="btn small secondary" data-photo-del="${ph.id}" style="margin-top:4px; font-size:11px;">Remove</button>` : ""}
+          </figure>`).join("")}
+        </div>`
+        : `<div style="font-size:12.5px; color:#9aa0ad;">No photos yet. ${isSop
+            ? "A photograph of what a step looks like when it is right is worth a paragraph describing it."
+            : "Photos can be added if an image makes the rule clearer."}</div>`}
+      </div>` : ""}
       ${(pol.revisions || []).length ? `<details style="margin-top:16px;">
         <summary style="font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:#6b7280; font-weight:700; cursor:pointer;">
           Revision history (${pol.revisions.length})</summary>
@@ -919,6 +939,25 @@
       }
     }));
     rOn("#pol-r-link", () => { close(); linkModal(pol, d, mount); });
+    rOn("#pol-r-photo", () => { close(); photoModal(pol, mount); });
+    // Full size on click. A thumbnail of a wiring diagram or a label is not a
+    // thing anybody can read, and the whole reason for the photo is that it
+    // shows a detail the words cannot.
+    bd.querySelectorAll("[data-photo-open]").forEach((img) => img.addEventListener("click", () => {
+      const full = document.createElement("div");
+      full.className = "modal-backdrop";
+      full.style.cursor = "zoom-out";
+      full.innerHTML = `<img src="/api/policies/photo/${img.getAttribute("data-photo-open")}"
+        style="max-width:92vw; max-height:92vh; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,.4);" />`;
+      full.addEventListener("click", () => full.remove());
+      document.body.appendChild(full);
+    }));
+    bd.querySelectorAll("[data-photo-del]").forEach((b) => b.addEventListener("click", async () => {
+      if (!confirm("Remove this photo from the record?")) return;
+      try { await api("/api/policies/photos/" + b.getAttribute("data-photo-del"), { method: "DELETE" });
+            close(); renderPolicies(mount); }
+      catch (e) { alert(e.message); }
+    }));
     rOn("#pol-r-amend", () => { close(); amendmentModal(pol, null, mount); });
     rOn("#pol-r-send", () => { close(); sendToStaffModal(pol, mount); });
     bd.querySelectorAll("[data-amend-edit]").forEach((b) => b.addEventListener("click", () => {
@@ -1302,6 +1341,104 @@
         res.textContent = `Moved ${out.moved}.` + (out.failed ? ` ${out.failed} could not be moved.` : "");
         setTimeout(() => { close(); renderPolicies(mount); }, 900);
       } catch (e) { apply.disabled = false; res.textContent = e.message; }
+    });
+  }
+
+  // ADDING PHOTOS TO AN SOP.
+  //
+  // The point of this is not a gallery. It is that a procedure written in
+  // prose often cannot say the thing a photograph says in one glance -- which
+  // cupboard, which switch, what "set up correctly" actually looks like. So
+  // each photo carries a STEP REFERENCE as well as a caption, and the step is
+  // what makes the difference between illustration and documentation.
+  //
+  // Files are read in the browser and posted as base64, the same way the
+  // supply and maintenance attachments already work.
+  function photoModal(pol, mount) {
+    const bd = document.createElement("div");
+    bd.className = "modal-backdrop";
+    bd.innerHTML = `<div class="modal" style="max-width:620px;">
+      <div class="modal-header"><div>
+        <h2>Add photos</h2>
+        <div style="font-size:12.5px;color:var(--text-muted);">${esc(pol.title)}</div>
+      </div><button class="close-btn">&times;</button></div>
+      <div style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:10px;padding:10px 12px;
+        margin-bottom:12px;font-size:12.5px;color:#115e59;line-height:1.55;">
+        A photograph of what a step looks like when it is done right saves a paragraph describing it.
+        Tag each one with the step it belongs to and it reads as part of the procedure rather than as a gallery at the end.
+      </div>
+      <div class="field"><label>Choose photos</label>
+        <input type="file" id="pol-ph-files" accept="image/*" multiple /></div>
+      <div id="pol-ph-list" style="display:flex;flex-direction:column;gap:10px;margin:10px 0;"></div>
+      <div><button class="btn" id="pol-ph-save" disabled>Add</button>
+        <span id="pol-ph-res" style="font-size:12.5px;color:var(--text-muted);margin-left:8px;"></span></div>
+    </div>`;
+    document.body.appendChild(bd);
+    const close = () => bd.remove();
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+
+    let picked = [];
+    const input = bd.querySelector("#pol-ph-files");
+    const list = bd.querySelector("#pol-ph-list");
+    const save = bd.querySelector("#pol-ph-save");
+
+    input.addEventListener("change", () => {
+      const files = Array.from(input.files || []).slice(0, 20);
+      picked = [];
+      list.innerHTML = "";
+      files.forEach((f, i) => {
+        const fr = new FileReader();
+        fr.onload = () => {
+          picked[i] = { filename: f.name, mime_type: f.type, data_base64: String(fr.result).split(",")[1] || "" };
+          save.disabled = false;
+        };
+        fr.readAsDataURL(f);
+        const row = document.createElement("div");
+        row.style.cssText = "display:grid;grid-template-columns:72px 1fr;gap:10px;align-items:start;";
+        row.innerHTML = `<img src="${URL.createObjectURL(f)}"
+            style="width:72px;height:56px;object-fit:cover;border-radius:6px;border:1px solid var(--border);" />
+          <div>
+            <input data-i="${i}" class="pol-ph-step" placeholder="Which step? e.g. Step 3"
+              style="width:100%;margin-bottom:5px;" />
+            <input data-i="${i}" class="pol-ph-cap" placeholder="Caption — what this shows"
+              style="width:100%;" />
+          </div>`;
+        list.appendChild(row);
+      });
+    });
+
+    save.addEventListener("click", async () => {
+      const res = bd.querySelector("#pol-ph-res");
+      const steps = Array.from(bd.querySelectorAll(".pol-ph-step"));
+      const caps = Array.from(bd.querySelectorAll(".pol-ph-cap"));
+      const ready = picked.filter(Boolean);
+      if (!ready.length) { res.textContent = "Still reading the files — try again in a moment."; return; }
+      save.disabled = true;
+      let done = 0;
+      const failed = [];
+      for (let i = 0; i < picked.length; i++) {
+        const p = picked[i];
+        if (!p) continue;
+        res.textContent = `Uploading ${done + 1} of ${ready.length}…`;
+        try {
+          await api("/api/policies/" + pol.id + "/photos", { method: "POST", body: {
+            ...p,
+            step_ref: (steps[i] && steps[i].value) || "",
+            caption: (caps[i] && caps[i].value) || "",
+          } });
+          done++;
+        } catch (e) { failed.push((p.filename || "a photo") + ": " + e.message); }
+      }
+      // Failures are named, not folded into the total. "4 of 6" with no
+      // indication of which two is a message nobody can act on.
+      if (failed.length) {
+        save.disabled = false;
+        res.innerHTML = `Added ${done}. <span style="color:#a3282e;">Not added: ${esc(failed.join("; "))}</span>`;
+        return;
+      }
+      close();
+      renderPolicies(mount);
     });
   }
 

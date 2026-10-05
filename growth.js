@@ -8,10 +8,20 @@
 
 // Telling a policy from an SOP, for records created before the two-library
 // split, which set every one of them to 'policy'. Proposes; never writes.
+const fs = require("fs");
+const path = require("path");
 const policyKind = require("./policy-kind");
 
 module.exports = function initGrowth(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, crypto, readBody, json, extractPdfLines, unzip } = ctx;
+
+  // Where SOP photographs live. On disk, like the supply and maintenance
+  // attachments, rather than base64 in a row: a procedure illustrated properly
+  // runs to a dozen photos, and a library of those inside the policy table
+  // would make every list query drag them along.
+  const POLICY_FILES_DIR = path.join(__dirname, "data", "policy-photos");
+  try { if (!fs.existsSync(POLICY_FILES_DIR)) fs.mkdirSync(POLICY_FILES_DIR, { recursive: true }); }
+  catch (e) { console.error("[growth] policy-photos dir:", e.message); }
   // Optional deps for contract management (item 10/11). Fall back gracefully so
   // the module still loads if a host wires it the old way.
   const sendEmail = ctx.sendEmail || (async () => {});
@@ -523,6 +533,35 @@ module.exports = function initGrowth(ctx) {
     )`).catch((e) => console.error("crm_policy_attachments:", e.message));
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_pol_attach_policy ON crm_policy_attachments(policy_id)`).catch(() => {});
 
+    // PHOTOGRAPHS ON AN SOP.
+    //
+    // Separate from crm_policy_attachments, which links a record to a DOCUMENT
+    // in the library -- and that uploader deliberately refuses anything whose
+    // text does not read as prose, because its job is to stop garbled PDFs
+    // entering the library. A photograph has no text at all and would be
+    // refused by exactly the guard that is protecting the policy text, so it
+    // needs its own door rather than a hole cut in that one.
+    //
+    // step_ref is the point of the feature. "Photo 3 of 7" is a gallery;
+    // "this is what step 4 looks like when it is right" is a procedure
+    // somebody can follow. It is free text, not a foreign key, because SOP
+    // steps are prose and numbering them in the database would be inventing a
+    // structure the documents do not have.
+    await dbRun(`CREATE TABLE IF NOT EXISTS crm_policy_photos (
+      id SERIAL PRIMARY KEY,
+      policy_id INTEGER NOT NULL,
+      stored_name TEXT NOT NULL,
+      original_name TEXT,
+      mime_type TEXT,
+      bytes INTEGER,
+      caption TEXT,
+      step_ref TEXT,
+      sort_order INTEGER DEFAULT 0,
+      uploaded_by TEXT,
+      uploaded_at TEXT NOT NULL
+    )`).catch((e) => console.error("crm_policy_photos:", e.message));
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_pol_photo_policy ON crm_policy_photos(policy_id, sort_order, id)").catch(() => {});
+
     // What changed, when, and who did it. Distinct from an amendment memo:
     // a memo changes the RULE and is published to staff, while a revision is
     // the editorial record of the document itself -- including the typo fix
@@ -929,6 +968,37 @@ module.exports = function initGrowth(ctx) {
         const rows = await dbAll("SELECT id, title, category, slug, color, summary, updated_at FROM crm_policies WHERE published = TRUE ORDER BY category, title");
         return json(res, 200, rows);
       }
+      // THE IMAGE ITSELF.
+      //
+      // Reachable without a session only when its record is PUBLISHED --
+      // which is the same test the public page already applies to the text.
+      // An unpublished draft's photographs are no more public than its words,
+      // and the check is on the parent record rather than on the photo so the
+      // two can never disagree.
+      const photoFile = pathname.match(/^\/api\/policies\/photo\/(\d+)$/);
+      if (photoFile && method === "GET") {
+        const ph = await dbGet(
+          `SELECT ph.stored_name, ph.mime_type, ph.original_name, p.published
+             FROM crm_policy_photos ph JOIN crm_policies p ON p.id = ph.policy_id
+            WHERE ph.id = ?`, [Number(photoFile[1])]);
+        if (!ph) return json(res, 404, { error: "No such photo." });
+        if (!(ph.published === true || ph.published === "t") && !user) {
+          return json(res, 401, { error: "Not authenticated" });
+        }
+        let buf;
+        try { buf = fs.readFileSync(path.join(POLICY_FILES_DIR, ph.stored_name)); }
+        catch (e) { return json(res, 404, { error: "That photo is no longer on file." }); }
+        res.writeHead(200, {
+          "Content-Type": ph.mime_type || "image/jpeg",
+          "Content-Length": buf.length,
+          // Immutable: the stored name is random and a photo is never
+          // rewritten in place, so a cached copy can never be the wrong one.
+          "Cache-Control": "public, max-age=31536000, immutable",
+        });
+        res.end(buf);
+        return true;
+      }
+
       const pubOne = pathname.match(/^\/api\/policies\/public\/([a-z0-9-]+)$/);
       if (pubOne && method === "GET") {
         const p = await dbGet("SELECT id, title, category, body, slug, color, updated_at FROM crm_policies WHERE slug = ? AND published = TRUE", [pubOne[1]]);
@@ -940,7 +1010,10 @@ module.exports = function initGrowth(ctx) {
           "SELECT * FROM crm_policy_amendments WHERE policy_id = ? ORDER BY COALESCE(effective_date, created_at), id",
           [p.id]
         ).catch(() => []);
-        return json(res, 200, { ...p, amendments: groupAmendments(pubAmend).in_force });
+        const pubPhotos = await dbAll(
+          `SELECT id, caption, step_ref FROM crm_policy_photos
+            WHERE policy_id = ? ORDER BY sort_order, id`, [p.id]).catch(() => []);
+        return json(res, 200, { ...p, amendments: groupAmendments(pubAmend).in_force, photos: pubPhotos });
       }
 
       if (!user) return json(res, 401, { error: "Not authenticated" });
@@ -1139,6 +1212,19 @@ module.exports = function initGrowth(ctx) {
           attachBy.get(a.policy_id).push({ id: a.id, title: a.title, filename: a.filename, type: a.doc_type });
         });
 
+        // Photographs, keyed the same way. Metadata only -- the bytes are
+        // fetched per image by the reader, so a library of 70 records with
+        // illustrated SOPs does not pull megabytes through one list call.
+        const photoRows = await dbAll(
+          `SELECT id, policy_id, caption, step_ref, original_name, sort_order
+             FROM crm_policy_photos ORDER BY policy_id, sort_order, id`).catch(() => []);
+        const photoBy = new Map();
+        photoRows.forEach((ph) => {
+          if (!photoBy.has(ph.policy_id)) photoBy.set(ph.policy_id, []);
+          photoBy.get(ph.policy_id).push({ id: ph.id, caption: ph.caption, step_ref: ph.step_ref,
+                                           filename: ph.original_name });
+        });
+
         const revRows = await dbAll(
           "SELECT policy_id, version, summary, changed_by, changed_at FROM crm_policy_revisions ORDER BY changed_at DESC, id DESC"
         ).catch(() => []);
@@ -1199,6 +1285,7 @@ module.exports = function initGrowth(ctx) {
             purpose: p.purpose || null,
             related: relatedOf(p),
             attachments: attachBy.get(p.id) || [],
+            photos: photoBy.get(p.id) || [],
             revisions: revBy.get(p.id) || [],
           };
         });
@@ -2043,6 +2130,95 @@ module.exports = function initGrowth(ctx) {
         return json(res, 200, { ok: true, moved, failed: failed.length });
       }
 
+      // ---- PHOTOGRAPHS ON AN SOP -----------------------------------------
+      const photoList = pathname.match(/^\/api\/policies\/(\d+)\/photos$/);
+      if (photoList && method === "POST") {
+        // Uploading is editing the SOP, so it follows canPolicyEdit rather
+        // than the operational tier.
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
+        const id = Number(photoList[1]);
+        const pol = await dbGet("SELECT id FROM crm_policies WHERE id = ?", [id]);
+        if (!pol) return json(res, 404, { error: "That record no longer exists." });
+        const b = await readBody(req);
+        const raw = String((b && b.data_base64) || "");
+        if (!raw) return json(res, 400, { error: "No image provided." });
+
+        const mime = String((b && b.mime_type) || "").toLowerCase();
+        // An allow-list, not a block-list. These are files the CRM will serve
+        // back to a browser, and serving an arbitrary uploaded type is how a
+        // photo upload becomes a way to host anything at all.
+        const ALLOWED = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
+        if (!ALLOWED.includes(mime)) {
+          return json(res, 400, { error: "That file is not a photo. JPEG, PNG, WebP, GIF or HEIC." });
+        }
+        let buf;
+        try {
+          const ci = raw.indexOf(",");
+          buf = Buffer.from(raw.startsWith("data:") && ci >= 0 ? raw.slice(ci + 1) : raw, "base64");
+        } catch (e) { return json(res, 400, { error: "Could not read that image." }); }
+        if (!buf.length) return json(res, 400, { error: "That image was empty." });
+        if (buf.length > 12 * 1024 * 1024) return json(res, 400, { error: "That photo is over 12 MB. Please use a smaller one." });
+
+        const stored = crypto.randomBytes(16).toString("hex") +
+          (mime === "image/png" ? ".png" : mime === "image/webp" ? ".webp" : mime === "image/gif" ? ".gif" : ".jpg");
+        try { fs.writeFileSync(path.join(POLICY_FILES_DIR, stored), buf); }
+        catch (e) { console.error("[growth] photo write:", e.message); return json(res, 500, { error: "Could not save that photo." }); }
+
+        const next = await dbGet("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM crm_policy_photos WHERE policy_id = ?", [id]);
+        const row = await dbGet(
+          `INSERT INTO crm_policy_photos
+             (policy_id, stored_name, original_name, mime_type, bytes, caption, step_ref, sort_order, uploaded_by, uploaded_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          [id, stored, String((b && b.filename) || "photo").slice(0, 200), mime, buf.length,
+           String((b && b.caption) || "").trim().slice(0, 300) || null,
+           String((b && b.step_ref) || "").trim().slice(0, 80) || null,
+           (next && next.n) || 1, (user && user.name) || null, nowISO()]
+        );
+        await dbRun(
+          `INSERT INTO crm_policy_revisions (policy_id, summary, changed_by, changed_at) VALUES (?, ?, ?, ?)`,
+          [id, "Photo added" + ((b && b.step_ref) ? ` (${String(b.step_ref).slice(0, 40)})` : ""),
+           (user && user.name) || null, nowISO()]
+        ).catch(() => {});
+        return json(res, 201, { ok: true, id: row.id });
+      }
+
+      if (photoList && method === "GET") {
+        const id = Number(photoList[1]);
+        const rows = await dbAll(
+          `SELECT id, original_name, mime_type, bytes, caption, step_ref, sort_order, uploaded_by, uploaded_at
+             FROM crm_policy_photos WHERE policy_id = ? ORDER BY sort_order, id`, [id]).catch(() => []);
+        return json(res, 200, { photos: rows });
+      }
+
+      const photoOne = pathname.match(/^\/api\/policies\/photos\/(\d+)$/);
+      if (photoOne && method === "PATCH") {
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const sets = [], args = [];
+        if (b.caption !== undefined) { sets.push("caption = ?"); args.push(String(b.caption).trim().slice(0, 300) || null); }
+        if (b.step_ref !== undefined) { sets.push("step_ref = ?"); args.push(String(b.step_ref).trim().slice(0, 80) || null); }
+        if (b.sort_order !== undefined) { sets.push("sort_order = ?"); args.push(Number(b.sort_order) || 0); }
+        if (!sets.length) return json(res, 400, { error: "Nothing to update." });
+        await dbRun(`UPDATE crm_policy_photos SET ${sets.join(", ")} WHERE id = ?`, [...args, Number(photoOne[1])]);
+        return json(res, 200, { ok: true });
+      }
+
+      if (photoOne && method === "DELETE") {
+        if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
+        const pid = Number(photoOne[1]);
+        const r = await dbGet("SELECT policy_id, stored_name FROM crm_policy_photos WHERE id = ?", [pid]);
+        if (!r) return json(res, 404, { error: "No such photo." });
+        await dbRun("DELETE FROM crm_policy_photos WHERE id = ?", [pid]);
+        // The row goes first and the file after: an orphaned file on disk is
+        // harmless, whereas a row pointing at a file that is gone renders as a
+        // broken image in the middle of a procedure.
+        try { fs.unlinkSync(path.join(POLICY_FILES_DIR, r.stored_name)); } catch (e) { /* already gone */ }
+        await dbRun(
+          `INSERT INTO crm_policy_revisions (policy_id, summary, changed_by, changed_at) VALUES (?, ?, ?, ?)`,
+          [r.policy_id, "Photo removed", (user && user.name) || null, nowISO()]).catch(() => {});
+        return json(res, 200, { ok: true });
+      }
+
       const attachMatch = pathname.match(/^\/api\/policies\/(\d+)\/attachments$/);
       if (attachMatch && method === "POST") {
         if (!canPolicyEdit(user)) return json(res, 403, { error: "Not permitted" });
@@ -2185,6 +2361,15 @@ module.exports = function initGrowth(ctx) {
   .memo-t{font-weight:700;color:var(--navy);margin-bottom:6px;}
   .memo-b{font-size:12px;color:var(--muted);margin-top:8px;}
   .orig{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border-top:1px solid var(--line);padding-top:12px;margin-bottom:10px;}
+  .photos{margin-top:20px;border-top:1px solid var(--line);padding-top:14px;}
+  .photos-h{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;}
+  .photo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;}
+  .shot{margin:0;}
+  .shot img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:10px;border:1px solid var(--line);background:#eef0f6;cursor:zoom-in;display:block;}
+  .shot .step{font-size:11.5px;font-weight:700;color:#0f766e;margin-top:5px;white-space:normal;}
+  .shot .cap{font-size:12px;color:var(--muted);line-height:1.45;white-space:normal;}
+  .lightbox{position:fixed;inset:0;background:rgba(15,23,42,.88);display:flex;align-items:center;justify-content:center;z-index:999;cursor:zoom-out;padding:16px;}
+  .lightbox img{max-width:96vw;max-height:96vh;border-radius:10px;}
 </style></head>
 <body>
 <div class="wrap" id="app"><p style="text-align:center;color:#64748b;">Loading…</p></div>
@@ -2237,7 +2422,30 @@ module.exports = function initGrowth(ctx) {
           +'<div class="memo-t">'+esc(a.title)+'</div>'+esc(a.body)
           +(a.created_by?'<div class="memo-b">Issued by '+esc(a.created_by)+'</div>':'')+'</div>';
       }).join("");
-      app.innerHTML=header()+'<button class="back" id="back">← All policies</button><div class="body" style="border-top:6px solid '+colorOf(p)+'"><h2><span class="dot" style="background:'+colorOf(p)+'"></span>'+esc(p.title)+'</h2><div style="color:#64748b;font-size:12px;margin-bottom:12px;">'+esc(p.category||"")+' · '+esc(when(p.updated_at))+'</div>'+memos+(memos?'<div class="orig">Original policy text — read the amendment(s) above, which take precedence.</div>':'')+esc(p.body)+'</div>';
+      // Photographs, after the text. This is the screen somebody actually
+      // reads an SOP on -- a phone, standing in front of the thing the
+      // procedure is about -- so a picture of what a step should look like
+      // belongs here more than anywhere in the CRM.
+      var photos=(p.photos||[]).length
+        ? '<div class="photos"><div class="photos-h">Photos</div><div class="photo-grid">'
+          +(p.photos||[]).map(function(ph){
+            return '<figure class="shot"><img src="/api/policies/photo/'+ph.id+'" loading="lazy" alt="'+esc(ph.caption||ph.step_ref||"")+'"/>'
+              +(ph.step_ref?'<figcaption class="step">'+esc(ph.step_ref)+'</figcaption>':'')
+              +(ph.caption?'<figcaption class="cap">'+esc(ph.caption)+'</figcaption>':'')
+              +'</figure>';
+          }).join("")+'</div></div>'
+        : '';
+      app.innerHTML=header()+'<button class="back" id="back">← All policies</button><div class="body" style="border-top:6px solid '+colorOf(p)+'"><h2><span class="dot" style="background:'+colorOf(p)+'"></span>'+esc(p.title)+'</h2><div style="color:#64748b;font-size:12px;margin-bottom:12px;">'+esc(p.category||"")+' · '+esc(when(p.updated_at))+'</div>'+memos+(memos?'<div class="orig">Original policy text — read the amendment(s) above, which take precedence.</div>':'')+esc(p.body)+photos+'</div>';
+      // Tap to enlarge. A thumbnail of a label or a dial is not readable, and
+      // the detail is the reason the photo is there at all.
+      Array.prototype.forEach.call(document.querySelectorAll(".shot img"),function(im){
+        im.addEventListener("click",function(){
+          var o=document.createElement("div");o.className="lightbox";
+          o.innerHTML='<img src="'+im.getAttribute("src")+'"/>';
+          o.addEventListener("click",function(){o.remove();});
+          document.body.appendChild(o);
+        });
+      });
       document.getElementById("back").addEventListener("click",function(){history.pushState({},"","/policies");showList();});
     }).catch(function(){app.innerHTML=header()+'<button class="back" id="back">← All policies</button><p style="text-align:center;color:#b91c1c;">Policy not found.</p>';var b=document.getElementById("back");if(b)b.addEventListener("click",function(){history.pushState({},"","/policies");showList();});});
   }
