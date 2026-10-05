@@ -208,6 +208,17 @@
         + '<span id="pto-status" style="font-size:12.5px;color:var(--text-muted);"></span>'
       + '</div>'
 
+      // THE PRIMARY ACTION, ABOVE THE TABLE. It sat underneath the roster
+      // until the owner went looking for it and could not find it: on a
+      // practice with forty staff that is the length of the page away from
+      // where anybody would look for the one button that does something.
+      + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#f8fafc;'
+        + 'border:1px solid var(--border,#e5e7eb);border-radius:10px;padding:12px 14px;margin:0 0 16px;">'
+        + '<button class="btn" id="pto-preview">Recalculate from source…</button>'
+        + '<span style="font-size:12.5px;color:#6b7280;">Rebuilds every balance from Rethink hours, the 90-day rule '
+          + 'and the 1 March 2026 start. <strong>Shows what would change before anything is written.</strong></span>'
+      + '</div>'
+
       // overflow-x:auto, NOT hidden. The audit view needs eight columns and
       // `hidden` does exactly what it says -- on a narrow window the right-hand
       // columns are clipped away with no scrollbar to reveal them, and the
@@ -231,8 +242,7 @@
       + '<p style="font-size:12px;color:var(--text-muted);margin-top:12px;max-width:800px;">'
       + 'A balance is accrued − taken + adjustments. Nothing here writes to payroll; it is a record for a person to act on. '
       + 'Use an adjustment to carry in an opening balance or correct a figure — every adjustment needs a reason.</p>'
-      + '<div style="margin-top:12px;"><button class="btn secondary" id="pto-preview">Recalculate from source…</button>'
-        + '<span style="font-size:11.5px;color:#6b7280;margin-left:8px;">Shows what would change before anything is written.</span></div>';
+      ;
 
     wire();
   }
