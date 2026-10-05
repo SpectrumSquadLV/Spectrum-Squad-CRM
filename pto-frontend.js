@@ -46,10 +46,22 @@
     // hours -- so what the badge has to say now is whether Rethink has sent
     // everything for the period, because an unsynced month is the one thing
     // that can still move a balance.
+    // A MONTH WITH NO WORK IS NOT A MONTH WITH NO DATA, and the amber badge
+    // used to claim both. Rethink returns nothing for somebody on leave, not
+    // yet carrying clients, or doing a month of admin -- indistinguishable,
+    // per person, from a month nobody fetched. It is distinguishable
+    // practice-wide, so it is now distinguished: amber only where the hours
+    // are genuinely unknown, and a quiet grey note where they are known to be
+    // none. Warning about something nobody can act on is how a real warning
+    // stops being read.
     var basis = r.unsynced_months
       ? '<span title="' + esc(r.hours_basis_detail || "") + '" style="background:#fef3c7;color:#92400e;font-weight:700;font-size:11px;padding:2px 8px;border-radius:999px;">'
         + r.unsynced_months + ' month(s) not synced</span>'
-      : '<span title="' + esc(r.hours_basis_detail || "") + '" style="background:#dcfce7;color:#166534;font-weight:700;font-size:11px;padding:2px 8px;border-radius:999px;">Rethink</span>';
+      : '<span title="' + esc(r.hours_basis_detail || "") + '" style="background:#dcfce7;color:#166534;font-weight:700;font-size:11px;padding:2px 8px;border-radius:999px;">Rethink</span>'
+        + (r.no_work_months
+          ? '<div title="Rethink has these months and lists no days for this person." style="font-size:11px;color:var(--text-muted);margin-top:3px;">'
+            + r.no_work_months + ' month(s) with no hours worked</div>'
+          : '');
 
     if (r.not_yet_eligible) {
       return '<tr style="border-top:1px solid var(--border,#eef0f4);">'

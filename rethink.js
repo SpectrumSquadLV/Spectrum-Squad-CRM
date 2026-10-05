@@ -2548,6 +2548,45 @@ module.exports = function initRethink(ctx) {
     return months.filter((m) => !have.has(m));
   }
 
+  // HAS THE PRACTICE GOT DATA FOR THE MONTHS THIS RANGE TOUCHES?
+  //
+  // This exists to separate two things that looked identical on the PTO
+  // screen and are not remotely the same fact:
+  //
+  //   "nobody has ever fetched this month"   -> hours unknown, warn
+  //   "this month is fetched and this person has no days in it" -> no work
+  //
+  // billableHoursBetween answers per PERSON, and absence there is ambiguous:
+  // somebody on leave, not yet carrying clients, or doing a month of admin
+  // has no provider rows and reads exactly like a month that was never
+  // synced. After a backfill that is the ONLY thing left reading that way,
+  // which made every remaining warning a false one.
+  //
+  // Practice-wide month coverage is the missing half. If the month came back
+  // from Rethink for anybody at all, it came back; a person with nothing in
+  // it worked nothing, and that is a measurement rather than a gap.
+  //
+  // EVERY touched month must be present, not merely one of them. A period
+  // straddling two months where only the first was fetched is still a period
+  // with unknown hours in it, and `some` would call that covered.
+  async function practiceCoversRange(from, to) {
+    if (!from || !to) return false;
+    const a = String(from).slice(0, 7);
+    const b = String(to).slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(a) || !/^\d{4}-\d{2}$/.test(b) || a > b) return false;
+    const months = monthsInRange(a, b);
+    if (!months.length) return false;
+    const rows = await dbAll(
+      "SELECT DISTINCT month FROM rethink_provider_day WHERE month >= ? AND month <= ?",
+      [a, b]
+    ).catch(() => null);
+    // A failed query is not evidence of coverage. Returning false keeps the
+    // cautious answer -- "not synced" -- rather than inventing a zero.
+    if (!rows) return false;
+    const have = new Set(rows.map((r) => r.month));
+    return months.every((m) => have.has(m));
+  }
+
   // ======================= 97153 AUTHORIZATIONS ==============
   // Is this row the CPT we track? billingCode is the primary test. When it is
   // blank -- which the field list warns is possible -- we fall back to the
@@ -3488,6 +3527,7 @@ module.exports = function initRethink(ctx) {
     billableWeeksForMonth,
     billableHoursBetween,
     startBackfill, backfillStatus, unsyncedMonths, monthsInRange,
+    practiceCoversRange,
     hoursSyncState,
     _billable: { weekStartOf, weekEndOf, classifyBillable, billableRaw },
     scanStaffFromAppointments,
