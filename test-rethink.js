@@ -750,6 +750,69 @@ const initRethink = require("./rethink");
     check("'Billable - Direct' is billable", cls("Billable - Direct") === true);
     check("an unrecognised label is null, never assumed billable", cls("Cancellation") === null);
     check("a blank label is null", cls("") === null);
+
+    // ---- THE ANSWER THE WORD-MATCH COULD NEVER REACH --------------------
+    // Real appointment types are called "Parent Training", not "Billable -
+    // Parent Training". No amount of reading the string discovers which side
+    // it belongs on; somebody who knows has to say.
+    const MAP = { billable_values: ["Parent Training", "Direct Therapy"],
+                  nonbillable_values: ["Drive Time"] };
+    check("A MAPPED TYPE IS BILLABLE EVEN THOUGH ITS NAME NEVER SAYS SO",
+      cls("Parent Training", MAP) === true, cls("Parent Training", MAP));
+    check("and a mapped non-billable type is non-billable",
+      cls("Drive Time", MAP) === false, cls("Drive Time", MAP));
+    check("matching ignores case and surrounding space, like every other filter here",
+      cls("  parent training ", MAP) === true, cls("  parent training ", MAP));
+    check("a type nobody mapped is STILL unclassified — the map does not become a guess",
+      cls("Team Meeting", MAP) === null, cls("Team Meeting", MAP));
+    check("THE WORD-MATCH SURVIVES UNDERNEATH, so an install that never opens the picker is unchanged",
+      cls("Billable - Direct", MAP) === true && cls("Non-Billable Admin", MAP) === false,
+      [cls("Billable - Direct", MAP), cls("Non-Billable Admin", MAP)]);
+    check("and the map OVERRIDES the word-match where they disagree",
+      cls("Billable - Travel", { billable_values: [], nonbillable_values: ["Billable - Travel"] }) === false,
+      "a label containing 'billable' was not overridden by an explicit non-billable mapping");
+    // A value in both lists has to resolve somewhere, and the safe direction
+    // is the one that does not inflate a requirement figure.
+    check("a value in both lists resolves to non-billable, never billable",
+      cls("Odd", { billable_values: ["Odd"], nonbillable_values: ["Odd"] }) === false,
+      cls("Odd", { billable_values: ["Odd"], nonbillable_values: ["Odd"] }));
+    check("no config at all behaves exactly as before",
+      cls("Parent Training") === null && cls("Billable - Direct") === true,
+      [cls("Parent Training"), cls("Billable - Direct")]);
+  }
+
+  // ---- THE MAP CHANGES WHAT A SYNC WRITES --------------------------------
+  // The unit checks above prove the rule; this proves the rule is actually
+  // the one the sync uses. A classifier that is right in isolation and never
+  // consulted is worth nothing.
+  {
+    const { state, ctx } = makeDb({
+      now: NOW,
+      config: { ...CONFIRMED,
+                billable_values: JSON.stringify(["Parent Training"]),
+                nonbillable_values: JSON.stringify(["Drive Time"]) },
+      employees: [{ id: 9, name: "Mapped BCBA", rethink_id: "S300" }],
+    });
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { staffId: "S300", appointmentDate: "2026-08-03", actualDurationHours: 3,
+        appointmentStatus: "Completed", staffVerification: true, appointmentType: "Parent Training" },
+      { staffId: "S300", appointmentDate: "2026-08-03", actualDurationHours: 1,
+        appointmentStatus: "Completed", staffVerification: true, appointmentType: "Drive Time" },
+      { staffId: "S300", appointmentDate: "2026-08-03", actualDurationHours: 2,
+        appointmentStatus: "Completed", staffVerification: true, appointmentType: "Team Meeting" },
+    ], pages: 1, truncated: false });
+
+    const r = initRethink(ctx);
+    await r.syncSupervisionHours("test", "2026-08");
+    const day = state.providerDay.find((d) => d.day === "2026-08-03");
+    check("the sync reads the map: three mapped billable hours land as billable",
+      day && day.billable === 3, day && day.billable);
+    check("the mapped non-billable hour lands as non-billable",
+      day && day.nonbillable === 1, day && day.nonbillable);
+    check("AND THE UNMAPPED TYPE IS STILL HELD BACK as unclassified",
+      day && day.unclassified === 2, day && day.unclassified);
+    check("every delivered hour is still accounted for somewhere",
+      day && day.billable + day.nonbillable + day.unclassified === 6, day);
   }
 
   // ---- SEEN IS NOT THE SAME AS COUNTED -----------------------------------
