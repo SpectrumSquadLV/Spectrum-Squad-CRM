@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Report a Concern — Spectrum Squad</title>
+<style>
+  :root { --navy:#1b2a6b; --gold:#d9a233; --line:#e6e8f0; --muted:#6b7280; --bg:#f7f6f1; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:#1f2430;
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:660px; margin:0 auto; padding:22px 16px 64px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; padding:20px; margin-bottom:14px; }
+  h1 { font-size:22px; margin:0 0 8px; color:var(--navy); }
+  h2 { font-size:16px; margin:22px 0 2px; color:var(--navy); }
+  .muted { color:var(--muted); font-size:14px; line-height:1.55; }
+  label { display:block; font-weight:700; font-size:14px; margin:16px 0 6px; }
+  input[type=text], input[type=date], input[type=time], select, textarea {
+    width:100%; padding:13px; border:1px solid var(--line); border-radius:10px;
+    font-size:16px; font-family:inherit; background:#fff; }
+  textarea { min-height:130px; resize:vertical; }
+  button { width:100%; background:var(--gold); color:var(--navy); font-weight:800; border:0;
+    border-radius:999px; padding:16px; font-size:17px; cursor:pointer; font-family:inherit; margin-top:20px; }
+  button:disabled { opacity:.55; cursor:default; }
+  button.link { background:none; color:var(--navy); text-decoration:underline; font-size:14px;
+    padding:6px; width:auto; margin:10px 0 0; font-weight:600; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media (max-width:520px) { .row { grid-template-columns:1fr; } }
+  .note { background:#fff8e6; border:1px solid #f3e0b0; border-radius:10px; padding:12px 14px; font-size:14px; margin-top:14px; line-height:1.55; }
+  .protect { background:#eef2ff; border:1px solid #c7d2fe; color:#312e81; border-radius:10px; padding:12px 14px; font-size:14px; margin-top:14px; line-height:1.55; }
+  .ok { background:#e9f9ee; border:1px solid #bfe6cd; color:#166534; border-radius:12px; padding:22px; text-align:center; }
+  .err { background:#fee2e2; border:1px solid #fca5a5; color:#991b1b; border-radius:10px; padding:12px 14px; font-size:14px; margin-top:12px; }
+  .code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:24px; font-weight:800;
+    letter-spacing:1px; background:#fff; border:2px dashed #166534; border-radius:10px;
+    padding:14px; margin:14px 0; user-select:all; color:#14532d; }
+  .mode { border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px; cursor:pointer; display:block; }
+  .mode.sel { border-color:var(--navy); background:#f5f7ff; }
+  .mode b { display:block; font-size:15px; color:var(--navy); }
+  .mode span { font-size:13px; color:var(--muted); line-height:1.5; }
+  .mode input { margin-right:8px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  .chip { background:#eef2ff; border:1px solid #c7d2fe; color:#312e81; border-radius:999px;
+    padding:5px 10px; font-size:13px; display:inline-flex; align-items:center; gap:6px; }
+  .chip button { all:unset; cursor:pointer; font-weight:800; color:#312e81; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="card" id="intro-card">
+    <h1>Report a Concern</h1>
+    <p class="muted" id="intro"></p>
+    <div class="protect" id="non-retaliation"></div>
+    <div class="note" id="not-an-accusation"></div>
+  </div>
+
+  <div class="card" id="form-card">
+    <h2>How do you want to send this?</h2>
+    <div id="modes"></div>
+    <div class="protect" id="mode-detail"></div>
+
+    <div id="named-fields" style="display:none;">
+      <div class="row">
+        <div><label for="rname">Your name</label><input type="text" id="rname" /></div>
+        <div><label for="remail">Your email</label><input type="text" id="remail" /></div>
+      </div>
+    </div>
+
+    <h2>What happened</h2>
+    <label for="ctype">Type of concern</label>
+    <select id="ctype"></select>
+    <div id="other-wrap" style="display:none;">
+      <label for="cother">Describe the type</label><input type="text" id="cother" />
+    </div>
+
+    <div class="row">
+      <div><label for="cdate">Date of incident</label><input type="date" id="cdate" /></div>
+      <div><label for="ctime">Approximate time</label><input type="time" id="ctime" /></div>
+    </div>
+    <label for="cloc">Location</label><input type="text" id="cloc" placeholder="Clinic, in-home, telehealth, other" />
+
+    <label for="pstaff">Person(s) involved</label>
+    <select id="pstaff"><option value="">— choose from staff —</option></select>
+    <div class="chips" id="pchips"></div>
+    <label for="pfree" style="margin-top:12px;">Anyone else involved (not staff, or not listed)</label>
+    <input type="text" id="pfree" placeholder="Names or descriptions" />
+
+    <label for="cdesc">What did you observe?</label>
+    <textarea id="cdesc" placeholder="What happened, in your own words."></textarea>
+
+    <label for="cpol">Policy or procedure involved, if you know it</label>
+    <input type="text" id="cpol" />
+
+    <label for="cwit">Were there witnesses?</label>
+    <select id="cwit"></select>
+    <div id="wit-wrap" style="display:none;">
+      <label for="cwitwho">Who witnessed it?</label><input type="text" id="cwitwho" />
+    </div>
+
+    <label for="cprev">Was this reported previously?</label>
+    <select id="cprev"><option value="no">No</option><option value="yes">Yes</option></select>
+    <div id="prev-wrap" style="display:none;">
+      <label for="cprevd">To whom, and when?</label><input type="text" id="cprevd" />
+    </div>
+
+    <label for="cmore">Anything else we should know</label>
+    <textarea id="cmore" style="min-height:80px;"></textarea>
+
+    <label for="cfiles">Supporting documentation or photos</label>
+    <input type="file" id="cfiles" multiple />
+
+    <button id="send">Submit concern</button>
+    <div class="err" id="err" style="display:none;"></div>
+    <button class="link" id="track-toggle">I have a reference code and want to check a concern</button>
+  </div>
+
+  <div class="card" id="track-card" style="display:none;">
+    <h2>Check a concern you submitted</h2>
+    <p class="muted">Enter the reference code you were given. This shows the status only — nothing from the review itself.</p>
+    <label for="tcode">Reference code</label><input type="text" id="tcode" placeholder="SQ-XXXXX-XXXXX" />
+    <button id="track-go">Check status</button>
+    <div class="note" id="track-out" style="display:none;"></div>
+  </div>
+
+  <div class="card ok" id="done" style="display:none;">
+    <h1 style="color:#166534;">Your concern has been submitted.</h1>
+    <p class="muted" id="done-mode"></p>
+    <div class="code" id="done-code"></div>
+    <p class="muted" id="done-keep"></p>
+    <div class="protect" id="done-nonret" style="text-align:left;"></div>
+  </div>
+
+</div>
+<script>
+(function () {
+  "use strict";
+  var opts = null, mode = "anonymous", people = [];
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  function renderModes() {
+    $("modes").innerHTML = opts.modes.map(function (m) {
+      return '<label class="mode' + (m.key === mode ? ' sel' : '') + '" data-m="' + m.key + '">' +
+        '<b><input type="radio" name="mode" value="' + m.key + '"' + (m.key === mode ? ' checked' : '') + ' />' +
+        esc(m.label) + '</b><span>' + esc(m.detail) + '</span></label>';
+    }).join("");
+    Array.prototype.forEach.call(document.querySelectorAll(".mode"), function (el) {
+      el.addEventListener("click", function () {
+        mode = el.getAttribute("data-m");
+        renderModes();
+        $("named-fields").style.display = mode === "anonymous" ? "none" : "";
+      });
+    });
+    var m = opts.modes.filter(function (x) { return x.key === mode; })[0];
+    $("mode-detail").textContent = m ? m.detail : "";
+  }
+
+  function renderPeople() {
+    $("pchips").innerHTML = people.map(function (p, i) {
+      return '<span class="chip">' + esc(p.name) + '<button data-i="' + i + '">&times;</button></span>';
+    }).join("");
+    Array.prototype.forEach.call($("pchips").querySelectorAll("button"), function (b) {
+      b.addEventListener("click", function () {
+        people.splice(Number(b.getAttribute("data-i")), 1); renderPeople();
+      });
+    });
+  }
+
+  fetch("/api/concerns/public/options").then(function (r) { return r.json(); }).then(function (d) {
+    opts = d;
+    $("intro").textContent = d.intro;
+    $("non-retaliation").textContent = d.non_retaliation;
+    $("not-an-accusation").textContent = d.not_an_accusation;
+    $("ctype").innerHTML = '<option value="">— choose —</option>' +
+      d.types.map(function (t) { return '<option>' + esc(t) + '</option>'; }).join("");
+    $("cwit").innerHTML = '<option value="">— choose —</option>' +
+      d.witness_answers.map(function (w) { return '<option>' + esc(w) + '</option>'; }).join("");
+    $("pstaff").innerHTML = '<option value="">— choose from staff —</option>' +
+      d.staff.map(function (s) { return '<option value="' + s.employee_id + '">' + esc(s.name) + '</option>'; }).join("");
+    renderModes();
+  });
+
+  $("ctype").addEventListener("change", function () {
+    $("other-wrap").style.display = $("ctype").value === "Other" ? "" : "none";
+  });
+  $("cwit").addEventListener("change", function () {
+    $("wit-wrap").style.display = $("cwit").value === "Yes" ? "" : "none";
+  });
+  $("cprev").addEventListener("change", function () {
+    $("prev-wrap").style.display = $("cprev").value === "yes" ? "" : "none";
+  });
+  $("pstaff").addEventListener("change", function () {
+    var sel = $("pstaff"); if (!sel.value) return;
+    var id = Number(sel.value), name = sel.options[sel.selectedIndex].text;
+    if (!people.some(function (p) { return p.employee_id === id; })) people.push({ employee_id: id, name: name });
+    sel.value = ""; renderPeople();
+  });
+  $("track-toggle").addEventListener("click", function () {
+    var c = $("track-card"); c.style.display = c.style.display === "none" ? "" : "none";
+  });
+  $("track-go").addEventListener("click", function () {
+    fetch("/api/concerns/public/status", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reference_code: $("tcode").value.trim() }) })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) {
+        var o = $("track-out"); o.style.display = "";
+        o.textContent = x.ok ? ("Status: " + x.d.status + " · submitted " + String(x.d.submitted || "").slice(0, 10))
+                             : (x.d.error || "Could not check that.");
+      });
+  });
+
+  function readFiles() {
+    var input = $("cfiles");
+    var files = Array.prototype.slice.call(input.files || []).slice(0, 10);
+    return Promise.all(files.map(function (f) {
+      return new Promise(function (resolve) {
+        var fr = new FileReader();
+        fr.onload = function () { resolve({ filename: f.name, content_type: f.type, data_base64: String(fr.result).split(",")[1] || "" }); };
+        fr.onerror = function () { resolve(null); };
+        fr.readAsDataURL(f);
+      });
+    })).then(function (xs) { return xs.filter(Boolean); });
+  }
+
+  $("send").addEventListener("click", function () {
+    var btn = $("send"), err = $("err");
+    err.style.display = "none";
+    if (!$("ctype").value) { err.textContent = "Choose what kind of concern this is."; err.style.display = ""; return; }
+    if (!$("cdesc").value.trim()) { err.textContent = "Describe what you observed."; err.style.display = ""; return; }
+    btn.disabled = true; btn.textContent = "Submitting…";
+    readFiles().then(function (files) {
+      return fetch("/api/concerns/public/submit", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reporting_mode: mode,
+          reporter_name: $("rname").value, reporter_email: $("remail").value,
+          concern_type: $("ctype").value, concern_type_other: $("cother").value,
+          incident_date: $("cdate").value, incident_time: $("ctime").value, location: $("cloc").value,
+          people_involved: people, people_text: $("pfree").value,
+          description: $("cdesc").value, policy_text: $("cpol").value,
+          witnesses_present: $("cwit").value, witnesses_text: $("cwitwho").value,
+          reported_previously: $("cprev").value === "yes", reported_previously_detail: $("cprevd").value,
+          additional_info: $("cmore").value, files: files,
+        }),
+      });
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) {
+        if (!x.ok) { btn.disabled = false; btn.textContent = "Submit concern";
+          err.textContent = x.d.error || "Could not submit."; err.style.display = ""; return; }
+        $("intro-card").style.display = "none";
+        $("form-card").style.display = "none";
+        $("track-card").style.display = "none";
+        $("done").style.display = "";
+        $("done-mode").textContent = x.d.reporting_mode === "anonymous"
+          ? "Nothing identifying you was recorded."
+          : (x.d.reporting_mode === "confidential"
+            ? "Your name was recorded and is visible only to the people who review concerns."
+            : "Your name is on the report.");
+        $("done-code").textContent = x.d.reference_code;
+        $("done-keep").textContent = x.d.reporting_mode === "anonymous"
+          ? "Keep this reference code. It is the only way to check this concern, and it cannot be re-issued — nobody can look it up for you, because nobody knows it was you."
+          : "Keep this reference code if you want to check the status without signing in.";
+        $("done-nonret").textContent = x.d.non_retaliation || "";
+        window.scrollTo(0, 0);
+      }).catch(function () {
+        btn.disabled = false; btn.textContent = "Submit concern";
+        err.textContent = "Could not submit. Please try again."; err.style.display = "";
+      });
+  });
+})();
+</script>
+</body>
+</html>

@@ -63,6 +63,14 @@ module.exports = function initUserEmail(ctx) {
     // email is addressed from here too.
     { table: "policy_change_requests", column: "requester_email", label: "policy change requests they raised" },
 
+    // The person who raised a concern. Identity, not a destination: the review
+    // screen shows this as "reported by", and leaving it behind would make a
+    // confidential report say it came from an address that no longer belongs
+    // to anybody. Note what is NOT carried -- an anonymous report stores no
+    // address at all, so there is nothing here to move, which is the whole
+    // point of storing nothing in the first place.
+    { table: "concern_reports", column: "reporter_email", label: "concerns they raised" },
+
     // Their own record of what they have signed and what they own.
     { table: "crm_policy_acknowledgments", column: "employee_email", label: "policy acknowledgements" },
     { table: "grant_applications", column: "owner_email", label: "grants they own" },
