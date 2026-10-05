@@ -194,6 +194,12 @@
           + '⚠ <strong>' + unsynced + ' ' + (unsynced === 1 ? "person has" : "people have") + ' months that have not been synced from Rethink.</strong> '
           + 'Those hours are not counted, so these balances can still rise once the sync catches up. '
           + 'A month with nothing synced is not a month with no work in it.'
+          // The fix, offered where the problem is stated. The automatic sync
+          // only ever fetches the CURRENT month, so every earlier one has to
+          // be asked for -- and a warning you cannot act on from the screen
+          // you are reading it on is a warning that gets ignored.
+          + '<div style="margin-top:9px;"><button class="btn small" id="pto-backfill">Fetch the missing months from Rethink</button>'
+            + '<span id="pto-backfill-res" style="font-size:12px;margin-left:8px;"></span></div>'
           + '</div>'
         : "")
 
@@ -243,6 +249,93 @@
   // destructive historical update executes, so the button PREVIEWS. Applying
   // is a second, deliberate click against a list of who moves and by how much.
   // Every applied run is snapshotted and can be put back.
+  // FETCHING THE MONTHS NOBODY ASKED FOR.
+  //
+  // The automatic Rethink sync passes no month, so it only ever fetches the
+  // current one. Every month before it has to be requested, and until it is
+  // those hours simply are not in the CRM -- which is why most balances on
+  // this screen are short.
+  //
+  // It runs in the background and this polls, because a year of months is
+  // minutes of upstream calls and a browser that gives up halfway leaves
+  // somebody unsure whether it is still going.
+  function backfillModal() {
+    var bd = document.createElement("div");
+    bd.className = "modal-backdrop";
+    bd.innerHTML = '<div class="modal" style="max-width:640px;">'
+      + '<div class="modal-header"><div><h2>Fetch missing months from Rethink</h2>'
+      + '<div style="font-size:12.5px;color:var(--text-muted);">The automatic sync only ever fetches the current month. Earlier ones have to be asked for.</div>'
+      + '</div><button class="close-btn">&times;</button></div>'
+      + '<div id="pto-bf-body" style="font-size:13px;color:var(--text-muted);">Checking what is missing…</div>'
+      + '</div>';
+    document.body.appendChild(bd);
+    var close = function () { bd.remove(); };
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.addEventListener("click", function (e) { if (e.target === bd) close(); });
+    var body = bd.querySelector("#pto-bf-body");
+    var timer = null;
+    var stop = function () { if (timer) { clearInterval(timer); timer = null; } };
+    bd.addEventListener("DOMNodeRemoved", stop);
+
+    function paint(d) {
+      var run = d.run;
+      if (run && run.running) {
+        var pct = run.total ? Math.round((run.done / run.total) * 100) : 0;
+        body.innerHTML = '<div style="font-weight:700;color:#1b2a6b;margin-bottom:6px;">Fetching ' + esc(run.current || "") + '…</div>'
+          + '<div style="background:#eef0f4;border-radius:999px;height:10px;overflow:hidden;margin-bottom:6px;">'
+            + '<div style="background:#1b2a6b;height:100%;width:' + pct + '%;transition:width .3s;"></div></div>'
+          + '<div style="font-size:12.5px;">' + run.done + ' of ' + run.total + ' month(s)'
+          + (run.failed ? ' · <span style="color:#b91c1c;">' + run.failed + ' failed</span>' : '') + '</div>'
+          + '<div style="font-size:12px;color:var(--text-muted);margin-top:8px;">You can close this; it keeps going.</div>';
+        return;
+      }
+      if (run && run.finished_at) {
+        // Failures are named, not folded into a total. "6 of 8" with no
+        // indication of which two is a message nobody can act on.
+        var bad = (run.results || []).filter(function (r) { return !r.ok; });
+        body.innerHTML = '<div style="background:' + (bad.length ? '#fff8e6' : '#e9f9ee') + ';border:1px solid '
+            + (bad.length ? '#f3e0b0' : '#bfe6cd') + ';border-radius:10px;padding:11px 13px;font-size:13px;color:'
+            + (bad.length ? '#92400e' : '#166534') + ';">'
+          + '<strong>' + (run.total - run.failed) + ' of ' + run.total + ' month(s) fetched.</strong>'
+          + (bad.length ? ' Not fetched: ' + esc(bad.map(function (r) { return r.month + " (" + (r.error || "failed") + ")"; }).join(", ")) : '')
+          + '</div>'
+          + '<div style="font-size:12.5px;color:var(--text-muted);margin-top:10px;">'
+          + 'Balances on this screen now include those hours. Recalculate from source to write them into the ledger.</div>';
+        stop();
+        load();
+        return;
+      }
+      var missing = d.missing_months || [];
+      if (!missing.length) {
+        body.innerHTML = '<div style="font-size:13px;">Nothing is missing between ' + esc(d.range.from) + ' and '
+          + esc(d.range.to) + '. Every month has been fetched.</div>';
+        return;
+      }
+      body.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:11px 13px;'
+          + 'font-size:13px;color:#92400e;margin-bottom:12px;"><strong>' + missing.length + ' month(s) have never been fetched:</strong> '
+          + esc(missing.join(", ")) + '</div>'
+        + (d.can_run
+          ? '<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px;">Each month is fetched in turn, '
+            + 'and a month already fetched is simply replaced — running this again is safe.</div>'
+            + '<button class="btn" id="pto-bf-go">Fetch ' + missing.length + ' month(s)</button>'
+          : '<div style="font-size:12.5px;color:var(--text-muted);">Only the owner can start a backfill.</div>');
+      var go = bd.querySelector("#pto-bf-go");
+      if (go) go.addEventListener("click", function () {
+        go.disabled = true;
+        body.insertAdjacentHTML("beforeend", '<div style="font-size:12.5px;margin-top:8px;">Starting…</div>');
+        api("/api/rethink/backfill", { method: "POST", body: { from: d.range.from, to: d.range.to } })
+          .then(function () { poll(); timer = setInterval(poll, 2000); })
+          .catch(function (e) { go.disabled = false; body.insertAdjacentHTML("beforeend",
+            '<div style="color:#b91c1c;font-size:12.5px;margin-top:6px;">' + esc(e.message || "Could not start.") + '</div>'); });
+      });
+    }
+    function poll() {
+      fetch("/api/rethink/backfill").then(function (r) { return r.json(); }).then(paint)
+        .catch(function () { /* a dropped poll is not a failure; the next one will do */ });
+    }
+    poll();
+  }
+
   function recalcModal() {
     var bd = document.createElement("div");
     bd.className = "modal-backdrop";
@@ -316,6 +409,8 @@
     });
     var prev = MOUNT.querySelector("#pto-preview");
     if (prev) prev.addEventListener("click", function () { recalcModal(); });
+    var bf = MOUNT.querySelector("#pto-backfill");
+    if (bf) bf.addEventListener("click", function () { backfillModal(); });
     var save = MOUNT.querySelector("#pto-save");
     if (save) save.addEventListener("click", function () {
       var status = MOUNT.querySelector("#pto-status");
