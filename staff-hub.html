@@ -22,9 +22,16 @@
            margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
   a.tile:active { transform:scale(.99); }
   .ic { width:46px; height:46px; flex:0 0 auto; border-radius:12px; display:flex; align-items:center;
-        justify-content:center; font-size:23px; }
+        justify-content:center; font-size:22px; }
   .tt { font-size:16px; font-weight:700; margin:0 0 2px; }
   .td { font-size:13px; color:var(--muted); margin:0; line-height:1.35; }
+  /* The confidentiality note sits ON the tile, not in the small print at the
+     bottom. Somebody deciding whether to raise a concern is deciding it right
+     here, and a promise they have to scroll to find is a promise they do not
+     read. */
+  .only { display:inline-block; margin-top:7px; font-size:12px; font-weight:700;
+          color:#b91c1c; background:#fef2f2; border:1px solid #fecaca;
+          border-radius:999px; padding:3px 10px; }
   .foot { text-align:center; color:var(--muted); font-size:12px; margin-top:26px; line-height:1.5; }
 </style>
 </head>
@@ -34,33 +41,42 @@
     <h1>Hi — what do you need?</h1>
     <p class="sub">Pick one. Nothing here needs an app.</p>
 
-    <a class="tile" href="/supply-request">
-      <div class="ic" style="background:#eef2ff;color:#1b2a6b;">▤</div>
+    <a class="tile" href="/policies">
+      <div class="ic" style="background:#eef2ff;color:#1b2a6b;">&#9638;</div>
       <div>
-        <p class="tt">I need supplies</p>
-        <p class="td">Anything for your sessions or the office. You get a link to track it.</p>
+        <p class="tt">Access Policies &amp; Standard Operating Procedures</p>
+        <p class="td">Look up how we do something, or check what a policy actually says.</p>
       </div>
     </a>
 
     <a class="tile" href="/maintenance-request">
-      <div class="ic" style="background:#fff7ed;color:#c2410c;">⚙</div>
+      <div class="ic" style="background:#fff7ed;color:#c2410c;">&#9881;</div>
       <div>
-        <p class="tt">Something is broken</p>
+        <p class="tt">Maintenance Request</p>
         <p class="td">A room, a door, a light, anything that needs fixing. Add a photo if it helps.</p>
       </div>
     </a>
 
-    <a class="tile" href="/report-concern">
-      <div class="ic" style="background:#fef2f2;color:#b91c1c;">⚠</div>
+    <a class="tile" href="/squad-report">
+      <div class="ic" style="background:#f5f3ff;color:#6d28d9;">&#9201;</div>
       <div>
-        <p class="tt">I need to report a concern</p>
-        <p class="td">Safety, conduct, ethics or anything that worries you. Handled confidentially.</p>
+        <p class="tt">Attendance Infractions <span style="font-weight:400;">(Squad Leaders Only)</span></p>
+        <p class="td">File a late arrival, a no-show or an early leave. You will be asked for your PIN.</p>
+      </div>
+    </a>
+
+    <a class="tile" href="/report-concern">
+      <div class="ic" style="background:#fef2f2;color:#b91c1c;">&#9888;</div>
+      <div>
+        <p class="tt">Report A Concern <span style="font-weight:400;">(Confidential)</span></p>
+        <p class="td">Safety, conduct, ethics, or anything that worries you.</p>
+        <span class="only">These go only to Quiana</span>
       </div>
     </a>
 
     <p class="foot">
-      None of these ask who you are.<br />
-      Put your name in if you want to be told what happened.
+      You can raise a concern without giving your name.<br />
+      Put it in only if you want to be told what happened.
     </p>
   </div>
 </body>

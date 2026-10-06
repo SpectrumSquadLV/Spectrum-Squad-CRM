@@ -9345,6 +9345,15 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === "/supply-request" || pathname.startsWith("/supply-request/")) {
     if (await supply.servePage(req, res, pathname)) return;
+  }
+
+  // Its OWN guard, and not a tidy-up: maintenance.servePage only ever matches
+  // /maintenance-request, and it used to be called from inside the
+  // /supply-request guard above -- where that path can never arrive. So the
+  // public maintenance form was unreachable, and anybody following a link to
+  // it got the CRM shell and a sign-in prompt instead of somewhere to report
+  // a broken door.
+  if (pathname === "/maintenance-request" || pathname.startsWith("/maintenance-request/")) {
     if (await maintenance.servePage(req, res, pathname)) return;
   }
 
