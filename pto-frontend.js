@@ -215,11 +215,6 @@
           + '</div>'
         : "")
 
-      // PTO REQUESTS RAISED FROM THE STAFF QR CODE. At the top, because a
-      // person waiting on an answer is the most time-sensitive thing on this
-      // screen -- the balances below are not going anywhere.
-      + '<div id="pto-requests"></div>'
-
       + '<div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin:14px 0;">'
         + '<label style="font-size:13px;">Accrual rate (h per hour worked)<br>'
           + '<input type="number" step="0.00001" min="0" id="pto-rate" value="' + data.default_rate + '" style="width:130px;margin-top:3px;" /></label>'
@@ -430,57 +425,6 @@
     }).catch(function (e) { body.textContent = e.message || "Could not work out the change."; });
   }
 
-  // The queue. Fetched separately from the roster so a slow balance rebuild
-  // never delays somebody's answer, and so a 403 on one does not blank the
-  // other.
-  function loadRequests() {
-    var box = MOUNT.querySelector("#pto-requests");
-    if (!box) return;
-    api("/api/pto/requests").then(function (d) {
-      var rows = (d.requests || []).filter(function (r) { return r.status === "requested"; });
-      if (!rows.length) { box.innerHTML = ""; return; }
-      box.innerHTML =
-        '<div style="background:#fff;border:1px solid #c7d2fe;border-radius:12px;padding:14px 16px;margin:14px 0;">'
-        + '<div style="font-weight:700;color:#1b2a6b;margin-bottom:4px;">'
-          + rows.length + ' PTO request' + (rows.length === 1 ? '' : 's') + ' waiting on you</div>'
-        + '<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px;">'
-          + 'Raised from the staff QR code. Nothing comes off a balance until it is approved.</div>'
-        + rows.map(function (r) {
-            var when = esc(r.start_date) + (r.end_date !== r.start_date ? ' to ' + esc(r.end_date) : '');
-            if (r.all_day === false && r.start_time) when += ', ' + esc(r.start_time) + '–' + esc(r.end_time);
-            return '<div style="border-top:1px solid var(--border,#eef0f4);padding:10px 0;display:flex;'
-              + 'justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">'
-              + '<div><div style="font-weight:600;">' + esc(r.name || 'Unknown') + '</div>'
-                + '<div style="font-size:12.5px;">' + when + '</div>'
-                + (r.notes ? '<div style="font-size:12.5px;color:var(--text-muted);">' + esc(r.notes) + '</div>' : '')
-                // The balance it would spend, so the decision is not made blind.
-                + '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">'
-                  + (r.balance == null ? 'balance unknown'
-                      : 'balance ' + Number(r.balance).toFixed(2) + ' h'
-                        + (r.balance_estimated ? ' (still provisional)' : ''))
-                + '</div></div>'
-              + (d.can_decide
-                  ? '<div style="display:flex;gap:6px;">'
-                    + '<button class="btn small" data-approve="' + r.id + '">Approve</button>'
-                    + '<button class="btn small" data-deny="' + r.id + '">Decline</button></div>'
-                  : '<div style="font-size:12px;color:var(--text-muted);">Only the owner can decide these.</div>')
-              + '</div>';
-          }).join("")
-        + '</div>';
-      var decide = function (id, status) {
-        api("/api/pto/requests/" + id, { method: "POST", body: { status: status } })
-          .then(function () { loadRequests(); load(); })
-          .catch(function (e) { alert(e.message || "Could not record that."); });
-      };
-      box.querySelectorAll("[data-approve]").forEach(function (b) {
-        b.addEventListener("click", function () { decide(b.getAttribute("data-approve"), "approved"); });
-      });
-      box.querySelectorAll("[data-deny]").forEach(function (b) {
-        b.addEventListener("click", function () { decide(b.getAttribute("data-deny"), "denied"); });
-      });
-    }).catch(function () { /* no queue is not an error worth shouting about */ });
-  }
-
   function wire() {
     MOUNT.querySelectorAll(".pto-audit").forEach(function (b) {
       b.addEventListener("click", function () { auditModal(b.getAttribute("data-id")); });
@@ -489,7 +433,6 @@
     if (prev) prev.addEventListener("click", function () { recalcModal(); });
     var bf = MOUNT.querySelector("#pto-backfill");
     if (bf) bf.addEventListener("click", function () { backfillModal(); });
-    loadRequests();
     var save = MOUNT.querySelector("#pto-save");
     if (save) save.addEventListener("click", function () {
       var status = MOUNT.querySelector("#pto-status");

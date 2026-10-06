@@ -59,7 +59,6 @@ const POLICY_ANNUAL_CAP = 0;
 
 module.exports = function initPto(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting } = ctx;
-  const sendEmail = ctx.sendEmail || (async () => ({}));
   // The ONE source of worked hours. Passed in rather than required directly so
   // this module keeps no opinion about how Rethink is configured, and so a
   // server without the integration degrades to "nothing synced" instead of
@@ -785,92 +784,6 @@ module.exports = function initPto(ctx) {
     try {
       if (pathname === "/api/pto/roster" && method === "GET") {
         json(res, 200, await roster({ from: query && query.from, to: query && query.to }));
-        return true;
-      }
-
-      // ---- PTO REQUESTS RAISED FROM THE STAFF PORTAL -------------------
-      //
-      // Reading the queue is for anybody who can already read the roster;
-      // DECIDING is owner/super_admin only, which is what was asked for. The
-      // split matters: an office admin seeing that somebody has asked for
-      // next Friday is ordinary scheduling, and granting the leave is not.
-      if (pathname === "/api/pto/requests" && method === "GET") {
-        const rows = await dbAll(
-          `SELECT t.id, t.employee_id, t.start_date, t.end_date, t.all_day, t.start_time, t.end_time,
-                  t.status, t.notes, t.created_at, t.created_by, e.name, e.role_title
-             FROM staff_time_off t
-             LEFT JOIN hr_employees e ON e.id = t.employee_id
-            WHERE COALESCE(t.kind,'pto') = 'pto'
-              AND (t.status = 'requested' OR t.created_at > ?)
-            ORDER BY (t.status = 'requested') DESC, t.start_date`,
-          [new Date(Date.now() - 45 * 86400000).toISOString()]
-        ).catch(() => []);
-        // The balance each decision would be spending, worked out by the same
-        // code that produces every other figure on this screen. A decision
-        // made without it is a decision made blind.
-        const seen = new Map();
-        for (const r of rows) {
-          if (r.status !== "requested") continue;
-          if (!seen.has(r.employee_id)) {
-            const emp = await dbGet(
-              `SELECT id, name, email, role_title,
-                      COALESCE(NULLIF(hr_hire_date, ''), NULLIF(hire_date, '')) AS hire_date,
-                      pto_accrual_rate, standard_weekly_hours, pto_annual_cap, pto_enrolled
-                 FROM hr_employees WHERE id = ?`, [r.employee_id]).catch(() => null);
-            seen.set(r.employee_id, emp ? await balanceFor(emp, {}).catch(() => null) : null);
-          }
-          const b = seen.get(r.employee_id);
-          r.balance = b ? b.balance : null;
-          r.balance_estimated = b ? b.estimated === true : false;
-        }
-        json(res, 200, { requests: rows,
-                         can_decide: ["owner", "super_admin"].includes(user.role) });
-        return true;
-      }
-
-      const decideMatch = pathname.match(/^\/api\/pto\/requests\/(\d+)$/);
-      if (decideMatch && method === "POST") {
-        if (!["owner", "super_admin"].includes(user.role)) {
-          json(res, 403, { error: "Only the owner can decide a PTO request." }); return true;
-        }
-        const id = Number(decideMatch[1]);
-        const b = await readBody(req);
-        const want = String(b && b.status || "").trim();
-        if (!["approved", "denied"].includes(want)) {
-          json(res, 400, { error: "A request is either approved or denied." }); return true;
-        }
-        const row = await dbGet(
-          "SELECT * FROM staff_time_off WHERE id = ? AND COALESCE(kind,'pto') = 'pto'", [id]).catch(() => null);
-        if (!row) { json(res, 404, { error: "No such request." }); return true; }
-        // A DECISION IS MADE ONCE. Re-deciding a request that has already been
-        // approved would silently move a balance that somebody has already
-        // been told about, and "undo" is a different operation with different
-        // consequences -- it belongs to the scheduler, which owns this table.
-        if (String(row.status) !== "requested") {
-          json(res, 400, { error: `That request was already ${row.status}.` }); return true;
-        }
-        await dbRun(
-          "UPDATE staff_time_off SET status = ?, notes = COALESCE(?, notes) WHERE id = ?",
-          [want, b && b.note ? String(b.note).trim() : null, id]);
-
-        // Approving is the ONLY thing that moves a balance, and it moves it by
-        // the ordinary route: hoursTaken reads approved rows out of
-        // staff_time_off. Nothing here writes a balance, so there is no second
-        // arithmetic to disagree with the ledger.
-        const emp = await dbGet("SELECT id, name, email FROM hr_employees WHERE id = ?", [row.employee_id]).catch(() => null);
-        if (emp && emp.email) {
-          await sendEmail({
-            to: emp.email,
-            subject: `Your PTO request was ${want}`,
-            html: `<p>Hi ${String(emp.name || "there").split(" ")[0]},</p>
-                   <p>Your request for ${row.start_date}${row.end_date !== row.start_date ? " to " + row.end_date : ""}
-                      has been <strong>${want}</strong>.</p>
-                   ${b && b.note ? `<p>${String(b.note).trim()}</p>` : ""}
-                   <p>You can see your balance any time from the staff QR code.</p>`,
-            type: "pto_decision", refType: "staff_time_off", refId: id,
-          }).catch(() => {});
-        }
-        json(res, 200, { ok: true, status: want });
         return true;
       }
 
