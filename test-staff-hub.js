@@ -46,13 +46,14 @@ const titleOf = (html) => {
   // is exactly the failure this file exists to catch.
   const EXPECTED = [
     ["/policies", /Policies/i, "Access Policies & Standard Operating Procedures"],
+    ["/supply-request", /Supply/i, "Supply Request"],
     ["/maintenance-request", /broken|Maintenance/i, "Maintenance Request"],
     ["/squad-report", /Attendance/i, "Attendance Infractions"],
     ["/report-concern", /Concern/i, "Report A Concern"],
   ];
 
   const hrefs = [...html.matchAll(/<a class="tile" href="([^"]+)"/g)].map((m) => m[1]);
-  check("the page offers exactly the four options", hrefs.length === 4, hrefs);
+  check("the page offers exactly the five options", hrefs.length === EXPECTED.length, hrefs);
   for (const [path] of EXPECTED) {
     check(`the ${path} tile is on the page`, hrefs.includes(path), hrefs);
   }
