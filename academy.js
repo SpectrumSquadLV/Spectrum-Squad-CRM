@@ -230,8 +230,112 @@ module.exports = function initAcademy(ctx) {
       created_at TEXT
     )`).catch((e) => console.error("academy_audit:", e.message));
 
+    // ---- ASKING FOR HELP, AND SAYING YOU WERE NEVER TAUGHT ---------------
+    //
+    // Two tables rather than one, because they are different acts with
+    // different audiences. A QUESTION is "how do I do this" and goes to your
+    // mentor. A GAP is "nobody ever showed me this", which is a statement
+    // about the PROGRAMME, not about the person -- it goes to leadership as
+    // well, and the trend across people is the point of recording it.
+    //
+    // Collapsing them would lose that: a hundred questions is a chatty new
+    // starter, and a hundred gaps on the same topic is a week of the
+    // curriculum that does not work.
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_questions (
+      id SERIAL PRIMARY KEY,
+      enrollment_id INTEGER NOT NULL,
+      employee_id INTEGER NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      answer TEXT,
+      answered_by TEXT,
+      answered_at TEXT,
+      created_at TEXT
+    )`).catch((e) => console.error("academy_questions:", e.message));
+
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_gaps (
+      id SERIAL PRIMARY KEY,
+      enrollment_id INTEGER NOT NULL,
+      employee_id INTEGER NOT NULL,
+      topic TEXT NOT NULL,
+      description TEXT,
+      urgency TEXT NOT NULL DEFAULT 'soon',
+      needs_help_now BOOLEAN NOT NULL DEFAULT FALSE,
+      status TEXT NOT NULL DEFAULT 'submitted',
+      assigned_to TEXT,
+      resolution TEXT,
+      resolved_by TEXT,
+      resolved_at TEXT,
+      created_at TEXT
+    )`).catch((e) => console.error("academy_gaps:", e.message));
+
+    // ---- CHECK-INS --------------------------------------------------------
+    //
+    // Scheduled on enrolment at days 7, 14, 21 and 30 rather than created
+    // when somebody remembers. A check-in that exists only once a manager
+    // thinks of it is the one that does not happen in a busy week, which is
+    // exactly the week it was for.
+    //
+    // BOTH SIDES HAVE TO SIGN. The employee answers, the supervisor answers,
+    // and the row is complete only when both have. A check-in where only the
+    // manager wrote something is a manager's note, and where only the
+    // employee wrote something is a diary entry; neither is a conversation.
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_checkins (
+      id SERIAL PRIMARY KEY,
+      enrollment_id INTEGER NOT NULL,
+      day INTEGER NOT NULL,
+      due_date TEXT NOT NULL,
+      learned TEXT,
+      comfortable_with TEXT,
+      still_unclear TEXT,
+      training_needed TEXT,
+      barriers TEXT,
+      employee_done_at TEXT,
+      mentor_feedback TEXT,
+      supervisor_by TEXT,
+      supervisor_done_at TEXT,
+      created_at TEXT
+    )`).catch((e) => console.error("academy_checkins:", e.message));
+    await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS academy_checkin_one
+                 ON academy_checkins (enrollment_id, day)`).catch(() => {});
+
     await seedBcbaProgram();
   }
+
+  const CHECKIN_DAYS = [7, 14, 21, 30];
+  const GAP_STATUSES = ["submitted", "under_review", "training_scheduled", "resolved"];
+  const GAP_LABELS = {
+    submitted: "Submitted", under_review: "Under Review",
+    training_scheduled: "Training Scheduled", resolved: "Resolved",
+  };
+  const URGENCIES = ["blocking", "soon", "whenever"];
+
+  // Created with the enrolment, so the dates exist before anybody needs them.
+  async function scheduleCheckins(enrollment) {
+    for (const day of CHECKIN_DAYS) {
+      await dbRun(
+        `INSERT INTO academy_checkins (enrollment_id, day, due_date, created_at)
+         VALUES (?,?,?,?) ON CONFLICT (enrollment_id, day) DO NOTHING`,
+        [enrollment.id, day, addDays(enrollment.start_date, day), nowISO()]
+      ).catch(() => {});
+    }
+  }
+
+  async function checkinsFor(enrollmentId) {
+    const rows = await dbAll(
+      "SELECT * FROM academy_checkins WHERE enrollment_id = ? ORDER BY day", [enrollmentId]).catch(() => []);
+    return rows.map((r) => ({
+      ...r,
+      // Complete means BOTH. Anything else is partly done, and saying so is
+      // the only way the dashboard can show what is actually outstanding.
+      state: r.employee_done_at && r.supervisor_done_at ? "complete"
+        : r.employee_done_at ? "awaiting_supervisor"
+        : r.supervisor_done_at ? "awaiting_employee"
+        : (r.due_date <= today() ? "due" : "scheduled"),
+    }));
+  }
+
 
   async function audit(enrollmentId, itemId, action, from, to, actor, note) {
     await dbRun(
@@ -391,6 +495,7 @@ module.exports = function initAcademy(ctx) {
     if (!row) return { ok: false, error: "The onboarding record could not be created." };
 
     await audit(row.id, null, "enrolled", null, "active", actor || "system", `${prog.name}, starting ${start}`);
+    await scheduleCheckins(row);
 
     const to = await leadershipEmails();
     if (to.length) {
@@ -834,6 +939,292 @@ module.exports = function initAcademy(ctx) {
       return true;
     }
 
+    // ---- ASK MY MENTOR ---------------------------------------------------
+    //
+    // The point of this, in the brief's own words, is that somebody can ask
+    // without interrupting another BCBA mid-session. So it is a written
+    // queue, not a notification that demands an answer now.
+    if (pathname === "/api/academy/questions" && method === "POST") {
+      if (!me) { json(res, 403, { error: "No employee record is linked to this account." }); return true; }
+      const enr = await dbGet(
+        "SELECT * FROM academy_enrollments WHERE employee_id = ? ORDER BY id DESC LIMIT 1", [me.id]).catch(() => null);
+      if (!enr) { json(res, 404, { error: "You are not enrolled in an onboarding programme." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      if (!clean(b.subject)) { json(res, 400, { error: "Give the question a subject." }); return true; }
+      const row = await dbGet(
+        `INSERT INTO academy_questions (enrollment_id, employee_id, subject, body, status, created_at)
+         VALUES (?,?,?,?, 'open', ?) RETURNING *`,
+        [enr.id, me.id, clean(b.subject).slice(0, 200), clean(b.body) || null, nowISO()]).catch(() => null);
+      if (!row) { json(res, 500, { error: "The question could not be saved." }); return true; }
+
+      // To the mentor. NOT to leadership: a question is not an escalation,
+      // and copying a director into "how do I find the schedule" is how
+      // people stop asking.
+      const mentor = enr.mentor_id
+        ? await dbGet("SELECT name, email FROM hr_employees WHERE id = ?", [enr.mentor_id]).catch(() => null) : null;
+      if (mentor && mentor.email) {
+        await sendEmail({
+          to: mentor.email,
+          subject: `Question from ${me.name}`,
+          html: `<p><strong>${me.name}</strong> has asked you something.</p>
+                 <p><strong>${clean(b.subject)}</strong></p>
+                 ${clean(b.body) ? `<p>${clean(b.body)}</p>` : ""}
+                 <p>Answer it on the Onboarding Academy screen in the BCBA Hub.</p>`,
+          type: "academy_question", refType: "academy_question", refId: row.id,
+        }).catch(() => {});
+      }
+      json(res, 200, { ok: true, question: row, mentor_notified: !!(mentor && mentor.email) });
+      return true;
+    }
+
+    if (pathname === "/api/academy/questions" && method === "GET") {
+      const enrId = num(query && query.enrollment_id);
+      let rows = [];
+      if (enrId) {
+        const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);
+        if (!enr) { json(res, 404, { error: "No such onboarding record." }); return true; }
+        const mentorHere = !!(me && enr.mentor_id && Number(enr.mentor_id) === Number(me.id));
+        const isSubject = !!(me && Number(enr.employee_id) === Number(me.id));
+        if (!(lead || mentorHere || isSubject)) { json(res, 403, { error: "Not permitted" }); return true; }
+        rows = await dbAll("SELECT * FROM academy_questions WHERE enrollment_id = ? ORDER BY id DESC", [enrId]).catch(() => []);
+      } else {
+        // LEADERSHIP NEED NOT BE AN EMPLOYEE RECORD. The owner signs in as a
+        // user and may have no row in hr_employees at all, and requiring one
+        // here locked the people this screen is mostly for out of it.
+        if (!me && !lead) { json(res, 403, { error: "Not permitted" }); return true; }
+        rows = lead
+          ? await dbAll(
+              `SELECT q.*, e.name AS asked_by FROM academy_questions q
+                 JOIN hr_employees e ON e.id = q.employee_id
+                ORDER BY (q.status = 'open') DESC, q.id DESC LIMIT 200`).catch(() => [])
+          // Mine, plus anything addressed to me as a mentor.
+          : await dbAll(
+              `SELECT q.*, e.name AS asked_by FROM academy_questions q
+                 JOIN hr_employees e ON e.id = q.employee_id
+                 JOIN academy_enrollments a ON a.id = q.enrollment_id
+                WHERE q.employee_id = ? OR a.mentor_id = ?
+                ORDER BY (q.status = 'open') DESC, q.id DESC LIMIT 200`,
+              [me.id, me.id]).catch(() => []);
+      }
+      json(res, 200, { questions: rows });
+      return true;
+    }
+
+    const ansMatch = pathname.match(/^\/api\/academy\/questions\/(\d+)$/);
+    if (ansMatch && method === "POST") {
+      const qid = Number(ansMatch[1]);
+      const q = await dbGet("SELECT * FROM academy_questions WHERE id = ?", [qid]).catch(() => null);
+      if (!q) { json(res, 404, { error: "No such question." }); return true; }
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [q.enrollment_id]).catch(() => null);
+      const mentorHere = !!(me && enr && enr.mentor_id && Number(enr.mentor_id) === Number(me.id));
+      // ANSWERING YOUR OWN QUESTION IS NOT AN ANSWER. It would close the
+      // thread and tell leadership the mentor responded.
+      if (me && Number(q.employee_id) === Number(me.id)) {
+        json(res, 403, { error: "You cannot answer your own question." }); return true;
+      }
+      if (!(lead || mentorHere)) { json(res, 403, { error: "Only the mentor or clinical leadership can answer." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      if (!clean(b.answer)) { json(res, 400, { error: "Write an answer." }); return true; }
+      await dbRun(
+        "UPDATE academy_questions SET answer = ?, answered_by = ?, answered_at = ?, status = 'answered' WHERE id = ?",
+        [clean(b.answer), actor, nowISO(), qid]);
+      const asker = await dbGet("SELECT name, email FROM hr_employees WHERE id = ?", [q.employee_id]).catch(() => null);
+      if (asker && asker.email) {
+        await sendEmail({
+          to: asker.email,
+          subject: `Answered: ${q.subject}`,
+          html: `<p>${actor} has answered your question.</p>
+                 <p><strong>${q.subject}</strong></p><p>${clean(b.answer)}</p>`,
+          type: "academy_question_answered", refType: "academy_question", refId: qid,
+        }).catch(() => {});
+      }
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    // ---- I WASN'T TRAINED ON THIS ---------------------------------------
+    //
+    // Deliberately easy to file and hard to lose. It goes to the mentor AND
+    // to clinical leadership, because the second audience is the point: one
+    // person saying it is a gap in their training, and four people saying it
+    // about the same topic is a gap in the programme.
+    if (pathname === "/api/academy/gaps" && method === "POST") {
+      if (!me) { json(res, 403, { error: "No employee record is linked to this account." }); return true; }
+      const enr = await dbGet(
+        "SELECT * FROM academy_enrollments WHERE employee_id = ? ORDER BY id DESC LIMIT 1", [me.id]).catch(() => null);
+      if (!enr) { json(res, 404, { error: "You are not enrolled in an onboarding programme." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      if (!clean(b.topic)) { json(res, 400, { error: "What was the topic or procedure?" }); return true; }
+      const urgency = URGENCIES.includes(clean(b.urgency)) ? clean(b.urgency) : "soon";
+      const row = await dbGet(
+        `INSERT INTO academy_gaps (enrollment_id, employee_id, topic, description, urgency, needs_help_now, status, created_at)
+         VALUES (?,?,?,?,?,?, 'submitted', ?) RETURNING *`,
+        [enr.id, me.id, clean(b.topic).slice(0, 200), clean(b.description) || null,
+         urgency, b.needs_help_now === true, nowISO()]).catch(() => null);
+      if (!row) { json(res, 500, { error: "That could not be saved." }); return true; }
+
+      const mentor = enr.mentor_id
+        ? await dbGet("SELECT email FROM hr_employees WHERE id = ?", [enr.mentor_id]).catch(() => null) : null;
+      const to = [...new Set([(mentor || {}).email, ...(await leadershipEmails())].filter(Boolean))];
+      if (to.length) {
+        await sendEmail({
+          to: to.join(","),
+          subject: (b.needs_help_now === true ? "[NEEDS HELP NOW] " : "") + `Training gap — ${me.name}`,
+          html: `<p><strong>${me.name}</strong> has reported that they were not trained on something.</p>
+                 <p><strong>${clean(b.topic)}</strong></p>
+                 ${clean(b.description) ? `<p>${clean(b.description)}</p>` : ""}
+                 <p>Urgency: ${urgency}${b.needs_help_now === true ? " — they need help immediately." : ""}</p>`,
+          type: "academy_gap", refType: "academy_gap", refId: row.id,
+        }).catch(() => {});
+      }
+      json(res, 200, { ok: true, gap: row });
+      return true;
+    }
+
+    if (pathname === "/api/academy/gaps" && method === "GET") {
+      // Same as the questions route above: leadership is a designation on a
+      // user, not necessarily a staff record, and the owner has no
+      // hr_employees row at all.
+      if (!me && !lead) { json(res, 403, { error: "Not permitted" }); return true; }
+      const rows = lead
+        ? await dbAll(
+            `SELECT g.*, e.name AS raised_by FROM academy_gaps g
+               JOIN hr_employees e ON e.id = g.employee_id
+              ORDER BY (g.status <> 'resolved') DESC, g.id DESC LIMIT 300`).catch(() => [])
+        : await dbAll(
+            `SELECT g.*, e.name AS raised_by FROM academy_gaps g
+               JOIN hr_employees e ON e.id = g.employee_id
+               JOIN academy_enrollments a ON a.id = g.enrollment_id
+              WHERE g.employee_id = ? OR a.mentor_id = ?
+              ORDER BY (g.status <> 'resolved') DESC, g.id DESC LIMIT 300`,
+            [me.id, me.id]).catch(() => []);
+      // The trend, which is what makes this worth collecting. Only for the
+      // people who can act on the programme.
+      let trend = null;
+      if (lead) {
+        trend = await dbAll(
+          `SELECT LOWER(TRIM(topic)) AS topic, COUNT(*) AS n
+             FROM academy_gaps GROUP BY LOWER(TRIM(topic))
+            HAVING COUNT(*) > 1 ORDER BY n DESC LIMIT 20`).catch(() => []);
+      }
+      json(res, 200, { gaps: rows, trend, statuses: GAP_LABELS, can_manage: lead });
+      return true;
+    }
+
+    const gapMatch = pathname.match(/^\/api\/academy\/gaps\/(\d+)$/);
+    if (gapMatch && method === "PATCH") {
+      const gid = Number(gapMatch[1]);
+      const g = await dbGet("SELECT * FROM academy_gaps WHERE id = ?", [gid]).catch(() => null);
+      if (!g) { json(res, 404, { error: "No such report." }); return true; }
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [g.enrollment_id]).catch(() => null);
+      const mentorHere = !!(me && enr && enr.mentor_id && Number(enr.mentor_id) === Number(me.id));
+      if (!(lead || mentorHere)) { json(res, 403, { error: "Only the mentor or clinical leadership can work on this." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const want = clean(b.status);
+      if (!GAP_STATUSES.includes(want)) { json(res, 400, { error: "Unknown status." }); return true; }
+      // Closing it has to say what was done, or the record says a gap was
+      // resolved and nothing about how.
+      if (want === "resolved" && !clean(b.resolution)) {
+        json(res, 400, { error: "Say what was done about it." }); return true;
+      }
+      await dbRun(
+        `UPDATE academy_gaps SET status = ?, resolution = COALESCE(?, resolution),
+           resolved_by = ?, resolved_at = ?, assigned_to = COALESCE(?, assigned_to) WHERE id = ?`,
+        [want, clean(b.resolution) || null, want === "resolved" ? actor : null,
+         want === "resolved" ? nowISO() : null, clean(b.assigned_to) || null, gid]);
+
+      const emp = await dbGet("SELECT name, email FROM hr_employees WHERE id = ?", [g.employee_id]).catch(() => null);
+      if (emp && emp.email) {
+        await sendEmail({
+          to: emp.email,
+          subject: `Your training gap report is now ${GAP_LABELS[want]}`,
+          html: `<p><strong>${g.topic}</strong></p>
+                 <p>Status: ${GAP_LABELS[want]}.</p>
+                 ${clean(b.resolution) ? `<p>${clean(b.resolution)}</p>` : ""}`,
+          type: "academy_gap_updated", refType: "academy_gap", refId: gid,
+        }).catch(() => {});
+      }
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    // ---- WEEKLY CHECK-INS -------------------------------------------------
+    const ciList = pathname.match(/^\/api\/academy\/enrollments\/(\d+)\/checkins$/);
+    if (ciList && method === "GET") {
+      const enrId = Number(ciList[1]);
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);
+      if (!enr) { json(res, 404, { error: "No such onboarding record." }); return true; }
+      const mentorHere = !!(me && enr.mentor_id && Number(enr.mentor_id) === Number(me.id));
+      const isSubject = !!(me && Number(enr.employee_id) === Number(me.id));
+      if (!(lead || mentorHere || isSubject)) { json(res, 403, { error: "Not permitted" }); return true; }
+      json(res, 200, { checkins: await checkinsFor(enrId) });
+      return true;
+    }
+
+    const ciOne = pathname.match(/^\/api\/academy\/enrollments\/(\d+)\/checkins\/(\d+)$/);
+    if (ciOne && method === "POST") {
+      const enrId = Number(ciOne[1]);
+      const day = Number(ciOne[2]);
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);
+      if (!enr) { json(res, 404, { error: "No such onboarding record." }); return true; }
+      const row = await dbGet(
+        "SELECT * FROM academy_checkins WHERE enrollment_id = ? AND day = ?", [enrId, day]).catch(() => null);
+      if (!row) { json(res, 404, { error: "No such check-in." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const mentorHere = !!(me && enr.mentor_id && Number(enr.mentor_id) === Number(me.id));
+      const isSubject = !!(me && Number(enr.employee_id) === Number(me.id));
+
+      // TWO HALVES, AND EACH SIDE WRITES ONLY ITS OWN. The employee answers
+      // the five questions about their own experience; the supervisor writes
+      // the feedback. Letting either write the other's half would turn a
+      // conversation into one person's account of it.
+      if (isSubject) {
+        const answers = ["learned", "comfortable_with", "still_unclear", "training_needed", "barriers"];
+        if (!answers.some((k) => clean(b[k]))) {
+          json(res, 400, { error: "Answer at least one of the questions." }); return true;
+        }
+        await dbRun(
+          `UPDATE academy_checkins SET learned = ?, comfortable_with = ?, still_unclear = ?,
+             training_needed = ?, barriers = ?, employee_done_at = ? WHERE id = ?`,
+          [clean(b.learned) || null, clean(b.comfortable_with) || null, clean(b.still_unclear) || null,
+           clean(b.training_needed) || null, clean(b.barriers) || null, nowISO(), row.id]);
+        await audit(enrId, null, "checkin_employee", null, "day " + day, actor, null);
+        const to = [...new Set([
+          enr.mentor_id ? (await dbGet("SELECT email FROM hr_employees WHERE id = ?", [enr.mentor_id]).catch(() => null) || {}).email : null,
+          ...(await leadershipEmails()),
+        ].filter(Boolean))];
+        if (to.length) {
+          await sendEmail({
+            to: to.join(","),
+            subject: `Day ${day} check-in ready — ${me.name}`,
+            html: `<p><strong>${me.name}</strong> has completed their day ${day} check-in.</p>
+                   <p>It needs your half before it counts as done.</p>`,
+            type: "academy_checkin_employee", refType: "academy_enrollment", refId: enrId,
+          }).catch(() => {});
+        }
+      } else if (lead || mentorHere) {
+        if (!clean(b.mentor_feedback)) { json(res, 400, { error: "Write your feedback." }); return true; }
+        await dbRun(
+          "UPDATE academy_checkins SET mentor_feedback = ?, supervisor_by = ?, supervisor_done_at = ? WHERE id = ?",
+          [clean(b.mentor_feedback), actor, nowISO(), row.id]);
+        await audit(enrId, null, "checkin_supervisor", null, "day " + day, actor, null);
+        const emp = await dbGet("SELECT name, email FROM hr_employees WHERE id = ?", [enr.employee_id]).catch(() => null);
+        if (emp && emp.email) {
+          await sendEmail({
+            to: emp.email,
+            subject: `Your day ${day} check-in has feedback`,
+            html: `<p>${actor} has added their feedback to your day ${day} check-in.</p>
+                   <p>${clean(b.mentor_feedback)}</p>`,
+            type: "academy_checkin_supervisor", refType: "academy_enrollment", refId: enrId,
+          }).catch(() => {});
+        }
+      } else {
+        json(res, 403, { error: "Not permitted" }); return true;
+      }
+      json(res, 200, { ok: true, checkins: await checkinsFor(enrId) });
+      return true;
+    }
+
     // ---- the curriculum, for anybody who can see the hub -----------------
     if (pathname === "/api/academy/curriculum" && method === "GET") {
       const prog = await dbGet("SELECT * FROM academy_programs WHERE key = ?",
@@ -854,8 +1245,9 @@ module.exports = function initAcademy(ctx) {
   }
 
   return {
-    initTables, handleApi, enrol, autoEnrolSweep, leadership, leadershipEmails, isClinicalLead,
+    initTables, handleApi, enrol, autoEnrolSweep, scheduleCheckins, checkinsFor, leadership, leadershipEmails, isClinicalLead,
     employeeFor, progressFor, itemsFor, seedBcbaProgram,
-    _internal: { STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS, addDays },
+    _internal: { STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
+                 addDays, CHECKIN_DAYS, GAP_STATUSES, GAP_LABELS, URGENCIES },
   };
 };
