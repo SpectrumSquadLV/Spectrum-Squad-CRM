@@ -5088,6 +5088,14 @@ async function handle(req, res, pathname, method, query = {}) {
     if (handled) return true;
   }
 
+  // Onboarding Academy owns /api/academy/*. It gates every route itself --
+  // employee, mentor and clinical leadership see different things through the
+  // same URLs -- so there is no single role test that could live here.
+  if (pathname.startsWith("/api/academy")) {
+    const handled = await academy.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
   // PTO add-on owns /api/pto/* (accrual and balances; leave taken still lives
   // in staff_time_off, which the scheduler owns).
   if (pathname.startsWith("/api/pto")) {
@@ -8593,6 +8601,7 @@ const PUBLIC_FILES = new Set([
   "/pto-frontend.js",
   "/supervision-frontend.js",
   "/growth-frontend.js",
+  "/academy-frontend.js",
   "/events-frontend.js",
   "/supply-requests-frontend.js",
   "/maintenance-requests-frontend.js",
@@ -8901,6 +8910,15 @@ const maintenance = require("./maintenance-requests")({
 // nothing else -- every door behind it belongs to the module that owns those
 // records, and all of them are anonymous and write-only. =====
 const staffPortal = require("./staff-portal")({ dbRun });
+// ===== ONBOARDING ACADEMY add-on: the 30-day training programme a new
+// clinician works through while carrying a caseload. Lives as a tab inside
+// the existing BCBA Hub; owns /api/academy/*. The curriculum is DATA, so the
+// same machinery serves RBT and Squad Leader programmes later. =====
+const academy = require("./academy")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, sendEmail,
+  onCompletion: (...args) => completions.record(...args),
+});
+
 const concerns = require("./concerns")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile,
   moduleGranted, moduleDenied,
@@ -9418,6 +9436,7 @@ async function start() {
   await maintenance.initTables().catch((e) => console.error("Maintenance initTables failed:", e));
   await concerns.initTables().catch((e) => console.error("Concerns initTables failed:", e));
   await staffPortal.initTables().catch((e) => console.error("Staff portal initTables failed:", e));
+  await academy.initTables().catch((e) => console.error("Academy initTables failed:", e));
   await policyChanges.initTables().catch((e) => console.error("Policy change requests initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
   await fidelity.initTables().catch((e) => console.error("Fidelity initTables failed:", e));
