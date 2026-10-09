@@ -39,7 +39,6 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { path: '/podcast', priority: 0.9 },
     { path: '/writing', priority: 0.8 },
     { path: '/programs', priority: 0.6 },
-    { path: '/assessment', priority: 0.6 },
     { path: '/about', priority: 0.5 },
     // /stories is deliberately absent. It is not published, and listing an
     // unpublished page is how a crawler finds one.

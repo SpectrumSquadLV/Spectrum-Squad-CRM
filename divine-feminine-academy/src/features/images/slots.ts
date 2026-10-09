@@ -186,6 +186,15 @@ export const imageSlots: readonly ImageSlot[] = [
     desktop: { ratio: '1 / 1', maxPx: 600, framing: 'Head and shoulders.' },
     mobile: { ratio: '1 / 1', maxPx: 400, framing: 'Head and shoulders.' },
   },
+  {
+    key: 'founder-note',
+    label: 'Beside your note before the mirror',
+    where: 'Inside the challenge, on the screen where you speak to her just before she looks',
+    brief:
+      'The most personal photograph on the platform, and the least produced. She is about to look into her own eyes for the first time and you are the last face she sees before she does — so this one wants to look like you actually said it: no styling that reads as a brand shot, no arms folded, nothing over your face. Straight at the lens, close, soft light, the expression you would have if you were sitting across from her. Cropped to a circle, so keep your head well inside the frame and do not let the top of it touch the edge.',
+    desktop: { ratio: '1 / 1', maxPx: 600, framing: 'Head and shoulders, centred, room around your head.' },
+    mobile: { ratio: '1 / 1', maxPx: 400, framing: 'Head and shoulders, centred, room around your head.' },
+  },
 ] as const
 
 const bySlot = new Map(imageSlots.map((s) => [s.key, s]))

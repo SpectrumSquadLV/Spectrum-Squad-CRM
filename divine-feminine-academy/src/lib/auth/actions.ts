@@ -8,7 +8,7 @@ import { db } from '@/db/client'
 import { activityEvents, contacts, crmStages, profiles } from '@/db/schema'
 import { headers } from 'next/headers'
 import { LIMITS, rateLimit } from '@/lib/security/rate-limit'
-import { isSupabaseConfigured, siteUrl } from './env'
+import { isSupabaseConfigured, requestOrigin } from './env'
 import { createServerSupabase } from './server'
 
 /**
@@ -170,7 +170,7 @@ export async function join(
   const { error } = await supabase.auth.signInWithOtp({
     email: input.email,
     options: {
-      emailRedirectTo: `${siteUrl()}/auth/callback?next=${encodeURIComponent(
+      emailRedirectTo: `${await requestOrigin()}/auth/callback?next=${encodeURIComponent(
         input.next ?? '/my-academy',
       )}`,
       data: { first_name: input.firstName, timezone: input.timezone },
@@ -208,7 +208,7 @@ export async function signInWithLink(
       // Do NOT create an account from the sign-in form. Signing up is a
       // separate, deliberate act with a name attached.
       shouldCreateUser: false,
-      emailRedirectTo: `${siteUrl()}/auth/callback?next=${encodeURIComponent(
+      emailRedirectTo: `${await requestOrigin()}/auth/callback?next=${encodeURIComponent(
         parsed.data.next ?? '/my-academy',
       )}`,
     },

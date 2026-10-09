@@ -2,6 +2,7 @@
 
 import { getBlock } from '@/blocks/registry'
 import type { HerEvidence } from '@/blocks/contract'
+import type { SlotImages } from '@/db/queries/images'
 
 /**
  * Renders one block by looking its type up in the registry.
@@ -17,6 +18,7 @@ export function BlockRenderer({
   onChange,
   disabled,
   context,
+  portrait,
   today,
 }: {
   blockId: string
@@ -26,6 +28,7 @@ export function BlockRenderer({
   onChange: (value: unknown) => void
   disabled?: boolean
   context?: HerEvidence
+  portrait?: SlotImages
   today?: Record<string, string>
 }) {
   const definition = getBlock(type)
@@ -64,6 +67,7 @@ export function BlockRenderer({
       onChange={onChange}
       disabled={disabled}
       context={context}
+      portrait={portrait}
       today={today}
     />
   )

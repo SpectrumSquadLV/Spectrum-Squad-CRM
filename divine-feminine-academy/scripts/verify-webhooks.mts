@@ -8,6 +8,7 @@
  * Run: npm run verify:webhooks
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   computeSignature,
   parseSignatureHeader,
@@ -173,6 +174,73 @@ await check('the fake provider still refuses a bad signature', async () => {
   await assert.rejects(
     () => fake.provider.parseWebhook(body, `t=${NOW},v1=deadbeef`),
     'the fake provider accepted a forgery',
+  )
+})
+
+/*
+ * THE MONEY PATHS MUST NOT BE SILENT.
+ *
+ * A source-level guard, in the spirit of verify:origin's, because this is not
+ * a property you can observe by calling the route: a silent failure and a
+ * loud one both return the same status code to the caller. The only
+ * difference is whether anybody can find out afterwards, and that difference
+ * is invisible to a test that only looks at responses.
+ *
+ * It matters here more than anywhere else in the product. Stripe's webhook
+ * secrets are `whsec_...` in BOTH live and test mode with nothing in the
+ * string to distinguish them, so a live key paired with a test-mode secret
+ * cannot be detected from the environment - and the way it shows up is a
+ * rejected signature. When that path was a bare `catch`, the outcome was: a
+ * real card charged, a 400 returned to Stripe, fulfilment skipped, and NOT
+ * ONE LINE anywhere on the server. The only way to discover it was a woman
+ * writing in to ask where the thing she paid for had gone.
+ *
+ * Both failure paths are checked, because they have different causes and need
+ * different messages: one means the secret is wrong, the other means the
+ * secret was right and fulfilment broke.
+ */
+await check('neither webhook failure path is silent', () => {
+  const source = readFileSync('app/api/webhooks/payments/route.ts', 'utf8')
+
+  // A `catch` that binds nothing cannot log what went wrong.
+  assert.ok(
+    !/}\s*catch\s*{/.test(source),
+    'the payments webhook has a bare `catch {` - a failure there records nothing, ' +
+      'and a woman who has been charged gets no access and leaves no trace',
+  )
+
+  assert.match(
+    source,
+    /console\.error\([`'"]\[webhook\] SIGNATURE REJECTED/,
+    'a rejected signature must be logged: it is the symptom of a live key paired ' +
+      'with a test-mode webhook secret, which takes real money and grants nothing',
+  )
+
+  assert.match(
+    source,
+    /console\.error\([`'"]\[webhook\] VERIFIED EVENT FAILED TO FULFIL/,
+    'a verified event we could not apply must be logged - she has paid and the ' +
+      'signature was fine, so the cause is ours',
+  )
+})
+
+await check('the rejection tells the server everything and the caller nothing', () => {
+  const source = readFileSync('app/api/webhooks/payments/route.ts', 'utf8')
+
+  // The 400 body must stay vague: a precise error tells a forger what to fix.
+  assert.match(
+    source,
+    /error:\s*'invalid'\s*}\s*,\s*{\s*status:\s*400/,
+    'the 400 response should stay unspecific',
+  )
+
+  // And the secret must never be printed, only described.
+  const logged = source.slice(source.indexOf('SIGNATURE REJECTED'))
+  assert.ok(
+    !/STRIPE_WEBHOOK_SECRET\s*(\)|,|\})/.test(
+      logged.replace(/process\.env\.STRIPE_WEBHOOK_SECRET \?\? ''\)\.startsWith\(/g, ''),
+    ) || logged.includes('.startsWith('),
+    'the webhook secret must be described, never printed into a log',
   )
 })
 
