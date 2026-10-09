@@ -137,6 +137,134 @@
       + " you are not expected to work systems out on your own.</div></div>";
   }
 
+  // "I WASN'T TRAINED ON THIS" IS THE MOST PROMINENT CONTROL ON THE PAGE
+  // after the progress bar, and it is worded as a statement about the
+  // programme rather than an admission about the person. Somebody who has to
+  // hunt for it, or who reads it as "report my own ignorance", does not press
+  // it -- and the whole value of the feature is in the pressing.
+  function helpHtml(d) {
+    return '<div class="ac-card">'
+      + '<div class="ac-row" style="justify-content:space-between;">'
+        + "<div><h3 style=\"margin:0 0 2px;font-size:15px;\">Stuck on something?</h3>"
+        + '<div class="ac-sub">Nobody expects you to work our systems out on your own.</div></div>'
+        + '<div class="ac-row">'
+          + '<button class="btn secondary" id="ac-ask">Ask my mentor</button>'
+          + '<button class="btn" id="ac-gap" style="background:#b91c1c;">I wasn\'t trained on this</button>'
+        + "</div>"
+      + "</div>"
+      + '<div id="ac-forms"></div>'
+      + "</div>";
+  }
+
+  function askFormHtml() {
+    return '<div style="margin-top:14px;border-top:1px solid var(--border,#eef0f4);padding-top:13px;">'
+      + '<label style="font-size:12.5px;font-weight:600;">What do you need to know?</label>'
+      + '<input id="ac-q-subject" placeholder="Where do I find…" style="width:100%;padding:9px 11px;'
+      + 'border:1px solid var(--border,#e5e7eb);border-radius:9px;margin:5px 0 9px;" />'
+      + '<textarea id="ac-q-body" rows="3" placeholder="Any detail that helps (optional)" '
+      + 'style="width:100%;padding:9px 11px;border:1px solid var(--border,#e5e7eb);border-radius:9px;"></textarea>'
+      + '<div class="ac-row" style="margin-top:9px;"><button class="btn" id="ac-q-send">Send to my mentor</button>'
+      + '<span class="ac-sub">It waits for them. You are not interrupting a session.</span></div>'
+      + '<div id="ac-q-msg" class="ac-sub" style="margin-top:7px;"></div></div>';
+  }
+
+  function gapFormHtml() {
+    return '<div style="margin-top:14px;border-top:1px solid var(--border,#eef0f4);padding-top:13px;">'
+      + '<div class="ac-sub" style="margin-bottom:9px;">This goes to your mentor and to clinical leadership.'
+      + " It is treated as a gap in the training, not a mark against you.</div>"
+      + '<label style="font-size:12.5px;font-weight:600;">Topic or procedure</label>'
+      + '<input id="ac-g-topic" placeholder="Authorization unit tracking" style="width:100%;padding:9px 11px;'
+      + 'border:1px solid var(--border,#e5e7eb);border-radius:9px;margin:5px 0 9px;" />'
+      + '<label style="font-size:12.5px;font-weight:600;">What is missing?</label>'
+      + '<textarea id="ac-g-desc" rows="3" style="width:100%;padding:9px 11px;'
+      + 'border:1px solid var(--border,#e5e7eb);border-radius:9px;margin:5px 0 9px;"></textarea>'
+      + '<div class="ac-row">'
+        + '<label style="font-size:12.5px;">How urgent?<br><select id="ac-g-urg" style="padding:8px 10px;'
+        + 'border:1px solid var(--border,#e5e7eb);border-radius:9px;margin-top:4px;">'
+        + '<option value="blocking">It is blocking me now</option>'
+        + '<option value="soon" selected>I need it soon</option>'
+        + '<option value="whenever">Whenever there is time</option></select></label>'
+        + '<label style="font-size:12.5px;display:flex;align-items:center;gap:7px;margin-top:17px;">'
+        + '<input type="checkbox" id="ac-g-now" style="width:auto;margin:0;" /> I need help right now</label>'
+      + "</div>"
+      + '<div class="ac-row" style="margin-top:11px;"><button class="btn" id="ac-g-send">Send it</button></div>'
+      + '<div id="ac-g-msg" class="ac-sub" style="margin-top:7px;"></div></div>';
+  }
+
+  function checkinsHtml(list, canSign, isMine) {
+    if (!list || !list.length) return "";
+    var LABEL = { complete: "Complete", awaiting_supervisor: "Waiting on your supervisor",
+                  awaiting_employee: "Waiting on you", due: "Due now", scheduled: "Scheduled" };
+    return '<div class="ac-card"><h3 style="margin:0 0 2px;font-size:15px;">Check-ins</h3>'
+      + '<div class="ac-sub" style="margin-bottom:8px;">Day 7, 14, 21 and 30. Both of you fill one in —'
+      + " it is a conversation, not a form.</div>"
+      + list.map(function (c) {
+        var open = c.state === "due" || c.state === "awaiting_employee";
+        return '<div class="ac-item"><div style="flex:1;min-width:0;">'
+          + "<div><strong>Day " + c.day + "</strong> "
+            + '<span class="ac-sub">due ' + esc(c.due_date) + "</span></div>"
+          + (c.learned ? '<div class="ac-sub" style="margin-top:4px;"><strong>Learned:</strong> '
+              + esc(c.learned) + "</div>" : "")
+          + (c.mentor_feedback ? '<div class="ac-sub" style="margin-top:3px;"><strong>Feedback:</strong> '
+              + esc(c.mentor_feedback) + "</div>" : "")
+          + (isMine && open
+              ? '<div style="margin-top:8px;"><textarea data-ci-learned="' + c.day + '" rows="2" '
+                + 'placeholder="What have you learned this week?" style="width:100%;padding:8px 10px;'
+                + 'border:1px solid var(--border,#e5e7eb);border-radius:9px;"></textarea>'
+                + '<textarea data-ci-unclear="' + c.day + '" rows="2" placeholder="What is still unclear?" '
+                + 'style="width:100%;padding:8px 10px;border:1px solid var(--border,#e5e7eb);'
+                + 'border-radius:9px;margin-top:6px;"></textarea>'
+                + '<button class="btn small" data-ci-save="' + c.day + '" style="margin-top:7px;">Save my half</button></div>'
+              : "")
+          + (canSign && c.employee_done_at && !c.supervisor_done_at
+              ? '<div style="margin-top:8px;"><textarea data-ci-fb="' + c.day + '" rows="2" '
+                + 'placeholder="Your feedback" style="width:100%;padding:8px 10px;'
+                + 'border:1px solid var(--border,#e5e7eb);border-radius:9px;"></textarea>'
+                + '<button class="btn small" data-ci-sign="' + c.day + '" style="margin-top:7px;">Add my half</button></div>'
+              : "")
+          + "</div>"
+          + '<div><span class="ac-pill ac-' + (c.state === "complete" ? "completed"
+              : c.state === "scheduled" ? "not_started" : "awaiting_review") + '">'
+            + esc(LABEL[c.state] || c.state) + "</span></div></div>";
+      }).join("") + "</div>";
+  }
+
+  function threadsHtml(questions, gaps, canAnswer) {
+    var qs = (questions || []).slice(0, 10);
+    var gs = (gaps || []).slice(0, 10);
+    if (!qs.length && !gs.length) return "";
+    return '<div class="ac-card"><h3 style="margin:0 0 8px;font-size:15px;">Questions &amp; training gaps</h3>'
+      + qs.map(function (q) {
+        return '<div class="ac-item"><div style="flex:1;min-width:0;">'
+          + "<div><strong>" + esc(q.subject) + "</strong>"
+            + (q.asked_by ? ' <span class="ac-sub">· ' + esc(q.asked_by) + "</span>" : "") + "</div>"
+          + (q.body ? '<div class="ac-sub">' + esc(q.body) + "</div>" : "")
+          + (q.answer ? '<div class="ac-comp" style="margin-top:6px;">' + esc(q.answer)
+              + '<div class="ac-sub" style="margin-top:4px;">— ' + esc(q.answered_by || "") + "</div></div>" : "")
+          + (canAnswer && q.status === "open"
+              ? '<div style="margin-top:7px;"><textarea data-ans="' + q.id + '" rows="2" '
+                + 'placeholder="Answer it" style="width:100%;padding:8px 10px;'
+                + 'border:1px solid var(--border,#e5e7eb);border-radius:9px;"></textarea>'
+                + '<button class="btn small" data-ans-send="' + q.id + '" style="margin-top:6px;">Send answer</button></div>'
+              : "")
+          + '</div><div><span class="ac-pill ac-' + (q.status === "answered" ? "completed" : "awaiting_review")
+          + '">' + (q.status === "answered" ? "Answered" : "Open") + "</span></div></div>";
+      }).join("")
+      + gs.map(function (g) {
+        var S = { submitted: "Submitted", under_review: "Under Review",
+                  training_scheduled: "Training Scheduled", resolved: "Resolved" };
+        return '<div class="ac-item"><div style="flex:1;min-width:0;">'
+          + '<div><strong>Not trained on:</strong> ' + esc(g.topic)
+            + (g.raised_by ? ' <span class="ac-sub">· ' + esc(g.raised_by) + "</span>" : "") + "</div>"
+          + (g.description ? '<div class="ac-sub">' + esc(g.description) + "</div>" : "")
+          + (g.resolution ? '<div class="ac-comp" style="margin-top:6px;">' + esc(g.resolution) + "</div>" : "")
+          + '</div><div><span class="ac-pill ac-' + (g.status === "resolved" ? "completed"
+              : g.status === "submitted" ? "needs_training" : "awaiting_review") + '">'
+          + esc(S[g.status] || g.status) + "</span></div></div>";
+      }).join("")
+      + "</div>";
+  }
+
   function itemHtml(it, canReview) {
     var isComp = it.kind === "competency";
     var controls = "";
@@ -182,11 +310,14 @@
     var title = (p.weeks.find(function (w) { return w.week === week; }) || {}).title || ("Week " + week);
     return heroHtml(d)
       + mentorHtml(d)
+      + helpHtml(d)
       + '<div class="ac-card"><h3 style="margin:0 0 2px;font-size:15px;">Week ' + week + " — " + esc(title) + "</h3>"
       + '<div class="ac-sub" style="margin-bottom:8px;">Tick each topic as you cover it. The competency at the'
       + " end is signed off by your mentor, not by you.</div>"
       + inWeek.map(function (i) { return itemHtml(i, false); }).join("")
-      + "</div>";
+      + "</div>"
+      + checkinsHtml(DATA.checkins, false, true)
+      + threadsHtml(DATA.questions, DATA.gaps, false);
   }
 
   // ---- the roster, for mentors and leadership -----------------------------
@@ -233,6 +364,10 @@
     }
     var body = VIEW === "roster" && showRoster
       ? rosterHtml(DATA.roster.enrollments || [], DATA.roster.can_manage)
+        // A mentor's queue belongs beside the roster, not buried in a
+        // mentee's record: the question they have not answered is the thing
+        // they came to this screen for.
+        + threadsHtml(DATA.questions, DATA.gaps, true)
       : meHtml(DATA.me);
     HOST.innerHTML = '<div class="ac-wrap">' + tabs + body + "</div>";
     wire();
@@ -259,7 +394,87 @@
     HOST.querySelectorAll("[data-ready]").forEach(function (b) {
       b.addEventListener("click", function () { set(b.dataset.ready, "awaiting_review"); });
     });
+
+    var forms = HOST.querySelector("#ac-forms");
+    var show = function (html) { if (forms) { forms.innerHTML = html; wire(); } };
+    var ask = HOST.querySelector("#ac-ask");
+    if (ask) ask.addEventListener("click", function () { show(askFormHtml()); });
+    var gapBtn = HOST.querySelector("#ac-gap");
+    if (gapBtn) gapBtn.addEventListener("click", function () { show(gapFormHtml()); });
+
+    var qSend = HOST.querySelector("#ac-q-send");
+    if (qSend) qSend.addEventListener("click", function () {
+      var subject = (HOST.querySelector("#ac-q-subject") || {}).value || "";
+      var msg = HOST.querySelector("#ac-q-msg");
+      if (!subject.trim()) { if (msg) msg.textContent = "Give it a subject first."; return; }
+      qSend.disabled = true;
+      api("/api/academy/questions", { method: "POST", body: {
+        subject: subject, body: (HOST.querySelector("#ac-q-body") || {}).value || "" } })
+        .then(function (d) {
+          if (msg) {
+            msg.textContent = d.mentor_notified
+              ? "Sent. Your mentor has it."
+              : "Saved. No mentor is assigned yet, so clinical leadership will pick it up.";
+          }
+          reload();
+        })
+        .catch(function (e) { qSend.disabled = false; if (msg) msg.textContent = e.message; });
+    });
+
+    var gSend = HOST.querySelector("#ac-g-send");
+    if (gSend) gSend.addEventListener("click", function () {
+      var topic = (HOST.querySelector("#ac-g-topic") || {}).value || "";
+      var msg = HOST.querySelector("#ac-g-msg");
+      if (!topic.trim()) { if (msg) msg.textContent = "What was the topic?"; return; }
+      gSend.disabled = true;
+      api("/api/academy/gaps", { method: "POST", body: {
+        topic: topic,
+        description: (HOST.querySelector("#ac-g-desc") || {}).value || "",
+        urgency: (HOST.querySelector("#ac-g-urg") || {}).value || "soon",
+        needs_help_now: !!(HOST.querySelector("#ac-g-now") || {}).checked } })
+        .then(function () {
+          if (msg) msg.textContent = "Sent to your mentor and clinical leadership. You will hear back.";
+          reload();
+        })
+        .catch(function (e) { gSend.disabled = false; if (msg) msg.textContent = e.message; });
+    });
+
+    HOST.querySelectorAll("[data-ans-send]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var id = b.getAttribute("data-ans-send");
+        var ta = HOST.querySelector('[data-ans="' + id + '"]');
+        if (!ta || !ta.value.trim()) { alert("Write an answer first."); return; }
+        b.disabled = true;
+        api("/api/academy/questions/" + id, { method: "POST", body: { answer: ta.value } })
+          .then(reload).catch(function (e) { b.disabled = false; alert(e.message); });
+      });
+    });
+
+    var enrId = DATA.me && DATA.me.enrollment ? DATA.me.enrollment.id : null;
+    HOST.querySelectorAll("[data-ci-save]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var day = b.getAttribute("data-ci-save");
+        if (!enrId) return;
+        b.disabled = true;
+        api("/api/academy/enrollments/" + enrId + "/checkins/" + day, { method: "POST", body: {
+          learned: (HOST.querySelector('[data-ci-learned="' + day + '"]') || {}).value || "",
+          still_unclear: (HOST.querySelector('[data-ci-unclear="' + day + '"]') || {}).value || "" } })
+          .then(reload).catch(function (e) { b.disabled = false; alert(e.message); });
+      });
+    });
+    HOST.querySelectorAll("[data-ci-sign]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var day = b.getAttribute("data-ci-sign");
+        if (!enrId) return;
+        b.disabled = true;
+        api("/api/academy/enrollments/" + enrId + "/checkins/" + day, { method: "POST", body: {
+          mentor_feedback: (HOST.querySelector('[data-ci-fb="' + day + '"]') || {}).value || "" } })
+          .then(reload).catch(function (e) { b.disabled = false; alert(e.message); });
+      });
+    });
   }
+
+  function reload() { window.__renderAcademy(HOST); }
 
   window.__renderAcademy = function (host) {
     injectStyles();
@@ -271,8 +486,17 @@
       // neither a mentor nor leadership, and the roster simply does not
       // appear for them.
       api("/api/academy/enrollments").catch(function () { return null; }),
+      api("/api/academy/questions").catch(function () { return { questions: [] }; }),
+      api("/api/academy/gaps").catch(function () { return { gaps: [] }; }),
     ]).then(function (r) {
-      DATA = { me: r[0], roster: r[1] };
+      DATA = { me: r[0], roster: r[1], questions: (r[2] || {}).questions, gaps: (r[3] || {}).gaps };
+      if (DATA.me && DATA.me.enrolled) {
+        return api("/api/academy/enrollments/" + DATA.me.enrollment.id + "/checkins")
+          .then(function (c) { DATA.checkins = c.checkins; return r; })
+          .catch(function () { return r; });
+      }
+      return r;
+    }).then(function (r) {
       if (!DATA.me.enrolled && DATA.roster && (DATA.roster.enrollments || []).length) VIEW = "roster";
       render();
     });
