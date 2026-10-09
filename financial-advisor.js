@@ -341,6 +341,100 @@ module.exports = function initFinancialAdvisor(ctx) {
     return lines;
   }
 
+  // ---- STREAM FILTERS ------------------------------------------------------
+  //
+  // A PDF stream may be encoded by a CHAIN of filters, not just one:
+  //
+  //   /Filter [ /ASCII85Decode /FlateDecode ]
+  //
+  // means ASCII85 first, then inflate. Reading only the last name in the
+  // dictionary and inflating the raw bytes -- which is what this did -- throws
+  // on the very first byte and the stream is dropped. Every page of such a
+  // document disappears, and the file is then reported as having no readable
+  // pages, which is a true statement about what the code managed and a false
+  // one about the PDF.
+  //
+  // ASCII85 is not exotic: it is what reportlab emits by default, and plenty
+  // of other generators use it. The filters are applied IN ORDER, as the spec
+  // says, rather than guessed at.
+  function ascii85Decode(str) {
+    let t = str.replace(/\s/g, "");
+    if (t.startsWith("<~")) t = t.slice(2);
+    const end = t.indexOf("~>");
+    if (end >= 0) t = t.slice(0, end);
+    const out = [];
+    let tuple = 0, count = 0;
+    for (let i = 0; i < t.length; i++) {
+      const c = t[i];
+      if (c === "z" && count === 0) { out.push(0, 0, 0, 0); continue; }
+      const v = c.charCodeAt(0) - 33;
+      if (v < 0 || v > 84) continue;
+      tuple = tuple * 85 + v;
+      if (++count === 5) {
+        out.push((tuple >>> 24) & 255, (tuple >>> 16) & 255, (tuple >>> 8) & 255, tuple & 255);
+        tuple = 0; count = 0;
+      }
+    }
+    // A partial final group is padded with 'u' and the pad bytes dropped.
+    if (count > 0) {
+      for (let i = count; i < 5; i++) tuple = tuple * 85 + 84;
+      const full = [(tuple >>> 24) & 255, (tuple >>> 16) & 255, (tuple >>> 8) & 255, tuple & 255];
+      out.push(...full.slice(0, count - 1));
+    }
+    return Buffer.from(out);
+  }
+
+  function asciiHexDecode(str) {
+    const hex = str.replace(/[^0-9a-fA-F>]/g, "").split(">")[0];
+    const even = hex.length % 2 ? hex + "0" : hex;   // an odd final digit is padded with zero
+    return Buffer.from(even, "hex");
+  }
+
+  function runLengthDecode(buf) {
+    const out = [];
+    let i = 0;
+    while (i < buf.length) {
+      const n = buf[i++];
+      if (n === 128) break;
+      if (n < 128) { for (let k = 0; k <= n && i < buf.length; k++) out.push(buf[i++]); }
+      else { const b = buf[i++]; for (let k = 0; k < 257 - n; k++) out.push(b); }
+    }
+    return Buffer.from(out);
+  }
+
+  const inflate = (buf) => {
+    try { return zlib.inflateSync(buf); }
+    catch (e) { return zlib.inflateRawSync(buf); }   // some writers omit the zlib header
+  };
+
+  // The filter names in dictionary order. Handles both the single form
+  // (/Filter /FlateDecode) and the array form (/Filter [ /A /B ]).
+  function filtersOf(dict) {
+    const m = dict.match(/\/Filter\s*(\[[^\]]*\]|\/[A-Za-z0-9]+)/);
+    if (!m) return [];
+    return [...m[1].matchAll(/\/([A-Za-z0-9]+)/g)].map((x) => x[1]);
+  }
+
+  // Returns the decoded bytes, or null with the name of the filter that
+  // stopped it -- so the caller can say WHICH encoding it could not read
+  // rather than implying the file is broken.
+  function decodeStream(bytes, dict) {
+    let data = bytes;
+    for (const f of filtersOf(dict)) {
+      try {
+        if (f === "FlateDecode") data = inflate(data);
+        else if (f === "ASCII85Decode") data = ascii85Decode(data.toString("latin1"));
+        else if (f === "ASCIIHexDecode") data = asciiHexDecode(data.toString("latin1"));
+        else if (f === "RunLengthDecode") data = runLengthDecode(data);
+        else if (f === "Crypt") continue;          // identity in practice
+        else return { data: null, blocked: f };    // LZWDecode and anything new
+      } catch (e) {
+        return { data: null, blocked: f };
+      }
+    }
+    return { data, blocked: null };
+  }
+
   function extractPdfLines(buffer) {
     if (buffer.slice(0, 5).toString("latin1") !== "%PDF-") throw new Error("That file isn't a PDF.");
     const raw = buffer.toString("latin1");
@@ -348,6 +442,8 @@ module.exports = function initFinancialAdvisor(ctx) {
     const lines = [];
     let idx = 0;
     let streams = 0;
+    let imageOnly = 0;
+    const blocked = new Set();
     while (true) {
       const s = raw.indexOf("stream", idx);
       if (s < 0) break;
@@ -364,19 +460,25 @@ module.exports = function initFinancialAdvisor(ctx) {
       if (raw[start] === "\n") start++;
       const bytes = buffer.slice(start, e);
       idx = e + 9;
-      if (/\/Subtype\s*\/Image|\/DCTDecode|\/JPXDecode|\/CCITTFaxDecode|\/ObjStm|\/XRef/.test(dict)) continue;
-      let data = null;
-      if (/\/FlateDecode/.test(dict)) {
-        try { data = zlib.inflateSync(bytes); }
-        catch (err) { try { data = zlib.inflateRawSync(bytes); } catch (e2) { data = null; } }
-      } else if (!/\/Filter/.test(dict)) {
-        data = bytes;
-      }
-      if (!data) continue;
+      if (/\/Subtype\s*\/Image|\/DCTDecode|\/JPXDecode|\/CCITTFaxDecode/.test(dict)) { imageOnly++; continue; }
+      if (/\/ObjStm|\/XRef/.test(dict)) continue;
+      const { data, blocked: stuck } = decodeStream(bytes, dict);
+      if (!data) { if (stuck) blocked.add(stuck); continue; }
       streams++;
       lines.push(...pdfContentToLines(data.toString("latin1"), fonts));
     }
-    if (!streams) throw new Error("This PDF's pages couldn't be read. If it's a scanned statement, download the CSV version from your bank instead.");
+    if (!streams) {
+      // SAY WHICH OF THE THREE IT IS. "Couldn't be read" covers a scan, an
+      // encoding this code does not implement, and a genuinely broken file,
+      // and the reader can only act on one of them.
+      if (blocked.size) {
+        throw new Error(`This PDF is compressed with ${[...blocked].join(" and ")}, which this importer cannot read. Re-save or print it to PDF from the original application and upload that.`);
+      }
+      if (imageOnly) {
+        throw new Error("This PDF has no text in it — every page is an image, which is what a scan or a photographed document looks like. It needs a version with real text.");
+      }
+      throw new Error("No readable page content was found in this PDF.");
+    }
     return lines;
   }
 
