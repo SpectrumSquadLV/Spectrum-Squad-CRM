@@ -1059,6 +1059,10 @@
     { key: "authorization", label: "Authorization Request", icon: "clipboard" },
     { key: "forms", label: "Form Library", icon: "folder" },
     { key: "resources", label: "Clinical Resources", icon: "book" },
+    // Mounted, not rendered here -- same arrangement as Authorization
+    // Request. The Academy owns its own markup, its own fetches and its own
+    // permissions; the Hub gives it somewhere to live and nothing else.
+    { key: "academy", label: "Onboarding Academy", icon: "book" },
     { key: "student", label: "Student Analyst", icon: "people", soon: true },
   ];
 
@@ -1093,6 +1097,8 @@
       body = formsHtml("forms");
     } else if (state.tab === "resources") {
       body = formsHtml("resources");
+    } else if (state.tab === "academy") {
+      body = '<div id="bh-academy"></div>';
     } else {
       body = comingSoonHtml((TABS.find((t) => t.key === state.tab) || {}).label || "This area");
     }
@@ -1108,6 +1114,14 @@
         window.__renderAuthorizationRequests(host);
       } else if (host) {
         host.innerHTML = '<div class="bh-card"><div class="bh-empty">Authorization Request could not be loaded.</div></div>';
+      }
+    }
+    if (state.tab === "academy") {
+      const host = mountEl.querySelector("#bh-academy");
+      if (host && typeof window.__renderAcademy === "function") {
+        window.__renderAcademy(host);
+      } else if (host) {
+        host.innerHTML = '<div class="bh-card"><div class="bh-empty">The Onboarding Academy could not be loaded.</div></div>';
       }
     }
   }
@@ -1343,7 +1357,7 @@
     const place = loadPlace();
     if (place.payer && state.payers.some((p) => p.key === place.payer)) state.payerKey = place.payer;
     if (place.mode === "initial" || place.mode === "reauth") state.mode = place.mode;
-    if (place.tab === "cheatsheet" || place.tab === "forms") state.tab = place.tab;
+    if (["cheatsheet", "forms", "resources", "authorization", "academy"].includes(place.tab)) state.tab = place.tab;
     if (!state.payerKey && state.payers.length) state.payerKey = state.payers[0].key;
     render();
   };
