@@ -83,11 +83,26 @@ const stamp = Date.now().toString(36);
       `INSERT INTO hr_employees (name, email, role_title, hr_hire_date, status)
        VALUES ('AcadUI Newbie',$1,'BCBA',$2,'active') RETURNING id`, [newEmail, today])).rows[0].id;
 
-    const prog = (await pool.query("SELECT id, version FROM academy_programs WHERE key = 'bcba-30day'")).rows[0];
-    const enr = (await pool.query(
-      `INSERT INTO academy_enrollments (employee_id, program_id, program_version, start_date, due_date, state, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$4,'active', now()::text, now()::text) RETURNING id`,
-      [empId, prog.id, prog.version, today])).rows[0];
+    // ENROLLED THROUGH THE REAL ROUTE, not with an INSERT. Enrolling does
+    // more than write one row -- it schedules the four check-ins -- and a
+    // fixture that writes the row directly tests a state the product never
+    // produces. The first version of this file did exactly that and the
+    // check-ins were simply absent.
+    let apiCookie = "";
+    const asOwner = async (path, opts = {}) => {
+      const r = await fetch(BASE + path, {
+        method: opts.method || "GET",
+        headers: { ...(opts.body ? { "Content-Type": "application/json" } : {}), ...(apiCookie ? { Cookie: apiCookie } : {}) },
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+      const sc = r.headers.get("set-cookie"); if (sc) apiCookie = sc.split(";")[0];
+      let d = null; try { d = await r.json(); } catch (e) {}
+      return { status: r.status, data: d };
+    };
+    await asOwner("/api/auth/login", { method: "POST", body: { email: "admin@spectrumsquadlv.com", password: "TestOwner123!" } });
+    const enrolRes = await asOwner("/api/academy/enrollments", { method: "POST", body: { employee_id: empId } });
+    check("the fixture enrols through the real route", enrolRes.status === 200, enrolRes.data);
+    const enr = { id: enrolRes.data.enrollment.id };
 
     // ==================================================================
     section("THE NEW BCBA'S OWN SCREEN");
@@ -152,6 +167,41 @@ const stamp = Date.now().toString(36);
     const afterReady = await page.textContent(".ac-big");
     check("READY IS NOT DONE — the percentage does not move for it",
       afterReady === after, { after, afterReady });
+
+    section("ASKING FOR HELP IS THE EASIEST THING ON THE PAGE");
+    // Somebody who has to hunt for this, or who reads it as an admission
+    // about themselves, does not press it -- and the whole value is in the
+    // pressing. So it is checked for prominence and for wording, not just
+    // for existing.
+    check("there is an 'I wasn't trained on this' control",
+      await page.locator("#ac-gap").count() === 1, await page.locator("#ac-gap").count());
+    check("and an 'ask my mentor' one beside it",
+      await page.locator("#ac-ask").count() === 1);
+    check("the page says nobody expects them to work it out alone",
+      /work our systems out on your own/i.test(await page.textContent(".ac-wrap")));
+
+    await page.click("#ac-gap");
+    await page.waitForTimeout(300);
+    const gapForm = await page.textContent(".ac-wrap");
+    check("the gap form says where it goes",
+      /mentor and to clinical leadership/i.test(gapForm), gapForm.slice(0, 200));
+    check("AND THAT IT IS NOT A MARK AGAINST THEM — the wording is the feature",
+      /not a mark against you/i.test(gapForm), gapForm.slice(0, 200));
+
+    await page.fill("#ac-g-topic", "Authorization unit tracking");
+    await page.fill("#ac-g-desc", "Nobody showed me where remaining units are.");
+    await page.click("#ac-g-send");
+    await page.waitForTimeout(1200);
+    check("filing one is confirmed on screen",
+      /Not trained on:|You will hear back/i.test(await page.textContent(".ac-wrap")),
+      (await page.textContent(".ac-wrap")).slice(0, 300));
+
+    section("CHECK-INS APPEAR WITHOUT ANYBODY SCHEDULING THEM");
+    const ci = await page.textContent(".ac-wrap");
+    check("all four are listed", /Day 7/.test(ci) && /Day 14/.test(ci) && /Day 21/.test(ci) && /Day 30/.test(ci),
+      ci.slice(0, 300));
+    check("and it says both sides fill one in",
+      /it is a conversation, not a form/i.test(ci));
 
     section("A NEW STARTER IS NOT SHOWN THE ROSTER");
     check("there is no 'everyone onboarding' view for them",

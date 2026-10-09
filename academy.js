@@ -301,6 +301,24 @@ module.exports = function initAcademy(ctx) {
                  ON academy_checkins (enrollment_id, day)`).catch(() => {});
 
     await seedBcbaProgram();
+    await backfillCheckins();
+  }
+
+  // ANYBODY ALREADY ENROLLED GETS THEIR CHECK-INS TOO.
+  //
+  // The spine shipped before this table existed, so every enrolment created
+  // by it has none -- and a feature that only works for people who join
+  // after it was built is the kind of gap nobody notices until somebody asks
+  // where their day 7 went. Runs on boot, inserts nothing where rows already
+  // exist, and is therefore safe to run every time.
+  async function backfillCheckins() {
+    const rows = await dbAll(
+      `SELECT a.id, a.start_date FROM academy_enrollments a
+        WHERE a.state <> 'withdrawn'
+          AND NOT EXISTS (SELECT 1 FROM academy_checkins c WHERE c.enrollment_id = a.id)`
+    ).catch(() => []);
+    for (const r of rows) await scheduleCheckins(r);
+    if (rows.length) console.log(`[academy] scheduled check-ins for ${rows.length} existing enrolment(s)`);
   }
 
   const CHECKIN_DAYS = [7, 14, 21, 30];
@@ -1245,7 +1263,7 @@ module.exports = function initAcademy(ctx) {
   }
 
   return {
-    initTables, handleApi, enrol, autoEnrolSweep, scheduleCheckins, checkinsFor, leadership, leadershipEmails, isClinicalLead,
+    initTables, handleApi, enrol, autoEnrolSweep, scheduleCheckins, checkinsFor, backfillCheckins, leadership, leadershipEmails, isClinicalLead,
     employeeFor, progressFor, itemsFor, seedBcbaProgram,
     _internal: { STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
                  addDays, CHECKIN_DAYS, GAP_STATUSES, GAP_LABELS, URGENCIES },
