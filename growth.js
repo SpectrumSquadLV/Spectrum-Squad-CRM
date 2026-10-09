@@ -591,9 +591,22 @@ module.exports = function initGrowth(ctx) {
   // and storing that would fill the library with 60 policies of gibberish that
   // look real until somebody opens one. Real prose contains common words in
   // quantity; glyph soup does not.
+  // A PROPORTION, NOT A COUNT. This asked for 25 common words outright, which
+  // is a test of LENGTH wearing the costume of a test of readability: a
+  // one-page SOP -- "Arrive five minutes early. Greet the client. Record the
+  // start time." -- has about eleven in sixty words and was refused as
+  // gibberish. Short procedures are the commonest thing anybody uploads here.
+  //
+  // Real English runs 15-40% function words. Glyph soup runs at essentially
+  // zero, because the symbols are not words at all. Six percent separates
+  // them with room to spare, and the floor on length is there because a
+  // fifteen-word fragment cannot be judged either way.
   function looksLikeProse(t) {
-    const hits = (String(t || "").match(/\b(the|and|of|to|for|is|in|that|will|not|any|with|employee)\b/gi) || []).length;
-    return hits >= 25;
+    const text = String(t || "");
+    const words = text.trim().split(/\s+/).filter(Boolean);
+    if (words.length < 15) return false;
+    const hits = (text.match(/\b(the|and|of|to|for|is|in|that|will|not|any|with|employee|a|an|or|be|are|on|as|by|this|it|from|at|shall|must|each|all)\b/gi) || []).length;
+    return hits / words.length >= 0.06;
   }
 
   // Where a document divides into policies. Structural only -- numbering, an
@@ -1656,9 +1669,10 @@ module.exports = function initGrowth(ctx) {
           buf = Buffer.from(raw, "base64");
         } catch (e) { return json(res, 400, { error: "Could not read that file." }); }
 
+        const isPdf = /\.pdf$/i.test(name) || buf.slice(0, 5).toString("latin1") === "%PDF-";
         let text = "";
         try {
-          if (/\.pdf$/i.test(name) || buf.slice(0, 5).toString("latin1") === "%PDF-") text = extractPdfLines(buf).join("\n");
+          if (isPdf) text = extractPdfLines(buf).join("\n");
           else if (/\.docx$/i.test(name)) text = docxToText(buf);
           else if (/\.(txt|md)$/i.test(name)) text = buf.toString("utf8");
           else return json(res, 400, { error: "Upload a PDF, a Word .docx, or a plain text file. (Old .doc files need to be saved as .docx first.)" });
@@ -1672,9 +1686,14 @@ module.exports = function initGrowth(ctx) {
         // codes rather than words. Refusing it here is the point: storing it
         // would fill the library with policies that look real until somebody
         // opens one, and no amount of careful importing recovers from that.
-        if (!looksLikeProse(text)) {
+        //
+        // ONLY PDFs. A .docx and a .txt store real characters -- there is no
+        // font mapping to go wrong -- so this test can only ever produce a
+        // false refusal on them, and did: a short Word SOP came back told to
+        // "save it as .docx", which it already was.
+        if (isPdf && !looksLikeProse(text)) {
           return json(res, 400, {
-            error: "This file's text could not be decoded — it came out as symbols rather than words, which happens with PDFs whose fonts use a custom encoding. Save it as .docx or .txt and upload that instead.",
+            error: "This PDF's text came out as symbols rather than words, which happens when its fonts use a custom encoding. Open it and save or print it as a .docx or .txt, then upload that.",
           });
         }
 
@@ -1939,9 +1958,10 @@ module.exports = function initGrowth(ctx) {
           buf = Buffer.from(raw, "base64");
         } catch (e) { return json(res, 400, { error: "Could not read that file." }); }
 
+        const isPdf2 = /\.pdf$/i.test(name) || buf.slice(0, 5).toString("latin1") === "%PDF-";
         let text = "";
         try {
-          if (/\.pdf$/i.test(name) || buf.slice(0, 5).toString("latin1") === "%PDF-") {
+          if (isPdf2) {
             text = extractPdfLines(buf).join("\n");
           } else if (/\.docx$/i.test(name)) {
             text = docxToText(buf);
@@ -1956,8 +1976,9 @@ module.exports = function initGrowth(ctx) {
         if (text.replace(/\s/g, "").length < 40) {
           return json(res, 400, { error: "That file didn't have readable text in it. If it's a scan or a photo, it needs to be a text document to become a policy card." });
         }
-        if (!looksLikeProse(text)) {
-          return json(res, 400, { error: "This file's text could not be decoded — it came out as symbols rather than words. Save it as .docx or .txt and upload that instead." });
+        // PDFs only -- see the note on the same check above.
+        if (isPdf2 && !looksLikeProse(text)) {
+          return json(res, 400, { error: "This PDF's text came out as symbols rather than words, which happens when its fonts use a custom encoding. Save it as a .docx or .txt and upload that instead." });
         }
 
         const fileTitle = name.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ").trim();
