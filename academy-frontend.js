@@ -25,8 +25,10 @@
   };
   var HOST = null;
   var DATA = null;
-  var VIEW = "me";          // me | roster
+  var VIEW = "me";          // me | roster | review
   var OPEN_WEEK = null;
+  var REVIEW = null;        // the loaded 30-day review, when VIEW === "review"
+  var BACK_TO = "me";       // where Back goes: remembered, not guessed
 
   function api(path, opts) {
     opts = opts || {};
@@ -81,7 +83,21 @@
       ".ac-tbl td{padding:9px 10px;border-top:1px solid var(--border,#eef0f4);}",
       ".ac-mini{height:7px;border-radius:999px;background:#eef0f4;overflow:hidden;width:110px;}",
       ".ac-mini>div{height:100%;background:var(--brand-navy,#1b2a6b);}",
-      "@media (max-width:640px){.ac-weeks{grid-template-columns:repeat(2,1fr);}}",
+      ".ac-independent{background:#dcfce7;color:#166534;}",
+      ".ac-needs_support{background:#fef3c7;color:#92400e;}",
+      ".ac-not_demonstrated{background:#fee2e2;color:#991b1b;}",
+      ".ac-unrated{background:#f1f5f9;color:#475569;}",
+      ".ac-dom{padding:12px 0;border-top:1px solid var(--border,#eef0f4);}",
+      ".ac-dom:first-child{border-top:0;}",
+      ".ac-dom select,.ac-dom textarea,.ac-plan input,.ac-plan textarea{font:inherit;padding:7px 9px;",
+      "border:1px solid var(--border,#e5e7eb);border-radius:8px;width:100%;box-sizing:border-box;}",
+      ".ac-plan{background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px;margin-top:9px;}",
+      ".ac-plan-on{background:#f8fafc;border:1px solid var(--border,#e5e7eb);border-radius:10px;",
+      "padding:10px 12px;margin-top:8px;font-size:12.5px;}",
+      ".ac-block{background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:12px;",
+      "margin-bottom:10px;font-size:12.5px;color:#991b1b;}",
+      ".ac-grid2{display:grid;grid-template-columns:1fr 1fr;gap:9px;}",
+      "@media (max-width:640px){.ac-weeks{grid-template-columns:repeat(2,1fr);}.ac-grid2{grid-template-columns:1fr;}}",
     ].join("\n");
     document.head.appendChild(st);
   }
@@ -317,7 +333,208 @@
       + inWeek.map(function (i) { return itemHtml(i, false); }).join("")
       + "</div>"
       + checkinsHtml(DATA.checkins, false, true)
+      + '<div class="ac-card"><h3 style="margin:0 0 2px;font-size:15px;">Your 30-day review</h3>'
+      + '<div class="ac-sub" style="margin-bottom:9px;">At the end of the thirty days your mentor rates ten areas of'
+      + " the job and your Clinical Director signs it off. You will see all of it, and talk it through, once it is"
+      + " signed — not while it is being written.</div>"
+      + '<button class="btn small" data-rv-open="' + d.enrollment.id + '" data-rv-who="you">Open it</button></div>'
       + threadsHtml(DATA.questions, DATA.gaps, false);
+  }
+
+  // ---- THE THIRTY-DAY REVIEW ----------------------------------------------
+  //
+  // Ten domains, three ratings, and deliberately no total. There is no score
+  // anywhere on this panel because the moment a number appears, the question
+  // stops being "is this person operating independently" and becomes "are we
+  // over the line" -- and the approval is supposed to be a judgement somebody
+  // signs their name to.
+  //
+  // The panel also never hides why it cannot be approved. Every blocker is
+  // listed, with the thing to do about it, because a greyed-out button that
+  // will not say what is wrong is the most frustrating object in software.
+  function ratingPill(r) {
+    if (!r.rating) return '<span class="ac-pill ac-unrated">Not yet rated</span>';
+    return '<span class="ac-pill ac-' + esc(r.rating) + '">' + esc(r.rating_label) + "</span>";
+  }
+
+  function planRowHtml(p) {
+    return '<div class="ac-plan-on"><strong>' + esc(p.action) + "</strong>"
+      + '<div class="ac-sub" style="margin-top:3px;">Due ' + esc(p.due_date)
+      + " · reassessed " + esc(p.reassess_on)
+      + (p.state === "closed" ? " · closed" : "") + "</div>"
+      + (p.outcome ? '<div class="ac-sub" style="margin-top:3px;">Outcome: ' + esc(p.outcome) + "</div>" : "")
+      + (p.state === "open" && REVIEW.can_rate
+          ? '<div style="margin-top:7px;"><input data-pl-out="' + p.id + '" placeholder="What did the reassessment find?">'
+            + '<button class="btn small" style="margin-top:6px;" data-pl-close="' + p.id + '">Close this plan</button></div>'
+          : "")
+      + "</div>";
+  }
+
+  function domainHtml(r, rv) {
+    var plans = (rv.plans || []).filter(function (p) { return p.domain === r.domain; });
+    var isGap = r.rating && r.rating !== "independent";
+    var h = '<div class="ac-dom" data-domain="' + esc(r.domain) + '">'
+      + '<div class="ac-row" style="justify-content:space-between;">'
+        + "<strong>" + esc(r.label) + "</strong>" + ratingPill(r)
+      + "</div>"
+      + (r.note ? '<div class="ac-sub" style="margin-top:4px;">' + esc(r.note) + "</div>" : "")
+      + (r.rated_by ? '<div class="ac-sub" style="margin-top:2px;">Rated by ' + esc(r.rated_by) + "</div>" : "");
+    if (REVIEW.can_rate && !rv.closed) {
+      h += '<div class="ac-grid2" style="margin-top:8px;">'
+        + '<select data-rate="' + esc(r.domain) + '">'
+          + '<option value="">Choose a rating…</option>'
+          + Object.keys(REVIEW.rating_labels || {}).map(function (k) {
+              return '<option value="' + esc(k) + '"' + (r.rating === k ? " selected" : "") + ">"
+                + esc(REVIEW.rating_labels[k]) + "</option>";
+            }).join("")
+        + "</select>"
+        + '<input data-rnote="' + esc(r.domain) + '" placeholder="What you saw (required unless Independent)"'
+        + ' value="' + esc(r.note || "") + '">'
+        + "</div>"
+        + '<button class="btn small" style="margin-top:7px;" data-rsave="' + esc(r.domain) + '">Save rating</button>';
+    }
+    h += plans.map(planRowHtml).join("");
+    // A GAP WITH NO PLAN IS THE ONE THING THAT BLOCKS APPROVAL, so the form
+    // to fix it sits right under the rating that caused it rather than in a
+    // separate place somebody has to go and find.
+    if (isGap && !plans.length && REVIEW.can_rate && !rv.closed) {
+      h += '<div class="ac-plan"><strong style="font-size:13px;">This needs a development plan</strong>'
+        + '<div class="ac-sub" style="margin:2px 0 8px;">With a deadline and a date to look at it again — a plan'
+        + " with no date on it is how somebody is still &quot;needing support&quot; in March.</div>"
+        + '<textarea data-pa="' + esc(r.domain) + '" rows="2" placeholder="What will happen — training, shadowing, a specific piece of work"></textarea>'
+        + '<div class="ac-grid2" style="margin-top:8px;">'
+          + '<label class="ac-sub">Deadline<input type="date" data-pd="' + esc(r.domain) + '"></label>'
+          + '<label class="ac-sub">Reassess on<input type="date" data-pr="' + esc(r.domain) + '"></label>'
+        + "</div>"
+        + '<button class="btn small" style="margin-top:8px;" data-padd="' + esc(r.domain) + '">Add the plan</button>'
+        + "</div>";
+    }
+    return h + "</div>";
+  }
+
+  // ---- WHAT IS WAITING ON THE PERSON READING THIS -------------------------
+  //
+  // The approval gate refuses to sign off an onboarding while a competency
+  // review request sits unanswered. Before this card existed, that refusal
+  // was unresolvable from the screen: the only control that reviews a
+  // competency was rendered for nobody and wired to nothing, so the only way
+  // out of the blocker was the API. A gate has to come with the means of
+  // getting through it.
+  function waitingHtml() {
+    var items = ((REVIEW.progress || {}).items || []).filter(function (i) {
+      return i.status === "awaiting_review";
+    });
+    if (!REVIEW.can_rate || !items.length) return "";
+    return '<div class="ac-card"><h3 style="margin:0 0 2px;font-size:15px;">Waiting on you</h3>'
+      + '<div class="ac-sub" style="margin-bottom:8px;">They have said they are ready. Watch them do it, then'
+      + " sign it off or send it back with what still needs work — the onboarding cannot be approved while one of"
+      + " these is unanswered.</div>"
+      + items.map(function (i) {
+        return '<div class="ac-item"><div style="flex:1;min-width:0;">'
+          + '<div style="font-weight:700;">' + esc(i.title) + "</div>"
+          + (i.detail ? '<div class="ac-comp">' + esc(i.detail) + "</div>" : "")
+          + '<div style="margin-top:7px;"><input data-vn="' + i.item_id
+            + '" placeholder="What still needs work (required to send it back)"></div>'
+        + "</div>"
+        + '<div style="text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end;">'
+          + '<button class="btn small" data-vok="' + i.item_id + '">Sign it off</button>'
+          + '<button class="btn small secondary" data-vno="' + i.item_id + '">Needs more training</button>'
+        + "</div></div>";
+      }).join("")
+      + "</div>";
+  }
+
+  function blockersHtml(rv) {
+    var out = [];
+    if (!rv.complete) out.push("Still unrated: " + rv.unrated.map(esc).join(", ") + ".");
+    if (REVIEW.progress && REVIEW.progress.awaiting_review) {
+      out.push(REVIEW.progress.awaiting_review + " competency review request(s) are unanswered.");
+    }
+    var covered = {};
+    (rv.plans || []).forEach(function (p) { covered[p.domain] = true; });
+    var missing = (rv.gaps || []).filter(function (g) { return !covered[g.domain]; });
+    if (missing.length) {
+      out.push("No development plan yet for: " + missing.map(function (m) { return esc(m.label); }).join(", ") + ".");
+    }
+    if (!out.length) return "";
+    return '<div class="ac-block"><strong>Not ready to approve yet</strong><ul style="margin:6px 0 0;padding-left:18px;">'
+      + out.map(function (t) { return "<li>" + t + "</li>"; }).join("") + "</ul></div>";
+  }
+
+  function reviewHtml() {
+    var rv = REVIEW.review;
+    var who = REVIEW.who || "this employee";
+    var head = '<div class="ac-card"><div class="ac-row" style="justify-content:space-between;">'
+      + "<div><h3 style=\"margin:0;font-size:15px;\">30-day review — " + esc(who) + "</h3>"
+      + '<div class="ac-sub">Day ' + ((REVIEW.progress || {}).day || "?") + " of onboarding</div></div>"
+      + '<button class="btn small" id="ac-rv-back">Back</button></div></div>';
+
+    if (!rv) {
+      // NOT-YET-STARTED IS STILL A REVIEW SCREEN. The first version of this
+      // showed the ten domains and nothing else, so whoever opened a day-30
+      // review was never told what signing it off would require -- they
+      // found out one refusal at a time. The blockers belong on screen from
+      // the first moment, when they are at their longest.
+      var blank = {
+        state: "draft", closed: false, complete: false, plans: [], gaps: [],
+        ratings: (REVIEW.domains || []).map(function (d) {
+          return { domain: d.key, label: d.label, rating: null, note: null };
+        }),
+        unrated: (REVIEW.domains || []).map(function (d) { return d.label; }),
+      };
+      return head + waitingHtml() + '<div class="ac-card"><div class="ac-sub">'
+        + (REVIEW.can_rate
+            ? "No review has been started. Rating the first area below starts it."
+            : "No review has been started yet.")
+        + "</div></div>"
+        + domainsCard(blank) + approveCard(blank);
+    }
+    if (rv.draft_in_progress) {
+      return head + '<div class="ac-card"><div class="ac-sub">Your review has been started but is not finished.'
+        + " You will see it in full, and talk it through, once your Clinical Director has signed it off.</div></div>";
+    }
+    return head + waitingHtml() + domainsCard(rv) + approveCard(rv);
+  }
+
+  function domainsCard(rv) {
+    return '<div class="ac-card"><h3 style="margin:0 0 2px;font-size:15px;">The ten areas</h3>'
+      + '<div class="ac-sub" style="margin-bottom:6px;">Independent, Requires Additional Support, or Not Yet'
+      + " Demonstrated. There is no score and no pass mark — anything below Independent needs a plan with dates.</div>"
+      + (rv.ratings || []).map(function (r) { return domainHtml(r, rv); }).join("")
+      + "</div>";
+  }
+
+  function approveCard(rv) {
+    if (rv.closed) {
+      return '<div class="ac-card"><h3 style="margin:0 0 4px;font-size:15px;">'
+        + (rv.state === "development_plan" ? "Approved, with a development plan" : "Approved") + "</h3>"
+        + '<div class="ac-sub">Signed off by ' + esc(rv.approved_by || "—") + " on "
+        + esc(String(rv.approved_at || "").slice(0, 10)) + ".</div>"
+        + (rv.summary ? '<div style="margin-top:8px;">' + esc(rv.summary) + "</div>" : "")
+        + "</div>";
+    }
+    if (!REVIEW.can_approve) {
+      return '<div class="ac-card"><div class="ac-sub">'
+        + (REVIEW.is_subject
+            ? "You cannot approve your own onboarding."
+            : "The Clinical Director or an Assistant Clinical Director signs off the completion. Your ratings above are what they sign off on.")
+        + "</div></div>";
+    }
+    return '<div class="ac-card"><h3 style="margin:0 0 4px;font-size:15px;">Sign off the onboarding</h3>'
+      + '<div class="ac-sub" style="margin-bottom:9px;">This is a judgement, not a calculation: the CRM will not'
+      + " approve anybody because thirty days have passed or because a checklist is full.</div>"
+      + blockersHtml(rv)
+      + '<textarea id="ac-rv-summary" rows="3" placeholder="A short summary of the review — this is sent to them"></textarea>'
+      + '<div class="ac-row" style="margin-top:9px;"><button class="btn" id="ac-rv-approve">Approve the onboarding</button>'
+      + '<span class="ac-sub" id="ac-rv-msg"></span></div>'
+      + "</div>";
+  }
+
+  function openReview(enrId, who) {
+    api("/api/academy/enrollments/" + enrId + "/review").then(function (d) {
+      REVIEW = d; REVIEW.enr_id = enrId; REVIEW.who = who;
+      BACK_TO = VIEW; VIEW = "review"; render();
+    }).catch(function (e) { alert(e.message); });
   }
 
   // ---- the roster, for mentors and leadership -----------------------------
@@ -328,6 +545,7 @@
     return '<div class="ac-card" style="overflow-x:auto;">'
       + '<table class="ac-tbl" style="min-width:720px;"><thead><tr>'
       + "<th>Who</th><th>Started</th><th>Day</th><th>Progress</th><th>Needs attention</th><th>Mentor</th>"
+      + "<th>Review</th>"
       + "</tr></thead><tbody>"
       + list.map(function (e) {
         return "<tr>"
@@ -341,10 +559,15 @@
           + "<td>"
             + (e.awaiting_review ? '<span class="ac-pill ac-awaiting_review">' + e.awaiting_review + " to review</span> " : "")
             + (e.needs_training ? '<span class="ac-pill ac-needs_training">' + e.needs_training + " redoing</span>" : "")
-            + (!e.awaiting_review && !e.needs_training ? '<span class="ac-sub">—</span>' : "")
+            + (e.review_due ? '<span class="ac-pill ac-not_demonstrated">30-day review due</span> ' : "")
+            + (e.open_plans ? '<span class="ac-pill ac-needs_support">' + e.open_plans + " open plan(s)</span> " : "")
+            + (!e.awaiting_review && !e.needs_training && !e.review_due && !e.open_plans
+                ? '<span class="ac-sub">—</span>' : "")
           + "</td>"
           + "<td>" + (e.mentor_name ? esc(e.mentor_name)
               : '<span class="ac-sub">none assigned</span>') + "</td>"
+          + '<td><button class="btn small" data-rv-open="' + e.id + '" data-rv-who="' + esc(e.name) + '">'
+            + (e.state === "completed" ? "View review" : "30-day review") + "</button></td>"
           + "</tr>";
       }).join("")
       + "</tbody></table></div>";
@@ -361,6 +584,11 @@
         + '<button class="ac-tab' + (VIEW === "me" ? " on" : "") + '" data-view="me">My training</button>'
         + '<button class="ac-tab' + (VIEW === "roster" ? " on" : "") + '" data-view="roster">'
         + (DATA.roster.can_manage ? "Everyone onboarding" : "My mentees") + "</button></div>";
+    }
+    if (VIEW === "review" && REVIEW) {
+      HOST.innerHTML = '<div class="ac-wrap">' + reviewHtml() + "</div>";
+      wire();
+      return;
     }
     var body = VIEW === "roster" && showRoster
       ? rosterHtml(DATA.roster.enrollments || [], DATA.roster.can_manage)
@@ -462,6 +690,103 @@
           .then(reload).catch(function (e) { b.disabled = false; alert(e.message); });
       });
     });
+    // ---- the review ------------------------------------------------------
+    HOST.querySelectorAll("[data-rv-open]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        openReview(b.getAttribute("data-rv-open"), b.getAttribute("data-rv-who"));
+      });
+    });
+    var back = HOST.querySelector("#ac-rv-back");
+    if (back) back.addEventListener("click", function () {
+      REVIEW = null; VIEW = BACK_TO === "review" ? "me" : BACK_TO;
+      render();
+    });
+
+    var reloadReview = function () {
+      return api("/api/academy/enrollments/" + REVIEW.enr_id + "/review").then(function (d) {
+        var who = REVIEW.who, id = REVIEW.enr_id;
+        REVIEW = d; REVIEW.who = who; REVIEW.enr_id = id;
+        render();
+      });
+    };
+
+    var verify = function (itemId, status, note) {
+      return api("/api/academy/enrollments/" + REVIEW.enr_id + "/items/" + itemId,
+                 { method: "POST", body: { status: status, note: note } });
+    };
+    HOST.querySelectorAll("[data-vok]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        b.disabled = true;
+        verify(b.getAttribute("data-vok"), "completed", "")
+          .then(reloadReview).catch(function (e) { b.disabled = false; alert(e.message); });
+      });
+    });
+    HOST.querySelectorAll("[data-vno]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var id = b.getAttribute("data-vno");
+        var el = HOST.querySelector('[data-vn="' + id + '"]');
+        // SENDING SOMETHING BACK HAS TO SAY WHY. The server refuses a blank
+        // one, and being told that after pressing the button is worse than
+        // being told before.
+        if (!el || !el.value.trim()) { alert("Say what still needs work before sending it back."); return; }
+        b.disabled = true;
+        verify(id, "needs_training", el.value)
+          .then(reloadReview).catch(function (e) { b.disabled = false; alert(e.message); });
+      });
+    });
+
+    HOST.querySelectorAll("[data-rsave]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var dom = b.getAttribute("data-rsave");
+        var sel = HOST.querySelector('[data-rate="' + dom + '"]');
+        var note = HOST.querySelector('[data-rnote="' + dom + '"]');
+        if (!sel || !sel.value) { alert("Choose a rating first."); return; }
+        b.disabled = true;
+        api("/api/academy/enrollments/" + REVIEW.enr_id + "/review", { method: "POST", body: {
+          domain: dom, rating: sel.value, note: note ? note.value : "" } })
+          .then(reloadReview)
+          .catch(function (e) { b.disabled = false; alert(e.message); });
+      });
+    });
+
+    HOST.querySelectorAll("[data-padd]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var dom = b.getAttribute("data-padd");
+        var g = function (attr) {
+          var el = HOST.querySelector("[" + attr + '="' + dom + '"]');
+          return el ? el.value : "";
+        };
+        b.disabled = true;
+        api("/api/academy/enrollments/" + REVIEW.enr_id + "/review/plans", { method: "POST", body: {
+          domain: dom, action: g("data-pa"), due_date: g("data-pd"), reassess_on: g("data-pr") } })
+          .then(reloadReview)
+          .catch(function (e) { b.disabled = false; alert(e.message); });
+      });
+    });
+
+    HOST.querySelectorAll("[data-pl-close]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var id = b.getAttribute("data-pl-close");
+        var el = HOST.querySelector('[data-pl-out="' + id + '"]');
+        if (!el || !el.value.trim()) { alert("Say what the reassessment found."); return; }
+        b.disabled = true;
+        api("/api/academy/plans/" + id, { method: "PATCH", body: { outcome: el.value } })
+          .then(reloadReview)
+          .catch(function (e) { b.disabled = false; alert(e.message); });
+      });
+    });
+
+    var appr = HOST.querySelector("#ac-rv-approve");
+    if (appr) appr.addEventListener("click", function () {
+      var sum = HOST.querySelector("#ac-rv-summary");
+      var msg = HOST.querySelector("#ac-rv-msg");
+      appr.disabled = true;
+      api("/api/academy/enrollments/" + REVIEW.enr_id + "/review/approve", { method: "POST", body: {
+        summary: sum ? sum.value : "" } })
+        .then(reloadReview)
+        .catch(function (e) { appr.disabled = false; if (msg) msg.textContent = e.message; else alert(e.message); });
+    });
+
     HOST.querySelectorAll("[data-ci-sign]").forEach(function (b) {
       b.addEventListener("click", function () {
         var day = b.getAttribute("data-ci-sign");

@@ -60,6 +60,10 @@ module.exports = function initAcademy(ctx) {
   const clean = (v) => String(v == null ? "" : v).trim();
   const num = (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
   const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(clean(v));
+  // Free text typed by a human, going into an HTML email. A review summary
+  // with a "<" in it would otherwise arrive with a chunk missing.
+  const h = (v) => clean(v).replace(/[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const today = () => new Date().toISOString().slice(0, 10);
   const addDays = (d, n) => {
     const t = new Date(d + "T00:00:00Z");
@@ -300,9 +304,127 @@ module.exports = function initAcademy(ctx) {
     await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS academy_checkin_one
                  ON academy_checkins (enrollment_id, day)`).catch(() => {});
 
+    // ---- THE THIRTY-DAY REVIEW -------------------------------------------
+    //
+    // One review per enrolment, holding a rating for each of the ten domains
+    // the brief names. Separate from the weekly competencies on purpose: a
+    // competency is "can you do this task", and a domain is "are you
+    // operating independently in this area of the job". Somebody can pass
+    // every weekly competency and still not be ready, which is precisely the
+    // judgement this exists to record.
+    //
+    // THE RATINGS ARE NOT A SCORE. There is no total, no percentage and no
+    // pass mark, because the brief forbids approving on arithmetic -- and
+    // the first thing a number invites is approving on the number.
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_reviews (
+      id SERIAL PRIMARY KEY,
+      enrollment_id INTEGER NOT NULL,
+      state TEXT NOT NULL DEFAULT 'draft',
+      summary TEXT,
+      started_by TEXT,
+      approved_by TEXT,
+      approved_at TEXT,
+      employee_ack_at TEXT,
+      created_at TEXT, updated_at TEXT
+    )`).catch((e) => console.error("academy_reviews:", e.message));
+    await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS academy_review_one
+                 ON academy_reviews (enrollment_id)`).catch(() => {});
+
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_review_ratings (
+      id SERIAL PRIMARY KEY,
+      review_id INTEGER NOT NULL,
+      domain TEXT NOT NULL,
+      rating TEXT,
+      note TEXT,
+      rated_by TEXT,
+      rated_at TEXT
+    )`).catch((e) => console.error("academy_review_ratings:", e.message));
+    await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS academy_rating_one
+                 ON academy_review_ratings (review_id, domain)`).catch(() => {});
+
+    // A DEVELOPMENT PLAN IS NOT A NOTE. Every row carries a deadline and a
+    // reassessment date, because "needs more support" with no date attached
+    // is how somebody is still needing more support in March.
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_dev_plans (
+      id SERIAL PRIMARY KEY,
+      review_id INTEGER NOT NULL,
+      enrollment_id INTEGER NOT NULL,
+      domain TEXT NOT NULL,
+      action TEXT NOT NULL,
+      due_date TEXT NOT NULL,
+      reassess_on TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'open',
+      closed_by TEXT,
+      closed_at TEXT,
+      outcome TEXT,
+      created_by TEXT,
+      created_at TEXT
+    )`).catch((e) => console.error("academy_dev_plans:", e.message));
+
     await seedBcbaProgram();
     await backfillCheckins();
   }
+
+  // The ten domains, in the brief's order.
+  const DOMAINS = [
+    ["systems", "Company systems proficiency"],
+    ["documentation", "Clinical documentation"],
+    ["authorizations", "Authorization management"],
+    ["compliance", "Clinical compliance"],
+    ["supervision", "RBT supervision"],
+    ["caseload", "Caseload management"],
+    ["communication", "Communication"],
+    ["professionalism", "Professionalism"],
+    ["leadership", "Leadership"],
+    ["policy", "Policy adherence"],
+  ];
+  const DOMAIN_KEYS = DOMAINS.map((d) => d[0]);
+  // Three ratings, and the middle one is not a soft fail -- it is the one
+  // that produces a development plan with dates on it.
+  const RATINGS = ["independent", "needs_support", "not_demonstrated"];
+  const RATING_LABELS = {
+    independent: "Independent",
+    needs_support: "Requires Additional Support",
+    not_demonstrated: "Not Yet Demonstrated",
+  };
+  const REVIEW_STATES = ["draft", "approved", "development_plan"];
+  // APPROVED WITH A DEVELOPMENT PLAN IS STILL APPROVED. Somebody can be
+  // doing the job while still developing in one area, and the state records
+  // which of the two it was -- so every "is this review closed" question has
+  // to ask about both, or re-rating would quietly reopen a signed decision.
+  const isClosed = (state) => state === "approved" || state === "development_plan";
+
+  async function reviewFor(enrollmentId) {
+    const r = await dbGet("SELECT * FROM academy_reviews WHERE enrollment_id = ?", [enrollmentId]).catch(() => null);
+    if (!r) return null;
+    const rows = await dbAll("SELECT * FROM academy_review_ratings WHERE review_id = ?", [r.id]).catch(() => []);
+    const byDomain = new Map(rows.map((x) => [x.domain, x]));
+    const ratings = DOMAINS.map(([key, label]) => {
+      const x = byDomain.get(key);
+      return {
+        domain: key, label,
+        rating: (x && x.rating) || null,
+        rating_label: x && x.rating ? RATING_LABELS[x.rating] : null,
+        note: (x && x.note) || null,
+        rated_by: (x && x.rated_by) || null,
+      };
+    });
+    const plans = await dbAll(
+      "SELECT * FROM academy_dev_plans WHERE review_id = ? ORDER BY due_date", [r.id]).catch(() => []);
+    const unrated = ratings.filter((x) => !x.rating).map((x) => x.label);
+    const gaps = ratings.filter((x) => x.rating && x.rating !== "independent");
+    return {
+      ...r, ratings, plans,
+      unrated,
+      // What stands between this review and an approval, said as a list
+      // rather than as a true/false, so the screen can show the reason.
+      gaps: gaps.map((g) => ({ domain: g.domain, label: g.label, rating: g.rating })),
+      complete: unrated.length === 0,
+      closed: isClosed(r.state),
+      open_plans: plans.filter((p) => p.state === "open").length,
+    };
+  }
+
 
   // ANYBODY ALREADY ENROLLED GETS THEIR CHECK-INS TOO.
   //
@@ -490,7 +612,7 @@ module.exports = function initAcademy(ctx) {
   // Created on the employee's FIRST DAY, not the day the record was typed in.
   // A BCBA added to the CRM three weeks before they start should not be a week
   // behind on their first morning.
-  async function enrol(employee, { programKey = "bcba-30day", actor = null, startDate = null } = {}) {
+  async function enrol(employee, { programKey = "bcba-30day", actor = null, startDate = null, mentorId = null } = {}) {
     if (!employee || !employee.id) return { ok: false, error: "No such employee." };
     const prog = await dbGet("SELECT * FROM academy_programs WHERE key = ? AND active = TRUE", [programKey]).catch(() => null);
     if (!prog) return { ok: false, error: "That programme does not exist." };
@@ -504,17 +626,25 @@ module.exports = function initAcademy(ctx) {
 
     const start = isDate(startDate) ? startDate
       : (isDate(employee.hire_date) ? employee.hire_date : today());
+    // A MENTOR CAN BE NAMED AT THE START. Nobody cannot mentor themselves,
+    // same rule as the later reassignment -- it would make every one of
+    // their own competencies self-signed.
+    const mentor = mentorId && Number(mentorId) !== Number(employee.id) ? Number(mentorId) : null;
     const row = await dbGet(
       `INSERT INTO academy_enrollments
-         (employee_id, program_id, program_version, start_date, due_date, state, created_by, created_at, updated_at)
-       VALUES (?,?,?,?,?, 'active', ?,?,?) RETURNING *`,
-      [employee.id, prog.id, prog.version, start, addDays(start, prog.duration_days), actor || "system", nowISO(), nowISO()]
+         (employee_id, program_id, program_version, start_date, due_date, mentor_id, state, created_by, created_at, updated_at)
+       VALUES (?,?,?,?,?,?, 'active', ?,?,?) RETURNING *`,
+      [employee.id, prog.id, prog.version, start, addDays(start, prog.duration_days), mentor,
+       actor || "system", nowISO(), nowISO()]
     ).catch(() => null);
     if (!row) return { ok: false, error: "The onboarding record could not be created." };
 
     await audit(row.id, null, "enrolled", null, "active", actor || "system", `${prog.name}, starting ${start}`);
     await scheduleCheckins(row);
 
+    const mentorName = mentor
+      ? ((await dbGet("SELECT name FROM hr_employees WHERE id = ?", [mentor]).catch(() => null) || {}).name || null)
+      : null;
     const to = await leadershipEmails();
     if (to.length) {
       await sendEmail({
@@ -522,7 +652,9 @@ module.exports = function initAcademy(ctx) {
         subject: `Onboarding started — ${employee.name}`,
         html: `<p><strong>${employee.name}</strong> has been enrolled in the ${prog.name}.</p>
                <p>Start date: ${start}. Due: ${addDays(start, prog.duration_days)}.</p>
-               <p>No mentor is assigned yet — assign one from the Academy screen in the BCBA Hub.</p>`,
+               ${mentorName
+                  ? `<p>Mentor: ${mentorName}.</p>`
+                  : "<p>No mentor is assigned yet — assign one from the Academy screen in the BCBA Hub.</p>"}`,
         type: "academy_enrolled", refType: "academy_enrollment", refId: row.id,
       }).catch(() => {});
     }
@@ -858,10 +990,16 @@ module.exports = function initAcademy(ctx) {
       const out = [];
       for (const r of visible) {
         const pr = await progressFor(r);
+        const rv = await reviewFor(r.id);
         out.push({
           ...r, percent: pr.percent, completed: pr.completed, total: pr.total,
           awaiting_review: pr.awaiting_review, needs_training: pr.needs_training,
           day: pr.day, current_week: Math.min(Math.ceil(pr.day / 7), r.weeks || 4),
+          review_state: rv ? rv.state : null,
+          open_plans: rv ? rv.open_plans : 0,
+          // THE ONE NUMBER THE ROSTER IS FOR: somebody at day 30 with no
+          // review started is the person about to be forgotten about.
+          review_due: pr.day >= 30 && r.state === "active" && !(rv && rv.closed),
         });
       }
       json(res, 200, { enrollments: out, can_manage: lead, is_owner: owner });
@@ -896,7 +1034,16 @@ module.exports = function initAcademy(ctx) {
                 COALESCE(NULLIF(hr_hire_date,''), NULLIF(hire_date,'')) AS hire_date
            FROM hr_employees WHERE id = ?`, [id]).catch(() => null);
       if (!emp) { json(res, 404, { error: "No such employee." }); return true; }
-      const r = await enrol(emp, { programKey: clean(b.program_key) || "bcba-30day", actor, startDate: b.start_date });
+      if (b.mentor_id !== undefined && b.mentor_id !== null && !num(b.mentor_id)) {
+        json(res, 400, { error: "That is not an employee." }); return true;
+      }
+      if (b.mentor_id && Number(num(b.mentor_id)) === Number(id)) {
+        json(res, 400, { error: "Somebody cannot be their own mentor." }); return true;
+      }
+      const r = await enrol(emp, {
+        programKey: clean(b.program_key) || "bcba-30day", actor,
+        startDate: b.start_date, mentorId: num(b.mentor_id),
+      });
       json(res, r.ok ? 200 : 400, r);
       return true;
     }
@@ -1243,6 +1390,266 @@ module.exports = function initAcademy(ctx) {
       return true;
     }
 
+    // ---- THE THIRTY-DAY REVIEW -------------------------------------------
+    const revGet = pathname.match(/^\/api\/academy\/enrollments\/(\d+)\/review$/);
+    if (revGet && method === "GET") {
+      const enrId = Number(revGet[1]);
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);
+      if (!enr) { json(res, 404, { error: "No such onboarding record." }); return true; }
+      const mentorHere = !!(me && enr.mentor_id && Number(enr.mentor_id) === Number(me.id));
+      const isSubject = !!(me && Number(enr.employee_id) === Number(me.id));
+      if (!(lead || mentorHere || isSubject)) { json(res, 403, { error: "Not permitted" }); return true; }
+      let review = await reviewFor(enrId);
+      // A DRAFT REVIEW IS NOT THE SUBJECT'S TO READ YET.
+      //
+      // Ratings in progress are the supervisor's working notes. "Not Yet
+      // Demonstrated" appearing on somebody's own screen before anybody has
+      // spoken to them is how a developmental review becomes the worst
+      // conversation of their month, and it would also stop supervisors
+      // writing anything honest down. Once it is approved they see all of
+      // it -- every rating, every note, every plan -- which is the point at
+      // which it is a decision rather than a draft.
+      if (review && isSubject && !review.closed) {
+        review = { state: review.state, draft_in_progress: true, closed: false,
+                   ratings: [], plans: [], unrated: [], gaps: [], complete: review.complete, open_plans: 0 };
+      }
+      json(res, 200, {
+        review,
+        domains: DOMAINS.map(([key, label]) => ({ key, label })),
+        rating_labels: RATING_LABELS,
+        progress: await progressFor(enr),
+        checkins: await checkinsFor(enrId),
+        // WHO MAY APPROVE, decided here and not in the browser. The subject
+        // is excluded even when they are clinical leadership, which is the
+        // case this flag exists for.
+        can_rate: (lead || mentorHere) && !isSubject,
+        can_approve: lead && !isSubject,
+        is_subject: isSubject,
+      });
+      return true;
+    }
+
+    if (revGet && method === "POST") {
+      // Starting the review, and rating a domain, are the same call: the
+      // review is created on first rating rather than by a separate "begin"
+      // button nobody would understand the purpose of.
+      const enrId = Number(revGet[1]);
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);
+      if (!enr) { json(res, 404, { error: "No such onboarding record." }); return true; }
+      const mentorHere = !!(me && enr.mentor_id && Number(enr.mentor_id) === Number(me.id));
+      const isSubject = !!(me && Number(enr.employee_id) === Number(me.id));
+      // RATING YOURSELF IS NOT A REVIEW. Checked before the permission below
+      // so that a clinical lead going through the academy cannot rate their
+      // own ten domains on the strength of being a clinical lead.
+      if (isSubject) { json(res, 403, { error: "You cannot rate your own review." }); return true; }
+      if (!(lead || mentorHere)) { json(res, 403, { error: "Only the mentor or clinical leadership can rate this." }); return true; }
+
+      const b = await readBody(req).catch(() => ({}));
+      const domain = clean(b.domain);
+      const rating = clean(b.rating);
+      if (!DOMAIN_KEYS.includes(domain)) { json(res, 400, { error: "Unknown domain." }); return true; }
+      if (!RATINGS.includes(rating)) { json(res, 400, { error: "Rate it Independent, Requires Additional Support, or Not Yet Demonstrated." }); return true; }
+      // A rating that is not "independent" has to say why, or the
+      // development plan it produces is written from nothing.
+      if (rating !== "independent" && !clean(b.note)) {
+        json(res, 400, { error: "Say what is missing, so the development plan has something to act on." });
+        return true;
+      }
+
+      let review = await dbGet("SELECT * FROM academy_reviews WHERE enrollment_id = ?", [enrId]).catch(() => null);
+      if (!review) {
+        review = await dbGet(
+          `INSERT INTO academy_reviews (enrollment_id, state, started_by, created_at, updated_at)
+           VALUES (?, 'draft', ?, ?, ?) RETURNING *`, [enrId, actor, nowISO(), nowISO()]).catch(() => null);
+      }
+      if (!review) { json(res, 500, { error: "The review could not be started." }); return true; }
+      // AN APPROVED REVIEW IS CLOSED. Re-rating a domain afterwards would
+      // change the basis of a decision already communicated to somebody.
+      if (isClosed(review.state)) {
+        json(res, 400, { error: "This review has been approved. Reopen it before changing a rating." }); return true;
+      }
+
+      await dbRun(
+        `INSERT INTO academy_review_ratings (review_id, domain, rating, note, rated_by, rated_at)
+         VALUES (?,?,?,?,?,?)
+         ON CONFLICT (review_id, domain) DO UPDATE SET
+           rating = EXCLUDED.rating, note = EXCLUDED.note,
+           rated_by = EXCLUDED.rated_by, rated_at = EXCLUDED.rated_at`,
+        [review.id, domain, rating, clean(b.note) || null, actor, nowISO()]);
+      await audit(enrId, null, "review_rating", null, domain + ":" + rating, actor, clean(b.note) || null);
+      json(res, 200, { ok: true, review: await reviewFor(enrId) });
+      return true;
+    }
+
+    const revApprove = pathname.match(/^\/api\/academy\/enrollments\/(\d+)\/review\/approve$/);
+    if (revApprove && method === "POST") {
+      const enrId = Number(revApprove[1]);
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);
+      if (!enr) { json(res, 404, { error: "No such onboarding record." }); return true; }
+      const isSubject = !!(me && Number(enr.employee_id) === Number(me.id));
+      if (isSubject) { json(res, 403, { error: "You cannot approve your own onboarding." }); return true; }
+      // THE MENTOR RATES; CLINICAL LEADERSHIP APPROVES. The brief is explicit
+      // that the Clinical Director or Assistant signs the completion, and a
+      // mentor who could do it would make the distinction decorative.
+      if (!lead) { json(res, 403, { error: "Only the Clinical Director or an Assistant can approve a completion." }); return true; }
+
+      const review = await reviewFor(enrId);
+      if (!review) { json(res, 400, { error: "No review has been started." }); return true; }
+      if (isClosed(review.state)) { json(res, 400, { error: "This onboarding is already approved." }); return true; }
+
+      // ---- THE GATE --------------------------------------------------
+      //
+      // The brief forbids approving on elapsed time or on a completed
+      // checklist, and both are easy mistakes to make because both are
+      // available and look like evidence. So neither is consulted here.
+      // What IS required:
+      const b = await readBody(req).catch(() => ({}));
+
+      //   1. Every domain rated. An unrated domain is not a pass, it is an
+      //      unasked question.
+      if (!review.complete) {
+        json(res, 400, {
+          error: `Rate every domain first. Still unrated: ${review.unrated.join(", ")}.`,
+          unrated: review.unrated,
+        });
+        return true;
+      }
+
+      //   2. Nothing is still waiting on a supervisor. An employee who asked
+      //      for a competency to be reviewed, and never got an answer, has an
+      //      open question -- and approving over it signs off on a
+      //      demonstration nobody actually watched.
+      const pr = await progressFor(enr);
+      if (pr && pr.awaiting_review > 0) {
+        json(res, 400, {
+          error: `${pr.awaiting_review} competency review request(s) are still unanswered. Sign those off or send them back first.`,
+          awaiting_review: pr.awaiting_review,
+        });
+        return true;
+      }
+
+      //   3. Every domain that is not "independent" has a development plan
+      //      with a deadline and a reassessment date. The brief asks for a
+      //      plan where more training is needed, and a plan with no date is
+      //      how somebody is still "needing support" in March.
+      if (review.gaps.length) {
+        const covered = new Set(review.plans.map((p) => p.domain));
+        const missing = review.gaps.filter((g) => !covered.has(g.domain));
+        if (missing.length) {
+          json(res, 400, {
+            error: `These are not yet independent and have no development plan: ${missing.map((m) => m.label).join(", ")}.`,
+            needs_plan: missing,
+          });
+          return true;
+        }
+      }
+
+      //   4. A written summary. An approval with no words is a button press,
+      //      and this one ends somebody's probationary training.
+      if (!clean(b.summary)) {
+        json(res, 400, { error: "Write a short summary of the review before approving." }); return true;
+      }
+
+      const state = review.gaps.length ? "development_plan" : "approved";
+      await dbRun(
+        `UPDATE academy_reviews SET state = ?, summary = ?, approved_by = ?, approved_at = ?, updated_at = ?
+          WHERE id = ?`,
+        [state, clean(b.summary), actor, nowISO(), nowISO(), review.id]);
+      await dbRun(
+        "UPDATE academy_enrollments SET state = 'completed', completed_at = ?, approved_by = ?, updated_at = ? WHERE id = ?",
+        [nowISO(), actor, nowISO(), enrId]);
+      await audit(enrId, null, "onboarding_approved", "active", "completed", actor,
+                  review.gaps.length ? `with a development plan on ${review.gaps.length} domain(s)` : null);
+
+      const emp = await dbGet("SELECT name, email FROM hr_employees WHERE id = ?", [enr.employee_id]).catch(() => null);
+      if (emp && emp.email) {
+        await sendEmail({
+          to: emp.email,
+          subject: "Your onboarding has been approved",
+          html: `<p>Your 30-day onboarding has been approved by ${h(actor)}.</p>
+                 <p>${h(b.summary)}</p>
+                 ${review.gaps.length
+                    ? `<p>There is a development plan on ${review.gaps.length} area(s), with dates. You can see it on the Academy screen.</p>`
+                    : ""}`,
+          type: "academy_approved", refType: "academy_enrollment", refId: enrId,
+        }).catch(() => {});
+      }
+      try {
+        onCompletion("academy_approved", {
+          subject: emp ? emp.name : "A new BCBA",
+          detail: review.gaps.length
+            ? `Approved with a development plan on ${review.gaps.length} area(s)`
+            : "Approved, independent in every area",
+          link: "/#/bcba-hub",
+          employeeId: enr.employee_id,
+          dedupeKey: "academy_approved:" + enrId,
+        });
+      } catch (e) { /* recording a completion must never fail an approval */ }
+      json(res, 200, { ok: true, state, review: await reviewFor(enrId) });
+      return true;
+    }
+
+    // ---- DEVELOPMENT PLANS -----------------------------------------------
+    const planAdd = pathname.match(/^\/api\/academy\/enrollments\/(\d+)\/review\/plans$/);
+    if (planAdd && method === "POST") {
+      const enrId = Number(planAdd[1]);
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);
+      if (!enr) { json(res, 404, { error: "No such onboarding record." }); return true; }
+      const isSubject = !!(me && Number(enr.employee_id) === Number(me.id));
+      const mentorHere = !!(me && enr.mentor_id && Number(enr.mentor_id) === Number(me.id));
+      if (isSubject) { json(res, 403, { error: "You cannot write your own development plan." }); return true; }
+      if (!(lead || mentorHere)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const review = await dbGet("SELECT * FROM academy_reviews WHERE enrollment_id = ?", [enrId]).catch(() => null);
+      if (!review) { json(res, 400, { error: "Start the review first." }); return true; }
+      // DELIBERATELY STILL OPEN AFTER APPROVAL, unlike the ratings. A rating
+      // is the record of a judgement already made and communicated, so it
+      // freezes; a development plan is the forward-looking half, and a
+      // reassessment that goes badly needs somewhere to put the next step
+      // without reopening the decision behind it.
+
+      const b = await readBody(req).catch(() => ({}));
+      if (!DOMAIN_KEYS.includes(clean(b.domain))) { json(res, 400, { error: "Unknown domain." }); return true; }
+      if (!clean(b.action)) { json(res, 400, { error: "What should happen?" }); return true; }
+      // BOTH DATES, ALWAYS. A plan with a deadline and no reassessment is a
+      // task; a plan with neither is a wish.
+      if (!isDate(b.due_date)) { json(res, 400, { error: "Give it a deadline." }); return true; }
+      if (!isDate(b.reassess_on)) { json(res, 400, { error: "Give it a date to be reassessed on." }); return true; }
+      if (clean(b.reassess_on) < clean(b.due_date)) {
+        json(res, 400, { error: "Reassessment cannot be before the deadline." }); return true;
+      }
+
+      const row = await dbGet(
+        `INSERT INTO academy_dev_plans (review_id, enrollment_id, domain, action, due_date, reassess_on,
+           state, created_by, created_at)
+         VALUES (?,?,?,?,?,?, 'open', ?, ?) RETURNING *`,
+        [review.id, enrId, clean(b.domain), clean(b.action), clean(b.due_date), clean(b.reassess_on),
+         actor, nowISO()]).catch(() => null);
+      if (!row) { json(res, 500, { error: "The plan could not be saved." }); return true; }
+      await audit(enrId, null, "dev_plan", null, clean(b.domain), actor, clean(b.action));
+      json(res, 200, { ok: true, review: await reviewFor(enrId) });
+      return true;
+    }
+
+    const planOne = pathname.match(/^\/api\/academy\/plans\/(\d+)$/);
+    if (planOne && method === "PATCH") {
+      const pid = Number(planOne[1]);
+      const plan = await dbGet("SELECT * FROM academy_dev_plans WHERE id = ?", [pid]).catch(() => null);
+      if (!plan) { json(res, 404, { error: "No such plan." }); return true; }
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [plan.enrollment_id]).catch(() => null);
+      const isSubject = !!(me && enr && Number(enr.employee_id) === Number(me.id));
+      const mentorHere = !!(me && enr && enr.mentor_id && Number(enr.mentor_id) === Number(me.id));
+      if (isSubject) { json(res, 403, { error: "You cannot close your own development plan." }); return true; }
+      if (!(lead || mentorHere)) { json(res, 403, { error: "Not permitted" }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      if (!clean(b.outcome)) { json(res, 400, { error: "Say what the reassessment found." }); return true; }
+      await dbRun(
+        "UPDATE academy_dev_plans SET state = 'closed', outcome = ?, closed_by = ?, closed_at = ? WHERE id = ?",
+        [clean(b.outcome), actor, nowISO(), pid]);
+      await audit(plan.enrollment_id, null, "dev_plan_closed", "open", "closed", actor, clean(b.outcome));
+      json(res, 200, { ok: true });
+      return true;
+    }
+
     // ---- the curriculum, for anybody who can see the hub -----------------
     if (pathname === "/api/academy/curriculum" && method === "GET") {
       const prog = await dbGet("SELECT * FROM academy_programs WHERE key = ?",
@@ -1263,9 +1670,11 @@ module.exports = function initAcademy(ctx) {
   }
 
   return {
-    initTables, handleApi, enrol, autoEnrolSweep, scheduleCheckins, checkinsFor, backfillCheckins, leadership, leadershipEmails, isClinicalLead,
+    initTables, handleApi, enrol, autoEnrolSweep, scheduleCheckins, checkinsFor, backfillCheckins,
+    reviewFor, leadership, leadershipEmails, isClinicalLead,
     employeeFor, progressFor, itemsFor, seedBcbaProgram,
     _internal: { STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
-                 addDays, CHECKIN_DAYS, GAP_STATUSES, GAP_LABELS, URGENCIES },
+                 addDays, CHECKIN_DAYS, GAP_STATUSES, GAP_LABELS, URGENCIES,
+                 DOMAINS, DOMAIN_KEYS, RATINGS, RATING_LABELS, REVIEW_STATES, isClosed },
   };
 };

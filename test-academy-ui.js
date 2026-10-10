@@ -65,6 +65,10 @@ const stamp = Date.now().toString(36);
     // ---- fixtures -------------------------------------------------------
     const purge = async () => {
       const ids = "(SELECT id FROM hr_employees WHERE name LIKE 'AcadUI %')";
+      const enrSel = `(SELECT id FROM academy_enrollments WHERE employee_id IN ${ids})`;
+      await pool.query(`DELETE FROM academy_dev_plans WHERE enrollment_id IN ${enrSel}`).catch(() => {});
+      await pool.query(`DELETE FROM academy_review_ratings WHERE review_id IN (SELECT id FROM academy_reviews WHERE enrollment_id IN ${enrSel})`).catch(() => {});
+      await pool.query(`DELETE FROM academy_reviews WHERE enrollment_id IN ${enrSel}`).catch(() => {});
       await pool.query(`DELETE FROM academy_progress WHERE enrollment_id IN (SELECT id FROM academy_enrollments WHERE employee_id IN ${ids})`).catch(() => {});
       await pool.query(`DELETE FROM academy_audit WHERE enrollment_id IN (SELECT id FROM academy_enrollments WHERE employee_id IN ${ids})`).catch(() => {});
       await pool.query(`DELETE FROM academy_enrollments WHERE employee_id IN ${ids}`).catch(() => {});
@@ -220,6 +224,198 @@ const stamp = Date.now().toString(36);
       /week \d/.test(roster) && /%/.test(roster), roster.slice(0, 300));
     check("and the missing mentor is called out",
       /none assigned/i.test(roster), roster.slice(0, 400));
+
+    // ==================================================================
+    // THE 30-DAY REVIEW PANEL
+    //
+    // The claim, same as everywhere else in this file: the screen does not
+    // offer what the server would refuse. An approve button that always
+    // errors is worse than no approve button, and the person it would lie to
+    // is signing off somebody's probation.
+    //
+    // The first version of this section proved none of that. It checked the
+    // employee's own screen for rating controls -- but a draft review stops
+    // at "not finished yet" before it reaches them, so deleting the
+    // permission check in the view changed nothing and the test still
+    // passed. The cases below are the ones where the permission is the thing
+    // that actually decides: a MENTOR on a draft (rates, cannot approve) and
+    // the SUBJECT on a signed review (sees everything, touches nothing).
+    section("A MENTOR IS GIVEN THE RATINGS AND NOT THE SIGN-OFF");
+    const mentorEmail = `acadui-mentor-${stamp}@example.invalid`;
+    const p2 = hp("AcadPass123!");
+    await pool.query(
+      `INSERT INTO users (name, email, password_hash, password_salt, role, created_at)
+       VALUES ('AcadUI Mentor',$1,$2,$3,'clinical', now())`, [mentorEmail, p2.hash, p2.salt]);
+    const mentorId = (await pool.query(
+      `INSERT INTO hr_employees (name, email, role_title, hr_hire_date, status)
+       VALUES ('AcadUI Mentor',$1,'BCBA',$2,'active') RETURNING id`, [mentorEmail, today])).rows[0].id;
+    const pa = await asOwner(`/api/academy/enrollments/${enr.id}`, { method: "PATCH", body: { mentor_id: mentorId } });
+    check("a mentor is assigned", pa.status === 200, pa.data);
+
+    await login(mentorEmail, "AcadPass123!");
+    await openAcademy();
+    await page.click('[data-view="roster"]');
+    await page.waitForTimeout(600);
+    await page.click('[data-rv-open="' + enr.id + '"]');
+    await page.waitForTimeout(900);
+    const mv = await page.textContent(".ac-wrap");
+    check("the mentor can open the review", /30-day review/i.test(mv), mv.slice(0, 160));
+    check("all ten areas are listed",
+      await page.locator("[data-domain]").count() === 10, await page.locator("[data-domain]").count());
+    check("the mentor IS given the rating controls",
+      await page.locator("[data-rsave]").count() === 10, await page.locator("[data-rsave]").count());
+    check("THE MENTOR IS NOT GIVEN AN APPROVE BUTTON",
+      await page.locator("#ac-rv-approve").count() === 0, await page.locator("#ac-rv-approve").count());
+    check("and is told who does sign it off, rather than left to guess",
+      /Clinical Director or an Assistant Clinical Director signs off/i.test(mv), mv.slice(0, 900));
+    check("it says plainly there is no score", /no score and no pass mark/i.test(mv), mv.slice(0, 600));
+
+    section("RATING SOMETHING BELOW INDEPENDENT ASKS FOR A PLAN ON THE SPOT");
+    await page.selectOption('[data-rate="supervision"]', "needs_support");
+    await page.fill('[data-rnote="supervision"]', "Has not yet run a supervision session alone.");
+    await page.click('[data-rsave="supervision"]');
+    await page.waitForTimeout(1100);
+    const afterRate = await page.textContent(".ac-wrap");
+    check("the rating is saved and shown back", /Requires Additional Support/.test(afterRate), afterRate.slice(0, 300));
+    check("A DEVELOPMENT PLAN FORM APPEARS UNDER IT, unasked",
+      await page.locator('[data-padd="supervision"]').count() === 1,
+      await page.locator('[data-padd="supervision"]').count());
+    check("asking for a deadline and a reassessment date, both",
+      await page.locator('[data-pd="supervision"]').count() === 1
+        && await page.locator('[data-pr="supervision"]').count() === 1);
+    check("and saying why a plan with no date is worthless",
+      /needing support.{0,12}in March/i.test(afterRate), afterRate.slice(0, 1200));
+
+    section("THE BLOCKERS ARE NAMED, NOT HIDDEN BEHIND A GREYED-OUT BUTTON");
+    // The mentor cannot approve, so the blocker list is not on their screen;
+    // it belongs to whoever is signing. Checked as the owner below.
+    await page.fill('[data-pa="supervision"]', "Run three supervision sessions with the mentor observing");
+    await page.fill('[data-pd="supervision"]', "2026-11-15");
+    await page.fill('[data-pr="supervision"]', "2026-11-22");
+    await page.click('[data-padd="supervision"]');
+    await page.waitForTimeout(1100);
+    const planned = await page.textContent(".ac-wrap");
+    check("the plan is saved with both its dates on show",
+      /Due 2026-11-15/.test(planned) && /reassessed 2026-11-22/.test(planned), planned.slice(0, 600));
+
+    section("THE SUBJECT, WHILE IT IS STILL A DRAFT");
+    await login(newEmail, "AcadPass123!");
+    await openAcademy();
+    const own = await page.textContent(".ac-wrap");
+    check("they are told when they will see it", /once it is signed/i.test(own), own.slice(-500));
+    await page.click('[data-rv-open="' + enr.id + '"]');
+    await page.waitForTimeout(900);
+    const ownRv = await page.textContent(".ac-wrap");
+    check("THEY CANNOT READ THE DRAFT RATING WRITTEN ABOUT THEM",
+      !/Requires Additional Support/.test(ownRv), ownRv.slice(0, 400));
+    check("they are told it is unfinished rather than shown an empty page",
+      /not finished/i.test(ownRv), ownRv.slice(0, 400));
+
+    section("THE OWNER SIGNS IT OFF, AND IS REFUSED UNTIL IT IS COMPLETE");
+    // Earlier in this journey the new BCBA pressed "ready for review" on a
+    // competency, and the approval gate quite rightly refuses to sign off an
+    // onboarding with a review request nobody has answered. So answer it,
+    // the way a supervisor would, before going anywhere near the approval.
+    const pend = (await pool.query(
+      "SELECT item_id FROM academy_progress WHERE enrollment_id = $1 AND status = 'awaiting_review'",
+      [enr.id])).rows;
+    check("one competency really is waiting on a supervisor", pend.length === 1, pend);
+    // THE BLOCKERS ARE NAMED, NOT HIDDEN BEHIND A GREYED-OUT BUTTON.
+    // Checked here, with nine areas still unrated, because that is the only
+    // moment anything is blocking -- and a sign-off screen that will not say
+    // what is wrong is the most frustrating object in software.
+    await login("admin@spectrumsquadlv.com", "TestOwner123!");
+    await openAcademy();
+    await page.click('[data-view="roster"]');
+    await page.waitForTimeout(600);
+    await page.click('[data-rv-open="' + enr.id + '"]');
+    await page.waitForTimeout(900);
+    section("A GATE COMES WITH THE MEANS OF GETTING THROUGH IT");
+    // The approval refuses to sign off while a competency review request is
+    // unanswered. Before this card existed the only control that answered
+    // one was rendered for nobody and wired to nothing, so the blocker could
+    // not be cleared from the screen at all.
+    const wait0 = await page.textContent(".ac-wrap");
+    check("the panel shows what is waiting on them", /Waiting on you/i.test(wait0), wait0.slice(0, 500));
+    check("naming the competency the new BCBA said they were ready for",
+      await page.locator("[data-vok]").count() === 1, await page.locator("[data-vok]").count());
+    check("the blockers name it too",
+      /competency review request/i.test(await page.textContent(".ac-block")),
+      await page.textContent(".ac-block"));
+    check("sending it back needs a reason, and the field is there to type one in",
+      await page.locator("[data-vn]").count() === 1);
+    await page.click("[data-vok]");
+    await page.waitForTimeout(1200);
+    check("signing it off clears the card", await page.locator("[data-vok]").count() === 0,
+      await page.locator("[data-vok]").count());
+    check("AND CLEARS THAT BLOCKER, from the screen it was raised on",
+      !/competency review request/i.test(await page.textContent(".ac-block")),
+      await page.textContent(".ac-block"));
+
+    check("the owner is told it is not ready to approve yet",
+      await page.locator(".ac-block").count() === 1, await page.locator(".ac-block").count());
+    const blk = await page.textContent(".ac-block");
+    check("AND WHICH AREAS ARE STILL UNRATED, by name", /Still unrated/i.test(blk), blk);
+    check("naming one of them", /Clinical documentation/i.test(blk), blk);
+    check("the approve button is offered anyway, rather than mysteriously greyed out",
+      await page.locator("#ac-rv-approve").count() === 1);
+
+    for (const d of ["systems", "documentation", "authorizations", "compliance",
+                     "caseload", "communication", "professionalism", "leadership", "policy"]) {
+      await asOwner(`/api/academy/enrollments/${enr.id}/review`,
+        { method: "POST", body: { domain: d, rating: "independent" } });
+    }
+    await page.click("#ac-rv-back");
+    await page.waitForTimeout(400);
+    await page.click('[data-rv-open="' + enr.id + '"]');
+    await page.waitForTimeout(900);
+    check("the owner IS given the approve button",
+      await page.locator("#ac-rv-approve").count() === 1, await page.locator("#ac-rv-approve").count());
+    check("and the CRM says it will not approve on elapsed time or a full checklist",
+      /will not.{0,60}approve anybody because thirty days have passed/i.test(await page.textContent(".ac-wrap")),
+      (await page.textContent(".ac-wrap")).slice(0, 1200));
+    check("with every area rated and the gap planned, nothing is blocking it",
+      await page.locator(".ac-block").count() === 0, await page.locator(".ac-block").count());
+
+    // An approval with no words is refused, and the refusal has to land ON
+    // THE SCREEN -- an error that only exists in a network tab is an error
+    // nobody acts on.
+    await page.click("#ac-rv-approve");
+    await page.waitForTimeout(1100);
+    check("A BLANK SUMMARY IS REFUSED, in words, on the page",
+      /summary/i.test(await page.textContent("#ac-rv-msg")), await page.textContent("#ac-rv-msg"));
+    check("and the review is not approved behind the refusal",
+      await page.locator("#ac-rv-approve").count() === 1);
+
+    await page.fill("#ac-rv-summary", "Strong on documentation and systems. Supervision needs three observed sessions.");
+    await page.click("#ac-rv-approve");
+    await page.waitForTimeout(1400);
+    const signed = await page.textContent(".ac-wrap");
+    check("with a summary written, it goes through", /Approved/.test(signed), signed.slice(0, 400));
+    check("AND IS SHOWN AS APPROVED WITH A DEVELOPMENT PLAN, not plain approved",
+      /Approved, with a development plan/i.test(signed), signed.slice(0, 400));
+    check("naming who signed it", /Signed off by/i.test(signed), signed.slice(0, 500));
+
+    section("THE SUBJECT, ONCE IT IS SIGNED");
+    await login(newEmail, "AcadPass123!");
+    await openAcademy();
+    await page.click('[data-rv-open="' + enr.id + '"]');
+    await page.waitForTimeout(1000);
+    const final = await page.textContent(".ac-wrap");
+    check("NOW they see every rating, including the hard one",
+      /Requires Additional Support/.test(final), final.slice(0, 600));
+    check("and the note behind it", /supervision session alone/i.test(final), final.slice(0, 900));
+    check("and their development plan, with its dates",
+      /Due 2026-11-15/.test(final) && /reassessed 2026-11-22/.test(final), final.slice(0, 900));
+    check("and the summary they were given", /three observed sessions/.test(final), final.slice(0, 900));
+    check("THERE IS NO RATING CONTROL ANYWHERE ON A SIGNED REVIEW",
+      await page.locator("[data-rsave]").count() === 0, await page.locator("[data-rsave]").count());
+    check("NO APPROVE BUTTON ON THEIR OWN REVIEW",
+      await page.locator("#ac-rv-approve").count() === 0, await page.locator("#ac-rv-approve").count());
+    check("no form to add themselves a development plan",
+      await page.locator("[data-padd]").count() === 0, await page.locator("[data-padd]").count());
+    check("and no control to close the one they have",
+      await page.locator("[data-pl-close]").count() === 0, await page.locator("[data-pl-close]").count());
 
     section("Nothing threw");
     check("no page errors anywhere in that journey", errors.length === 0, errors.slice(0, 3));
