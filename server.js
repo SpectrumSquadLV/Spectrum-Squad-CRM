@@ -4959,6 +4959,11 @@ async function handle(req, res, pathname, method, query = {}) {
     if (ma) {
       const prefixKey = (
         pathname.startsWith("/api/hr/") ? "hr" :
+        // Payer enrollment is a section of the HR Hub staff card, so switching
+        // HR off for somebody switches it off too. The progression widget is a
+        // dashboard panel and follows the dashboard.
+        pathname.startsWith("/api/payer-enrollments") ? "hr" :
+        pathname.startsWith("/api/staff-progression") ? "dashboard" :
         pathname.startsWith("/api/ot/") ? "ot" :
         pathname.startsWith("/api/supervision") ? "supervision" :
         pathname.startsWith("/api/fin/") ? "financial-center" :
@@ -5164,6 +5169,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/caseload")) {
     const handled = await bcbaDashboard.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/staff-progression") || pathname.startsWith("/api/payer-enrollments")) {
+    const handled = await staffProgression.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -8593,6 +8603,9 @@ const PUBLIC_FILES = new Set([
   "/bcba-hub-frontend.js",
   "/authorization-requests-frontend.js",
   "/bcba-dashboard-frontend.js",
+  // The Clinical Director's Staff Progression widget on that dashboard, and
+  // the payer enrollment section of the HR Hub staff card that feeds it.
+  "/staff-progression-frontend.js",
   "/screener-admin.js",
   "/hr-recruiting.js",
   "/ot-frontend.js",
@@ -8917,6 +8930,17 @@ const staffPortal = require("./staff-portal")({ dbRun });
 const academy = require("./academy")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, sendEmail,
   onCompletion: (...args) => completions.record(...args),
+});
+// ===== STAFF PROGRESSION add-on: the Clinical Director's view of every
+// incoming clinician, DERIVED from the HR Hub on each request -- nothing is
+// stored about progression. Also owns payer enrollment (group linking and
+// credentialing), which is HR Hub data edited on the staff card. Owns
+// /api/staff-progression and /api/payer-enrollments/*. =====
+const staffProgression = require("./staff-progression")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json,
+  hrCanManage: (u) => hr.hrCanManage(u),
+  isClinicalLead: (u) => academy.isClinicalLead(u),
+  leadership: () => academy.leadership(),
 });
 
 const concerns = require("./concerns")({
@@ -9448,6 +9472,7 @@ async function start() {
   await bcbaHub.initTables().catch((e) => console.error("BCBA Hub initTables failed:", e));
   await authorizationRequests.initTables().catch((e) => console.error("Authorization Request initTables failed:", e));
   await bcbaDashboard.initTables().catch((e) => console.error("BCBA dashboard initTables failed:", e));
+  await staffProgression.initTables().catch((e) => console.error("Staff progression initTables failed:", e));
   await driveNotes.initTables().catch((e) => console.error("Drive notes initTables failed:", e));
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
   await grants.initTables().catch((e) => console.error("Grants initTables failed:", e));

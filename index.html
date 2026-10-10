@@ -1971,6 +1971,7 @@ async function renderDashboard(mount) {
       <div class="stat-card"><div class="label">Active Therapy</div><div class="value">${byStage.active || 0}</div></div>
     </div>
     ${taskCenterHtml()}
+    <div id="dash-progression" class="spw-host" style="display:none;"></div>
     ${dash.authCounts ? renderAuthDashboardCard(dash.authCounts) : ""}
     <div style="display:grid; grid-template-columns: 1.4fr 1fr; gap: 20px;">
       <div class="card">
@@ -2041,6 +2042,13 @@ async function renderDashboard(mount) {
       <div id="dash-completions"><div class="empty-state">Loading…</div></div>
     </div>
   `;
+  // The Clinical Director's Staff Progression widget, when the Clinical
+  // Director signs in with an administrative role and lands here rather than on
+  // the BCBA dashboard. "admin" surface: the server shows it only to the person
+  // designated Clinical Director or Assistant, so nobody else's dashboard changes.
+  if (typeof window.__fillStaffProgression === "function") {
+    try { if (window.__bdInjectStyles) window.__bdInjectStyles(); window.__fillStaffProgression(mount.querySelector("#dash-progression"), "admin"); } catch (e) {}
+  }
 
   // Null-safe: two views define this id, and a fast second nav click can
   // replace the mount between the innerHTML write above and this line.
@@ -5611,6 +5619,7 @@ async function openStaffModal(id, pageMount) {
       </div>
       ${id ? `<div class="section-title">Emergency Contacts</div><div id="staff-emergency"></div>` : ""}
       ${id ? `<div class="section-title">Certifications &amp; Renewals</div><div id="staff-certs"></div>` : ""}
+      ${id ? `<div class="section-title">Payer Enrollment (Group Linking &amp; Credentialing)</div><div id="staff-payers"></div>` : ""}
       ${id ? `<div class="section-title">Onboarding Paperwork</div><div id="staff-packet"></div>` : ""}
       ${id ? `<div class="section-title">Documents</div><div id="staff-docs"></div>` : ""}
       ${id ? `<div class="section-title">Timecards</div><div id="staff-timecards">${timecardsHtml}</div>` : ""}
@@ -5697,6 +5706,8 @@ async function openStaffModal(id, pageMount) {
     if (ecEl) window.PeopleUI.renderEmergencyContacts(ecEl, "staff", id);
     const certEl = backdrop.querySelector("#staff-certs");
     if (certEl) window.PeopleUI.renderCertifications(certEl, id);
+    const payersEl = backdrop.querySelector("#staff-payers");
+    if (payersEl && window.__renderPayerEnrollments) window.__renderPayerEnrollments(payersEl, id);
     const packetEl = backdrop.querySelector("#staff-packet");
     if (packetEl) window.PeopleUI.renderNewHirePacket(packetEl, id);
   }
@@ -7516,6 +7527,7 @@ function openAccessModal(u, onDone) {
   <script src="bcba-hub-frontend.js"></script>
   <script src="authorization-requests-frontend.js"></script>
   <script src="bcba-dashboard-frontend.js"></script>
+  <script src="staff-progression-frontend.js"></script>
   <script src="people-frontend.js"></script>
   <script src="signnow-import-frontend.js"></script>
 
