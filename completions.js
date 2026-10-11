@@ -52,6 +52,7 @@ module.exports = function initCompletions(ctx) {
     onboarding_doc_received:   { label: "New hire document received",             group: "Hiring" },
     supervision_signed_off:    { label: "Supervision month signed off",           group: "Hiring" },
     certification_renewed:     { label: "Certification renewed",                  group: "Hiring" },
+    academy_approved:          { label: "Onboarding academy approved",            group: "Hiring" },
     ot_intake_submitted:       { label: "OT intake submitted",                    group: "Families" },
   };
   const GROUP_ORDER = ["Families", "Work", "Hiring"];
