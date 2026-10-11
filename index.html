@@ -646,6 +646,7 @@ const state = {
   // Where the sidebar's Rethink shortcut points. Empty until /api/nav-order
   // answers, and an empty value draws no entry rather than a dead link.
   rethinkUrl: "",
+  credentialingAccess: false,
   navReorder: false,
   clients: [],
   stages: [],
@@ -927,12 +928,14 @@ async function loadNavOrder() {
     state.navOrder = Array.isArray(d.order) ? d.order : [];
     state.navOrderCanEdit = !!d.can_edit;
     state.rethinkUrl = /^https:\/\//.test(d.rethink_url || "") ? d.rethink_url : "";
+    state.credentialingAccess = !!d.credentialing_access;
   } catch (e) {
     // Never fatal. The sidebar is how you get anywhere; it renders in its
     // natural order rather than not at all.
     state.navOrder = [];
     state.navOrderCanEdit = false;
     state.rethinkUrl = "";
+    state.credentialingAccess = false;
   }
 }
 
@@ -1253,6 +1256,7 @@ async function route() {
   else if (hash.startsWith("#/attendance")) { if (window.__renderAttendance) await window.__renderAttendance(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/billable")) { if (window.__renderBillable) await window.__renderBillable(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/pto")) { if (window.__renderPto) await window.__renderPto(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/credentialing")) { if (window.__renderCredentialing) await window.__renderCredentialing(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/client-behavior")) { if (window.__renderClientBehavior) await window.__renderClientBehavior(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/bcba-hub")) { if (window.__renderBcbaHub) await window.__renderBcbaHub(mount); else await renderDashboard(mount); }
@@ -1313,7 +1317,7 @@ const NAV_GROUPS = [
   { key: "grp-clients", label: "Clients",
     members: ["pipeline", "client-behavior", "auth-alerts", "outbox", "leads"] },
   { key: "grp-staff", label: "Staff",
-    members: ["staff", "attendance", "supervision", "fidelity", "billable", "pto", "hr"] },
+    members: ["staff", "attendance", "supervision", "fidelity", "billable", "pto", "hr", "credentialing"] },
   // Map is deliberately NOT in here. Grouping put it behind a heading that
   // renders collapsed, and from the outside that is indistinguishable from the
   // Map having been removed -- which is exactly how it was reported. It goes
@@ -1489,6 +1493,11 @@ function renderShell(active) {
     navItems.push({ key: "pto", label: "PTO Balances", icon: "◇" });
   if (["owner", "admin", "super_admin", "hr_admin", "clinical"].includes(state.user.role))
     navItems.push({ key: "supervision", label: "RBT Supervision", icon: "▥" });
+  // New-hire credentialing. Not a role: HR, owner/admin, and whoever is
+  // designated Clinical Director or Assistant -- the server says which, on the
+  // nav-order call every session already makes, and enforces the same rule.
+  if (!OT_ONLY && state.credentialingAccess)
+    navItems.push({ key: "credentialing", label: "Credentialing", icon: "◈", hash: "#/credentialing" });
   // RBT Fidelity sits beside RBT Supervision because they are about the same
   // people, and stays SEPARATE because they answer different questions.
   //

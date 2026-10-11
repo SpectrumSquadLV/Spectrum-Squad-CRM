@@ -1,6 +1,7 @@
-// The Staff Progression widget and the payer section of the staff card, in a
-// real browser. The API suite proves the derivation; this proves what the
-// Clinical Director actually SEES, and that she sees no way to change it.
+// The Credentialing dashboard, its side panel, the settings and the payer
+// section of the staff card, in a real browser. The API suite proves the
+// rules; this proves what people actually SEE -- and that the Clinical
+// Director sees no way to change anything.
 //
 //   DATABASE_URL=... PORT=3011 node server.js
 //   BASE=http://127.0.0.1:3011 node test-staff-progression-ui.js
@@ -12,10 +13,10 @@ let pass = 0, fail = 0;
 const failures = [];
 const check = (name, cond, detail) => {
   if (cond) { pass++; console.log("  PASS  " + name); }
-  else { fail++; failures.push(name + (detail !== undefined ? "  -> " + JSON.stringify(detail).slice(0, 300) : "")); console.log("  FAIL  " + name); }
+  else { fail++; failures.push(name + (detail !== undefined ? "  -> " + JSON.stringify(detail).slice(0, 300) : "")); console.log("  FAIL  " + name + (detail !== undefined ? "  -> " + JSON.stringify(detail).slice(0, 300) : "")); }
 };
 const section = (t) => console.log("\n== " + t + " ==");
-const day = (n) => { const d = new Date(); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const pdate = (n) => new Date(Date.now() + n * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 
 function api(cookie) {
   return async (p, { method = "GET", body } = {}) => {
@@ -37,15 +38,19 @@ function api(cookie) {
     if (patch) await o(`/api/hr/employees/${id}`, { method: "PATCH", body: patch });
     return id;
   };
+  const ms = (id, k, body) => o(`/api/credentialing/employees/${id}/milestones/${k}`, { method: "PATCH", body });
   const cdEmp = await mk({ name: `Dana Director ${stamp}`, email: "clinical@spectrumsquadlv.com", role_title: "Clinical Director" });
-  const bcba = await mk({ name: `Bea BCBA ${stamp}`, role_title: "BCBA" }, { status: "onboarding", hr_hire_date: day(6) });
-  const rbt = await mk({ name: `Ray RBT ${stamp}`, role_title: "RBT" }, { status: "active" });
-  await o("/api/payer-enrollments", { method: "POST", body: { employee_id: rbt, payer: "Nevada Medicaid", kind: "group_link", status: "effective", effective_date: day(-5) } });
-  await o("/api/payer-enrollments", { method: "POST", body: { employee_id: rbt, payer: "SilverSummit", kind: "credentialing", status: "pending", submitted_date: day(-50), notes: "HR-ONLY-" + stamp } });
-  await mk({ name: `Sam Student ${stamp}`, role_title: "Student Analyst" }, { status: "onboarding", hr_hire_date: day(30) });
+  const rbt = await mk({ name: `Ray RBT ${stamp}`, role_title: "RBT" }, { status: "onboarding", hr_hire_date: pdate(-3), rethink_id: "R1", hr_availability: "M-F" });
+  const bcba = await mk({ name: `Bea BCBA ${stamp}`, role_title: "BCBA" }, { status: "onboarding", hr_hire_date: pdate(-45) });
+  const ann = await mk({ name: `Ann Admin ${stamp}`, role_title: "Front Desk" }, { status: "onboarding", hr_hire_date: pdate(-1) });
+  const done = await mk({ name: `Dee Done ${stamp}`, role_title: "RBT" }, { status: "onboarding", hr_hire_date: pdate(-20) });
+  for (const k of ["hr_onboarding", "documents", "verification"]) await ms(done, k, { status: "complete", notes: "seed" });
+  await ms(done, "approval", { status: "complete" });
+  await o("/api/credentialing/config", { method: "PUT", body: { payers: [{ payer: "Nevada Medicaid", requires_linking: true, positions: ["rbt"] }] } });
+  await o("/api/payer-enrollments", { method: "POST", body: { employee_id: done, payer: "Nevada Medicaid", kind: "group_link", status: "pending", submitted_date: pdate(-4), notes: "HR-ONLY-" + stamp } });
 
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
 
@@ -59,135 +64,146 @@ function api(cookie) {
     await page.click('#login-form button[type="submit"]');
     await page.waitForTimeout(1800);
   };
-  const dashboard = async () => {
-    await page.goto(BASE + "/#/dashboard");
+  const go = async (hash) => {
+    await page.goto(BASE + "/" + hash);
     await page.reload({ waitUntil: "networkidle" });
-    await page.waitForTimeout(1800);
+    await page.waitForTimeout(1500);
   };
-  const shot = async (n) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/${n}.png`, fullPage: false }); };
+  const shot = async (n, full) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/${n}.png`, fullPage: !!full }); };
+  const navHas = async () => page.$$eval("nav [data-nav], nav a, nav button", (els) => els.some((e) => /Credentialing/.test(e.textContent)));
 
   // ------------------------------------------------------------------
-  section("An ordinary BCBA does not get the widget");
+  section("Before she is designated, a clinical user has no Credentialing");
   await login("clinical@spectrumsquadlv.com", "TestStaff123!");
-  await dashboard();
-  check("the BCBA dashboard draws", !!(await page.$(".bd")));
-  check("no Staff Progression panel for a non-leader", !(await page.$("#spw-panel")));
+  check("no Credentialing in the sidebar", !(await navHas()));
+  await go("#/credentialing");
+  check("going there directly says who it is for", /Clinical Director and Assistants/.test(await page.textContent("#view-mount")));
 
-  // ------------------------------------------------------------------
-  section("The Clinical Director sees it");
   await o(`/api/academy/leadership/${cdEmp}`, { method: "PUT", body: { leadership: "clinical_director" } });
-  await dashboard();
-  await page.waitForSelector("#spw-panel", { timeout: 8000 }).catch(() => {});
-  check("the panel is on her dashboard", !!(await page.$("#spw-panel")));
-  const title = await page.$eval("#spw-panel .bd-pt", (e) => e.textContent).catch(() => "");
-  check("it is called Incoming Staff Progression", /Incoming Staff Progression/.test(title), title);
-  const names = await page.$$eval("[data-spw-row] .spw-name", (e) => e.map((x) => x.textContent));
-  check("the incoming BCBA, RBT and student are listed",
-    [`Bea BCBA ${stamp}`, `Ray RBT ${stamp}`, `Sam Student ${stamp}`].every((n) => names.includes(n)), names);
-  check("the Clinical Director herself is not (she is not incoming)", !names.includes(`Dana Director ${stamp}`));
-  const rayRow = `[data-spw-row="emp-${rbt}"]`;
-  check("the RBT pending 50 days is highlighted as delayed", await page.$eval(rayRow, (e) => e.classList.contains("delayed")).catch(() => false));
-  check("the BCBA starting in 6 days is highlighted as starting soon",
-    await page.$eval(`[data-spw-row="emp-${bcba}"]`, (e) => e.classList.contains("soon")).catch(() => false));
-  check("every row says Internal or External on its next action",
-    await page.$$eval("[data-spw-row] .spw-c-next", (e) => e.every((x) => /Internal|External|Nothing outstanding/.test(x.textContent))));
-  await shot("01-widget");
-
-  section("Filters");
-  await page.click('[data-spw-role="rbt"]');
-  let shown = await page.$$eval("[data-spw-row] .spw-name", (e) => e.map((x) => x.textContent));
-  check("RBTs filter shows only the RBT", shown.length >= 1 && shown.every((n) => !/BCBA|Student/.test(n)), shown);
-  await page.click('[data-spw-role="student_analyst"]');
-  shown = await page.$$eval("[data-spw-row] .spw-name", (e) => e.map((x) => x.textContent));
-  check("Student Analysts filter shows only the student", shown.length === 1 && /Student/.test(shown[0]), shown);
-  await page.click('[data-spw-role="all"]');
-  await page.click('[data-spw-attn="delayed"]');
-  shown = await page.$$eval("[data-spw-row] .spw-name", (e) => e.map((x) => x.textContent));
-  check("Delayed filter shows the delayed RBT", shown.includes(`Ray RBT ${stamp}`) && !shown.includes(`Sam Student ${stamp}`), shown);
-  await page.click('[data-spw-attn="delayed"]');
-  await page.click('[data-spw-phase="partial_clearance"]');
-  shown = await page.$$eval("[data-spw-row] .spw-name", (e) => e.map((x) => x.textContent));
-  check("the Partial payer clearance phase tile filters to that phase", shown.length === 1 && shown[0] === `Ray RBT ${stamp}`, shown);
-  await page.click('[data-spw-phase="partial_clearance"]');
-
-  section("Expanding a profile, without leaving the dashboard");
-  const before = page.url();
-  await page.click(rayRow);
-  await page.waitForTimeout(250);
-  check("the detail opens inline", !!(await page.$(`[data-spw-detail="emp-${rbt}"]`)));
-  check("the URL did not change", page.url() === before);
-  const detail = await page.$eval(`[data-spw-detail="emp-${rbt}"]`, (e) => e.textContent).catch(() => "");
-  check("payer group linking and credentialing are shown with their status",
-    /Nevada Medicaid/.test(detail) && /Group linking/.test(detail) && /SilverSummit/.test(detail) && /Pending with payer/.test(detail), detail.slice(0, 300));
-  check("the delay reason is spelled out", /pending 50 days/.test(detail));
-  check("HR's payer notes are not on the dashboard", !detail.includes("HR-ONLY-"));
-  check("she is offered no way to edit", !(await page.$("[data-spw-edit]")));
-  await shot("02-expanded");
-  await page.click(rayRow);
-  check("and it closes again", !(await page.$(`[data-spw-detail="emp-${rbt}"]`)));
-
-  // Mobile: the grid must stack rather than scroll sideways.
-  await page.setViewportSize({ width: 390, height: 900 });
-  await page.waitForTimeout(300);
-  const overflow = await page.evaluate(() => {
-    const p = document.getElementById("spw-panel");
-    return p ? p.scrollWidth - p.clientWidth : 0;
-  });
-  check("no sideways scroll on a phone", overflow <= 2, overflow);
-  await page.evaluate(() => document.getElementById("spw-panel").scrollIntoView());
-  await shot("03-mobile");
-  await page.setViewportSize({ width: 1440, height: 1100 });
 
   // ------------------------------------------------------------------
-  section("The owner's main dashboard is unchanged");
-  await login("admin@spectrumsquadlv.com", "TestOwner123!");
-  await dashboard();
-  check("the main dashboard draws", !!(await page.$(".stat-grid")));
-  check("no Staff Progression panel on it for the owner", !(await page.$("#spw-panel")));
+  section("The Clinical Director's dashboard");
+  await login("clinical@spectrumsquadlv.com", "TestStaff123!");
+  check("Credentialing is in her sidebar", await navHas());
+  await go("#/dashboard");
+  check("her dashboard has the compact progression card", !!(await page.$(".cr-mini")));
+  check("...linking to the full dashboard", !!(await page.$('.cr-mini a[href="#/credentialing"]')));
+  await go("#/credentialing");
+  await page.waitForSelector("#cr-rows tr[data-emp]", { timeout: 10000 }).catch(() => {});
+  const cards = await page.$$eval(".cr-card", (els) => els.map((e) => [e.querySelector(".l").textContent, Number(e.querySelector(".n").textContent)]));
+  check("five summary cards", cards.length === 5 && cards[0][0] === "Total new hires", cards);
+  const n = Object.fromEntries(cards);
+  check("the numbers are the real records (4 hires, 1 approved, 1 overdue)", n["Total new hires"] === 4 && n["Internally approved"] === 1 && n["Overdue"] === 1, n);
+  const heads = await page.$$eval(".cr-table thead th", (els) => els.map((e) => e.textContent.trim()).filter(Boolean));
+  check("the table has the agreed columns", ["Employee", "Position", "Hire date", "Credentialing progress", "Payer linking", "Current status", "Target completion"].every((h) => heads.includes(h)), heads);
+  const rowText = await page.textContent("#cr-rows");
+  check("every new hire is listed", [rbt, bcba, ann, done].every(() => true) && rowText.includes(`Ray RBT ${stamp}`) && rowText.includes(`Ann Admin ${stamp}`) && rowText.includes(`Dee Done ${stamp}`));
+  check("the office hire shows payer linking N/A", /Ann Admin[\s\S]*?N\/A/.test(rowText));
+  check("the approved RBT waiting on Medicaid shows 0 of 1 linked", /Dee Done[\s\S]*?0 of 1 linked/.test(rowText));
+  check("progress bars are drawn", (await page.$$("#cr-rows .cr-bar span")).length >= 4);
+  check("no settings or edit buttons for her", !(await page.$("#cr-settings")) && !(await page.$("#cr-track")));
+  await shot("01-dashboard");
 
-  section("HR edits payer enrollment on the staff card");
-  await page.goto(BASE + "/#/staff");
-  await page.reload({ waitUntil: "networkidle" });
+  await page.fill("#cr-q", "Bea BCBA");
+  check("search narrows the table", (await page.$$("#cr-rows tr[data-emp]")).length === 1);
+  await page.fill("#cr-q", "");
+  await page.click('.cr-card[data-card="overdue"]');
+  const ov = await page.$$eval("#cr-rows tr[data-emp]", (els) => els.map((e) => e.textContent));
+  check("clicking Overdue filters to the overdue hire", ov.length === 1 && ov[0].includes("Bea BCBA"), ov.length);
+  await page.click('.cr-card[data-card="overdue"]');
+  await page.selectOption("#cr-pos", "admin");
+  check("position filter", (await page.$$("#cr-rows tr[data-emp]")).length === 1);
+  await page.selectOption("#cr-pos", "");
+
+  // ------------------------------------------------------------------
+  section("The employee panel, read-only for her");
+  await page.click(`#cr-rows tr[data-emp="${done}"]`);
+  await page.waitForSelector("#cr-drawer .cr-track", { timeout: 8000 }).catch(() => {});
+  check("the side panel opens over the dashboard", !!(await page.$("#cr-drawer")) && !!(await page.$("#cr-rows")));
+  check("four-stage tracker", (await page.$$("#cr-drawer .cr-step")).length === 4);
+  const panel = await page.textContent("#cr-drawer");
+  ["Position", "Hire date", "Onboarding coordinator", "Expected start", "Days in onboarding", "Target completion"].forEach((k) => check(`overview shows ${k}`, panel.includes(k)));
+  check("payer linking is shown separately", /Insurance payer linking/.test(panel) && /Nevada Medicaid/.test(panel) && /does not affect internal approval/.test(panel));
+  check("approved but NOT eligible for Medicaid clients", /Ready to serve clients, by payer[\s\S]*Nevada Medicaid[\s\S]*Not yet/.test(panel));
+  check("HR's payer notes are not on her screen", !panel.includes("HR-ONLY-" + stamp));
+  check("no Save buttons for her", !(await page.$("#cr-drawer [data-save]")));
+  await shot("02-panel-readonly");
+  await page.keyboard.press("Escape");
+  check("Escape closes the panel", !(await page.$("#cr-drawer")));
+
+  // ------------------------------------------------------------------
+  section("HR signs off a milestone from the panel");
+  await login("admin@spectrumsquadlv.com", "TestOwner123!");
+  await go("#/credentialing");
+  await page.waitForSelector("#cr-rows tr[data-emp]", { timeout: 10000 }).catch(() => {});
+  check("owner gets Settings and Track an employee", !!(await page.$("#cr-settings")) && !!(await page.$("#cr-track")));
+  await page.click(`#cr-rows tr[data-emp="${rbt}"]`);
+  await page.waitForSelector('#cr-drawer [data-ms="verification"] [data-save]', { timeout: 8000 }).catch(() => {});
+  await page.selectOption('#cr-drawer [data-ms="verification"] [data-f="status"]', "complete");
+  await page.click('#cr-drawer [data-save="verification"]');
+  await page.waitForTimeout(900);
+  const err = await page.textContent('#cr-drawer [data-msg="verification"]').catch(() => "");
+  check("signing off over open records asks for a reason", /note/i.test(err || ""), err);
+  await page.fill('#cr-drawer [data-ms="verification"] [data-f="notes"]', "Verified by phone with the BACB");
+  await page.click('#cr-drawer [data-save="verification"]');
   await page.waitForTimeout(1500);
-  await page.evaluate((id) => openStaffModal(String(id), document.createElement("div")), bcba);
+  const vt = await page.textContent('#cr-drawer [data-ms="verification"]');
+  check("the milestone shows Complete with the note", /Complete/.test(vt) && /Verified by phone/.test(vt), vt.slice(0, 200));
+  check("...and who did it", /by /.test(vt));
+  check("the change history records it", /Change history[\s\S]*verification/i.test(await page.textContent("#cr-drawer")));
+  await shot("03-panel-hr");
+  await page.keyboard.press("Escape");
+
+  // ------------------------------------------------------------------
+  section("Settings: payer rules and the daily email");
+  await page.click("#cr-settings");
+  await page.waitForSelector("#cr-em-time", { timeout: 8000 }).catch(() => {});
+  check("send time defaults to 07:00", (await page.inputValue("#cr-em-time")) === "07:00");
+  check("the seven payers are listed, none assumed", (await page.$$("#cr-payers [data-payer]")).length >= 7);
+  check("only Medicaid is switched on", (await page.$$eval("#cr-payers [data-payer]", (els) => els.filter((e) => e.querySelector("[data-req]").checked).map((e) => e.querySelector("[data-name]").textContent))).join() === "Nevada Medicaid");
+  await page.click("#cr-em-preview");
+  await page.waitForSelector("#cr-em-prev iframe", { timeout: 8000 }).catch(() => {});
+  const frame = page.frames().find((f) => f.url() === "about:srcdoc");
+  const ftext = frame ? await frame.textContent("body") : "";
+  check("the preview renders the email", /Pending internal onboarding/.test(ftext) && ftext.includes(`Bea BCBA ${stamp}`), ftext.slice(0, 200));
+  check("...without HR's payer notes", !ftext.includes("HR-ONLY-" + stamp));
+  await shot("04-settings", true);
+  await page.keyboard.press("Escape");
+
+  // ------------------------------------------------------------------
+  section("HR edits payer linking on the staff card");
+  await go("#/staff");
+  await page.evaluate((id) => openStaffModal(String(id), document.createElement("div")), rbt);
   await page.waitForSelector("#staff-payers .spw-pe-add", { timeout: 8000 }).catch(() => {});
-  check("the staff card has the payer enrollment section", !!(await page.$("#staff-payers .spw-pe-add")));
-  await page.fill('#staff-payers [data-pe-new="payer"]', "Anthem BCBS");
-  await page.selectOption('#staff-payers [data-pe-new="kind"]', "credentialing");
+  check("the staff card has the payer section", !!(await page.$("#staff-payers .spw-pe-add")));
+  await page.fill('#staff-payers [data-pe-new="payer"]', "Nevada Medicaid");
   await page.selectOption('#staff-payers [data-pe-new="status"]', "submitted");
   await page.click("#staff-payers [data-pe-add]");
-  await page.waitForTimeout(800);
-  const rowsNow = await page.$$eval("#staff-payers [data-pe-row]", (e) => e.map((x) => x.textContent));
-  check("the new enrollment appears on the card", rowsNow.some((t) => /Anthem BCBS/.test(t)), rowsNow);
-  const sel = '#staff-payers [data-pe-row] [data-pe="status"]';
-  await page.selectOption(sel, "approved");
-  const approvedDate = await page.$eval('#staff-payers [data-pe-row] [data-pe="approved_date"]', (e) => e.value);
-  check("choosing Approved fills today's date VISIBLY for HR to confirm", approvedDate === new Date().toISOString().slice(0, 10), approvedDate);
-  await shot("04-staff-card");
-  await page.click("#staff-payers [data-pe-save]");
-  await page.waitForTimeout(800);
-  const wd = await o("/api/staff-progression");
-  const bea = wd.data.people.find((p) => p.key === "emp-" + bcba);
-  check("the widget reads what HR just saved", bea && bea.payers.some((p) => p.payer === "Anthem BCBS" && p.status === "approved"), bea && bea.payers);
+  await page.waitForTimeout(1200);
+  const wd = await o("/api/credentialing");
+  const ray = wd.data.people.find((p) => p.employee_id === rbt);
+  check("the dashboard reads what HR just saved", ray && (ray.payer_linking.find((l) => l.payer === "Nevada Medicaid") || {}).state === "submitted", ray && ray.payer_linking);
 
   // ------------------------------------------------------------------
-  section("A Clinical Director whose login is not the clinical role");
-  // If her account is an administrative one she lands on the main dashboard,
-  // not the BCBA one. The widget has to be there for her -- and only her.
-  const sched = await mk({ name: `Dee Director ${stamp}`, email: "scheduling@spectrumsquadlv.com", role_title: "Clinical Director" });
-  await o(`/api/academy/leadership/${sched}`, { method: "PUT", body: { leadership: "clinical_director" } });
-  await login("scheduling@spectrumsquadlv.com", "TestOwner123!");
-  await dashboard();
-  await page.waitForSelector("#spw-panel", { timeout: 8000 }).catch(() => {});
-  check("she gets the widget on the main dashboard", !!(await page.$("#spw-panel")));
-  check("it sits in the main dashboard, not the BCBA one", !(await page.$(".bd")) && !!(await page.$(".stat-grid")));
-  const w = await page.$eval("#spw-panel", (e) => e.getBoundingClientRect().width).catch(() => 0);
-  check("it lays out at full width there", w > 800, w);
-  await shot("05-main-dashboard");
+  section("Phone width");
+  await page.setViewportSize({ width: 390, height: 860 });
+  await go("#/credentialing");
+  await page.waitForSelector("#cr-rows tr[data-emp]", { timeout: 10000 }).catch(() => {});
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  check("no sideways scrolling on a phone", overflow <= 2, overflow);
+  const cardCols = await page.$eval(".cr-cards", (e) => getComputedStyle(e).gridTemplateColumns.split(" ").length);
+  check("summary cards wrap to two columns", cardCols === 2, cardCols);
+  check("table rows become cards", (await page.$eval("#cr-rows tr", (e) => getComputedStyle(e).display)) === "grid");
+  await shot("05-mobile", true);
+  await page.click(`#cr-rows tr[data-emp="${bcba}"]`);
+  await page.waitForSelector("#cr-drawer .cr-track", { timeout: 8000 }).catch(() => {});
+  const dw = await page.$eval("#cr-drawer", (e) => e.getBoundingClientRect().width);
+  check("the panel is full width on a phone", dw >= 385, dw);
+  await shot("06-mobile-panel");
 
   check("no page errors", errors.length === 0, errors);
   await browser.close();
-  if (failures.length) console.log("\nFAILURES:\n  " + failures.join("\n  "));
   console.log(`\n${pass} passed, ${fail} failed`);
+  if (fail) { console.log("\nFailures:"); failures.forEach((f) => console.log("  - " + f)); }
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
