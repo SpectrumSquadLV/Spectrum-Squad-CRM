@@ -27,7 +27,8 @@
           "fidelity",
           "billable",
           "pto",
-          "hr"
+          "hr",
+          "credentialing"
         ],
         "grp-practice": [
           "events",
@@ -145,7 +146,8 @@
           "fidelity",
           "billable",
           "pto",
-          "hr"
+          "hr",
+          "credentialing"
         ],
         "grp-practice": [
           "events",
@@ -262,7 +264,8 @@
           "supervision",
           "billable",
           "pto",
-          "hr"
+          "hr",
+          "credentialing"
         ],
         "grp-practice": [
           "events",
@@ -721,7 +724,8 @@
           "supervision",
           "billable",
           "pto",
-          "hr"
+          "hr",
+          "credentialing"
         ],
         "grp-practice": [
           "policies",
