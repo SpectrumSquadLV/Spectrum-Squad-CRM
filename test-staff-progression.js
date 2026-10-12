@@ -439,6 +439,67 @@ function client() {
   check("...and is logged as a test, not as the day's report", (await q("SELECT COUNT(*)::int AS n FROM credentialing_email_log WHERE kind = 'test'")).rows[0].n === 1);
 
   // ==================================================================
+  section("The verification milestone's history survives the merge");
+  // This runs once, at boot, so nothing above exercises it. Someone who
+  // signed off Credential Verification while a document was still outstanding
+  // did so for a reason, and that reason is in their note. Dropping the row
+  // would re-block their approval and lose the note, so the sign-off carries
+  // over -- but never over a documents sign-off that already exists.
+  const settings = new Map();
+  const toPg = (sql) => { let i = 0; return sql.replace(/\?/g, () => "$" + ++i); };
+  const migMod = require("./staff-progression")({
+    dbGet: async (sql, pr) => (await q(toPg(sql), pr)).rows[0] || null,
+    dbAll: async (sql, pr) => (await q(toPg(sql), pr)).rows,
+    dbRun: async (sql, pr) => q(toPg(sql), pr),
+    nowISO: () => new Date().toISOString(),
+    readBody: async () => ({}), json: () => {},
+    getAppSetting: async (k, f) => (settings.has(k) ? settings.get(k) : f),
+    setAppSetting: async (k, v) => { settings.set(k, v); },
+  });
+  // Driven through initTables, not the migration function directly, so the
+  // test covers the boot wiring too -- a migration nothing calls is no
+  // migration at all.
+  const boot = () => migMod.initTables();
+
+  const legacy = await mkEmp({ name: `Vera Legacy ${stamp}`, role_title: "RBT", email: `vera${stamp}@x.test` });
+  await patchEmp(legacy, { status: "onboarding", hr_hire_date: pdate(-30) });
+  await q(`INSERT INTO hr_onboarding_milestones (employee_id, milestone_key, status, completed_at, completed_by, responsible, notes, updated_by, updated_at)
+           VALUES ($1,'verification','complete',$2,'Kim (Credentialing)','Kim (Credentialing)','Waived: registry checked by phone, certificate to follow','Kim',$2)`,
+          [legacy, new Date().toISOString()]);
+  // Somebody whose documents milestone is already signed off must not be overwritten.
+  const held = await mkEmp({ name: `Hank Held ${stamp}`, role_title: "RBT", email: `hank${stamp}@x.test` });
+  await patchEmp(held, { status: "onboarding", hr_hire_date: pdate(-30) });
+  await setMs(held, "documents", { status: "complete", notes: "DOCS-NOTE-" + stamp });
+  await q(`INSERT INTO hr_onboarding_milestones (employee_id, milestone_key, status, completed_at, completed_by, notes, updated_by, updated_at)
+           VALUES ($1,'verification','complete',$2,'Kim','VERIF-NOTE-' || $3,'Kim',$2)`, [held, new Date().toISOString(), stamp]);
+
+  await boot();
+  const docRow = async (id) => (await q("SELECT * FROM hr_onboarding_milestones WHERE employee_id = $1 AND milestone_key = 'documents'", [id])).rows[0] || null;
+  const lg = await docRow(legacy);
+  check("a completed verification sign-off carries onto documents", lg && lg.status === "complete", lg);
+  check("...keeping the note that explained it", lg && /registry checked by phone/.test(lg.notes || ""), lg && lg.notes);
+  check("...and saying where it came from", lg && /former Credential Verification milestone/.test(lg.notes || ""), lg && lg.notes);
+  check("...with the original sign-off's name on it", lg && /Kim/.test(lg.completed_by || ""), lg && lg.completed_by);
+  const lgHist = (await q("SELECT * FROM hr_onboarding_milestone_history WHERE employee_id = $1 AND milestone_key = 'documents'", [legacy])).rows;
+  check("...and the carry-over is on the change history", lgHist.some((h) => /merged into/.test(h.change)), lgHist);
+  check("the person is not re-blocked by the merge", (await person(legacy)).milestones.find((m) => m.key === "documents").status === "complete");
+
+  const hd = await docRow(held);
+  check("an existing documents sign-off is NOT overwritten", hd && /DOCS-NOTE-/.test(hd.notes || "") && !/VERIF-NOTE-/.test(hd.notes || ""), hd && hd.notes);
+
+  const vRows = (await q("SELECT COUNT(*)::int AS n FROM hr_onboarding_milestones WHERE milestone_key = 'verification'")).rows[0].n;
+  check("the old verification rows are kept, not deleted", vRows === 2, vRows);
+
+  // It is a one-time migration, and the guard matters: if HR later puts the
+  // documents milestone back to following the records, the next restart must
+  // not quietly re-apply the carried-over sign-off over that decision.
+  await q("UPDATE hr_onboarding_milestones SET status = NULL, completed_at = NULL, completed_by = NULL, notes = 'put back to follow the records' WHERE employee_id = $1 AND milestone_key = 'documents'", [legacy]);
+  await boot();
+  const reverted = await docRow(legacy);
+  check("a later boot does not undo HR putting it back to follow the records",
+    reverted && reverted.status === null && reverted.notes === "put back to follow the records", reverted);
+
+  // ==================================================================
   section("Existing records are untouched");
   const emp = (await q("SELECT status, role_title FROM hr_employees WHERE id = $1", [rbt])).rows[0];
   check("internal approval does not change the HR Hub status", emp.status === "onboarding", emp);
