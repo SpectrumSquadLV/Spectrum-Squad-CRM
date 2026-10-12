@@ -247,6 +247,87 @@ const today = () => new Date().toISOString().slice(0, 10);
     check("and the server refuses them the reports anyway", mRep === 403, mRep);
 
     // =====================================================================
+    section("NAMING A CLINICAL DIRECTOR, FROM THE SCREEN");
+    // The endpoint for this shipped in step one and nothing ever called it,
+    // so the only way to name anybody was an API request -- and a permission
+    // nobody can grant is a feature nobody has. These checks are that the
+    // control exists, that it works, and that it is not offered to staff.
+    await login("admin@spectrumsquadlv.com", "TestOwner123!");
+    await openAcademy();
+    await page.click('[data-view="roster"]');
+    await page.waitForTimeout(1400);
+    const ld = await page.textContent(".ac-wrap");
+    check("the owner is shown a clinical leadership card",
+      /Clinical leadership/.test(ld), ld.slice(0, 400));
+    check("it says plainly what happens while nobody is named",
+      /No onboarding can be approved until somebody is/i.test(ld)
+        || /has nobody to accept it/i.test(ld), ld.slice(0, 900));
+    check("THERE IS A PICKER TO NAME SOMEBODY",
+      await page.locator("#ac-ld-who").count() === 1, await page.locator("#ac-ld-who").count());
+    const candCount = await page.locator("#ac-ld-who option").count();
+    check("and it is populated with staff, not empty", candCount > 1, candCount);
+    check("it warns that a second Director replaces the first",
+      /Naming a second replaces/i.test(ld), ld.slice(0, 1800));
+
+    const mentorLabel = await page.evaluate(() => {
+      const o = [...document.querySelectorAll("#ac-ld-who option")].find((x) => /AcadL4 Mentor/.test(x.textContent));
+      return o ? o.value : "";
+    });
+    check("the mentor is selectable", !!mentorLabel, mentorLabel);
+    await page.selectOption("#ac-ld-who", mentorLabel);
+    await page.selectOption("#ac-ld-role", "clinical_director");
+    await page.click("#ac-ld-save");
+    await page.waitForTimeout(1800);
+    const named = await page.textContent(".ac-wrap");
+    check("NAMING SOMEBODY WORKS, from the screen", /AcadL4 Mentor/.test(named), named.slice(0, 900));
+    const row = (await pool.query(
+      "SELECT academy_leadership FROM hr_employees WHERE id = $1", [mentorId])).rows[0];
+    check("and it is recorded against them",
+      row && row.academy_leadership === "clinical_director", row);
+
+    section("A CLINICAL LEAD SEES WHO IS NAMED BUT CANNOT NAME ANYBODY");
+    // The deciding case for the picker's own gate. The owner sees it and a
+    // plain BCBA sees no card at all, so neither exercises it -- somebody
+    // who IS leadership but is NOT the owner is the person it exists for.
+    await pool.query("UPDATE hr_employees SET academy_leadership = 'assistant_clinical_director' WHERE id = $1",
+      [mentorId]);
+    await login(mEmail, "AcadL4Pass123!");
+    await openAcademy();
+    await page.click('[data-view="roster"]');
+    await page.waitForTimeout(1400);
+    const leadView = await page.textContent(".ac-wrap");
+    check("they DO see the clinical leadership card", /Clinical leadership/.test(leadView),
+      leadView.slice(0, 400));
+    check("THEY DO NOT GET THE PICKER — naming leadership is the owner's",
+      await page.locator("#ac-ld-who").count() === 0, await page.locator("#ac-ld-who").count());
+    check("nor a remove control", await page.locator("[data-lead-clear]").count() === 0,
+      await page.locator("[data-lead-clear]").count());
+    const leadDenied = await page.evaluate(async () => {
+      const r = await fetch("/api/academy/leadership/candidates", { credentials: "include" });
+      return r.status;
+    });
+    check("and the candidate list is refused them too", leadDenied === 403, leadDenied);
+    await pool.query("UPDATE hr_employees SET academy_leadership = NULL WHERE id = $1", [mentorId]);
+
+    section("AND IT IS NOT OFFERED TO STAFF");
+    await login(email, "AcadL4Pass123!");
+    await openAcademy();
+    check("an ordinary BCBA sees no leadership card",
+      !/Clinical leadership/.test(await page.textContent(".ac-wrap")));
+    const denied = await page.evaluate(async (id) => {
+      const r = await fetch("/api/academy/leadership/" + id, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadership: "clinical_director" }) });
+      return r.status;
+    }, empId);
+    check("AND THE SERVER REFUSES THEM NAMING THEMSELVES", denied === 403, denied);
+    const stillPlain = (await pool.query(
+      "SELECT academy_leadership FROM hr_employees WHERE id = $1", [empId])).rows[0];
+    check("so they did not become the Clinical Director",
+      stillPlain && !stillPlain.academy_leadership, stillPlain);
+    await pool.query("UPDATE hr_employees SET academy_leadership = NULL WHERE id = $1", [mentorId]).catch(() => {});
+
     section("LEADERSHIP: THE REPORTS");
     await login("admin@spectrumsquadlv.com", "TestOwner123!");
     await openAcademy();

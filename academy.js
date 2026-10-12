@@ -1030,6 +1030,20 @@ module.exports = function initAcademy(ctx) {
       return true;
     }
 
+    // WHO CAN BE NAMED. Its own endpoint rather than reusing the HR roster,
+    // which carries pay and credentials this screen has no business holding
+    // just to fill a dropdown.
+    if (pathname === "/api/academy/leadership/candidates" && method === "GET") {
+      if (!owner) { json(res, 403, { error: "Only the owner can name clinical leadership." }); return true; }
+      const rows = await dbAll(
+        `SELECT id, name, role_title, email, academy_leadership
+           FROM hr_employees
+          WHERE COALESCE(status,'active') = 'active'
+          ORDER BY name`).catch(() => []);
+      json(res, 200, { candidates: rows });
+      return true;
+    }
+
     const leadMatch = pathname.match(/^\/api\/academy\/leadership\/(\d+)$/);
     if (leadMatch && method === "PUT") {
       // NAMING CLINICAL LEADERSHIP IS AN OWNER ACT. It hands somebody the
