@@ -499,6 +499,45 @@ function client() {
   check("a later boot does not undo HR putting it back to follow the records",
     reverted && reverted.status === null && reverted.notes === "put back to follow the records", reverted);
 
+  // If the carry-over fails, the migration must NOT mark itself finished --
+  // it would take those sign-offs with it and never try again.
+  const brokenSettings = new Map();
+  const brokenMod = require("./staff-progression")({
+    dbGet: async (sql, pr) => (await q(toPg(sql), pr)).rows[0] || null,
+    dbAll: async (sql, pr) => (await q(toPg(sql), pr)).rows,
+    dbRun: async (sql, pr) => {
+      if (/'documents','complete'/.test(sql)) throw new Error("simulated write failure");
+      return q(toPg(sql), pr);
+    },
+    nowISO: () => new Date().toISOString(),
+    readBody: async () => ({}), json: () => {},
+    getAppSetting: async (k, f) => (brokenSettings.has(k) ? brokenSettings.get(k) : f),
+    setAppSetting: async (k, v) => { brokenSettings.set(k, v); },
+  });
+  const stray = await mkEmp({ name: `Stan Stray ${stamp}`, role_title: "RBT", email: `stan${stamp}@x.test` });
+  await patchEmp(stray, { status: "onboarding", hr_hire_date: pdate(-30) });
+  await q(`INSERT INTO hr_onboarding_milestones (employee_id, milestone_key, status, completed_at, completed_by, notes, updated_by, updated_at)
+           VALUES ($1,'verification','complete',$2,'Kim','STRAY-NOTE-' || $3,'Kim',$2)`, [stray, new Date().toISOString(), stamp]);
+  await brokenMod.initTables();
+  check("a failed carry-over does not mark the migration finished",
+    brokenSettings.get("credentialing_verification_merged") !== "1", [...brokenSettings.entries()]);
+  check("...and nothing half-written is left on the documents milestone", (await docRow(stray)) === null, await docRow(stray));
+  // The next restart, with writes working, picks it up.
+  const retrySettings = new Map();
+  const retryMod = require("./staff-progression")({
+    dbGet: async (sql, pr) => (await q(toPg(sql), pr)).rows[0] || null,
+    dbAll: async (sql, pr) => (await q(toPg(sql), pr)).rows,
+    dbRun: async (sql, pr) => q(toPg(sql), pr),
+    nowISO: () => new Date().toISOString(),
+    readBody: async () => ({}), json: () => {},
+    getAppSetting: async (k, f) => (retrySettings.has(k) ? retrySettings.get(k) : f),
+    setAppSetting: async (k, v) => { retrySettings.set(k, v); },
+  });
+  await retryMod.initTables();
+  const strayDoc = await docRow(stray);
+  check("the next restart carries it over after all", strayDoc && strayDoc.status === "complete" && /STRAY-NOTE-/.test(strayDoc.notes || ""), strayDoc);
+  check("...and only then is the migration marked finished", retrySettings.get("credentialing_verification_merged") === "1");
+
   // ==================================================================
   section("Existing records are untouched");
   const emp = (await q("SELECT status, role_title FROM hr_employees WHERE id = $1", [rbt])).rows[0];

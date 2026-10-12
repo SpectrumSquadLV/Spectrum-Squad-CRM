@@ -280,20 +280,31 @@ module.exports = function initStaffProgression(ctx) {
                              WHERE d.employee_id = v.employee_id AND d.milestone_key = 'documents'
                                AND d.status IS NOT NULL AND d.status <> '')`);
     } catch (e) { return; }
+    let carried = 0, failed = 0;
     for (const v of rows) {
       const note = [clean(v.notes), "(carried over from the former Credential Verification milestone)"].filter(Boolean).join(" ");
-      await dbRun(
-        `INSERT INTO hr_onboarding_milestones (employee_id, milestone_key, status, completed_at, completed_by, responsible, notes, due_date, updated_by, updated_at)
-         VALUES (?,'documents','complete',?,?,?,?,?,?,?)
-         ON CONFLICT (employee_id, milestone_key) DO UPDATE SET status = EXCLUDED.status, completed_at = EXCLUDED.completed_at,
-           completed_by = EXCLUDED.completed_by, notes = EXCLUDED.notes, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
-        [v.employee_id, v.completed_at || null, v.completed_by || null, clean(v.responsible) || null, note || null,
-         null, "Credentialing merge", nowISO()]).catch(() => {});
-      await recordHistory(v.employee_id, "documents",
-        "Credential Verification merged into Required Documents & Credentials; its completed sign-off carried over",
-        "Credentialing merge").catch(() => {});
+      try {
+        await dbRun(
+          `INSERT INTO hr_onboarding_milestones (employee_id, milestone_key, status, completed_at, completed_by, responsible, notes, due_date, updated_by, updated_at)
+           VALUES (?,'documents','complete',?,?,?,?,?,?,?)
+           ON CONFLICT (employee_id, milestone_key) DO UPDATE SET status = EXCLUDED.status, completed_at = EXCLUDED.completed_at,
+             completed_by = EXCLUDED.completed_by, notes = EXCLUDED.notes, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
+          [v.employee_id, v.completed_at || null, v.completed_by || null, clean(v.responsible) || null, note || null,
+           null, "Credentialing merge", nowISO()]);
+        await recordHistory(v.employee_id, "documents",
+          "Credential Verification merged into Required Documents & Credentials; its completed sign-off carried over",
+          "Credentialing merge").catch(() => {});
+        carried++;
+      } catch (e) {
+        failed++;
+        console.error(`Credentialing: could not carry employee ${v.employee_id}'s verification sign-off onto documents: ${e.message}`);
+      }
     }
-    if (rows.length) console.log(`Credentialing: carried ${rows.length} verification sign-off(s) onto Required Documents & Credentials.`);
+    if (carried) console.log(`Credentialing: carried ${carried} verification sign-off(s) onto Required Documents & Credentials.`);
+    // Only call it done if it IS done. A one-time migration that marks itself
+    // finished after failing would take those sign-offs with it, and the next
+    // restart would not try again.
+    if (failed) { console.error(`Credentialing: ${failed} sign-off(s) did not carry over; will try again on the next restart.`); return; }
     await setAppSetting("credentialing_verification_merged", "1").catch(() => {});
   }
 
