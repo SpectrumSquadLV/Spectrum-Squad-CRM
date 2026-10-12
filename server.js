@@ -4959,6 +4959,14 @@ async function handle(req, res, pathname, method, query = {}) {
     if (ma) {
       const prefixKey = (
         pathname.startsWith("/api/hr/") ? "hr" :
+        // Payer enrollment is a section of the HR Hub staff card, so switching
+        // HR off for somebody switches it off too. The progression widget is a
+        // dashboard panel and follows the dashboard.
+        pathname.startsWith("/api/payer-enrollments") ? "hr" :
+        pathname.startsWith("/api/staff-progression") ? "dashboard" :
+        // The Credentialing Tracker follows the dashboard too: it is the
+        // Clinical Director's view, and HR's edits are checked in the module.
+        pathname.startsWith("/api/credentialing") ? "dashboard" :
         pathname.startsWith("/api/ot/") ? "ot" :
         pathname.startsWith("/api/supervision") ? "supervision" :
         pathname.startsWith("/api/fin/") ? "financial-center" :
@@ -5164,6 +5172,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/caseload")) {
     const handled = await bcbaDashboard.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/staff-progression") || pathname.startsWith("/api/payer-enrollments") || pathname.startsWith("/api/credentialing")) {
+    const handled = await staffProgression.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -5742,6 +5755,9 @@ async function handle(req, res, pathname, method, query = {}) {
         order: Array.isArray(order) ? order : [],
         can_edit: USER_ADMIN_ROLES.includes(user.role),
         rethink_url: await getAppSetting("rethink_app_url", DEFAULT_SETTINGS.rethink_app_url),
+        // Whether the Credentialing entry is drawn. HR, owner/admin and the
+        // designated Clinical Director / Assistants; the API enforces the same rule.
+        credentialing_access: await staffProgression.canSee(user).catch(() => false),
       });
     }
 
@@ -8593,6 +8609,9 @@ const PUBLIC_FILES = new Set([
   "/bcba-hub-frontend.js",
   "/authorization-requests-frontend.js",
   "/bcba-dashboard-frontend.js",
+  // The Clinical Director's Staff Progression widget on that dashboard, and
+  // the payer enrollment section of the HR Hub staff card that feeds it.
+  "/staff-progression-frontend.js",
   "/screener-admin.js",
   "/hr-recruiting.js",
   "/ot-frontend.js",
@@ -8917,6 +8936,21 @@ const staffPortal = require("./staff-portal")({ dbRun });
 const academy = require("./academy")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, sendEmail,
   onCompletion: (...args) => completions.record(...args),
+});
+// ===== STAFF PROGRESSION add-on: the Clinical Director's view of every
+// incoming clinician, DERIVED from the HR Hub on each request -- nothing is
+// stored about progression. Also owns payer enrollment (group linking and
+// credentialing), which is HR Hub data edited on the staff card. Owns
+// /api/staff-progression and /api/payer-enrollments/*. =====
+const staffProgression = require("./staff-progression")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting, sendEmail, brandedEmail,
+  appBaseUrl: APP_BASE_URL,
+  hrCanManage: (u) => hr.hrCanManage(u),
+  isClinicalLead: (u) => academy.isClinicalLead(u),
+  leadership: () => academy.leadership(),
+  // Default recipients of the 7 AM onboarding email when none are configured.
+  leadershipEmails: () => academy.leadershipEmails(),
+  canConfigure: (u) => canManageUsers(u),
 });
 
 const concerns = require("./concerns")({
@@ -9448,6 +9482,15 @@ async function start() {
   await bcbaHub.initTables().catch((e) => console.error("BCBA Hub initTables failed:", e));
   await authorizationRequests.initTables().catch((e) => console.error("Authorization Request initTables failed:", e));
   await bcbaDashboard.initTables().catch((e) => console.error("BCBA dashboard initTables failed:", e));
+  await staffProgression.initTables().catch((e) => console.error("Staff progression initTables failed:", e));
+  // The 7:00 AM Pacific new-hire onboarding email. Checked every five minutes
+  // (a once-a-day timer never fires on a week of deploys); the day is claimed
+  // by a unique row, so a second check, instance or restart sends nothing.
+  const credentialingSweep = () => staffProgression.dailySweep()
+    .then((r) => { if (r && r.ran) console.log(`[credentialing] daily onboarding email: ${r.status} (${r.date})`); })
+    .catch((e) => console.error("Credentialing daily email failed:", e.message));
+  setTimeout(credentialingSweep, 60 * 1000);
+  setInterval(credentialingSweep, 5 * 60 * 1000);
   await driveNotes.initTables().catch((e) => console.error("Drive notes initTables failed:", e));
   await people.initTables().catch((e) => console.error("People initTables failed:", e));
   await grants.initTables().catch((e) => console.error("Grants initTables failed:", e));
