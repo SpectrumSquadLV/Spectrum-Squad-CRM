@@ -234,6 +234,49 @@ const hp = (pw) => {
   check("the Assistant Clinical Director signs in", (await boss("/api/auth/login", {
     method: "POST", body: { email: bossEmail, password: "PplPass123!" } })).status === 200);
 
+  // ---- NAMING LEADERSHIP IS AN OWNER ACT, and this is the person who
+  // ---- proves it. A clinical lead who could name leadership could name
+  // ---- themselves Clinical Director, which is the one promotion nobody
+  // ---- should be able to give themselves.
+  const selfName = await boss(`/api/academy/leadership/${bossId}`, {
+    method: "PUT", body: { leadership: "clinical_director" } });
+  check("AN ASSISTANT CLINICAL DIRECTOR CANNOT NAME CLINICAL LEADERSHIP",
+    selfName.status === 403, selfName);
+  const stillAssistant = (await pool.query(
+    "SELECT academy_leadership FROM hr_employees WHERE id = $1", [bossId])).rows[0];
+  check("so they did not promote themselves to Clinical Director",
+    stillAssistant && stillAssistant.academy_leadership === "assistant_clinical_director", stillAssistant);
+  const candsDenied = await boss("/api/academy/leadership/candidates");
+  check("nor can they read the list of who could be named", candsDenied.status === 403, candsDenied);
+  const candsOk = await owner("/api/academy/leadership/candidates");
+  check("the owner can", candsOk.status === 200 && (candsOk.data.candidates || []).length > 0,
+    candsOk.status);
+
+  // ---- ONE CLINICAL DIRECTOR. Naming a second replaces the first, so
+  // ---- "the Clinical Director approved it" is never ambiguous.
+  const cdA = `ppl-cd-a-${stamp}@example.invalid`;
+  await mkUser(cdA);
+  const cdAId = await mkEmp("Ppl Director A", cdA, today);
+  const cdB = `ppl-cd-b-${stamp}@example.invalid`;
+  await mkUser(cdB);
+  const cdBId = await mkEmp("Ppl Director B", cdB, today);
+  await owner(`/api/academy/leadership/${cdAId}`, { method: "PUT", body: { leadership: "clinical_director" } });
+  let who = await owner("/api/academy/leadership");
+  check("the first is the Clinical Director",
+    who.data.clinical_director && Number(who.data.clinical_director.id) === Number(cdAId),
+    who.data.clinical_director);
+  await owner(`/api/academy/leadership/${cdBId}`, { method: "PUT", body: { leadership: "clinical_director" } });
+  who = await owner("/api/academy/leadership");
+  check("NAMING A SECOND REPLACES THE FIRST, rather than leaving two",
+    who.data.clinical_director && Number(who.data.clinical_director.id) === Number(cdBId),
+    who.data.clinical_director);
+  const firstNow = (await pool.query(
+    "SELECT academy_leadership FROM hr_employees WHERE id = $1", [cdAId])).rows[0];
+  check("and the first no longer holds the designation",
+    firstNow && !firstNow.academy_leadership, firstNow);
+  await pool.query("UPDATE hr_employees SET academy_leadership = NULL WHERE id = ANY($1::int[])",
+    [[cdAId, cdBId]]).catch(() => {});
+
   const bossEnrol = await owner("/api/academy/enrollments", { method: "POST", body: { employee_id: bossId } });
   check("and is enrolled in the academy themselves", bossEnrol.status === 200, bossEnrol.data);
   const bossEnrId = bossEnrol.data.enrollment.id;

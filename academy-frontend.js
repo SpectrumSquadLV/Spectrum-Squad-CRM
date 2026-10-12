@@ -652,6 +652,87 @@
       + '<span class="ac-sub" id="ac-sv-msg"></span></div></div>';
   }
 
+  // ---- NAMING CLINICAL LEADERSHIP -----------------------------------------
+  //
+  // The designation that gates the entire Academy: without a Clinical
+  // Director or an Assistant, nobody can sign off a competency and no
+  // onboarding can be approved.
+  //
+  // The endpoint for this shipped in step one and NOTHING EVER CALLED IT, so
+  // the only way to name anybody was an API request. A permission nobody can
+  // grant is a feature nobody has.
+  //
+  // Owner-only, and the server says so -- this card appears because
+  // can_assign came back true, not because the browser decided the viewer
+  // looked like an owner.
+  function leadershipHtml() {
+    var L = DATA.leadership;
+    if (!L) return "";
+    var cd = L.clinical_director;
+    var assistants = L.assistants || [];
+    var who = function (p) {
+      return '<div class="ac-item"><div style="flex:1;min-width:0;">'
+        + "<strong>" + esc(p.name) + "</strong>"
+        + (p.email ? '<div class="ac-sub">' + esc(p.email) + "</div>" : "")
+        + "</div>"
+        + (L.can_assign
+            ? '<div><button class="btn small secondary" data-lead-clear="' + p.id + '">Remove</button></div>'
+            : "")
+        + "</div>";
+    };
+
+    var out = '<div class="ac-card"><h3 style="margin:0 0 2px;font-size:15px;">Clinical leadership</h3>'
+      + '<div class="ac-sub" style="margin-bottom:9px;">Who can sign off a competency and approve a completed'
+      + " onboarding. Until somebody is named here, nobody can — the Academy records progress and then has"
+      + " nobody to accept it.</div>";
+
+    out += '<div class="ac-sub" style="text-transform:uppercase;letter-spacing:.4px;font-size:10.5px;'
+      + 'margin-top:10px;">Clinical Director</div>';
+    out += cd ? who(cd)
+      : '<div class="ac-block" style="margin-top:6px;"><strong>Nobody is named.</strong>'
+        + '<div class="ac-sub" style="margin-top:4px;">No onboarding can be approved until somebody is.</div></div>';
+
+    out += '<div class="ac-sub" style="text-transform:uppercase;letter-spacing:.4px;font-size:10.5px;'
+      + 'margin-top:12px;">Assistant Clinical Directors</div>';
+    out += assistants.length ? assistants.map(who).join("")
+      : '<div class="ac-sub" style="margin-top:4px;">None named. Optional — they can approve as well as the'
+        + " Director, which matters when the Director is the person being reviewed.</div>";
+
+    // Said out loud, because the fallback working quietly is how somebody
+    // concludes the designation is broken.
+    if (L.from_setting) {
+      out += '<div class="ac-sub" style="margin-top:11px;">The CRM is still falling back to the older'
+        + " <strong>clinical_director_email</strong> setting (" + esc(L.from_setting) + ")."
+        + " Naming somebody above replaces it, and keeps working if their email ever changes.</div>";
+    }
+
+    if (L.can_assign) {
+      var cands = DATA.leadCandidates || [];
+      out += '<div class="ac-plan" style="margin-top:12px;background:#f8fafc;border-color:var(--border,#e5e7eb);">'
+        + '<strong style="font-size:13px;">Name somebody</strong>'
+        + '<div class="ac-sub" style="margin:2px 0 8px;">Only you can do this: it hands somebody the power to'
+        + " approve an onboarding, which is not a thing a clinical lead should be able to give themselves.</div>"
+        + '<div class="ac-grid2">'
+          + '<label class="ac-sub">Who<select id="ac-ld-who"><option value="">Choose a staff member…</option>'
+            + cands.map(function (c) {
+                return '<option value="' + c.id + '">' + esc(c.name)
+                  + (c.role_title ? " — " + esc(c.role_title) : "") + "</option>";
+              }).join("")
+          + "</select></label>"
+          + '<label class="ac-sub">As<select id="ac-ld-role">'
+            + '<option value="clinical_director">Clinical Director</option>'
+            + '<option value="assistant_clinical_director">Assistant Clinical Director</option>'
+          + "</select></label>"
+        + "</div>"
+        + '<div class="ac-sub" style="margin-top:7px;">There is one Clinical Director. Naming a second replaces'
+        + " the first, so &quot;the Clinical Director approved it&quot; is never ambiguous in the audit trail.</div>"
+        + '<button class="btn small" style="margin-top:8px;" id="ac-ld-save">Name them</button>'
+        + '<span class="ac-sub" id="ac-ld-msg" style="margin-left:9px;"></span>'
+        + "</div>";
+    }
+    return out + "</div>";
+  }
+
   // ---- the roster, for mentors and leadership -----------------------------
   function rosterHtml(list, canManage) {
     if (!list.length) {
@@ -895,7 +976,10 @@
       // A mentor's queue belongs beside the roster, not buried in a
       // mentee's record: the question they have not answered is the thing
       // they came to this screen for.
-      body = rosterHtml(DATA.roster.enrollments || [], canManage)
+      // Above the roster, because a roster full of people nobody can sign
+      // off is the symptom and this is the cause.
+      body = (canManage ? leadershipHtml() : "")
+           + rosterHtml(DATA.roster.enrollments || [], canManage)
            + threadsHtml(DATA.questions, DATA.gaps, true);
     } else if (VIEW === "reports" && canManage) {
       body = reportsHtml();
@@ -1005,6 +1089,36 @@
           .then(reload).catch(function (e) { b.disabled = false; alert(e.message); });
       });
     });
+    // ---- naming clinical leadership --------------------------------------
+    var setLead = function (id, role, msgEl, btn) {
+      if (btn) btn.disabled = true;
+      return api("/api/academy/leadership/" + id, { method: "PUT", body: { leadership: role } })
+        .then(function (d) {
+          DATA.leadership = Object.assign({}, DATA.leadership, d.leadership || {});
+          return loadLeadership();
+        })
+        .then(render)
+        .catch(function (e) {
+          if (btn) btn.disabled = false;
+          if (msgEl) msgEl.textContent = e.message; else alert(e.message);
+        });
+    };
+    var ldSave = HOST.querySelector("#ac-ld-save");
+    if (ldSave) ldSave.addEventListener("click", function () {
+      var msg = HOST.querySelector("#ac-ld-msg");
+      var who = (HOST.querySelector("#ac-ld-who") || {}).value || "";
+      var role = (HOST.querySelector("#ac-ld-role") || {}).value || "";
+      if (!who) { if (msg) msg.textContent = "Choose a staff member first."; return; }
+      setLead(who, role, msg, ldSave);
+    });
+    HOST.querySelectorAll("[data-lead-clear]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (!window.confirm("Remove their clinical leadership designation? They will no longer be able to"
+          + " approve an onboarding.")) return;
+        setLead(b.getAttribute("data-lead-clear"), "", null, b);
+      });
+    });
+
     // ---- training hours --------------------------------------------------
     var hAdd = HOST.querySelector("#ac-h-add");
     if (hAdd) hAdd.addEventListener("click", function () {
@@ -1310,6 +1424,19 @@
     });
   }
 
+  function loadLeadership() {
+    return api("/api/academy/leadership")
+      .then(function (d) {
+        DATA.leadership = d;
+        // The candidate list is owner-only, so it is fetched only when the
+        // server has said this viewer can assign.
+        if (!d.can_assign) { DATA.leadCandidates = []; return null; }
+        return api("/api/academy/leadership/candidates").catch(function () { return { candidates: [] }; });
+      })
+      .then(function (c) { if (c) DATA.leadCandidates = c.candidates || []; })
+      .catch(function () { DATA.leadership = null; });
+  }
+
   function loadHours() {
     var enrId = DATA.me && DATA.me.enrollment ? DATA.me.enrollment.id : null;
     if (!enrId) return Promise.resolve();
@@ -1380,9 +1507,10 @@
       api("/api/academy/questions").catch(function () { return { questions: [] }; }),
       api("/api/academy/gaps").catch(function () { return { gaps: [] }; }),
       api("/api/academy/survey").catch(function () { return { can_submit: false }; }),
+      api("/api/academy/leadership").catch(function () { return null; }),
     ]).then(function (r) {
       DATA = { me: r[0], roster: r[1], questions: (r[2] || {}).questions, gaps: (r[3] || {}).gaps,
-               survey: r[4] };
+               survey: r[4], leadership: r[5] };
       if (DATA.me && DATA.me.enrolled) {
         return api("/api/academy/enrollments/" + DATA.me.enrollment.id + "/checkins")
           .then(function (c) { DATA.checkins = c.checkins; return loadHours(); })
@@ -1393,6 +1521,9 @@
     }).then(function (r) {
       if (!DATA.me.enrolled && DATA.roster && (DATA.roster.enrollments || []).length) VIEW = "roster";
       render();
+      // The candidate list follows, so the card can render immediately with
+      // who is already named and fill its picker a moment later.
+      if (DATA.leadership && DATA.leadership.can_assign) loadLeadership().then(render);
     });
   };
 })();
