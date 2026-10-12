@@ -102,7 +102,12 @@ const daysAgo = (n) => {
   let score = r.data.score;
   check("both occurrences reached this person's total (the sheet showed 0.0)", score.points_30 === 2.5, score.points_30);
   check("the 90-day total agrees", score.points_90 === 2.5, score.points_90);
-  check("2.5 in 30 days is an Attendance Improvement Plan", score.review_level === "Attendance Improvement Plan", score.review_level);
+  // 2.5 sat in Attendance Improvement Plan under the old ladder. The policy
+  // now starts a coaching conversation at 4, so a month at 2.5 is a month
+  // somebody is monitored through rather than put on a plan for.
+  check("2.5 in 30 days is Meets Expectations, since coaching now starts at 4",
+    score.review_level === "Meets Expectations", score.review_level);
+  check("and it still counts as a good month for pay", score.review_needs_action === false, score);
   check("2.5 in 90 days is still Good standing", score.discipline_level === "Good standing", score.discipline_level);
   check("notice hours were computed from the times", 
     (r.data.flags || []).some((f) => Number(f.notice_hours) === 3), (r.data.flags || []).map((f) => f.notice_hours));
@@ -122,20 +127,83 @@ const daysAgo = (n) => {
   await logAt("left_early", 80);            // 2.0
   await logAt("calloff_gt4", 75);           // 1.0  -> 3.0
   score = await scoreOf(ladderId);
-  check("3 points is a Verbal reminder", score.points_90 === 3 && score.discipline_level === "Verbal reminder", score);
+  // THE ORDERING THIS LADDER MOVE EXISTS FOR. 3 rolling points used to be a
+  // filed verbal reminder, which arrived before the monthly review called
+  // for a conversation at all. It is now still good standing.
+  check("3 points is still Good standing — discipline no longer starts below"
+    + " the coaching conversation",
+    score.points_90 === 3 && score.discipline_level === "Good standing", score);
 
-  await logAt("left_early", 70);            // -> 5.0
+  await logAt("calloff_gt4", 74);           // -> 4.0
   score = await scoreOf(ladderId);
-  check("5 points is a Written warning", score.points_90 === 5 && score.discipline_level === "Written warning", score);
+  check("and 4 points, the coaching line, is still Good standing on the rolling ladder",
+    score.points_90 === 4 && score.discipline_level === "Good standing", score);
+
+  await logAt("late", 73);                  // -> 4.5
+  await logAt("late", 72);                  // -> 5.0
+  score = await scoreOf(ladderId);
+  check("5 points is a Verbal reminder — one point past the coaching line",
+    score.points_90 === 5 && score.discipline_level === "Verbal reminder", score);
+  check("and the caseload is not flagged yet", score.caseload_risk === "OK", score.caseload_risk);
+
+  await logAt("left_early", 70);            // -> 7.0
+  score = await scoreOf(ladderId);
+  check("7 points is a Written warning", score.points_90 === 7 && score.discipline_level === "Written warning", score);
   check("and flags the caseload for review", score.caseload_risk === "Review caseload", score.caseload_risk);
 
-  await logAt("left_early", 65);            // -> 7.0
+  await logAt("left_early", 65);            // -> 9.0
   score = await scoreOf(ladderId);
-  check("7 points is a Final warning or probation", score.discipline_level === "Final warning or probation", score.discipline_level);
+  check("9 points is a Final warning or probation",
+    score.points_90 === 9 && score.discipline_level === "Final warning or probation", score.discipline_level);
 
-  await logAt("left_early", 60);            // -> 9.0
+  await logAt("left_early", 60);            // -> 11.0
   score = await scoreOf(ladderId);
-  check("9 points is a Termination review", score.points_90 === 9 && score.discipline_level === "Termination review", score);
+  check("11 points is a Termination review", score.points_90 === 11 && score.discipline_level === "Termination review", score);
+
+  // ---- A NO-CALL/NO-SHOW CARRIES ITS OWN STEP ------------------------
+  //
+  // It is 5 points, which on this ladder is only the first step, so the
+  // arithmetic alone would call one a verbal reminder. The policy says it is
+  // the serious one, so it floors the standing at a written warning. These
+  // checks are the floor's three edges: it raises, it never lowers, and it
+  // lifts when the occurrence ages out of the window.
+  const ncnsEmp = await owner("/api/hr/employees", { method: "POST", body: {
+    name: "Ncns One " + stamp, email: `ncns.${stamp}@example.invalid`,
+    role_title: "RBT", status: "active", hire_date: daysAgo(300) } });
+  const ncnsId = ncnsEmp.data.id || (ncnsEmp.data.employee && ncnsEmp.data.employee.id);
+  await owner(`/api/attendance/employee/${ncnsId}`, { method: "POST", body: {
+    type_key: "ncns", incident_date: daysAgo(10), notify: false } });
+  score = await scoreOf(ncnsId);
+  check("a single no-call/no-show is 5 points", score.points_90 === 5, score.points_90);
+  check("AND IS A WRITTEN WARNING, not the verbal reminder 5 points alone would give",
+    score.discipline_level === "Written warning", score.discipline_level);
+  check("and the caseload is flagged with it",
+    score.caseload_risk === "Review caseload", score.caseload_risk);
+  check("the roster marks them as needing action",
+    score.discipline_needs_action === true, score.discipline_needs_action);
+
+  // IT RAISES, IT NEVER LOWERS. Enough points for a termination review plus
+  // a no-call/no-show must stay a termination review.
+  for (const d of [9, 8, 7]) {
+    await owner(`/api/attendance/employee/${ncnsId}`, { method: "POST", body: {
+      type_key: "left_early", incident_date: daysAgo(d), notify: false } });
+  }
+  score = await scoreOf(ncnsId);
+  check("with 11 points and a no-call/no-show they are at 11", score.points_90 === 11, score.points_90);
+  check("A FLOOR ONLY EVER RAISES THE STEP — they are not pulled back down"
+    + " to a written warning", score.discipline_level === "Termination review", score.discipline_level);
+
+  // AND IT LIFTS WITH THE WINDOW, like the points do.
+  const oldNcns = await owner("/api/hr/employees", { method: "POST", body: {
+    name: "Ncns Old " + stamp, email: `ncns.old.${stamp}@example.invalid`,
+    role_title: "RBT", status: "active", hire_date: daysAgo(400) } });
+  const oldId = oldNcns.data.id || (oldNcns.data.employee && oldNcns.data.employee.id);
+  await owner(`/api/attendance/employee/${oldId}`, { method: "POST", body: {
+    type_key: "ncns", incident_date: daysAgo(200), notify: false } });
+  score = await scoreOf(oldId);
+  check("a no-call/no-show from 200 days ago counts for no points", score.points_90 === 0, score.points_90);
+  check("AND FLOORS NOTHING — they are in good standing",
+    score.discipline_level === "Good standing", score.discipline_level);
 
   // None of those fall inside 30 days, so the monthly review reads clean.
   check("none of it lands in the 30-day window", score.points_30 === 0, score.points_30);
@@ -149,7 +217,7 @@ const daysAgo = (n) => {
   });
   check("picking up a last-minute shift is worth -1", r.data.points === -1, r.data.points);
   score = await scoreOf(ladderId);
-  check("it comes off the 90-day total", score.points_90 === 8, score.points_90);
+  check("it comes off the 90-day total", score.points_90 === 10, score.points_90);
   check("which drops them back to Final warning", score.discipline_level === "Final warning or probation", score.discipline_level);
 
   // ============ the bonus cycle ============
@@ -199,7 +267,7 @@ const daysAgo = (n) => {
   const roster = Object.fromEntries((r.data.staff || []).map((s) => [s.employee_id, s]));
   check("it covers the staff we created", !!roster[empId] && !!roster[ladderId] && !!roster[cleanId]);
   check("it carries points, level and bonus for each",
-    roster[ladderId].points_90 === 8 && roster[ladderId].discipline_level === "Final warning or probation" && roster[ladderId].bonus_eligible === false,
+    roster[ladderId].points_90 === 10 && roster[ladderId].discipline_level === "Final warning or probation" && roster[ladderId].bonus_eligible === false,
     roster[ladderId]);
   check("the totals count who needs action", typeof r.data.totals.needing_action === "number", r.data.totals);
   check("and who is on track for the bonus", r.data.totals.bonus_eligible >= 1, r.data.totals);
@@ -242,10 +310,73 @@ const daysAgo = (n) => {
   const revId = reviewee.data.id || (reviewee.data.employee && reviewee.data.employee.id);
   await owner(`/api/attendance/employee/${revId}`, { method: "POST", body: { type_key: "left_early", incident_date: daysAgo(5), notify: false } });
   await owner(`/api/attendance/employee/${revId}`, { method: "POST", body: { type_key: "calloff_gt4", incident_date: daysAgo(3), notify: false } });
+  await owner(`/api/attendance/employee/${revId}`, { method: "POST", body: { type_key: "left_early", incident_date: daysAgo(7), notify: false } });
 
   score = await scoreOf(revId);
-  check("the reviewee is at 3.0 for the period", score.points_30 === 3, score.points_30);
+  check("the reviewee is at 5.0 for the period", score.points_30 === 5, score.points_30);
   check("which is an Attendance Improvement Plan", score.review_level === "Attendance Improvement Plan", score.review_level);
+  check("and is marked as needing action", score.review_needs_action === true, score);
+
+  // ---- THE LADDER ITSELF, pinned at every boundary -------------------
+  // The policy moved once; these are what make moving it again a decision
+  // rather than an accident.
+  const bandAt = async (pts) => {
+    const who = await owner("/api/hr/employees", { method: "POST", body: {
+      name: `Band ${pts} ${stamp}`, email: `band.${String(pts).replace(".", "-")}.${stamp}@example.invalid`,
+      role_title: "RBT", status: "active", hire_date: daysAgo(300) } });
+    const id = who.data.id || (who.data.employee && who.data.employee.id);
+    let left = pts;
+    let day = 2;
+    while (left >= 2) {
+      await owner(`/api/attendance/employee/${id}`, { method: "POST", body: {
+        type_key: "left_early", incident_date: daysAgo(day++), notify: false } });
+      left -= 2;
+    }
+    while (left >= 0.5) {
+      await owner(`/api/attendance/employee/${id}`, { method: "POST", body: {
+        type_key: "late", incident_date: daysAgo(day++), notify: false } });
+      left -= 0.5;
+    }
+    const sc = await scoreOf(id);
+    return { points: sc.points_30, level: sc.review_level, needs: sc.review_needs_action };
+  };
+  const b0 = await bandAt(0);
+  check("0 points is Exceeds Expectations", b0.level === "Exceeds Expectations", b0);
+  const b35 = await bandAt(3.5);
+  check("3.5 points is still Meets Expectations", b35.points === 3.5 && b35.level === "Meets Expectations", b35);
+  check("and still a good month", b35.needs === false, b35);
+  const b4 = await bandAt(4);
+  check("4 POINTS IS A COACHING CONVERSATION — the line this policy change moved",
+    b4.points === 4 && b4.level === "Coaching Conversation", b4);
+  check("and is no longer a good month", b4.needs === true, b4);
+  const b5 = await bandAt(5);
+  check("5 points is an Attendance Improvement Plan",
+    b5.points === 5 && b5.level === "Attendance Improvement Plan", b5);
+  const b6 = await bandAt(6);
+  check("6 points is a Leadership Review",
+    b6.points === 6 && b6.level === "Leadership Review", b6);
+
+  // ---- AND THE COUNTS THAT HANG OFF THE LINE -------------------------
+  //
+  // The roster tile and the management summary each used to carry their own
+  // copy of the threshold. Nothing tested either against the policy, so a
+  // stale copy was invisible -- which is how three of them survived a policy
+  // change in the first place. These two checks are what make the single
+  // source actually single.
+  const lineRoster = await owner("/api/attendance/roster");
+  check("the roster reports the coaching line it is counting from",
+    Number(lineRoster.data.totals.coaching_min) === 4, lineRoster.data.totals);
+  const lineStaff = lineRoster.data.staff || [];
+  const needing = lineStaff.filter((x) => Number(x.points_30) >= 4).length;
+  const belowLine = lineStaff.filter(
+    (x) => Number(x.points_30) >= 1.5 && Number(x.points_30) < 4).length;
+  check("there is somebody sitting between the old line and the new one",
+    belowLine >= 1, { belowLine, points: lineStaff.map((x) => x.points_30) });
+  check("THE TILE COUNTS FROM 4, NOT FROM THE OLD 1.5 — otherwise it counts"
+    + " people the policy now calls fine and labels them 'at coaching level'",
+    Number(lineRoster.data.totals.needing_action) === needing,
+    { tile: lineRoster.data.totals.needing_action, from_four: needing,
+      from_one_five: needing + belowLine });
 
   const period = new Date().toISOString().slice(0, 7);
   r = await owner("/api/attendance/monthly-review", { method: "POST", body: { period } });

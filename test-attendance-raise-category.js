@@ -166,14 +166,16 @@ const stamp = Date.now();
   // =========================================================================
   section("The threshold is the policy's, and it is not read twice");
   const f = await staff(`ZzAtt Coaching ${stamp}`, "2024-06-01");
-  // 1.5 points in one month is EXACTLY Coaching Conversation: the first band
-  // the policy does not call acceptable. Three late arrivals at 0.5 each land
+  // 4.0 points in one month is EXACTLY Coaching Conversation: the first band
+  // the policy does not call acceptable. Eight late arrivals at 0.5 each land
   // on that line precisely, which is the point -- a bad month built out of a
   // no-call/no-show would sail past the line and would not notice if the line
-  // moved.
-  await flag(f, "2025-05-05", "late");
-  await flag(f, "2025-05-12", "late");
-  await flag(f, "2025-05-19", "late");           // 1.5 -> Coaching Conversation, exactly
+  // moved. It was three lates against the old 1.5 line, so this fixture moved
+  // with the policy rather than being left as a month that merely looks bad.
+  for (const d of ["2025-05-05", "2025-05-06", "2025-05-07", "2025-05-08",
+                   "2025-05-12", "2025-05-13", "2025-05-14", "2025-05-19"]) {
+    await flag(f, d, "late");
+  }                                              // 4.0 -> Coaching Conversation, exactly
   const g = await staff(`ZzAtt Borderline ${stamp}`, "2024-06-01");
   await flag(g, "2025-05-05", "late");           // 0.5 -> Meets Expectations
   const pf = attendanceOf(await raiseFor(f));
@@ -182,12 +184,12 @@ const stamp = Date.now();
     pf && /11 of 12 month/.test(pf.detail || ""), pf && pf.detail);
   // The roster's own band is a rolling 30-day figure as of today, so it cannot
   // answer a question about May last year. What it can confirm is the points,
-  // and 1.5 is the Coaching Conversation line exactly -- which is what makes
+  // and 4.0 is the Coaching Conversation line exactly -- which is what makes
   // the check above a test of the line rather than of a month miles past it.
   const mayPoints = (await owner(`/api/attendance/employee/${f}`)).data.flags
     .filter((x) => String(x.incident_date || "").slice(0, 7) === "2025-05")
     .reduce((a, x) => a + Number(x.points), 0);
-  check("...and that month sits exactly on the line, not miles past it", mayPoints === 1.5, mayPoints);
+  check("...and that month sits exactly on the line, not miles past it", mayPoints === 4, mayPoints);
   check("a month that stays at Meets Expectations does",
     pg && /12 of 12 month/.test(pg.detail || ""), pg && pg.detail);
 
