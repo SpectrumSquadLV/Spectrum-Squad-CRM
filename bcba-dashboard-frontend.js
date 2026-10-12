@@ -1196,6 +1196,7 @@
       ${other ? `<div class="bd-panel"><div class="bd-warn" style="border-top:0;">You are viewing <strong>${esc(d.bcba.name)}</strong>'s caseload.</div></div>` : ""}
       ${cards(d)}
       ${priorityPanel(d)}
+      <div id="bd-progression" style="display:none;"></div>
       ${taskCenterPanel() || tasksPanel(d)}
       ${schedulePanel()}
       ${caseloadPanel(d)}
@@ -1214,6 +1215,12 @@
     }
     fillSchedule();
     fillNextSessions();
+    // The Clinical Director's Staff Progression widget. It owns its own fetch
+    // and permission: the server answers 403 for anybody who is not clinical
+    // leadership or HR, and the slot stays hidden.
+    if (typeof window.__fillStaffProgression === "function") {
+      try { window.__fillStaffProgression(mountEl.querySelector("#bd-progression")); } catch (e) { /* the widget owns its own errors */ }
+    }
   }
 
   function openClient(id) {
