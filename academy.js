@@ -36,6 +36,7 @@
 
 module.exports = function initAcademy(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, readBody, json } = ctx;
+  const crypto = ctx.crypto || require("crypto");
   const getAppSetting = ctx.getAppSetting || (async () => "");
   const sendEmail = ctx.sendEmail || (async () => ({}));
   const onCompletion = ctx.onCompletion || (() => {});
@@ -181,6 +182,123 @@ module.exports = function initAcademy(ctx) {
       archived BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TEXT
     )`).catch((e) => console.error("academy_items:", e.message));
+
+    // ---- THE CURRICULUM IS VERSIONED, AND THAT IS NOT A NICETY ----------
+    //
+    // The brief requires that the version of the curriculum each employee
+    // completed be preserved. Until now the enrolment recorded a
+    // program_version that NOTHING READ: every screen rebuilt the curriculum
+    // from the current rows, so the moment anybody edited a week, the record
+    // of what people had already finished changed under them. Harmless while
+    // nothing could edit a curriculum -- and curriculum management, below, is
+    // exactly the thing that makes it live.
+    //
+    // So a module and an item each hold the range of programme versions they
+    // belong to: version_from, and version_to which is NULL while current.
+    // Editing a programme somebody is enrolled on does not change a row; it
+    // closes the old one and opens a new one at the next version. Somebody
+    // enrolled at version 1 keeps reading version 1 for ever, including the
+    // week that was rewritten after they finished it.
+    for (const t of ["academy_modules", "academy_items"]) {
+      await dbRun(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS version_from INTEGER NOT NULL DEFAULT 1`).catch(() => {});
+      await dbRun(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS version_to INTEGER`).catch(() => {});
+    }
+    // Anything archived before versioning existed is closed off at the
+    // current version rather than left looking live at version 1.
+    await dbRun(
+      `UPDATE academy_modules m SET version_to = p.version
+         FROM academy_programs p
+        WHERE p.id = m.program_id AND m.archived = TRUE AND m.version_to IS NULL`).catch(() => {});
+    await dbRun(
+      `UPDATE academy_items i SET version_to = p.version
+         FROM academy_modules m JOIN academy_programs p ON p.id = m.program_id
+        WHERE m.id = i.module_id AND i.archived = TRUE AND i.version_to IS NULL`).catch(() => {});
+
+    // ---- THE TRAINING LIBRARY -------------------------------------------
+    //
+    // What somebody reads or watches for a week, hanging off the module or
+    // off one item. Deliberately NOT versioned itself: a resource belongs to
+    // a module row or an item row, and those are already version-scoped, so
+    // a fork copies the attachments across with everything else and an old
+    // enrolment keeps the links it was given.
+    //
+    // A DOCUMENT IS A POINTER, NOT A COPY. The CRM already has a policy and
+    // SOP library with its own versions, amendments and acknowledgments;
+    // pasting an SOP's text into a training week would create a second copy
+    // that stops matching the first the day it is amended. So a document
+    // resource holds a policy_id and the library stays the one source.
+    //
+    // A VIDEO IS AN EMBEDDED LINK. The CRM's upload path is base64 inside a
+    // JSON body capped at 15MB, and a ten-minute training video is several
+    // times that, so hosting them here would fail at the worst moment. Loom,
+    // YouTube and Vimeo already solve it.
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_resources (
+      id SERIAL PRIMARY KEY,
+      module_id INTEGER,
+      item_id INTEGER,
+      kind TEXT NOT NULL DEFAULT 'link',
+      title TEXT NOT NULL,
+      url TEXT,
+      policy_id INTEGER,
+      body TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT,
+      created_at TEXT
+    )`).catch((e) => console.error("academy_resources:", e.message));
+    await dbRun("CREATE INDEX IF NOT EXISTS academy_res_module ON academy_resources (module_id)").catch(() => {});
+    await dbRun("CREATE INDEX IF NOT EXISTS academy_res_item ON academy_resources (item_id)").catch(() => {});
+
+    // ---- TRAINING HOURS, KEPT AWAY FROM BILLABLE ------------------------
+    //
+    // The brief: track training hours separately from clinical billable
+    // hours. Separately is the whole requirement, so these live in their own
+    // table that nothing in billing, the timecard or the Rethink sync reads
+    // or writes. A training hour cannot become a billable hour by accident
+    // because there is no path between them -- not a flag on a shared row
+    // that one wrong query would pick up.
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_hours (
+      id SERIAL PRIMARY KEY,
+      enrollment_id INTEGER NOT NULL,
+      item_id INTEGER,
+      on_date TEXT NOT NULL,
+      hours NUMERIC NOT NULL,
+      activity TEXT,
+      note TEXT,
+      logged_by TEXT,
+      created_at TEXT
+    )`).catch((e) => console.error("academy_hours:", e.message));
+    await dbRun("CREATE INDEX IF NOT EXISTS academy_hours_enr ON academy_hours (enrollment_id)").catch(() => {});
+
+    // ---- THE ANONYMOUS FEEDBACK SURVEY ----------------------------------
+    //
+    // ANONYMITY HERE IS STRUCTURAL, NOT A PROMISE. A response row carries no
+    // employee id, no enrolment id and no name -- there is no column to join
+    // on, so no future query and no new screen can un-anonymise it, and
+    // neither can I. The alternative, a flag saying "treat this as
+    // anonymous", is a promise one careless JOIN later breaks.
+    //
+    // Whether somebody HAS responded is tracked separately, because
+    // leadership needs a response rate and needs to stop asking people who
+    // have already answered. That table holds an enrolment id and a date and
+    // nothing about the answers, so the two cannot be rejoined.
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_survey_responses (
+      id SERIAL PRIMARY KEY,
+      program_id INTEGER NOT NULL,
+      program_version INTEGER,
+      prepared INTEGER,
+      mentor_time INTEGER,
+      set_up_to_do_job INTEGER,
+      missing TEXT,
+      change_what TEXT,
+      submitted_at TEXT NOT NULL
+    )`).catch((e) => console.error("academy_survey_responses:", e.message));
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_survey_done (
+      id SERIAL PRIMARY KEY,
+      enrollment_id INTEGER NOT NULL,
+      submitted_at TEXT NOT NULL
+    )`).catch((e) => console.error("academy_survey_done:", e.message));
+    await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS academy_survey_once
+                 ON academy_survey_done (enrollment_id)`).catch(() => {});
 
     // ONE ENROLMENT PER PERSON PER PROGRAMME, enforced at the table rather
     // than checked in code: the auto-assignment runs on a schedule and on
@@ -694,20 +812,146 @@ module.exports = function initAcademy(ctx) {
   }
 
   // ---- progress -----------------------------------------------------------
-  async function itemsFor(programId) {
+  // The curriculum AS OF A VERSION. Pass no version and you get the current
+  // one, which is what the editing screens want; pass an enrolment's version
+  // and you get the curriculum that person actually signed up to.
+  async function itemsFor(programId, version = null) {
+    if (version == null) {
+      const p = await dbGet("SELECT version FROM academy_programs WHERE id = ?", [programId]).catch(() => null);
+      version = p ? Number(p.version) : 1;
+    }
+    const v = Number(version) || 1;
     return await dbAll(
       `SELECT i.*, m.week, m.title AS module_title, m.position AS module_position
          FROM academy_items i JOIN academy_modules m ON m.id = i.module_id
-        WHERE m.program_id = ? AND i.archived = FALSE AND m.archived = FALSE
+        WHERE m.program_id = ?
+          AND m.version_from <= ? AND (m.version_to IS NULL OR m.version_to > ?)
+          AND i.version_from <= ? AND (i.version_to IS NULL OR i.version_to > ?)
         ORDER BY m.week, m.position, i.position, i.id`,
-      [programId]
+      [programId, v, v, v, v]
     ).catch(() => []);
   }
 
+  const RESOURCE_KINDS = ["document", "video", "link", "note"];
+  const SURVEY_SCALES = ["prepared", "mentor_time", "set_up_to_do_job"];
+  const SURVEY_QUESTIONS = [
+    ["prepared", "How prepared did you feel to do the job at the end of onboarding?"],
+    ["mentor_time", "Did you get enough time with your mentor?"],
+    ["set_up_to_do_job", "Did the programme set you up to carry a caseload?"],
+    ["missing", "What was missing from the training?"],
+    ["change_what", "What would you change about it?"],
+  ];
+  // NOBODY SEES A SINGLE RESPONSE. With one answer in, "the anonymous
+  // feedback" and "what the person who just finished thinks" are the same
+  // sentence, and everybody knows it. Three is the smallest number that is
+  // not a name.
+  const SURVEY_MIN = 3;
+  // Order is an identifier too: comments served newest-first line up with
+  // the marker table's submission order, which is the one join this design
+  // exists to prevent.
+  const median = (nums) => {
+    const v = nums.slice().sort((a, b) => a - b);
+    if (!v.length) return null;
+    const mid = Math.floor(v.length / 2);
+    return v.length % 2 ? v[mid] : Math.round((v[mid - 1] + v[mid]) / 2);
+  };
+
+  // A name with a comma in it, or a note somebody pasted a quote into, must
+  // not shift every later column by one.
+  const csvCell = (v) => {
+    const t = String(v == null ? "" : v);
+    return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const shuffle = (a) => {
+    const out = a.slice();
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = crypto.randomInt(i + 1);
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  };
+  // Only http and https. A resource's url goes into an href, and
+  // "javascript:..." in that position is a script somebody else wrote
+  // running on the reader's session.
+  const safeUrl = (v) => {
+    const u = clean(v);
+    if (!u) return null;
+    return /^https?:\/\/[^\s]+$/i.test(u) ? u : false;
+  };
+
+  async function resourcesFor(moduleIds, itemIds) {
+    const mods = (moduleIds || []).map(Number).filter(Boolean);
+    const items = (itemIds || []).map(Number).filter(Boolean);
+    if (!mods.length && !items.length) return [];
+    const parts = [], vals = [];
+    if (mods.length) { parts.push(`module_id IN (${mods.map(() => "?").join(",")})`); vals.push(...mods); }
+    if (items.length) { parts.push(`item_id IN (${items.map(() => "?").join(",")})`); vals.push(...items); }
+    const rows = await dbAll(
+      `SELECT r.*, p.title AS policy_title, p.slug AS policy_slug
+         FROM academy_resources r
+         LEFT JOIN crm_policies p ON p.id = r.policy_id
+        WHERE ${parts.join(" OR ")}
+        ORDER BY r.position, r.id`, vals).catch(() => []);
+    return rows.map((r) => ({
+      ...r,
+      // A document resource reads its title from the policy library when it
+      // has one, so renaming an SOP does not leave a stale name in a week.
+      title: r.policy_id && r.policy_title ? r.policy_title : r.title,
+      href: r.policy_id ? `/policies#p-${r.policy_slug || r.policy_id}` : r.url,
+    }));
+  }
+
+  // Copying attachments when a module or item forks. Without this a forked
+  // week keeps its checklist and silently loses everything to read.
+  async function copyResources({ fromModule, toModule, fromItem, toItem, actor }) {
+    const where = fromModule ? "module_id = ? AND item_id IS NULL" : "item_id = ?";
+    const arg = fromModule || fromItem;
+    const rows = await dbAll(`SELECT * FROM academy_resources WHERE ${where}`, [arg]).catch(() => []);
+    for (const r of rows) {
+      await dbRun(
+        `INSERT INTO academy_resources (module_id, item_id, kind, title, url, policy_id, body, position, created_by, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [toModule || null, toItem || null, r.kind, r.title, r.url, r.policy_id, r.body, r.position,
+         actor || r.created_by, nowISO()]);
+    }
+    return rows.length;
+  }
+
+  async function modulesFor(programId, version = null) {
+    if (version == null) {
+      const p = await dbGet("SELECT version FROM academy_programs WHERE id = ?", [programId]).catch(() => null);
+      version = p ? Number(p.version) : 1;
+    }
+    const v = Number(version) || 1;
+    return await dbAll(
+      `SELECT * FROM academy_modules
+        WHERE program_id = ? AND version_from <= ? AND (version_to IS NULL OR version_to > ?)
+        ORDER BY week, position`, [programId, v, v]).catch(() => []);
+  }
+
   async function progressFor(enrollment) {
-    const items = await itemsFor(enrollment.program_id);
+    // THE ENROLMENT'S OWN VERSION, not the latest. This is the line that
+    // makes "preserve the version each employee completed" true.
+    const items = await itemsFor(enrollment.program_id, enrollment.program_version);
     const rows = await dbAll("SELECT * FROM academy_progress WHERE enrollment_id = ?", [enrollment.id]).catch(() => []);
     const byItem = new Map(rows.map((r) => [Number(r.item_id), r]));
+    // What to read and watch, beside the thing to do. A checklist item with
+    // no material attached is an instruction to go and find out somehow,
+    // which is the gap the whole academy exists to close.
+    const resources = await resourcesFor(
+      [...new Set(items.map((i) => Number(i.module_id)))],
+      items.map((i) => Number(i.id)));
+    const resByItem = new Map();
+    const resByModule = new Map();
+    for (const r of resources) {
+      if (r.item_id) {
+        if (!resByItem.has(Number(r.item_id))) resByItem.set(Number(r.item_id), []);
+        resByItem.get(Number(r.item_id)).push(r);
+      } else if (r.module_id) {
+        if (!resByModule.has(Number(r.module_id))) resByModule.set(Number(r.module_id), []);
+        resByModule.get(Number(r.module_id)).push(r);
+      }
+    }
     const merged = items.map((i) => {
       const p = byItem.get(Number(i.id));
       return {
@@ -719,6 +963,7 @@ module.exports = function initAcademy(ctx) {
         verified_by: (p && p.verified_by) || null,
         verified_at: (p && p.verified_at) || null,
         reviewer_note: (p && p.reviewer_note) || null,
+        resources: resByItem.get(Number(i.id)) || [],
       };
     });
     const required = merged.filter((m) => m.required);
@@ -728,9 +973,11 @@ module.exports = function initAcademy(ctx) {
       const inWeek = merged.filter((m) => Number(m.week) === w);
       if (!inWeek.length) continue;
       const req = inWeek.filter((m) => m.required);
+      const modIds = [...new Set(inWeek.map((m) => Number(m.module_id)))];
       weeks.push({
         week: w,
         title: (inWeek[0] && inWeek[0].module_title) || `Week ${w}`,
+        resources: modIds.flatMap((id) => resByModule.get(id) || []),
         total: req.length,
         completed: req.filter((m) => m.status === "completed").length,
         awaiting_review: inWeek.filter((m) => m.status === "awaiting_review").length,
@@ -1650,19 +1897,810 @@ module.exports = function initAcademy(ctx) {
       return true;
     }
 
+    // ---- REPORTS ---------------------------------------------------------
+    //
+    // What leadership needs to run the programme rather than admire it: who
+    // is behind, how long it actually takes, which competencies get sent
+    // back, which topics people keep saying they were never taught, and how
+    // much time the training is costing.
+    //
+    // TRAINING HOURS APPEAR HERE AND NOWHERE NEAR A PAY FIGURE. They are
+    // read from academy_hours, which no billing or timecard code touches.
+    if (pathname === "/api/academy/reports" && method === "GET") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can read the reports." }); return true; }
+      const progKey = clean(query && query.program) || "bcba-30day";
+      const prog = await dbGet("SELECT * FROM academy_programs WHERE key = ?", [progKey]).catch(() => null);
+      if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
+
+      const enrs = await dbAll(
+        `SELECT a.*, e.name, e.role_title, m.name AS mentor_name
+           FROM academy_enrollments a
+           JOIN hr_employees e ON e.id = a.employee_id
+           LEFT JOIN hr_employees m ON m.id = a.mentor_id
+          WHERE a.program_id = ? ORDER BY a.start_date DESC`, [prog.id]).catch(() => []);
+
+      const people = [];
+      const completedDays = [];
+      for (const a of enrs) {
+        const pr = await progressFor(a);
+        const rv = await reviewFor(a.id);
+        const h = await dbGet("SELECT COALESCE(SUM(hours),0)::float AS t FROM academy_hours WHERE enrollment_id = ?",
+                              [a.id]).catch(() => null);
+        if (a.state === "completed" && a.completed_at) {
+          const d = Math.round((new Date(a.completed_at) - new Date(a.start_date)) / 86400000);
+          if (d >= 0) completedDays.push(d);
+        }
+        people.push({
+          enrollment_id: a.id, name: a.name, role_title: a.role_title, mentor_name: a.mentor_name || null,
+          state: a.state, start_date: a.start_date, due_date: a.due_date, completed_at: a.completed_at,
+          curriculum_version: Number(a.program_version),
+          percent: pr.percent, day: pr.day,
+          awaiting_review: pr.awaiting_review, needs_training: pr.needs_training,
+          // OVERDUE IS THE ONE FIGURE THIS REPORT IS FOR: somebody past
+          // their date with nobody having noticed.
+          overdue: a.state === "active" && !!a.due_date && a.due_date < today(),
+          review_state: rv ? rv.state : null,
+          open_plans: rv ? rv.open_plans : 0,
+          training_hours: h ? Math.round(Number(h.t) * 10) / 10 : 0,
+        });
+      }
+
+      // Competencies: how often one is sent back before it is signed off.
+      // A competency nobody ever fails is not being assessed.
+      const comp = await dbGet(
+        `SELECT
+           COUNT(*) FILTER (WHERE p.status = 'completed')::int AS signed_off,
+           COUNT(*) FILTER (WHERE p.status = 'needs_training')::int AS sent_back,
+           COUNT(*) FILTER (WHERE p.status = 'awaiting_review')::int AS waiting
+         FROM academy_progress p
+         JOIN academy_items i ON i.id = p.item_id
+         JOIN academy_enrollments a ON a.id = p.enrollment_id
+        WHERE a.program_id = ? AND i.kind = 'competency'`, [prog.id]).catch(() => null);
+
+      // The topics people say they were never taught. Recurring ones are a
+      // gap in the programme rather than in a person, which is the reason
+      // gaps are a table and not a flag.
+      const gaps = await dbAll(
+        `SELECT LOWER(TRIM(g.topic)) AS topic, COUNT(*)::int AS n,
+                COUNT(*) FILTER (WHERE g.status <> 'resolved')::int AS open
+           FROM academy_gaps g JOIN academy_enrollments a ON a.id = g.enrollment_id
+          WHERE a.program_id = ?
+          GROUP BY LOWER(TRIM(g.topic)) ORDER BY n DESC, topic LIMIT 25`, [prog.id]).catch(() => []);
+
+      const plans = await dbAll(
+        `SELECT d.*, e.name FROM academy_dev_plans d
+           JOIN academy_enrollments a ON a.id = d.enrollment_id
+           JOIN hr_employees e ON e.id = a.employee_id
+          WHERE a.program_id = ? AND d.state = 'open' ORDER BY d.due_date`, [prog.id]).catch(() => []);
+
+      const hoursTotal = people.reduce((t, p) => t + Number(p.training_hours || 0), 0);
+      json(res, 200, {
+        program: { id: prog.id, key: prog.key, name: prog.name, version: Number(prog.version),
+                   weeks: Number(prog.weeks), duration_days: Number(prog.duration_days) },
+        counts: {
+          total: enrs.length,
+          active: enrs.filter((a) => a.state === "active").length,
+          completed: enrs.filter((a) => a.state === "completed").length,
+          paused: enrs.filter((a) => a.state === "paused").length,
+          overdue: people.filter((p) => p.overdue).length,
+          review_due: people.filter((p) => p.state === "active" && p.day >= Number(prog.duration_days)
+                                            && p.review_state !== "approved" && p.review_state !== "development_plan").length,
+        },
+        // A MEDIAN, over FINISHED onboardings only.
+        //
+        // A median because with four completions and one person who took
+        // ninety days a mean describes a programme nobody experienced. And
+        // finished-only because counting people still going reports a figure
+        // that falls as the programme gets slower, which is backwards.
+        median_days_to_complete: median(completedDays),
+        completed_counted: completedDays.length,
+        competencies: comp || { signed_off: 0, sent_back: 0, waiting: 0 },
+        training_hours: {
+          total: Math.round(hoursTotal * 10) / 10,
+          per_person: people.length ? Math.round((hoursTotal / people.length) * 10) / 10 : 0,
+          note: "Training hours. Not billable, not sent to payroll, not part of any Rethink figure.",
+        },
+        recurring_gaps: gaps,
+        open_plans: plans.map((d) => ({
+          id: d.id, name: d.name, domain: d.domain, action: d.action,
+          due_date: d.due_date, reassess_on: d.reassess_on,
+          overdue: d.due_date < today(),
+        })),
+        people,
+      });
+      return true;
+    }
+
+    if (pathname === "/api/academy/reports.csv" && method === "GET") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can export the reports." }); return true; }
+      const progKey = clean(query && query.program) || "bcba-30day";
+      const prog = await dbGet("SELECT * FROM academy_programs WHERE key = ?", [progKey]).catch(() => null);
+      if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
+      const enrs = await dbAll(
+        `SELECT a.*, e.name, e.role_title, m.name AS mentor_name
+           FROM academy_enrollments a
+           JOIN hr_employees e ON e.id = a.employee_id
+           LEFT JOIN hr_employees m ON m.id = a.mentor_id
+          WHERE a.program_id = ? ORDER BY e.name`, [prog.id]).catch(() => []);
+      const head = ["Name", "Role", "Mentor", "State", "Start", "Due", "Completed",
+                    "Curriculum version", "Percent", "Day", "Awaiting review", "Needs training",
+                    "Overdue", "Review", "Open plans", "Training hours"];
+      const lines = [head.join(",")];
+      for (const a of enrs) {
+        const pr = await progressFor(a);
+        const rv = await reviewFor(a.id);
+        const h = await dbGet("SELECT COALESCE(SUM(hours),0)::float AS t FROM academy_hours WHERE enrollment_id = ?",
+                              [a.id]).catch(() => null);
+        lines.push([
+          a.name, a.role_title || "", a.mentor_name || "", a.state, a.start_date, a.due_date || "",
+          a.completed_at || "", a.program_version, pr.percent, pr.day, pr.awaiting_review, pr.needs_training,
+          a.state === "active" && a.due_date && a.due_date < today() ? "yes" : "",
+          rv ? rv.state : "", rv ? rv.open_plans : 0,
+          h ? Math.round(Number(h.t) * 10) / 10 : 0,
+        ].map(csvCell).join(","));
+      }
+      const body = lines.join("\r\n") + "\r\n";
+      res.writeHead(200, {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="academy-${prog.key}-${today()}.csv"`,
+        "Content-Length": Buffer.byteLength(body),
+      });
+      res.end(body);
+      return true;
+    }
+
+    // ---- THE ANONYMOUS SURVEY --------------------------------------------
+    if (pathname === "/api/academy/survey" && method === "GET") {
+      const mine = me ? await dbGet(
+        `SELECT a.* FROM academy_enrollments a WHERE a.employee_id = ? ORDER BY a.id DESC LIMIT 1`,
+        [me.id]).catch(() => null) : null;
+      const done = mine ? await dbGet("SELECT * FROM academy_survey_done WHERE enrollment_id = ?",
+                                      [mine.id]).catch(() => null) : null;
+      json(res, 200, {
+        questions: SURVEY_QUESTIONS.map(([key, text]) => ({ key, text, scale: SURVEY_SCALES.includes(key) })),
+        can_submit: !!mine && !done,
+        already: !!done,
+        // SAID PLAINLY, BECAUSE THE ONE THING THAT MUST NOT HAPPEN IS
+        // SOMEBODY TRUSTING THIS MORE THAN IT DESERVES. The answers carry no
+        // identifier. What free text gives away is not something the CRM can
+        // take back, so the form says so rather than implying otherwise.
+        promise: "Your answers are stored with no link to your name, your account or your onboarding record — "
+               + "not hidden, absent. Nobody can look up who said what, including the person who built this. "
+               + "What you write in your own words could still identify you, so write it the way you would say it "
+               + "in a room where you did not mind being recognised.",
+        threshold: SURVEY_MIN,
+      });
+      return true;
+    }
+
+    if (pathname === "/api/academy/survey" && method === "POST") {
+      if (!me) { json(res, 403, { error: "This login is not linked to a staff record." }); return true; }
+      const enr = await dbGet(
+        "SELECT * FROM academy_enrollments WHERE employee_id = ? ORDER BY id DESC LIMIT 1",
+        [me.id]).catch(() => null);
+      if (!enr) { json(res, 400, { error: "You are not enrolled in an onboarding programme." }); return true; }
+      const done = await dbGet("SELECT * FROM academy_survey_done WHERE enrollment_id = ?", [enr.id]).catch(() => null);
+      if (done) { json(res, 400, { error: "You have already given feedback on this programme." }); return true; }
+
+      const b = await readBody(req).catch(() => ({}));
+      const scales = {};
+      for (const k of SURVEY_SCALES) {
+        const v = Number(b[k]);
+        if (!Number.isInteger(v) || v < 1 || v > 5) {
+          json(res, 400, { error: "Answer each of the three ratings, 1 to 5." }); return true;
+        }
+        scales[k] = v;
+      }
+
+      // TWO WRITES THAT MUST NOT BE JOINABLE, and the order matters: the
+      // marker goes first, so a crash between them loses a response rather
+      // than letting somebody submit twice. Losing one anonymous answer is
+      // the cheaper failure.
+      const marker = await dbGet(
+        `INSERT INTO academy_survey_done (enrollment_id, submitted_at) VALUES (?, ?)
+         ON CONFLICT (enrollment_id) DO NOTHING RETURNING id`, [enr.id, nowISO()]).catch(() => null);
+      if (!marker) { json(res, 400, { error: "You have already given feedback on this programme." }); return true; }
+
+      await dbRun(
+        `INSERT INTO academy_survey_responses
+           (program_id, program_version, prepared, mentor_time, set_up_to_do_job, missing, change_what, submitted_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [enr.program_id, enr.program_version, scales.prepared, scales.mentor_time, scales.set_up_to_do_job,
+         clean(b.missing) || null, clean(b.change_what) || null,
+         // DATE ONLY, not a timestamp. A response filed at 14:52:07 and a
+         // marker written at 14:52:07 are the same person to anybody with
+         // both tables, which would undo the whole design.
+         today()]);
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    if (pathname === "/api/academy/survey/results" && method === "GET") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can read the feedback." }); return true; }
+      const progKey = clean(query && query.program) || "bcba-30day";
+      const prog = await dbGet("SELECT * FROM academy_programs WHERE key = ?", [progKey]).catch(() => null);
+      if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
+      const rows = await dbAll(
+        "SELECT * FROM academy_survey_responses WHERE program_id = ? ORDER BY submitted_at DESC",
+        [prog.id]).catch(() => []);
+      const asked = await dbGet(
+        `SELECT COUNT(*)::int AS n FROM academy_enrollments WHERE program_id = ? AND state = 'completed'`,
+        [prog.id]).catch(() => null);
+
+      if (rows.length < SURVEY_MIN) {
+        // The count is safe to show; the answers are not. Saying how many
+        // more are needed is the difference between a withheld report and a
+        // broken one.
+        json(res, 200, {
+          responses: rows.length, withheld: true, threshold: SURVEY_MIN,
+          completed_onboardings: asked ? Number(asked.n) : 0,
+          reason: `Feedback stays sealed until ${SURVEY_MIN} people have answered. With fewer than that, `
+                + "everybody can work out whose answers they are reading.",
+        });
+        return true;
+      }
+      const avg = (k) => {
+        const v = rows.map((r) => Number(r[k])).filter((n) => n >= 1);
+        return v.length ? Math.round((v.reduce((a, x) => a + x, 0) / v.length) * 10) / 10 : null;
+      };
+      json(res, 200, {
+        responses: rows.length,
+        withheld: false,
+        completed_onboardings: asked ? Number(asked.n) : 0,
+        averages: { prepared: avg("prepared"), mentor_time: avg("mentor_time"),
+                    set_up_to_do_job: avg("set_up_to_do_job") },
+        // Free text in submission order would pair with the marker table's
+        // order. Shuffled, and dates only, so reading order says nothing.
+        comments: shuffle(rows.flatMap((r) => [
+          r.missing ? { q: "What was missing", text: r.missing } : null,
+          r.change_what ? { q: "What to change", text: r.change_what } : null,
+        ]).filter(Boolean)),
+      });
+      return true;
+    }
+
     // ---- the curriculum, for anybody who can see the hub -----------------
     if (pathname === "/api/academy/curriculum" && method === "GET") {
       const prog = await dbGet("SELECT * FROM academy_programs WHERE key = ?",
                                [clean(query && query.program) || "bcba-30day"]).catch(() => null);
       if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
-      const mods = await dbAll(
-        "SELECT * FROM academy_modules WHERE program_id = ? AND archived = FALSE ORDER BY week, position",
-        [prog.id]).catch(() => []);
-      const items = await itemsFor(prog.id);
+      // AT A VERSION. Somebody enrolled on version 1 reading the curriculum
+      // page must see version 1, or the page and their own checklist would
+      // disagree about what the programme contains.
+      let ver = null;
+      if (query && query.version) ver = Number(query.version) || null;
+      if (ver == null && me) {
+        const mine = await dbGet(
+          "SELECT program_version FROM academy_enrollments WHERE employee_id = ? AND program_id = ?",
+          [me.id, prog.id]).catch(() => null);
+        if (mine) ver = Number(mine.program_version);
+      }
+      const mods = await modulesFor(prog.id, ver);
+      const items = await itemsFor(prog.id, ver);
+      // WITH THEIR MATERIAL. Without this the curriculum page and the
+      // editing screen both show a week's checklist and none of the things
+      // attached to it, which looks exactly like nothing was attached.
+      const resources = await resourcesFor(mods.map((m) => m.id), items.map((i) => i.id));
+      const forItem = (id) => resources.filter((r) => Number(r.item_id) === Number(id));
+      const forModule = (id) => resources.filter((r) => !r.item_id && Number(r.module_id) === Number(id));
       json(res, 200, {
         program: prog,
-        modules: mods.map((m) => ({ ...m, items: items.filter((i) => Number(i.module_id) === Number(m.id)) })),
+        version: ver == null ? Number(prog.version) : ver,
+        modules: mods.map((m) => ({
+          ...m,
+          resources: forModule(m.id),
+          items: items.filter((i) => Number(i.module_id) === Number(m.id))
+                      .map((i) => ({ ...i, resources: forItem(i.id) })),
+        })),
       });
+      return true;
+    }
+
+    // =====================================================================
+    // CURRICULUM MANAGEMENT
+    //
+    // The brief's last requirement: the framework has to serve RBT
+    // onboarding and Squad Leader development later without disturbing the
+    // BCBA Hub. That is why a programme is rows rather than code -- and why
+    // leadership can create a second programme here rather than waiting for
+    // somebody to write one.
+    //
+    // THE RULE THAT MAKES VERSIONING REAL: editing a programme nobody is
+    // enrolled on edits the rows. Editing one somebody IS enrolled on forks
+    // it to the next version, leaving every existing enrolment reading
+    // exactly what it read yesterday. Nobody's finished week is rewritten
+    // under them, which is the brief's requirement, and the cost is one
+    // extra row per edit.
+    // =====================================================================
+    async function programInUse(programId) {
+      const r = await dbGet("SELECT COUNT(*)::int AS n FROM academy_enrollments WHERE program_id = ?",
+                            [programId]).catch(() => null);
+      return !!(r && Number(r.n) > 0);
+    }
+
+    // Returns the version to write new rows at, bumping the programme when
+    // it is in use. Called once per edit.
+    async function versionForEdit(prog) {
+      if (!(await programInUse(prog.id))) return { version: Number(prog.version), forked: false };
+      const next = Number(prog.version) + 1;
+      await dbRun("UPDATE academy_programs SET version = ?, updated_at = ? WHERE id = ?",
+                  [next, nowISO(), prog.id]);
+      return { version: next, forked: true };
+    }
+
+    const progOf = async (moduleId) => await dbGet(
+      `SELECT p.* FROM academy_programs p JOIN academy_modules m ON m.program_id = p.id WHERE m.id = ?`,
+      [moduleId]).catch(() => null);
+
+    // RUN THE AUTO-ENROLMENT NOW. The sweep runs on boot and on a schedule,
+    // which is right for the ordinary case and no use at all when somebody
+    // has just fixed a missing hire date and wants that BCBA's thirty days
+    // to start today. Leadership only, and it enrols nobody the scheduled
+    // sweep would not have enrolled anyway.
+    if (pathname === "/api/academy/sweep" && method === "POST") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can run the enrolment sweep." }); return true; }
+      const enrolled = await autoEnrolSweep(actor);
+      json(res, 200, { ok: true, enrolled, count: enrolled.length });
+      return true;
+    }
+
+    if (pathname === "/api/academy/programs" && method === "GET") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can manage the curriculum." }); return true; }
+      const rows = await dbAll("SELECT * FROM academy_programs ORDER BY active DESC, name").catch(() => []);
+      const out = [];
+      for (const r of rows) {
+        const c = await dbGet(
+          "SELECT COUNT(*)::int AS n FROM academy_enrollments WHERE program_id = ?", [r.id]).catch(() => null);
+        const mods = await modulesFor(r.id);
+        const items = await itemsFor(r.id);
+        out.push({ ...r, enrolled: c ? Number(c.n) : 0, modules: mods.length, items: items.length });
+      }
+      json(res, 200, { programs: out });
+      return true;
+    }
+
+    if (pathname === "/api/academy/programs" && method === "POST") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can create a programme." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const name = clean(b.name);
+      if (!name) { json(res, 400, { error: "Give the programme a name." }); return true; }
+      const key = clean(b.key) || name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      if (!key) { json(res, 400, { error: "That name does not make a usable key." }); return true; }
+      const exists = await dbGet("SELECT id FROM academy_programs WHERE key = ?", [key]).catch(() => null);
+      if (exists) { json(res, 400, { error: "A programme with that key already exists." }); return true; }
+      const weeks = Math.max(1, Math.min(52, num(b.weeks) || 4));
+      const days = Math.max(1, Math.min(730, num(b.duration_days) || weeks * 7));
+      // ROLE TARGET IS WHAT AUTO-ENROLS, and it is opt-in. The sweep takes
+      // programmes that are active AND carry a role_target, so a new
+      // programme is usable immediately -- leadership can enrol a pilot
+      // cohort by hand -- while nobody is swept onto a half-written
+      // curriculum because it was saved.
+      //
+      // `active` is NOT that switch: it means the programme exists at all,
+      // and enrolling anybody onto an inactive one is refused. Defaulting it
+      // to false, as the first version of this did, made a new programme
+      // impossible to enrol onto and looked like the programme had not saved.
+      const row = await dbGet(
+        `INSERT INTO academy_programs (key, name, role_target, weeks, duration_days, weekly_hours_target,
+           version, active, created_at, updated_at)
+         VALUES (?,?,?,?,?,?, 1, ?, ?, ?) RETURNING *`,
+        [key, name, clean(b.role_target) || null, weeks, days, num(b.weekly_hours_target) || 5,
+         b.active !== false, nowISO(), nowISO()]).catch(() => null);
+      if (!row) { json(res, 500, { error: "The programme could not be created." }); return true; }
+      json(res, 200, { ok: true, program: row });
+      return true;
+    }
+
+    const progOne = pathname.match(/^\/api\/academy\/programs\/(\d+)$/);
+    if (progOne && method === "PATCH") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can change a programme." }); return true; }
+      const prog = await dbGet("SELECT * FROM academy_programs WHERE id = ?", [Number(progOne[1])]).catch(() => null);
+      if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const sets = [], vals = [];
+      if (b.name !== undefined) {
+        if (!clean(b.name)) { json(res, 400, { error: "A programme needs a name." }); return true; }
+        sets.push("name = ?"); vals.push(clean(b.name));
+      }
+      if (b.role_target !== undefined) { sets.push("role_target = ?"); vals.push(clean(b.role_target) || null); }
+      if (b.weeks !== undefined) { sets.push("weeks = ?"); vals.push(Math.max(1, Math.min(52, num(b.weeks) || 4))); }
+      if (b.duration_days !== undefined) {
+        sets.push("duration_days = ?"); vals.push(Math.max(1, Math.min(730, num(b.duration_days) || 30)));
+      }
+      if (b.weekly_hours_target !== undefined) {
+        sets.push("weekly_hours_target = ?"); vals.push(num(b.weekly_hours_target) || 0);
+      }
+      if (b.active !== undefined) { sets.push("active = ?"); vals.push(b.active === true); }
+      if (!sets.length) { json(res, 400, { error: "Nothing to change." }); return true; }
+      sets.push("updated_at = ?"); vals.push(nowISO());
+      vals.push(prog.id);
+      await dbRun(`UPDATE academy_programs SET ${sets.join(", ")} WHERE id = ?`, vals);
+      json(res, 200, { ok: true, program: await dbGet("SELECT * FROM academy_programs WHERE id = ?", [prog.id]) });
+      return true;
+    }
+
+    const progMods = pathname.match(/^\/api\/academy\/programs\/(\d+)\/modules$/);
+    if (progMods && method === "POST") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      const prog = await dbGet("SELECT * FROM academy_programs WHERE id = ?", [Number(progMods[1])]).catch(() => null);
+      if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      if (!clean(b.title)) { json(res, 400, { error: "Give the week a title." }); return true; }
+      const week = num(b.week);
+      if (!week || week < 1 || week > Number(prog.weeks)) {
+        json(res, 400, { error: `Week must be between 1 and ${prog.weeks}.` }); return true;
+      }
+      // ADDING is not editing: nothing existing changes, so an addition does
+      // not fork the programme. It appears for new enrolments only, because
+      // existing ones stay on their own version.
+      const { version } = await versionForEdit(prog);
+      const row = await dbGet(
+        `INSERT INTO academy_modules (program_id, week, position, title, focus, body, video_url,
+           archived, version_from, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?, FALSE, ?, ?, ?) RETURNING *`,
+        [prog.id, week, num(b.position) || 0, clean(b.title), clean(b.focus) || null,
+         clean(b.body) || null, clean(b.video_url) || null, version, nowISO(), nowISO()]).catch(() => null);
+      if (!row) { json(res, 500, { error: "The week could not be added." }); return true; }
+      json(res, 200, { ok: true, module: row, version });
+      return true;
+    }
+
+    const modOne = pathname.match(/^\/api\/academy\/modules\/(\d+)$/);
+    if (modOne && (method === "PATCH" || method === "DELETE")) {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      const mod = await dbGet("SELECT * FROM academy_modules WHERE id = ?", [Number(modOne[1])]).catch(() => null);
+      if (!mod) { json(res, 404, { error: "No such week." }); return true; }
+      if (mod.version_to !== null && mod.version_to !== undefined) {
+        json(res, 400, { error: "That week belongs to an older version of the curriculum and cannot be edited." });
+        return true;
+      }
+      const prog = await progOf(mod.id);
+      if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
+      const b = method === "PATCH" ? await readBody(req).catch(() => ({})) : {};
+      const { version, forked } = await versionForEdit(prog);
+
+      if (!forked) {
+        // Nobody is on this programme: edit the rows and keep the version.
+        if (method === "DELETE") {
+          await dbRun("UPDATE academy_modules SET archived = TRUE, version_to = ? WHERE id = ?", [version + 1, mod.id]);
+          await dbRun("UPDATE academy_items SET archived = TRUE, version_to = ? WHERE module_id = ? AND version_to IS NULL",
+                      [version + 1, mod.id]);
+          // version+1 on an unused programme is only a bookkeeping marker:
+          // nothing reads a version above the programme's own.
+          await dbRun("UPDATE academy_programs SET version = ?, updated_at = ? WHERE id = ?",
+                      [version + 1, nowISO(), prog.id]);
+          json(res, 200, { ok: true, removed: true, version: version + 1 });
+          return true;
+        }
+        const sets = [], vals = [];
+        for (const [k, f] of [["title", clean], ["focus", clean], ["body", clean], ["video_url", clean]]) {
+          if (b[k] !== undefined) { sets.push(`${k} = ?`); vals.push(f(b[k]) || null); }
+        }
+        if (b.week !== undefined) {
+          const w = num(b.week);
+          if (!w || w < 1 || w > Number(prog.weeks)) { json(res, 400, { error: `Week must be between 1 and ${prog.weeks}.` }); return true; }
+          sets.push("week = ?"); vals.push(w);
+        }
+        if (b.position !== undefined) { sets.push("position = ?"); vals.push(num(b.position) || 0); }
+        if (!sets.length) { json(res, 400, { error: "Nothing to change." }); return true; }
+        if (sets.some((x) => x.startsWith("title")) && !clean(b.title)) {
+          json(res, 400, { error: "A week needs a title." }); return true;
+        }
+        sets.push("updated_at = ?"); vals.push(nowISO());
+        vals.push(mod.id);
+        await dbRun(`UPDATE academy_modules SET ${sets.join(", ")} WHERE id = ?`, vals);
+        json(res, 200, { ok: true, module: await dbGet("SELECT * FROM academy_modules WHERE id = ?", [mod.id]), version });
+        return true;
+      }
+
+      // FORKED. Close the old week at the new version and, unless it is
+      // being removed, open a replacement -- carrying its live items across,
+      // because a new module row with no items is a week that silently
+      // emptied itself.
+      await dbRun("UPDATE academy_modules SET version_to = ? WHERE id = ?", [version, mod.id]);
+      await dbRun("UPDATE academy_items SET version_to = ? WHERE module_id = ? AND version_to IS NULL",
+                  [version, mod.id]);
+      if (method === "DELETE") {
+        json(res, 200, { ok: true, removed: true, forked: true, version });
+        return true;
+      }
+      if (b.title !== undefined && !clean(b.title)) {
+        json(res, 400, { error: "A week needs a title." }); return true;
+      }
+      let week = mod.week;
+      if (b.week !== undefined) {
+        const w = num(b.week);
+        if (!w || w < 1 || w > Number(prog.weeks)) { json(res, 400, { error: `Week must be between 1 and ${prog.weeks}.` }); return true; }
+        week = w;
+      }
+      const fresh = await dbGet(
+        `INSERT INTO academy_modules (program_id, week, position, title, focus, body, video_url,
+           archived, version_from, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?, FALSE, ?, ?, ?) RETURNING *`,
+        [prog.id, week, b.position !== undefined ? (num(b.position) || 0) : mod.position,
+         b.title !== undefined ? clean(b.title) : mod.title,
+         b.focus !== undefined ? (clean(b.focus) || null) : mod.focus,
+         b.body !== undefined ? (clean(b.body) || null) : mod.body,
+         b.video_url !== undefined ? (clean(b.video_url) || null) : mod.video_url,
+         version, nowISO(), nowISO()]).catch(() => null);
+      if (!fresh) { json(res, 500, { error: "The week could not be updated." }); return true; }
+      const carry = await dbAll("SELECT * FROM academy_items WHERE module_id = ? AND version_to = ?",
+                                [mod.id, version]).catch(() => []);
+      for (const it of carry) {
+        const copy = await dbGet(
+          `INSERT INTO academy_items (module_id, kind, title, detail, required, position, archived, version_from, created_at)
+           VALUES (?,?,?,?,?,?, FALSE, ?, ?) RETURNING id`,
+          [fresh.id, it.kind, it.title, it.detail, it.required, it.position, version, nowISO()]).catch(() => null);
+        // AND THE ITEM'S OWN ATTACHMENTS. A forked week that kept its
+        // checklist but lost everything to read would look complete and be
+        // useless.
+        if (copy) await copyResources({ fromItem: it.id, toItem: copy.id, actor });
+      }
+      const movedRes = await copyResources({ fromModule: mod.id, toModule: fresh.id, actor });
+      json(res, 200, { ok: true, module: fresh, forked: true, version,
+                       carried: carry.length, resources_carried: movedRes });
+      return true;
+    }
+
+    const modItems = pathname.match(/^\/api\/academy\/modules\/(\d+)\/items$/);
+    if (modItems && method === "POST") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      const mod = await dbGet("SELECT * FROM academy_modules WHERE id = ?", [Number(modItems[1])]).catch(() => null);
+      if (!mod) { json(res, 404, { error: "No such week." }); return true; }
+      if (mod.version_to !== null && mod.version_to !== undefined) {
+        json(res, 400, { error: "That week belongs to an older version of the curriculum." }); return true;
+      }
+      const prog = await progOf(mod.id);
+      const b = await readBody(req).catch(() => ({}));
+      if (!clean(b.title)) { json(res, 400, { error: "Give the item a title." }); return true; }
+      const kind = clean(b.kind) || "reading";
+      if (!ITEM_KINDS.includes(kind)) {
+        json(res, 400, { error: "An item is a reading, a checklist item, a competency, or a quiz." }); return true;
+      }
+      const { version } = await versionForEdit(prog);
+      const row = await dbGet(
+        `INSERT INTO academy_items (module_id, kind, title, detail, required, position, archived, version_from, created_at)
+         VALUES (?,?,?,?,?,?, FALSE, ?, ?) RETURNING *`,
+        [mod.id, kind, clean(b.title), clean(b.detail) || null,
+         b.required !== false, num(b.position) || 0, version, nowISO()]).catch(() => null);
+      if (!row) { json(res, 500, { error: "The item could not be added." }); return true; }
+      json(res, 200, { ok: true, item: row, version });
+      return true;
+    }
+
+    const itemEdit = pathname.match(/^\/api\/academy\/items\/(\d+)$/);
+    if (itemEdit && (method === "PATCH" || method === "DELETE")) {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      const item = await dbGet("SELECT * FROM academy_items WHERE id = ?", [Number(itemEdit[1])]).catch(() => null);
+      if (!item) { json(res, 404, { error: "No such item." }); return true; }
+      if (item.version_to !== null && item.version_to !== undefined) {
+        json(res, 400, { error: "That item belongs to an older version of the curriculum." }); return true;
+      }
+      const prog = await progOf(item.module_id);
+      if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
+      const b = method === "PATCH" ? await readBody(req).catch(() => ({})) : {};
+      if (method === "PATCH" && b.kind !== undefined && !ITEM_KINDS.includes(clean(b.kind))) {
+        json(res, 400, { error: "An item is a reading, a checklist item, a competency, or a quiz." }); return true;
+      }
+      if (method === "PATCH" && b.title !== undefined && !clean(b.title)) {
+        json(res, 400, { error: "An item needs a title." }); return true;
+      }
+      const { version, forked } = await versionForEdit(prog);
+
+      if (!forked) {
+        if (method === "DELETE") {
+          await dbRun("UPDATE academy_items SET archived = TRUE, version_to = ? WHERE id = ?", [version + 1, item.id]);
+          await dbRun("UPDATE academy_programs SET version = ?, updated_at = ? WHERE id = ?",
+                      [version + 1, nowISO(), prog.id]);
+          json(res, 200, { ok: true, removed: true, version: version + 1 });
+          return true;
+        }
+        const sets = [], vals = [];
+        for (const [k, f] of [["title", clean], ["detail", clean], ["kind", clean]]) {
+          if (b[k] !== undefined) { sets.push(`${k} = ?`); vals.push(f(b[k]) || null); }
+        }
+        if (b.required !== undefined) { sets.push("required = ?"); vals.push(b.required !== false); }
+        if (b.position !== undefined) { sets.push("position = ?"); vals.push(num(b.position) || 0); }
+        if (!sets.length) { json(res, 400, { error: "Nothing to change." }); return true; }
+        vals.push(item.id);
+        await dbRun(`UPDATE academy_items SET ${sets.join(", ")} WHERE id = ?`, vals);
+        json(res, 200, { ok: true, item: await dbGet("SELECT * FROM academy_items WHERE id = ?", [item.id]), version });
+        return true;
+      }
+
+      await dbRun("UPDATE academy_items SET version_to = ? WHERE id = ?", [version, item.id]);
+      if (method === "DELETE") {
+        json(res, 200, { ok: true, removed: true, forked: true, version });
+        return true;
+      }
+      const fresh = await dbGet(
+        `INSERT INTO academy_items (module_id, kind, title, detail, required, position, archived, version_from, created_at)
+         VALUES (?,?,?,?,?,?, FALSE, ?, ?) RETURNING *`,
+        [item.module_id,
+         b.kind !== undefined ? clean(b.kind) : item.kind,
+         b.title !== undefined ? clean(b.title) : item.title,
+         b.detail !== undefined ? (clean(b.detail) || null) : item.detail,
+         b.required !== undefined ? (b.required !== false) : item.required,
+         b.position !== undefined ? (num(b.position) || 0) : item.position,
+         version, nowISO()]).catch(() => null);
+      if (!fresh) { json(res, 500, { error: "The item could not be updated." }); return true; }
+      const resCarried = await copyResources({ fromItem: item.id, toItem: fresh.id, actor });
+      json(res, 200, { ok: true, item: fresh, forked: true, version, resources_carried: resCarried });
+      return true;
+    }
+
+    // ---- THE TRAINING LIBRARY, as leadership manages it ------------------
+    if (pathname === "/api/academy/resources" && method === "POST") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can add training material." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const kind = clean(b.kind) || "link";
+      if (!RESOURCE_KINDS.includes(kind)) {
+        json(res, 400, { error: "A resource is a document, a video, a link, or a note." }); return true;
+      }
+      const modId = num(b.module_id), itemId = num(b.item_id);
+      if (!modId && !itemId) { json(res, 400, { error: "Attach it to a week or to an item." }); return true; }
+      if (modId && itemId) { json(res, 400, { error: "Attach it to a week or to an item, not both." }); return true; }
+      // It has to attach to something that is still part of the CURRENT
+      // curriculum, or it would appear for nobody.
+      if (modId) {
+        const m = await dbGet("SELECT * FROM academy_modules WHERE id = ?", [modId]).catch(() => null);
+        if (!m) { json(res, 404, { error: "No such week." }); return true; }
+        if (m.version_to !== null && m.version_to !== undefined) {
+          json(res, 400, { error: "That week belongs to an older version of the curriculum." }); return true;
+        }
+      }
+      if (itemId) {
+        const it = await dbGet("SELECT * FROM academy_items WHERE id = ?", [itemId]).catch(() => null);
+        if (!it) { json(res, 404, { error: "No such item." }); return true; }
+        if (it.version_to !== null && it.version_to !== undefined) {
+          json(res, 400, { error: "That item belongs to an older version of the curriculum." }); return true;
+        }
+      }
+
+      let policyId = null, url = null, body = null, title = clean(b.title);
+      if (kind === "document") {
+        // A DOCUMENT POINTS AT THE POLICY LIBRARY. Letting it hold pasted
+        // text instead would create a second copy of an SOP that stops
+        // matching the first the day somebody amends it.
+        policyId = num(b.policy_id);
+        if (!policyId) { json(res, 400, { error: "Choose a policy or SOP from the library." }); return true; }
+        const pol = await dbGet("SELECT id, title FROM crm_policies WHERE id = ?", [policyId]).catch(() => null);
+        if (!pol) { json(res, 404, { error: "That policy is not in the library." }); return true; }
+        if (!title) title = pol.title;
+      } else if (kind === "note") {
+        body = clean(b.body);
+        if (!body) { json(res, 400, { error: "Write the note." }); return true; }
+        if (!title) { json(res, 400, { error: "Give the note a title." }); return true; }
+      } else {
+        url = safeUrl(b.url);
+        if (url === null) { json(res, 400, { error: "Give it a link." }); return true; }
+        if (url === false) { json(res, 400, { error: "That is not a web address. It must start with http:// or https://." }); return true; }
+        if (!title) { json(res, 400, { error: "Give it a title." }); return true; }
+      }
+
+      const row = await dbGet(
+        `INSERT INTO academy_resources (module_id, item_id, kind, title, url, policy_id, body, position, created_by, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING *`,
+        [modId || null, itemId || null, kind, title, url, policyId, body,
+         num(b.position) || 0, actor, nowISO()]).catch(() => null);
+      if (!row) { json(res, 500, { error: "The resource could not be saved." }); return true; }
+      json(res, 200, { ok: true, resource: row });
+      return true;
+    }
+
+    const resOne = pathname.match(/^\/api\/academy\/resources\/(\d+)$/);
+    if (resOne && method === "DELETE") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can remove training material." }); return true; }
+      const id = Number(resOne[1]);
+      const row = await dbGet("SELECT * FROM academy_resources WHERE id = ?", [id]).catch(() => null);
+      if (!row) { json(res, 404, { error: "No such resource." }); return true; }
+      // Removing an attachment never touches the policy it points at.
+      await dbRun("DELETE FROM academy_resources WHERE id = ?", [id]);
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    // ---- TRAINING HOURS --------------------------------------------------
+    //
+    // Separate from billable by construction: its own table, read by nothing
+    // in billing or the timecard. Logged by the employee about their own
+    // training, or by a supervisor about theirs.
+    const hoursMatch = pathname.match(/^\/api\/academy\/enrollments\/(\d+)\/hours$/);
+    if (hoursMatch && (method === "GET" || method === "POST")) {
+      const enrId = Number(hoursMatch[1]);
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);
+      if (!enr) { json(res, 404, { error: "No such onboarding record." }); return true; }
+      const isSubject = !!(me && Number(enr.employee_id) === Number(me.id));
+      const mentorHere = !!(me && enr.mentor_id && Number(enr.mentor_id) === Number(me.id));
+      if (!(isSubject || mentorHere || lead)) { json(res, 403, { error: "Not permitted" }); return true; }
+
+      if (method === "GET") {
+        const rows = await dbAll(
+          "SELECT * FROM academy_hours WHERE enrollment_id = ? ORDER BY on_date DESC, id DESC", [enrId]).catch(() => []);
+        const total = rows.reduce((a, r) => a + Number(r.hours || 0), 0);
+        const prog = await dbGet("SELECT weekly_hours_target, weeks FROM academy_programs WHERE id = ?",
+                                 [enr.program_id]).catch(() => null);
+        json(res, 200, {
+          hours: rows,
+          total: Math.round(total * 100) / 100,
+          target: prog ? Number(prog.weekly_hours_target || 0) * Number(prog.weeks || 0) : null,
+          // Said out loud on the endpoint, because the one way this feature
+          // fails is somebody assuming these hours went somewhere else too.
+          note: "Training hours only. These are not billable hours and are not sent to payroll or Rethink.",
+        });
+        return true;
+      }
+
+      // THE SUBJECT MAY LOG THEIR OWN TRAINING TIME. This is not a
+      // self-assessment of competence -- it is "I spent two hours on this" --
+      // and the person who knows that is the person who spent it.
+      const b = await readBody(req).catch(() => ({}));
+      if (!isDate(b.on_date)) { json(res, 400, { error: "Which day was it?" }); return true; }
+      if (clean(b.on_date) > today()) { json(res, 400, { error: "That day has not happened yet." }); return true; }
+      const hrs = Number(b.hours);
+      if (!(hrs > 0)) { json(res, 400, { error: "How many hours?" }); return true; }
+      // A DAY HAS A CEILING. A fat-fingered 80 in a training log that feeds a
+      // report is a number somebody will later have to explain.
+      if (hrs > 16) { json(res, 400, { error: "That is more than 16 hours in a day. Check the number." }); return true; }
+      if (!clean(b.activity)) { json(res, 400, { error: "What was the training?" }); return true; }
+      const itemId = num(b.item_id);
+      if (itemId) {
+        const it = await dbGet("SELECT id FROM academy_items WHERE id = ?", [itemId]).catch(() => null);
+        if (!it) { json(res, 404, { error: "No such item." }); return true; }
+      }
+      const row = await dbGet(
+        `INSERT INTO academy_hours (enrollment_id, item_id, on_date, hours, activity, note, logged_by, created_at)
+         VALUES (?,?,?,?,?,?,?,?) RETURNING *`,
+        [enrId, itemId || null, clean(b.on_date), Math.round(hrs * 100) / 100,
+         clean(b.activity), clean(b.note) || null, actor, nowISO()]).catch(() => null);
+      if (!row) { json(res, 500, { error: "The hours could not be saved." }); return true; }
+      json(res, 200, { ok: true, entry: row });
+      return true;
+    }
+
+    const hourOne = pathname.match(/^\/api\/academy\/hours\/(\d+)$/);
+    if (hourOne && method === "DELETE") {
+      const id = Number(hourOne[1]);
+      const row = await dbGet("SELECT * FROM academy_hours WHERE id = ?", [id]).catch(() => null);
+      if (!row) { json(res, 404, { error: "No such entry." }); return true; }
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [row.enrollment_id]).catch(() => null);
+      const isSubject = !!(me && enr && Number(enr.employee_id) === Number(me.id));
+      // Somebody can delete their own mistake; leadership can delete
+      // anybody's. A mentor cannot quietly remove somebody's record of the
+      // time they put in.
+      if (!(isSubject || lead)) { json(res, 403, { error: "Not permitted" }); return true; }
+      await dbRun("DELETE FROM academy_hours WHERE id = ?", [id]);
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    // MOVING SOMEBODY TO THE CURRENT CURRICULUM, deliberately, one person at
+    // a time. Forking leaves active enrolments where they are, which is
+    // right for a rewritten week and wrong for a corrected typo -- so the
+    // move exists, it is explicit, and it is audited. It is never automatic.
+    const verMove = pathname.match(/^\/api\/academy\/enrollments\/(\d+)\/curriculum-version$/);
+    if (verMove && method === "POST") {
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can move somebody's curriculum version." }); return true; }
+      const enrId = Number(verMove[1]);
+      const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);
+      if (!enr) { json(res, 404, { error: "No such onboarding record." }); return true; }
+      const prog = await dbGet("SELECT * FROM academy_programs WHERE id = ?", [enr.program_id]).catch(() => null);
+      if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
+      if (Number(enr.program_version) === Number(prog.version)) {
+        json(res, 400, { error: "They are already on the current version." }); return true;
+      }
+      // A COMPLETED ONBOARDING IS A RECORD, NOT A WORK ITEM. Moving one to a
+      // newer curriculum would restate what somebody was signed off against,
+      // which is the one thing the brief says to preserve.
+      if (enr.state === "completed") {
+        json(res, 400, { error: "This onboarding is complete. Its curriculum version is part of the record." });
+        return true;
+      }
+      await dbRun("UPDATE academy_enrollments SET program_version = ?, updated_at = ? WHERE id = ?",
+                  [Number(prog.version), nowISO(), enrId]);
+      await audit(enrId, null, "curriculum_version", String(enr.program_version), String(prog.version), actor,
+                  clean((await readBody(req).catch(() => ({}))).note) || null);
+      json(res, 200, { ok: true, version: Number(prog.version) });
       return true;
     }
 
@@ -1672,9 +2710,10 @@ module.exports = function initAcademy(ctx) {
   return {
     initTables, handleApi, enrol, autoEnrolSweep, scheduleCheckins, checkinsFor, backfillCheckins,
     reviewFor, leadership, leadershipEmails, isClinicalLead,
-    employeeFor, progressFor, itemsFor, seedBcbaProgram,
+    employeeFor, progressFor, itemsFor, modulesFor, resourcesFor, seedBcbaProgram,
     _internal: { STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
                  addDays, CHECKIN_DAYS, GAP_STATUSES, GAP_LABELS, URGENCIES,
-                 DOMAINS, DOMAIN_KEYS, RATINGS, RATING_LABELS, REVIEW_STATES, isClosed },
+                 DOMAINS, DOMAIN_KEYS, RATINGS, RATING_LABELS, REVIEW_STATES, isClosed,
+                 RESOURCE_KINDS, safeUrl },
   };
 };
