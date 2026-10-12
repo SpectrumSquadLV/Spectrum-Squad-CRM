@@ -674,7 +674,9 @@ module.exports = function initPeople(ctx) {
                 ORDER BY c.expiration_date NULLS LAST, e.name`
             );
         for (const r of rows) r.state = certStatusOf(r);
-        json(res, 200, { certifications: rows, stages: CERT_STAGES.map((s) => s.key) });
+        // Two ladders now, so saying only one would misreport what an RBT
+        // certification actually sends.
+        json(res, 200, { certifications: rows, stages: CERT_STAGES.map((s) => s.key), rbt_stages: RBT_CERT_STAGES.map((s) => s.key) });
         return true;
       }
 
@@ -798,6 +800,6 @@ module.exports = function initPeople(ctx) {
     handleApi,
     certificationSweep,
     listDepartments,
-    _lib: { CERT_STAGES, daysUntil, dueStage, certStatusOf, slugify },
+    _lib: { CERT_STAGES, RBT_CERT_STAGES, isRbtCert, stagesFor, daysUntil, dueStage, certStatusOf, slugify },
   };
 };

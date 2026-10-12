@@ -234,6 +234,10 @@ function check(name, cond, detail) {
   check("renewing an overdue RBT certification clears it", r.data.state.days === 400, r.data.state);
   r = await req("/api/people/certifications/sweep", { method: "POST", body: { dry_run: true } });
   check("...and the nagging stops", !r.data.sent.some((x) => x.id === nagging), r.data.sent);
+  r = await req("/api/people/certifications");
+  check("the roll-up reports both ladders, not just the general one",
+    (r.data.stages || []).includes("90") && (r.data.rbt_stages || []).join() === "45,30,15,expired",
+    { stages: r.data.stages, rbt: r.data.rbt_stages });
   await req(`/api/hr/employees/${rbtEmp.id}`, { method: "PATCH", body: { status: "terminated" } });
 
   // ---------------- new-hire packet ----------------
