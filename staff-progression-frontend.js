@@ -2,7 +2,7 @@
 //
 //   1. THE CREDENTIALING DASHBOARD at #/credentialing: summary cards, the staff
 //      progression table, the employee side panel with the four-stage tracker,
-//      payer linking and per-payer readiness, and (owner/admin) the settings for
+//      payer linking and per-payer readiness, and (the owner only) the settings for
 //      payer rules, due dates and the 7 AM email.
 //   2. A COMPACT CARD on the Clinical Director's dashboards that links to it.
 //   3. THE PAYER ENROLLMENT SECTION of the HR Hub staff card, where HR records
@@ -248,7 +248,7 @@
         </div>
       </div>
       <div class="cr-cards">${CARD_DEFS.map((c) => `<button class="cr-card" data-card="${c.key}" style="--accent:${c.accent};"><div class="n">${c.n(s)}</div><div class="l">${c.label}</div></button>`).join("")}</div>
-      ${!d.payers_configured && d.can_configure ? `<div class="cr-panel" style="padding:12px 16px;margin-bottom:14px;font-size:13px;">No payer linking rules are set yet, so payer linking shows N/A for everyone. <a href="#" id="cr-cfg-link">Choose which payers need individual linking</a>.</div>` : ""}
+      ${!d.payers_configured && d.can_configure ? `<div class="cr-panel" style="padding:12px 16px;margin-bottom:14px;font-size:13px;">No payer requires individual linking yet, so linking shows N/A for everyone and does not hold up any approval. <a href="#" id="cr-cfg-link">Choose which payers need individual linking</a>.</div>` : ""}
       <div class="cr-panel">
         <div class="cr-filters">
           <input class="grow" id="cr-q" placeholder="Search name or position" value="${esc(f.q)}" />
@@ -348,7 +348,7 @@
           <div><div class="k">Last updated</div><div class="v">${m.updated_at ? esc(stamp(m.updated_at)) + `<div class="cr-muted">by ${esc(m.updated_by || "—")}</div>` : "—"}</div></div>
         </div>
         ${m.notes ? `<div style="margin-top:8px;font-size:13px;"><span class="cr-muted">Notes:</span> ${esc(m.notes)}</div>` : ""}
-        ${m.requirements.length ? `<ul class="cr-req">${m.requirements.map((r) => `<li><span class="${r.done ? "ok" : "no"}">${r.done ? "&#10003;" : "&bull;"}</span><span>${esc(r.label)}${r.detail ? ` <span class="cr-muted">(${esc(r.detail)})</span>` : ""} <span class="cr-muted">· ${esc(r.owner)}</span></span></li>`).join("")}</ul>` : ""}
+        ${m.requirements.length ? `<ul class="cr-req">${m.requirements.map((r) => `<li><span class="${r.done ? "ok" : "no"}">${r.done ? "&#10003;" : "&bull;"}</span><span>${esc(r.label)}${r.detail ? ` <span class="cr-muted">(${esc(r.detail)})</span>` : ""} <span class="cr-muted">· ${esc(r.owner)}</span>${r.kind === "payer" && !r.done ? ` <span class="cr-muted">· waiting on the insurer</span>` : ""}</span></li>`).join("")}</ul>` : ""}
         ${m.missing.length ? `<div class="cr-muted" style="margin-top:6px;"><strong>Missing:</strong> ${esc(m.missing.join("; "))}</div>` : ""}
         ${edit ? `<div class="cr-edit">
           <label class="cr-field">Status<select data-f="status">${curSel === "__keep" ? `<option value="__keep" selected>${esc(m.status_label)} (current)</option>` : ""}${opts.map(([v, l]) => `<option value="${v}"${v === curSel ? " selected" : ""}>${l}</option>`).join("")}</select></label>
@@ -386,14 +386,14 @@
       </div>
       ${p.milestones.map(msBox).join("")}
       <div class="cr-box"><div class="cr-section-title">Insurance payer linking</div>
-        <div class="cr-muted" style="margin-bottom:8px;">Tracked separately. It does not affect internal approval.${edit ? " Edit linking on the HR Hub staff card." : ""}</div>
+        <div class="cr-muted" style="margin-bottom:8px;">Confirmed linking is part of final internal approval.${edit ? " Edit linking on the HR Hub staff card." : ""}</div>
         ${link.length ? `<div style="overflow-x:auto;"><table class="cr-ptable"><thead><tr><th>Payer</th><th>Status</th><th>Submitted</th><th>Confirmed</th><th>Effective</th></tr></thead><tbody>
           ${link.map((l) => `<tr><td><strong>${esc(l.payer)}</strong>${l.why ? `<div class="cr-muted">${esc(l.why)}</div>` : ""}</td><td>${pill(l.state === "linked" ? "linked" : l.state, l.state_label)}${l.days_waiting != null ? `<div class="cr-muted">${l.days_waiting} days waiting</div>` : ""}</td>
             <td>${esc(shortDate(l.submitted_date))}</td><td>${esc(shortDate(l.confirmation_date))}</td><td>${esc(shortDate(l.effective_date))}</td></tr>`).join("")}
-          </tbody></table></div>` : `<div class="cr-muted">N/A — no payer linking rules are configured for this position.</div>`}
+          </tbody></table></div>` : `<div class="cr-muted">N/A — no payer requires individual linking for this position.</div>`}
       </div>
       ${p.readiness.length ? `<div class="cr-box"><div class="cr-section-title">Ready to serve clients, by payer</div>
-        <div class="cr-muted" style="margin-bottom:8px;">Never assumed from internal approval. Client authorizations and supervision are checked per client before scheduling.</div>
+        <div class="cr-muted" style="margin-bottom:8px;">Client authorizations and supervision are still checked per client before scheduling.</div>
         <table class="cr-ptable"><tbody>${p.readiness.map((r) => `<tr><td><strong>${esc(r.payer)}</strong></td><td>${r.ready ? pill("complete", "Eligible") : pill("pending", "Not yet")}</td><td class="cr-muted">${esc(r.missing.join("; "))}</td></tr>`).join("")}</tbody></table></div>` : ""}
       <div class="cr-box"><div class="cr-section-title">Change history</div>
         ${d.history.length ? `<ul class="cr-hist">${d.history.map((h) => `<li><strong>${esc(stamp(h.changed_at))}</strong> · ${esc(h.changed_by || "—")}<br><span class="cr-muted">${esc(h.milestone_key.replace(/_/g, " "))}:</span> ${esc(h.change)}</li>`).join("")}</ul>` : `<div class="cr-muted">No changes recorded yet.</div>`}
@@ -493,12 +493,14 @@
           </tbody></table></div>` : `<div class="cr-muted">Nothing sent yet.</div>`}
       </div>
       <div class="cr-box"><div class="cr-section-title">Payer linking rules</div>
-        <div class="cr-muted" style="margin-bottom:10px;">Nothing is assumed: a payer only needs individual linking if it is switched on here. Leave every position unticked to mean all positions.</div>
+        <div class="cr-muted" style="margin-bottom:10px;">Only a payer switched on here is tracked. Payers left off do not appear on anyone's record and never hold up an approval. Confirmed linking is part of final internal approval. Leave every position unticked to mean all positions.</div>
         <div id="cr-payers">${c.payers.map((p, i) => `<div class="cr-box" style="margin-bottom:8px;padding:10px 12px;" data-payer="${i}">
           <div class="cr-ms-head"><strong data-name>${esc(p.payer)}</strong>
             <label class="cr-check" style="margin-left:auto;"><input type="checkbox" data-req${p.requires_linking ? " checked" : ""} /> Requires individual linking</label></div>
-          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">${posBoxes(p)}</div>
-          <label class="cr-check" style="margin-top:8px;"><input type="checkbox" data-case${p.caseload_only ? " checked" : ""} /> Only staff with this payer's clients on their caseload</label>
+          <div data-detail style="display:${p.requires_linking ? "block" : "none"};">
+            <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">${posBoxes(p)}</div>
+            <label class="cr-check" style="margin-top:8px;"><input type="checkbox" data-case${p.caseload_only ? " checked" : ""} /> Only staff with this payer's clients on their caseload</label>
+          </div>
         </div>`).join("")}</div>
         <div style="display:flex;gap:8px;margin-top:6px;"><input id="cr-new-payer" placeholder="Add another payer" style="flex:1;font:inherit;font-size:13px;padding:7px 10px;border:1px solid #dcdfea;border-radius:10px;" /><button class="cr-btn small ghost" id="cr-add-payer">Add</button></div>
       </div>
@@ -536,10 +538,26 @@
       const i = c.payers.length - 1;
       wrap.insertAdjacentHTML("beforeend", `<div class="cr-box" style="margin-bottom:8px;padding:10px 12px;" data-payer="${i}"><div class="cr-ms-head"><strong data-name>${esc(name)}</strong>
         <label class="cr-check" style="margin-left:auto;"><input type="checkbox" data-req /> Requires individual linking</label></div>
-        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">${posBoxes(c.payers[i])}</div>
-        <label class="cr-check" style="margin-top:8px;"><input type="checkbox" data-case /> Only staff with this payer's clients on their caseload</label></div>`);
+        <div data-detail style="display:none;">
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">${posBoxes(c.payers[i])}</div>
+          <label class="cr-check" style="margin-top:8px;"><input type="checkbox" data-case /> Only staff with this payer's clients on their caseload</label>
+        </div></div>`);
       body.querySelector("#cr-new-payer").value = "";
+      wireReqToggles();
     });
+    // A payer that needs no individual linking needs none of the settings that
+    // go with it, so they stay out of the way until it is switched on.
+    function wireReqToggles() {
+      body.querySelectorAll("[data-payer] [data-req]").forEach((box) => {
+        if (box.dataset.wired) return;
+        box.dataset.wired = "1";
+        box.addEventListener("change", () => {
+          const d = box.closest("[data-payer]").querySelector("[data-detail]");
+          if (d) d.style.display = box.checked ? "block" : "none";
+        });
+      });
+    }
+    wireReqToggles();
     const save = body.querySelector("#cr-cfg-save");
     save.addEventListener("click", async () => {
       const payers = [...body.querySelectorAll("[data-payer]")].map((row) => ({

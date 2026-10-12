@@ -8950,7 +8950,9 @@ const staffProgression = require("./staff-progression")({
   leadership: () => academy.leadership(),
   // Default recipients of the 7 AM onboarding email when none are configured.
   leadershipEmails: () => academy.leadershipEmails(),
-  canConfigure: (u) => canManageUsers(u),
+  // Credentialing settings (payer linking rules, onboarding deadlines, the
+  // daily email) are the practice owner's alone.
+  canConfigure: (u) => !!u && u.role === "owner",
 });
 
 const concerns = require("./concerns")({

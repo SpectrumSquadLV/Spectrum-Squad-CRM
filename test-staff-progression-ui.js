@@ -44,8 +44,8 @@ function api(cookie) {
   const bcba = await mk({ name: `Bea BCBA ${stamp}`, role_title: "BCBA" }, { status: "onboarding", hr_hire_date: pdate(-45) });
   const ann = await mk({ name: `Ann Admin ${stamp}`, role_title: "Front Desk" }, { status: "onboarding", hr_hire_date: pdate(-1) });
   const done = await mk({ name: `Dee Done ${stamp}`, role_title: "RBT" }, { status: "onboarding", hr_hire_date: pdate(-20) });
-  for (const k of ["hr_onboarding", "documents", "verification"]) await ms(done, k, { status: "complete", notes: "seed" });
-  await ms(done, "approval", { status: "complete" });
+  for (const k of ["hr_onboarding", "documents"]) await ms(done, k, { status: "complete", notes: "seed" });
+  await ms(done, "approval", { status: "complete", notes: "seed -- Medicaid still pending" });
   await o("/api/credentialing/config", { method: "PUT", body: { payers: [{ payer: "Nevada Medicaid", requires_linking: true, positions: ["rbt"] }] } });
   await o("/api/payer-enrollments", { method: "POST", body: { employee_id: done, payer: "Nevada Medicaid", kind: "group_link", status: "pending", submitted_date: pdate(-4), notes: "HR-ONLY-" + stamp } });
 
@@ -120,10 +120,13 @@ function api(cookie) {
   await page.click(`#cr-rows tr[data-emp="${done}"]`);
   await page.waitForSelector("#cr-drawer .cr-track", { timeout: 8000 }).catch(() => {});
   check("the side panel opens over the dashboard", !!(await page.$("#cr-drawer")) && !!(await page.$("#cr-rows")));
-  check("four-stage tracker", (await page.$$("#cr-drawer .cr-step")).length === 4);
+  check("three-stage tracker", (await page.$$("#cr-drawer .cr-step")).length === 3);
+  check("no separate credential-verification stage", !/Credential Verification/i.test(await page.textContent("#cr-drawer .cr-track")));
   const panel = await page.textContent("#cr-drawer");
   ["Position", "Hire date", "Onboarding coordinator", "Expected start", "Days in onboarding", "Target completion"].forEach((k) => check(`overview shows ${k}`, panel.includes(k)));
-  check("payer linking is shown separately", /Insurance payer linking/.test(panel) && /Nevada Medicaid/.test(panel) && /does not affect internal approval/.test(panel));
+  check("payer linking is shown and counts towards approval",
+    /Insurance payer linking/.test(panel) && /Nevada Medicaid/.test(panel) && /part of final internal approval/.test(panel));
+  check("the documents milestone covers credentials too", /Required Documents & Credentials/.test(panel), panel.slice(0, 400));
   check("approved but NOT eligible for Medicaid clients", /Ready to serve clients, by payer[\s\S]*Nevada Medicaid[\s\S]*Not yet/.test(panel));
   check("HR's payer notes are not on her screen", !panel.includes("HR-ONLY-" + stamp));
   check("no Save buttons for her", !(await page.$("#cr-drawer [data-save]")));
@@ -138,19 +141,29 @@ function api(cookie) {
   await page.waitForSelector("#cr-rows tr[data-emp]", { timeout: 10000 }).catch(() => {});
   check("owner gets Settings and Track an employee", !!(await page.$("#cr-settings")) && !!(await page.$("#cr-track")));
   await page.click(`#cr-rows tr[data-emp="${rbt}"]`);
-  await page.waitForSelector('#cr-drawer [data-ms="verification"] [data-save]', { timeout: 8000 }).catch(() => {});
-  await page.selectOption('#cr-drawer [data-ms="verification"] [data-f="status"]', "complete");
-  await page.click('#cr-drawer [data-save="verification"]');
+  await page.waitForSelector('#cr-drawer [data-ms="documents"] [data-save]', { timeout: 8000 }).catch(() => {});
+  await page.selectOption('#cr-drawer [data-ms="documents"] [data-f="status"]', "complete");
+  await page.click('#cr-drawer [data-save="documents"]');
   await page.waitForTimeout(900);
-  const err = await page.textContent('#cr-drawer [data-msg="verification"]').catch(() => "");
+  const err = await page.textContent('#cr-drawer [data-msg="documents"]').catch(() => "");
   check("signing off over open records asks for a reason", /note/i.test(err || ""), err);
-  await page.fill('#cr-drawer [data-ms="verification"] [data-f="notes"]', "Verified by phone with the BACB");
-  await page.click('#cr-drawer [data-save="verification"]');
+  await page.fill('#cr-drawer [data-ms="documents"] [data-f="notes"]', "Certificate seen on the BACB registry");
+  await page.click('#cr-drawer [data-save="documents"]');
   await page.waitForTimeout(1500);
-  const vt = await page.textContent('#cr-drawer [data-ms="verification"]');
-  check("the milestone shows Complete with the note", /Complete/.test(vt) && /Verified by phone/.test(vt), vt.slice(0, 200));
+  const vt = await page.textContent('#cr-drawer [data-ms="documents"]');
+  check("the milestone shows Complete with the note", /Complete/.test(vt) && /Certificate seen/.test(vt), vt.slice(0, 200));
   check("...and who did it", /by /.test(vt));
-  check("the change history records it", /Change history[\s\S]*verification/i.test(await page.textContent("#cr-drawer")));
+  check("the change history records it", /Change history[\s\S]*documents/i.test(await page.textContent("#cr-drawer")));
+  // Approval now shows the payer link as an outside wait, and refuses without a note.
+  const ap = await page.textContent('#cr-drawer [data-ms="approval"]');
+  check("approval lists the payer link as waiting on the insurer",
+    /Nevada Medicaid linking confirmed/.test(ap) && /waiting on the insurer/.test(ap), ap.slice(0, 400));
+  await page.selectOption('#cr-drawer [data-ms="approval"] [data-f="status"]', "complete");
+  await page.click('#cr-drawer [data-save="approval"]');
+  await page.waitForTimeout(1200);
+  check("approving over an unconfirmed payer asks for a reason",
+    /note/i.test(await page.textContent('#cr-drawer [data-msg="approval"]').catch(() => "")),
+    await page.textContent('#cr-drawer [data-msg="approval"]').catch(() => ""));
   await shot("03-panel-hr");
   await page.keyboard.press("Escape");
 
@@ -161,6 +174,25 @@ function api(cookie) {
   check("send time defaults to 07:00", (await page.inputValue("#cr-em-time")) === "07:00");
   check("the seven payers are listed, none assumed", (await page.$$("#cr-payers [data-payer]")).length >= 7);
   check("only Medicaid is switched on", (await page.$$eval("#cr-payers [data-payer]", (els) => els.filter((e) => e.querySelector("[data-req]").checked).map((e) => e.querySelector("[data-name]").textContent))).join() === "Nevada Medicaid");
+  // A payer that needs no individual linking shows nothing but its name and
+  // the switch -- its positions and caseload rule are not asked for.
+  const shown = await page.$$eval("#cr-payers [data-payer]", (els) => els.map((e) => ({
+    name: e.querySelector("[data-name]").textContent,
+    on: e.querySelector("[data-req]").checked,
+    detail: e.querySelector("[data-detail]") ? getComputedStyle(e.querySelector("[data-detail]")).display !== "none" : null,
+  })));
+  check("the payer that is switched on shows its settings", (shown.find((x) => x.name === "Nevada Medicaid") || {}).detail === true, shown);
+  check("the payers that are off show none of theirs", shown.filter((x) => !x.on).every((x) => x.detail === false), shown.filter((x) => !x.on));
+  // Switching one on reveals its settings without a reload.
+  const offRow = shown.findIndex((x) => !x.on);
+  await page.click(`#cr-payers [data-payer="${offRow}"] [data-req]`);
+  await page.waitForTimeout(200);
+  check("switching a payer on reveals its settings",
+    await page.$eval(`#cr-payers [data-payer="${offRow}"] [data-detail]`, (e) => getComputedStyle(e).display !== "none"));
+  await page.click(`#cr-payers [data-payer="${offRow}"] [data-req]`);
+  await page.waitForTimeout(200);
+  check("...and switching it off hides them again",
+    await page.$eval(`#cr-payers [data-payer="${offRow}"] [data-detail]`, (e) => getComputedStyle(e).display === "none"));
   await page.click("#cr-em-preview");
   await page.waitForSelector("#cr-em-prev iframe", { timeout: 8000 }).catch(() => {});
   const frame = page.frames().find((f) => f.url() === "about:srcdoc");

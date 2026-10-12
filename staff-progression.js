@@ -10,7 +10,7 @@
 //
 //   hr_onboarding_tracking            who is being tracked, their coordinator
 //                                     and target completion date
-//   hr_onboarding_milestones          a person's sign-off on one of the four
+//   hr_onboarding_milestones          a person's sign-off on one of the three
 //                                     internal milestones (and its notes, owner,
 //                                     due date); NULL status = follow the records
 //   hr_onboarding_milestone_history   every change to the above: what, who, when
@@ -21,14 +21,22 @@
 //   credentialing_email_log           one row per (day, recipient) of the daily
 //                                     email: sent, simulated, failed, skipped
 //
-// TWO DIFFERENT QUESTIONS, NEVER MERGED:
+// THREE MILESTONES, AND WHAT APPROVAL MEANS:
 //
-//   INTERNALLY APPROVED -- the four internal milestones are done. Payer linking
-//   is not one of them and cannot hold this up.
+//   HR ONBOARDING, then REQUIRED DOCUMENTS & CREDENTIALS -- a document the
+//   practice holds is a document it has verified, so there is no second
+//   sign-off step over the same list. What a received document cannot tell us
+//   is whether the credential is still in date, so that is checked here.
 //
-//   READY FOR A PAYER'S CLIENTS -- internally approved AND linked with that
-//   payer where linking applies AND a current credential on file. Shown per
-//   payer, worked out every time, never assumed from internal approval alone.
+//   FINAL INTERNAL APPROVAL -- the two milestones above are done AND every
+//   payer this position has to be individually linked with is confirmed
+//   linked. The owner can still approve over an unconfirmed payer, but only
+//   with a note on the record saying why, because an insurer sitting on a
+//   submission is nobody here's fault and can run past 45 days.
+//
+//   READY FOR A PAYER'S CLIENTS -- approval plus a current credential, worked
+//   out per payer. Payers that do not require individual linking are not
+//   tracked per person at all.
 //
 // WHAT THE PAYLOAD NEVER CARRIES: pay, background-check results, files, notes
 // on documents, Social Security or ID details, or HR's payer notes. Outstanding
@@ -42,9 +50,10 @@ module.exports = function initStaffProgression(ctx) {
   const isClinicalLead = ctx.isClinicalLead || (async (u) => !!u && ["owner", "super_admin"].includes(u.role));
   const leadership = ctx.leadership || (async () => ({ clinical_director: null, assistants: [], from_setting: null }));
   const leadershipEmails = ctx.leadershipEmails || (async () => []);
-  // Configuration (payer rules, due dates, the email) is owner/admin work. HR
-  // runs onboarding; it does not decide who gets the leadership email.
-  const canConfigure = ctx.canConfigure || ((u) => !!u && ["owner", "admin", "super_admin"].includes(u.role));
+  // Configuration -- payer rules, onboarding deadlines, the daily email -- is
+  // the practice owner's alone, not HR's and not an admin's. HR runs
+  // onboarding; it does not set the rules or decide who gets the email.
+  const canConfigure = ctx.canConfigure || ((u) => !!u && u.role === "owner");
   const getAppSetting = ctx.getAppSetting || (async (k, f) => f);
   const setAppSetting = ctx.setAppSetting || (async () => {});
   const sendEmail = ctx.sendEmail || null;
@@ -92,19 +101,23 @@ module.exports = function initStaffProgression(ctx) {
   const DOC_REQUEST_STALE_DAYS = 7;  // a document requested this long ago and not in
   const PAYER_SLOW_DAYS = 45;        // a payer submission unanswered this long
   const APPROVED_VISIBLE_DAYS = 90;  // approved hires stay on the dashboard this long
-  const DEFAULT_DUE_DAYS = { hr_onboarding: 7, documents: 14, verification: 21, approval: 30 };
+  const DEFAULT_DUE_DAYS = { hr_onboarding: 7, documents: 21, approval: 30 };
 
-  // ---- the four internal milestones ----------------------------------------
-  // `auto`: completes on its own when every requirement read from the records
-  // is met. Verification and approval are a person's judgment and always need
-  // a sign-off.
+  // ---- the three internal milestones ---------------------------------------
+  // Receiving a credential document IS verifying it -- the practice does not
+  // run a second sign-off step over documents it already holds, so documents
+  // and verification are one milestone. `auto`: completes on its own when
+  // every requirement read from the records is met. Final approval is a
+  // person's judgment and always needs a sign-off.
   const MILESTONES = [
     { key: "hr_onboarding", label: "HR Onboarding", owner: "HR", auto: true },
-    { key: "documents", label: "Required Documents", owner: "HR", auto: true },
-    { key: "verification", label: "Credential Verification", owner: "Credentialing (HR)", auto: false },
+    { key: "documents", label: "Required Documents & Credentials", owner: "Credentialing (HR)", auto: true },
     { key: "approval", label: "Final Internal Approval", owner: "Owner / HR", auto: false },
   ];
   const MKEYS = MILESTONES.map((m) => m.key);
+  const APPROVAL_KEY = "approval";
+  // Everything that must be done before the owner can sign the final approval.
+  const PRE_APPROVAL = MILESTONES.filter((m) => m.key !== APPROVAL_KEY);
   const STATUS_LABEL = { complete: "Complete", in_progress: "In progress", pending: "Pending", overdue: "Overdue" };
   const OVERALL = [
     { key: "approved", label: "Internally approved" },
@@ -245,7 +258,43 @@ module.exports = function initStaffProgression(ctx) {
     // second click fails this insert instead of sending a second email.
     await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cred_email_daily
       ON credentialing_email_log (report_date, kind, recipient) WHERE kind = 'daily'`).catch(() => {});
+    await mergeVerificationMilestone();
     console.log("Credentialing tracker schema ready.");
+  }
+
+  // ONE-TIME: 'verification' was its own milestone before documents and
+  // verification became one. Someone who signed verification off while a
+  // document was still outstanding did so for a reason, and that reason is in
+  // the note -- dropping the row would re-block their approval and lose it.
+  // So a completed verification sign-off carries over to documents, but only
+  // where documents has no sign-off of its own to overwrite. The old rows and
+  // the whole history table are left exactly as they are.
+  async function mergeVerificationMilestone() {
+    if (clean(await getAppSetting("credentialing_verification_merged", "")) === "1") return;
+    let rows = [];
+    try {
+      rows = await dbAll(
+        `SELECT v.* FROM hr_onboarding_milestones v
+          WHERE v.milestone_key = 'verification' AND v.status = 'complete'
+            AND NOT EXISTS (SELECT 1 FROM hr_onboarding_milestones d
+                             WHERE d.employee_id = v.employee_id AND d.milestone_key = 'documents'
+                               AND d.status IS NOT NULL AND d.status <> '')`);
+    } catch (e) { return; }
+    for (const v of rows) {
+      const note = [clean(v.notes), "(carried over from the former Credential Verification milestone)"].filter(Boolean).join(" ");
+      await dbRun(
+        `INSERT INTO hr_onboarding_milestones (employee_id, milestone_key, status, completed_at, completed_by, responsible, notes, due_date, updated_by, updated_at)
+         VALUES (?,'documents','complete',?,?,?,?,?,?,?)
+         ON CONFLICT (employee_id, milestone_key) DO UPDATE SET status = EXCLUDED.status, completed_at = EXCLUDED.completed_at,
+           completed_by = EXCLUDED.completed_by, notes = EXCLUDED.notes, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
+        [v.employee_id, v.completed_at || null, v.completed_by || null, clean(v.responsible) || null, note || null,
+         null, "Credentialing merge", nowISO()]).catch(() => {});
+      await recordHistory(v.employee_id, "documents",
+        "Credential Verification merged into Required Documents & Credentials; its completed sign-off carried over",
+        "Credentialing merge").catch(() => {});
+    }
+    if (rows.length) console.log(`Credentialing: carried ${rows.length} verification sign-off(s) onto Required Documents & Credentials.`);
+    await setAppSetting("credentialing_verification_merged", "1").catch(() => {});
   }
 
   async function logActivity(employeeId, text) {
@@ -382,7 +431,6 @@ module.exports = function initStaffProgression(ctx) {
     headshot: "Headshot", social: "Social Security card (sighted)", id: "Photo ID (sighted)",
     rbt_state: "State RBT license", rbt_national: "National RBT certification", background_check: "Background check",
   };
-  const VERIFY_KEYS = ["background_check", "rbt_state", "rbt_national"];
 
   function credentialCurrent(group, certs, creds, tracker, now) {
     const current = (exp) => !exp || day(exp) >= now;
@@ -393,7 +441,8 @@ module.exports = function initStaffProgression(ctx) {
     if (group === "rbt") {
       return certs.some((c) => /\brbt\b/i.test(c.name) && current(c.expiration_date))
         || creds.some((c) => c.credential_type === "rbt" && current(c.expiration_date) && c.status !== "expired")
-        || tracker.some((t) => t.doc_key === "rbt_national" && t.status === "Verified");
+        // A national RBT certificate the practice holds is one it has verified.
+        || tracker.some((t) => t.doc_key === "rbt_national" && ["Received", "Verified"].includes(t.status));
     }
     if (group === "ot") return certs.some((c) => /\b(ot|otr|cota)\b|occupational/i.test(c.name) && current(c.expiration_date));
     // Students and other clinical roles: a current certification of any kind
@@ -402,9 +451,10 @@ module.exports = function initStaffProgression(ctx) {
   }
 
   // Requirements read from the records, per milestone. Each one:
-  // { label, done, owner, waiting: internal|external, kind?: missing_info|doc|stale|expired }
+  // { label, done, owner, waiting: internal|external,
+  //   kind?: missing_info|doc|stale|expired|payer, payer?: <name for kind payer> }
   function requirementsFor(emp, group, idx, now) {
-    const req = { hr_onboarding: [], documents: [], verification: [], approval: [] };
+    const req = { hr_onboarding: [], documents: [], approval: [] };
     const packet = emp.applicant_id ? idx.packetByApp.get(emp.applicant_id) : null;
     const offer = emp.applicant_id ? idx.offerByApp.get(emp.applicant_id) : null;
     const startDate = day(emp.hr_hire_date) || day(emp.hire_date) || (offer && day(offer.start_date)) || null;
@@ -438,16 +488,15 @@ module.exports = function initStaffProgression(ctx) {
     });
     if (!docs.length && !tracker.length) req.documents.push({ label: "No onboarding documents requested yet", done: false, owner: "HR", waiting: "internal", kind: "doc" });
 
-    // 3. Verification
-    VERIFY_KEYS.forEach((k) => {
-      const t = tracker.find((x) => x.doc_key === k);
-      if (!t) return;
-      req.verification.push({ label: `${DOC_LABELS[k]} verified`, done: t.status === "Verified", owner: "Credentialing (HR)", waiting: "internal" });
-    });
+    // A document on file counts as verified, so there is no separate
+    // "verified" row per document -- that only restated the line above it.
+    // What a received document cannot tell us is whether the credential is
+    // still in date, so that check stays, here, in the same milestone.
     if (["bcba", "rbt", "ot"].includes(group)) {
       const ok = credentialCurrent(group, idx.certsByEmp.get(emp.id) || [], idx.credsByEmp.get(emp.id) || [], tracker, now);
       const name = group === "bcba" ? "BCBA certification" : group === "rbt" ? "RBT certification" : "OT / COTA license";
-      req.verification.push({ label: `${name} on file and current`, done: ok, owner: "Credentialing (HR)", waiting: "internal" });
+      req.documents.push({ label: ok ? `${name} on file and current` : `${name} missing or expired`,
+        done: ok, owner: "Credentialing (HR)", waiting: "internal", kind: ok ? null : "expired" });
     }
     return { req, startDate, offer, onb, tracker };
   }
@@ -465,13 +514,61 @@ module.exports = function initStaffProgression(ctx) {
     const { req, startDate, offer, onb } = requirementsFor(emp, group, idx, now);
     const base = startDate || day(tracking && tracking.created_at) || day(emp.created_at) || now;
 
+    // ---- payer linking ------------------------------------------------------
+    // Computed before the milestones because confirmed linking is part of what
+    // final approval means: an unlinked clinician cannot be billed for.
+    // Payers that do not require individual linking are not tracked here at
+    // all -- they used to render a row per person saying so, which was noise.
+    const enr = idx.payersByEmp.get(emp.id) || [];
+    const caseloadPayers = idx.caseloadFor(emp);
+    const linking = [];
+    cfg.rules.filter((rule) => rule.requires_linking).forEach((rule) => {
+      const row = enr.find((r) => r.kind === "group_link" && samePayer(r.payer, rule.payer));
+      let applicable = !rule.positions.length || rule.positions.includes(group);
+      if (applicable && rule.caseload_only) applicable = caseloadPayers.some((p) => samePayer(p, rule.payer));
+      const st = applicable ? (row && payerState(row, now) === "not_required" ? "not_required" : linkState(row, now)) : "not_required";
+      linking.push({
+        payer: rule.payer, applicable, configured: true, state: st, state_label: LINK_STATES[st],
+        why: applicable ? null
+          : (rule.caseload_only && (!rule.positions.length || rule.positions.includes(group)) ? "No clients with this payer on their caseload" : "Not required for this position"),
+        submitted_date: row ? day(row.submitted_date) : null, confirmation_date: row ? day(row.approved_date) : null,
+        effective_date: row ? day(row.effective_date) : null,
+        days_waiting: row ? publicPayer(row, now).days_waiting : null, enrollment_id: row ? row.id : null,
+      });
+    });
+    // Linking recorded against a payer nobody has configured yet still shows.
+    enr.filter((r) => r.kind === "group_link" && !cfg.rules.some((rule) => samePayer(r.payer, rule.payer))).forEach((r) => {
+      const st = linkState(r, now);
+      linking.push({ payer: r.payer, applicable: st !== "not_required", configured: false, state: st, state_label: LINK_STATES[st], why: "Payer not yet configured",
+        submitted_date: day(r.submitted_date), confirmation_date: day(r.approved_date), effective_date: day(r.effective_date),
+        days_waiting: publicPayer(r, now).days_waiting, enrollment_id: r.id });
+    });
+    const applicable = linking.filter((l) => l.applicable && l.state !== "not_required");
+    const linked = applicable.filter((l) => l.state === "linked").length;
+    // WHAT GATES APPROVAL is only a payer the owner has deliberately marked as
+    // requiring individual linking. A link HR recorded against a payer nobody
+    // has configured still shows on the record, but it does not hold up a
+    // sign-off -- otherwise noting an exploratory enrolment would quietly
+    // block a new hire nobody meant to block.
+    const gating = applicable.filter((l) => l.configured);
+
     // ---- milestone statuses -------------------------------------------------
     const ms = [];
     for (const m of MILESTONES) {
       const s = stored[m.key] || {};
       let reqs = req[m.key];
-      if (m.key === "approval") {
-        reqs = ms.map((p) => ({ label: `${p.label} complete`, done: p.status === "complete", owner: p.responsible, waiting: "internal" }));
+      if (m.key === APPROVAL_KEY) {
+        // Final approval is held by the internal milestones AND by any payer
+        // linking this position actually needs. Payer items are tagged so the
+        // rest of the module can tell an internal hold from an external one.
+        reqs = ms.map((p) => ({ label: `${p.label} complete`, done: p.status === "complete", owner: p.responsible, waiting: "internal" }))
+          .concat(gating.map((l) => ({
+            label: `${l.payer} linking confirmed`, done: l.state === "linked",
+            owner: "Credentialing (HR)", waiting: "external", kind: "payer", payer: l.payer,
+            detail: l.state === "linked" ? null
+              : l.days_waiting != null ? `${l.state_label.toLowerCase()}, ${l.days_waiting} day${l.days_waiting === 1 ? "" : "s"} waiting`
+              : l.state_label.toLowerCase(),
+          })));
       }
       const open = reqs.filter((r) => !r.done);
       const due = isDate(s.due_date) ? s.due_date : addDays(base, cfg.dueDays[m.key]);
@@ -483,8 +580,8 @@ module.exports = function initStaffProgression(ctx) {
       } else if (due && due < now) st = "overdue";
       else if (s.status === "in_progress" || reqs.some((r) => r.done)) st = "in_progress";
       else st = "pending";
-      // Approval is ready to sign the moment the other three are done.
-      if (m.key === "approval" && st === "pending" && !open.length) st = "in_progress";
+      // Approval is ready to sign the moment nothing is outstanding.
+      if (m.key === APPROVAL_KEY && st === "pending" && !open.length) st = "in_progress";
       ms.push({
         key: m.key, label: m.label, status: st, status_label: STATUS_LABEL[st],
         auto_complete: auto, sign_off_required: !m.auto,
@@ -492,26 +589,33 @@ module.exports = function initStaffProgression(ctx) {
         responsible: clean(s.responsible) || (m.key === "hr_onboarding" || m.key === "documents" ? clean(tracking && tracking.coordinator) || m.owner : m.owner),
         notes: clean(s.notes) || null,
         due_date: due, due_overridden: isDate(s.due_date),
-        requirements: reqs.map((r) => ({ label: r.label, done: !!r.done, owner: r.owner, waiting: r.waiting, detail: r.detail || null })),
+        requirements: reqs.map((r) => ({ label: r.label, done: !!r.done, owner: r.owner, waiting: r.waiting, kind: r.kind || null, payer: r.payer || null, detail: r.detail || null })),
         missing: open.map((r) => r.label + (r.detail ? ` (${r.detail})` : "")),
         updated_at: s.updated_at || null, updated_by: s.updated_by || null,
       });
     }
     const done = ms.filter((m) => m.status === "complete").length;
-    const approval = ms[3];
+    const approval = ms.find((m) => m.key === APPROVAL_KEY);
     const approved = approval.status === "complete";
     if (approved && approval.completed_at && daysBetween(day(approval.completed_at), now) > APPROVED_VISIBLE_DAYS && status === "active") return null;
 
     // ---- overall status ------------------------------------------------------
     const target = isDate(tracking && tracking.target_completion_date) ? tracking.target_completion_date : approval.due_date;
-    const allOpen = MILESTONES.slice(0, 3).flatMap((m) => req[m.key]).filter((r) => !r.done);
+    const allOpen = PRE_APPROVAL.flatMap((m) => req[m.key]).filter((r) => !r.done);
     const reasons = [];
     allOpen.forEach((r) => {
       if (r.kind === "missing_info") reasons.push(r.label);
       if (r.kind === "expired") reasons.push(r.label);
       if (r.kind === "stale") reasons.push(`${r.label} ${r.detail}`);
     });
-    if (!approved && ms.slice(0, 3).every((m) => m.status === "complete")) reasons.push("Ready for final internal approval");
+    // A payer that has sat on a submission is worth chasing; a payer that was
+    // submitted last week is not something anyone here can act on.
+    gating.forEach((l) => {
+      if (l.state !== "linked" && l.days_waiting != null && l.days_waiting > PAYER_SLOW_DAYS) {
+        reasons.push(`${l.payer} linking still unconfirmed after ${l.days_waiting} days`);
+      }
+    });
+    if (!approved && !approval.missing.length) reasons.push("Ready for final internal approval");
     let overall;
     if (approved) overall = "approved";
     else if (ms.some((m) => m.status === "overdue") || (target && target < now)) overall = "overdue";
@@ -527,43 +631,22 @@ module.exports = function initStaffProgression(ctx) {
       milestone: current.label,
     } : null;
 
-    // ---- payer linking (separate; never part of approval) ---------------------
-    const enr = idx.payersByEmp.get(emp.id) || [];
-    const caseloadPayers = idx.caseloadFor(emp);
-    const linking = [];
-    cfg.rules.forEach((rule) => {
-      const row = enr.find((r) => r.kind === "group_link" && samePayer(r.payer, rule.payer));
-      let applicable = rule.requires_linking && (!rule.positions.length || rule.positions.includes(group));
-      if (applicable && rule.caseload_only) applicable = caseloadPayers.some((p) => samePayer(p, rule.payer));
-      const st = applicable ? (row && payerState(row, now) === "not_required" ? "not_required" : linkState(row, now)) : "not_required";
-      linking.push({
-        payer: rule.payer, applicable, state: st, state_label: LINK_STATES[st],
-        why: !rule.requires_linking ? "This payer does not require individual linking"
-          : !applicable ? (rule.caseload_only && (!rule.positions.length || rule.positions.includes(group)) ? "No clients with this payer on their caseload" : "Not required for this position") : null,
-        submitted_date: row ? day(row.submitted_date) : null, confirmation_date: row ? day(row.approved_date) : null,
-        effective_date: row ? day(row.effective_date) : null,
-        days_waiting: row ? publicPayer(row, now).days_waiting : null, enrollment_id: row ? row.id : null,
-      });
-    });
-    // Linking recorded against a payer nobody has configured yet still shows.
-    enr.filter((r) => r.kind === "group_link" && !cfg.rules.some((rule) => samePayer(r.payer, rule.payer))).forEach((r) => {
-      const st = linkState(r, now);
-      linking.push({ payer: r.payer, applicable: st !== "not_required", state: st, state_label: LINK_STATES[st], why: "Payer not yet configured",
-        submitted_date: day(r.submitted_date), confirmation_date: day(r.approved_date), effective_date: day(r.effective_date),
-        days_waiting: publicPayer(r, now).days_waiting, enrollment_id: r.id });
-    });
-    const applicable = linking.filter((l) => l.applicable && l.state !== "not_required");
-    const linked = applicable.filter((l) => l.state === "linked").length;
-
-    // ---- readiness per payer: never assumed from internal approval ---------
+    // ---- readiness per payer ------------------------------------------------
+    // Approval now covers documents, credentials and linking, so saying
+    // "internal approval" next to "Aetna linking" when the only thing holding
+    // approval IS the Aetna linking just states one fact twice. Each payer
+    // reports the specific thing in its way and nothing more.
     const credOk = CLINICAL.has(group)
       ? credentialCurrent(group, idx.certsByEmp.get(emp.id) || [], idx.credsByEmp.get(emp.id) || [], idx.trackerByEmp.get(emp.id) || [], now)
       : false;
-    const readiness = CLINICAL.has(group) ? cfg.rules.map((rule) => {
+    const approvalOpen = approval.requirements.filter((r) => !r.done);
+    const readiness = CLINICAL.has(group) ? cfg.rules.filter((rule) => rule.requires_linking).map((rule) => {
       const l = linking.find((x) => x.payer === rule.payer);
+      const pending = !!(l && l.applicable && l.state !== "linked" && l.state !== "not_required");
+      const otherHolds = approvalOpen.filter((r) => !(r.kind === "payer" && samePayer(r.payer, rule.payer)));
       const missing = [];
-      if (!approved) missing.push("Internal approval");
-      if (l && l.applicable && l.state !== "linked" && l.state !== "not_required") missing.push(`${rule.payer} linking`);
+      if (pending) missing.push(`${rule.payer} linking`);
+      if (!approved && (otherHolds.length || !pending)) missing.push("Internal approval");
       if (!credOk) missing.push("Current credential on file");
       return { payer: rule.payer, ready: !missing.length, missing };
     }) : [];
@@ -656,7 +739,7 @@ module.exports = function initStaffProgression(ctx) {
       milestones: MILESTONES.map((m) => ({ key: m.key, label: m.label, sign_off_required: !m.auto })),
       statuses: OVERALL, positions: POSITIONS.filter((p) => people.some((x) => x.position_group === p.key)),
       coordinators: [...new Set(people.map((p) => p.coordinator).filter(Boolean))].sort(),
-      payers_configured: inp.rules.length,
+      payers_configured: inp.rules.filter((r) => r.requires_linking).length,
       due_days: cfg.dueDays,
     };
   }
@@ -687,9 +770,17 @@ module.exports = function initStaffProgression(ctx) {
       const st = b.status === "auto" || b.status === null || b.status === "" ? null : clean(b.status);
       if (st !== null && !["complete", "in_progress", "pending"].includes(st)) return { status: 400, error: "Status must be complete, in progress, pending, or follow the records." };
       if (st === "complete") {
-        if (key === "approval") {
-          const blockers = person.milestones.slice(0, 3).filter((m) => m.status !== "complete");
-          if (blockers.length) return { status: 400, error: `Final approval needs ${blockers.map((m) => m.label).join(", ")} complete first. Payer linking is not required.` };
+        if (key === APPROVAL_KEY) {
+          const blockers = person.milestones.filter((m) => m.key !== APPROVAL_KEY && m.status !== "complete");
+          if (blockers.length) return { status: 400, error: `Final approval needs ${blockers.map((m) => m.label).join(", ")} complete first.` };
+          // Payer linking holds approval too, but an insurer sitting on a
+          // submission is not the new hire's fault and not something HR can
+          // finish. The owner can still approve over it, on the record, with
+          // a note saying why -- which the history keeps.
+          const payerOpen = cur.requirements.filter((r) => !r.done && r.kind === "payer");
+          if (payerOpen.length && !clean(b.notes !== undefined ? b.notes : next.notes)) {
+            return { status: 400, error: `Payer linking is not confirmed yet: ${payerOpen.map((r) => r.label).join("; ")}. Add a note explaining why final approval is being given anyway.` };
+          }
         } else if (cur.missing.length && !clean(b.notes !== undefined ? b.notes : next.notes)) {
           return { status: 400, error: `Still outstanding in the records: ${cur.missing.join("; ")}. Add a note explaining why it is complete anyway.` };
         }
@@ -744,23 +835,35 @@ module.exports = function initStaffProgression(ctx) {
   };
   const pill = (k, label) => { const t = TONE[k] || TONE.pending; return `<span style="display:inline-block;padding:2px 9px;border-radius:999px;background:${t[0]};color:${t[1]};font-size:12px;font-weight:700;white-space:nowrap;">${escH(label)}</span>`; };
 
-  // The pending list: active new hires with internal onboarding still open.
-  // Payer linking plays no part -- an approved hire waiting on a payer is not here.
+  // The pending list: active new hires who are not internally approved yet.
   const pendingPeople = (data) => data.people.filter((p) => !p.approved);
 
   function actionGroups(pending) {
-    const g = { docs: [], verify: [], approval: [], overdue: [], info: [] };
+    const g = { docs: [], payer: [], approval: [], overdue: [], info: [] };
     pending.forEach((p) => {
-      const [hr, docs, ver, appr] = p.milestones;
+      const byKey = (k) => p.milestones.find((m) => m.key === k) || { status: "pending", requirements: [], missing: [] };
+      const hr = byKey("hr_onboarding"), docs = byKey("documents"), appr = byKey(APPROVAL_KEY);
       const info = [...hr.requirements, ...docs.requirements].filter((r) => !r.done && /not recorded/.test(r.label));
       if (info.length) g.info.push({ p, what: info.map((r) => r.label).join("; "), who: "HR" });
       if (p.status === "overdue") g.overdue.push({ p, what: `Target ${shortD(p.target_completion_date)} — ${p.next_action ? p.next_action.label : "finish onboarding"}`, who: p.next_action ? p.next_action.owner : "HR" });
+      const payerOpen = appr.requirements.filter((r) => !r.done && r.kind === "payer");
       if (docs.status !== "complete") g.docs.push({ p, what: docs.missing.join("; ") || "Sign off required documents", who: docs.responsible });
-      else if (ver.status !== "complete") g.verify.push({ p, what: ver.missing.length ? ver.missing.join("; ") : "Sign off credential verification", who: ver.responsible });
+      else if (payerOpen.length) g.payer.push({ p, what: payerOpen.map((r) => r.label + (r.detail ? ` (${r.detail})` : "")).join("; "), who: appr.responsible });
       else if (appr.status !== "complete" && hr.status === "complete") g.approval.push({ p, what: "Give final internal approval", who: appr.responsible });
     });
     return g;
   }
+
+  // What is actually outstanding for one person. Final approval's own
+  // requirements restate the milestones above it -- listing "Required
+  // Documents & Credentials complete" as an outstanding item next to the
+  // document that is actually missing says the same thing twice and reads
+  // like a contradiction. So approval contributes only what is new: the
+  // payer linking nobody here can finish.
+  const outstanding = (p) => p.milestones
+    .filter((m) => m.status !== "complete")
+    .flatMap((m) => (m.key !== APPROVAL_KEY ? m.missing
+      : m.requirements.filter((r) => !r.done && r.kind === "payer").map((r) => r.label + (r.detail ? ` (${r.detail})` : ""))));
 
   function buildEmail(data, reportDate) {
     const pending = pendingPeople(data);
@@ -775,7 +878,7 @@ module.exports = function initStaffProgression(ctx) {
       ${td(`<strong>${escH(p.name)}</strong><br><span style="color:#6b6a86;font-size:12px;">${escH(p.position)}</span>`)}
       ${td(`${escH(shortD(p.hire_date))}<br><span style="color:#6b6a86;font-size:12px;">${p.days_in_onboarding} day${p.days_in_onboarding === 1 ? "" : "s"} pending</span>`)}
       ${td(`${escH(p.current_stage)}<br><span style="color:#6b6a86;font-size:12px;">${p.milestones_done} of ${p.milestones_total} milestones</span>`)}
-      ${td(escH(p.milestones.filter((m) => m.status !== "complete").flatMap((m) => m.missing).slice(0, 4).join("; ") || (p.next_action ? p.next_action.label : "—")))}
+      ${td(escH(outstanding(p).slice(0, 4).join("; ") || (p.next_action ? p.next_action.label : "—")))}
       ${td(escH(p.next_action ? p.next_action.owner : "HR"))}
       ${td(`${escH(shortD(p.target_completion_date))}<br>${pill(p.status, p.status === "overdue" ? "Overdue" : p.status_label)}`)}
     </tr>`).join("");
@@ -799,7 +902,7 @@ module.exports = function initStaffProgression(ctx) {
         <div style="font-size:16px;font-weight:800;margin:20px 0 2px;">Action required</div>
         ${groupHtml("Past their target completion date", g.overdue, "#b91c1c")}
         ${groupHtml("Missing required documentation", g.docs, "#b45309")}
-        ${groupHtml("Awaiting credential verification", g.verify, "#1e40af")}
+        ${groupHtml("Waiting on insurance payer linking", g.payer, "#1e40af")}
         ${groupHtml("Waiting for final internal approval", g.approval, "#1e40af")}
         ${groupHtml("Missing information needed to move forward", g.info, "#b45309")}
         ${recent.length ? `<div style="font-size:16px;font-weight:800;margin:20px 0 6px;">Approved in the last 24 hours</div>
@@ -807,7 +910,7 @@ module.exports = function initStaffProgression(ctx) {
         <p style="text-align:center;margin:26px 0 8px;">
           <a href="${escH(link)}" style="background:#1b2a6b;color:#ffffff;font-weight:700;text-decoration:none;padding:12px 24px;border-radius:999px;font-size:14px;display:inline-block;">View Credentialing Dashboard</a>
         </p>
-        <p style="font-size:11px;color:#6b6a86;text-align:center;margin:0;">Sign-in required. Payer linking is tracked separately and does not hold anyone on this list.</p>
+        <p style="font-size:11px;color:#6b6a86;text-align:center;margin:0;">Sign-in required. Confirmed payer linking is part of final internal approval.</p>
       </div>`;
   }
   const subjectFor = (date) => `Spectrum Squad | Daily New Hire Onboarding Status — ${longDate(date)}`;
@@ -1062,7 +1165,7 @@ module.exports = function initStaffProgression(ctx) {
       return true;
     }
     if (pathname === "/api/credentialing/config" && method === "PUT") {
-      if (!canConfigure(user)) { json(res, 403, { error: "Only an owner or admin can change credentialing settings." }); return true; }
+      if (!canConfigure(user)) { json(res, 403, { error: "Only the practice owner can change credentialing settings." }); return true; }
       const b = await readBody(req);
       if (Array.isArray(b.payers)) {
         for (const p of b.payers) {
@@ -1105,7 +1208,7 @@ module.exports = function initStaffProgression(ctx) {
 
     // ---- email: preview, test, run now, retry, log ---------------------------
     if (pathname.startsWith("/api/credentialing/email") && !canConfigure(user)) {
-      json(res, 403, { error: "Only an owner or admin can manage the daily email." }); return true;
+      json(res, 403, { error: "Only the practice owner can manage the daily email." }); return true;
     }
     if (pathname === "/api/credentialing/email/preview" && method === "GET") {
       const date = today();
