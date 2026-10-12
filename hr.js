@@ -466,6 +466,40 @@ module.exports = function initHr(ctx) {
       created_at TEXT
     )`);
 
+    // WHICH TIMECARD A SIGNED PDF IS OF.
+    //
+    // hr_documents never recorded this, so every query asking "the signed PDF
+    // for this timecard" had to guess -- and guessed "the newest timecard PDF
+    // for this employee". Downloading September's signed card handed you the
+    // most recent one instead, for every pay period except the latest. A
+    // signed timecard is a payroll record, so handing over the wrong one is
+    // worse than handing over nothing.
+    await dbRun(`ALTER TABLE hr_documents ADD COLUMN IF NOT EXISTS timecard_id INTEGER`).catch(() => {});
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_hr_doc_timecard ON hr_documents(timecard_id)").catch(() => {});
+
+    // The PDFs already on file can be recovered rather than abandoned: the
+    // filename carries the pay period end, which is what saveTimecardPdf
+    // builds it from.
+    //
+    // ONLY WHERE IT IS UNAMBIGUOUS. If an employee somehow has two timecards
+    // ending on the same date, this leaves the link null and the screen then
+    // offers no download at all -- which is the right answer, because the
+    // alternative is attaching somebody's signature to the wrong fortnight.
+    await dbRun(
+      `UPDATE hr_documents d
+          SET timecard_id = t.id
+         FROM hr_timecards t
+        WHERE d.timecard_id IS NULL
+          AND d.kind = 'timecard'
+          AND d.employee_id IS NOT NULL
+          AND t.employee_id = d.employee_id
+          AND COALESCE(t.pay_period_end, '') <> ''
+          AND d.filename LIKE '%' || t.pay_period_end || '%'
+          AND (SELECT COUNT(*) FROM hr_timecards t2
+                WHERE t2.employee_id = d.employee_id
+                  AND t2.pay_period_end = t.pay_period_end) = 1`
+    ).catch((e) => console.error("timecard pdf backfill:", e.message));
+
     await dbRun(`CREATE TABLE IF NOT EXISTS hr_timecards (
       id SERIAL PRIMARY KEY,
       employee_id INTEGER,
@@ -3087,7 +3121,11 @@ module.exports = function initHr(ctx) {
           `SELECT t.*, e.name AS employee_name,
                   (SELECT COUNT(*) FROM hr_timecard_flags f WHERE f.timecard_id = t.id) AS flag_count,
                   (SELECT COUNT(*) FROM hr_timecard_flags f WHERE f.timecard_id = t.id AND f.status IN ('open','explained')) AS open_flags,
-                  (SELECT d.id FROM hr_documents d WHERE d.employee_id = t.employee_id AND d.kind = 'timecard' ORDER BY d.id DESC LIMIT 1) AS pdf_doc_id
+                  -- d.timecard_id = t.id, not "newest for this employee".
+                  -- The old form gave every row in this list the same PDF.
+                  (SELECT d.id FROM hr_documents d
+                    WHERE d.timecard_id = t.id AND d.kind = 'timecard'
+                    ORDER BY d.id DESC LIMIT 1) AS pdf_doc_id
              FROM hr_timecards t LEFT JOIN hr_employees e ON e.id = t.employee_id
              ORDER BY t.id DESC LIMIT 100`
         );
@@ -3142,7 +3180,9 @@ module.exports = function initHr(ctx) {
         const flags = await dbAll("SELECT * FROM hr_timecard_flags WHERE timecard_id = ? ORDER BY id", [tc.id]);
         // The signed PDF (saved on accept) so the office can open exactly what the
         // employee signed.
-        const pdf = await dbGet("SELECT id FROM hr_documents WHERE employee_id = ? AND kind = 'timecard' ORDER BY id DESC LIMIT 1", [tc.employee_id]).catch(() => null);
+        const pdf = await dbGet(
+          "SELECT id FROM hr_documents WHERE timecard_id = ? AND kind = 'timecard' ORDER BY id DESC LIMIT 1",
+          [tc.id]).catch(() => null);
         return json(res, 200, { ...tc, entries: parseJson(tc.entries, []), edited_entries: parseJson(tc.edited_entries, []), employee: emp, flags, pdf_doc_id: pdf ? pdf.id : null });
       }
       // Delete a timecard -- OWNER ONLY. Managers can import/send timecards, but
@@ -5658,9 +5698,9 @@ Write body as plain text with line breaks (no HTML).`;
 
     const filename = `Timecard_${empName.replace(/[^A-Za-z0-9]+/g, "_")}_${tc.pay_period_end || "period"}.pdf`;
     const row = await dbRun(
-      `INSERT INTO hr_documents (employee_id, kind, filename, stored_name, mime_type, created_at)
-       VALUES (?, 'timecard', ?, ?, 'application/pdf', ?) RETURNING id`,
-      [tc.employee_id || null, filename, storedName, nowISO()]
+      `INSERT INTO hr_documents (employee_id, timecard_id, kind, filename, stored_name, mime_type, created_at)
+       VALUES (?, ?, 'timecard', ?, ?, 'application/pdf', ?) RETURNING id`,
+      [tc.employee_id || null, tc.id || null, filename, storedName, nowISO()]
     );
     return row.rows[0].id;
   }
