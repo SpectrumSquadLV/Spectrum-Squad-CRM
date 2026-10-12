@@ -102,7 +102,12 @@ const daysAgo = (n) => {
   let score = r.data.score;
   check("both occurrences reached this person's total (the sheet showed 0.0)", score.points_30 === 2.5, score.points_30);
   check("the 90-day total agrees", score.points_90 === 2.5, score.points_90);
-  check("2.5 in 30 days is an Attendance Improvement Plan", score.review_level === "Attendance Improvement Plan", score.review_level);
+  // 2.5 sat in Attendance Improvement Plan under the old ladder. The policy
+  // now starts a coaching conversation at 4, so a month at 2.5 is a month
+  // somebody is monitored through rather than put on a plan for.
+  check("2.5 in 30 days is Meets Expectations, since coaching now starts at 4",
+    score.review_level === "Meets Expectations", score.review_level);
+  check("and it still counts as a good month for pay", score.review_needs_action === false, score);
   check("2.5 in 90 days is still Good standing", score.discipline_level === "Good standing", score.discipline_level);
   check("notice hours were computed from the times", 
     (r.data.flags || []).some((f) => Number(f.notice_hours) === 3), (r.data.flags || []).map((f) => f.notice_hours));
@@ -242,10 +247,73 @@ const daysAgo = (n) => {
   const revId = reviewee.data.id || (reviewee.data.employee && reviewee.data.employee.id);
   await owner(`/api/attendance/employee/${revId}`, { method: "POST", body: { type_key: "left_early", incident_date: daysAgo(5), notify: false } });
   await owner(`/api/attendance/employee/${revId}`, { method: "POST", body: { type_key: "calloff_gt4", incident_date: daysAgo(3), notify: false } });
+  await owner(`/api/attendance/employee/${revId}`, { method: "POST", body: { type_key: "left_early", incident_date: daysAgo(7), notify: false } });
 
   score = await scoreOf(revId);
-  check("the reviewee is at 3.0 for the period", score.points_30 === 3, score.points_30);
+  check("the reviewee is at 5.0 for the period", score.points_30 === 5, score.points_30);
   check("which is an Attendance Improvement Plan", score.review_level === "Attendance Improvement Plan", score.review_level);
+  check("and is marked as needing action", score.review_needs_action === true, score);
+
+  // ---- THE LADDER ITSELF, pinned at every boundary -------------------
+  // The policy moved once; these are what make moving it again a decision
+  // rather than an accident.
+  const bandAt = async (pts) => {
+    const who = await owner("/api/hr/employees", { method: "POST", body: {
+      name: `Band ${pts} ${stamp}`, email: `band.${String(pts).replace(".", "-")}.${stamp}@example.invalid`,
+      role_title: "RBT", status: "active", hire_date: daysAgo(300) } });
+    const id = who.data.id || (who.data.employee && who.data.employee.id);
+    let left = pts;
+    let day = 2;
+    while (left >= 2) {
+      await owner(`/api/attendance/employee/${id}`, { method: "POST", body: {
+        type_key: "left_early", incident_date: daysAgo(day++), notify: false } });
+      left -= 2;
+    }
+    while (left >= 0.5) {
+      await owner(`/api/attendance/employee/${id}`, { method: "POST", body: {
+        type_key: "late", incident_date: daysAgo(day++), notify: false } });
+      left -= 0.5;
+    }
+    const sc = await scoreOf(id);
+    return { points: sc.points_30, level: sc.review_level, needs: sc.review_needs_action };
+  };
+  const b0 = await bandAt(0);
+  check("0 points is Exceeds Expectations", b0.level === "Exceeds Expectations", b0);
+  const b35 = await bandAt(3.5);
+  check("3.5 points is still Meets Expectations", b35.points === 3.5 && b35.level === "Meets Expectations", b35);
+  check("and still a good month", b35.needs === false, b35);
+  const b4 = await bandAt(4);
+  check("4 POINTS IS A COACHING CONVERSATION — the line this policy change moved",
+    b4.points === 4 && b4.level === "Coaching Conversation", b4);
+  check("and is no longer a good month", b4.needs === true, b4);
+  const b5 = await bandAt(5);
+  check("5 points is an Attendance Improvement Plan",
+    b5.points === 5 && b5.level === "Attendance Improvement Plan", b5);
+  const b6 = await bandAt(6);
+  check("6 points is a Leadership Review",
+    b6.points === 6 && b6.level === "Leadership Review", b6);
+
+  // ---- AND THE COUNTS THAT HANG OFF THE LINE -------------------------
+  //
+  // The roster tile and the management summary each used to carry their own
+  // copy of the threshold. Nothing tested either against the policy, so a
+  // stale copy was invisible -- which is how three of them survived a policy
+  // change in the first place. These two checks are what make the single
+  // source actually single.
+  const lineRoster = await owner("/api/attendance/roster");
+  check("the roster reports the coaching line it is counting from",
+    Number(lineRoster.data.totals.coaching_min) === 4, lineRoster.data.totals);
+  const lineStaff = lineRoster.data.staff || [];
+  const needing = lineStaff.filter((x) => Number(x.points_30) >= 4).length;
+  const belowLine = lineStaff.filter(
+    (x) => Number(x.points_30) >= 1.5 && Number(x.points_30) < 4).length;
+  check("there is somebody sitting between the old line and the new one",
+    belowLine >= 1, { belowLine, points: lineStaff.map((x) => x.points_30) });
+  check("THE TILE COUNTS FROM 4, NOT FROM THE OLD 1.5 — otherwise it counts"
+    + " people the policy now calls fine and labels them 'at coaching level'",
+    Number(lineRoster.data.totals.needing_action) === needing,
+    { tile: lineRoster.data.totals.needing_action, from_four: needing,
+      from_one_five: needing + belowLine });
 
   const period = new Date().toISOString().slice(0, 7);
   r = await owner("/api/attendance/monthly-review", { method: "POST", body: { period } });

@@ -60,7 +60,11 @@
       return '<span class="tag" style="background:' + tone[0] + ';color:' + tone[1] + ';font-size:12.5px;padding:5px 11px;">' + esc(label) + ": <strong>" + esc(String(value)) + "</strong></span>";
     };
     var head = score
-      ? chip("30-day points", score.points_30, score.points_30 >= 1.5 ? ["#fef3c7", "#92400e"] : ["#dcfce7", "#166534"])
+      ? chip("30-day points", score.points_30,
+             // The server says whether this band needs a conversation; the
+             // browser does not re-derive it from a number it would then
+             // have to be kept in step with.
+             score.review_needs_action ? ["#fef3c7", "#92400e"] : ["#dcfce7", "#166534"])
         + " " + chip("90-day points", score.points_90, score.points_90 >= 3 ? ["#fee2e2", "#991b1b"] : ["#dcfce7", "#166534"])
         + " " + pill(score.discipline_level) + " " + pill(score.review_level)
         + " " + chip("Bonus", score.bonus_eligible ? "$50 on track" : score.bonus_status, score.bonus_eligible ? ["#dcfce7", "#166534"] : ["#f1f5f9", "#475569"])

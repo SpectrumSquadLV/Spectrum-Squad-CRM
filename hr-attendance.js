@@ -63,12 +63,25 @@ module.exports = function initHrAttendance(ctx) {
   // between an acceptable month and one that needs a conversation is a policy
   // decision, not an arithmetic one, and it must not exist twice.
   const MONTHLY_REVIEW = [
-    { min: 4.5, level: "Leadership Review", action: "Review caseload / disciplinary action", bonus: "Not bonus eligible", meets: false },
-    { min: 2.5, level: "Attendance Improvement Plan", action: "Create improvement plan", bonus: "Not bonus eligible for active cycle", meets: false },
-    { min: 1.5, level: "Coaching Conversation", action: "Discuss patterns / support", bonus: "Not guaranteed", meets: false },
+    { min: 6, level: "Leadership Review", action: "Review caseload / disciplinary action", bonus: "Not bonus eligible", meets: false },
+    { min: 5, level: "Attendance Improvement Plan", action: "Create improvement plan", bonus: "Not bonus eligible for active cycle", meets: false },
+    { min: 4, level: "Coaching Conversation", action: "Discuss patterns / support", bonus: "Not guaranteed", meets: false },
     { min: 0.5, level: "Meets Expectations", action: "Monitor and document", bonus: "May remain eligible only if 90-day points return to 0", meets: true },
     { min: 0, level: "Exceeds Expectations", action: "Recognize reliability", bonus: "Can remain eligible if 90-day points are 0", meets: true },
   ];
+
+  // WHERE A CONVERSATION STARTS, read off the matrix rather than written out
+  // again. It is the lowest band that is not a good month, so moving the
+  // coaching line moves every count, tile and colour that depends on it in
+  // one edit.
+  //
+  // This existed as a hardcoded 1.5 in three other places -- the roster tile,
+  // the management summary's "N staff at Coaching Conversation or above", and
+  // the colour of the points chip. Raising the coaching line to 4 without
+  // this would have left the summary counting from 1.5 while naming a level
+  // that now starts at 4, and the sentence would have been wrong rather than
+  // merely stale.
+  const COACHING_MIN = Math.min(...MONTHLY_REVIEW.filter((b) => b.meets !== true).map((b) => b.min));
 
   const BONUS_AMOUNT = 50;      // $50
   const BONUS_CYCLE_DAYS = 90;  // paid every 90 days from hire date
@@ -484,6 +497,13 @@ module.exports = function initHrAttendance(ctx) {
       points_30: points30,
       review_level: band.level,
       review_action: band.action,
+      // WHETHER THIS MONTH NEEDS A CONVERSATION, answered by the server off
+      // the matrix. The staff card used to colour its points chip by
+      // comparing against a hardcoded 1.5, which is the coaching line
+      // written out a fourth time -- and a browser is not where a policy
+      // threshold belongs.
+      review_needs_action: band.meets !== true,
+      coaching_min: COACHING_MIN,
       bonus_impact: exclusion.excluded ? "Not in the attendance bonus" : band.bonus,
       bonus_eligible: exclusion.excluded ? false : bonus.eligible,
       bonus_status: exclusion.excluded ? exclusion.reason : bonus.status,
@@ -1194,7 +1214,8 @@ module.exports = function initHrAttendance(ctx) {
             // scheme at all.
             bonus_excluded: staff.filter((s) => s.bonus_excluded).length,
             bonus_in_scheme: staff.filter((s) => !s.bonus_excluded).length,
-            needing_action: staff.filter((s) => s.points_30 >= 1.5).length,
+            needing_action: staff.filter((s) => s.points_30 >= COACHING_MIN).length,
+            coaching_min: COACHING_MIN,
             unsigned: staff.reduce((n, s) => n + s.unsigned_acknowledgments, 0),
           },
           bonus_amount: BONUS_AMOUNT,
@@ -1454,7 +1475,7 @@ module.exports = function initHrAttendance(ctx) {
     const nothingNew = skipped === scored.length && scored.length > 0 && !force;
     let emailedManagers = 0;
     if (recipients.length && !nothingNew) {
-      const needing = scored.filter((x) => x.score.points_30 >= 1.5)
+      const needing = scored.filter((x) => x.score.points_30 >= COACHING_MIN)
         .sort((a, b) => b.score.points_30 - a.score.points_30);
       const bonusDue = scored.filter((x) => x.score.bonus_eligible);
       const row = (x) => `<tr>
@@ -1696,7 +1717,7 @@ module.exports = function initHrAttendance(ctx) {
     // once.
     matrixTypes, typeByKey, logEmpActivity, attendanceCompliance,
     _internal: {
-      buildAckPdf, REASONS, ATTENDANCE_MATRIX, DISCIPLINE_STEPS, MONTHLY_REVIEW,
+      buildAckPdf, REASONS, ATTENDANCE_MATRIX, DISCIPLINE_STEPS, MONTHLY_REVIEW, COACHING_MIN,
       scoreEmployee, disciplineFor, monthlyReviewFor, bonusCycle, bonusExclusion, noticeHours,
       pointsBetween, daysBefore, addDays, lastDayOf, monthLabel, monthsBetween,
     },
