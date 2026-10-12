@@ -102,6 +102,9 @@ function api(cookie) {
   check("the approved RBT waiting on Medicaid shows 0 of 1 linked", /Dee Done[\s\S]*?0 of 1 linked/.test(rowText));
   check("progress bars are drawn", (await page.$$("#cr-rows .cr-bar span")).length >= 4);
   check("no settings or edit buttons for her", !(await page.$("#cr-settings")) && !(await page.$("#cr-track")));
+  // A button that simply is not there reads as a bug. Say whose it is.
+  check("...but she is told why there are no settings, not left guessing",
+    /Payer rules, deadlines and the daily email are set by the practice owner/.test(await page.textContent("body")));
   await shot("01-dashboard");
 
   await page.fill("#cr-q", "Bea BCBA");
@@ -140,6 +143,8 @@ function api(cookie) {
   await go("#/credentialing");
   await page.waitForSelector("#cr-rows tr[data-emp]", { timeout: 10000 }).catch(() => {});
   check("owner gets Settings and Track an employee", !!(await page.$("#cr-settings")) && !!(await page.$("#cr-track")));
+  check("...and is not told the settings belong to someone else",
+    !/set by the practice owner/.test(await page.textContent("body")));
   await page.click(`#cr-rows tr[data-emp="${rbt}"]`);
   await page.waitForSelector('#cr-drawer [data-ms="documents"] [data-save]', { timeout: 8000 }).catch(() => {});
   await page.selectOption('#cr-drawer [data-ms="documents"] [data-f="status"]', "complete");

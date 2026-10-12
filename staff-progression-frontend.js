@@ -1,7 +1,7 @@
 // staff-progression-frontend.js -- the Credentialing Tracker, in three places.
 //
 //   1. THE CREDENTIALING DASHBOARD at #/credentialing: summary cards, the staff
-//      progression table, the employee side panel with the four-stage tracker,
+//      progression table, the employee side panel with the three-stage tracker,
 //      payer linking and per-payer readiness, and (the owner only) the settings for
 //      payer rules, due dates and the 7 AM email.
 //   2. A COMPACT CARD on the Clinical Director's dashboards that links to it.
@@ -243,7 +243,8 @@
           <div class="cr-sub">Internal onboarding for every new hire, with payer linking tracked separately. Read from the HR Hub on every load.</div></div>
         <div class="cr-actions">
           ${d.can_edit ? `<button class="cr-btn ghost" id="cr-track">Track an employee</button>` : ""}
-          ${d.can_configure ? `<button class="cr-btn ghost" id="cr-settings">Settings &amp; daily email</button>` : ""}
+          ${d.can_configure ? `<button class="cr-btn ghost" id="cr-settings">Settings &amp; daily email</button>`
+            : `<span class="cr-muted" style="font-size:12px;align-self:center;">Payer rules, deadlines and the daily email are set by the practice owner.</span>`}
           <button class="cr-btn ghost" id="cr-refresh">Refresh</button>
         </div>
       </div>
