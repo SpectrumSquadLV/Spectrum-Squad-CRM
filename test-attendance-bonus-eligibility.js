@@ -126,9 +126,18 @@ async function addEmployee(name, roleTitle, crmEmail) {
   const score = detail.data && detail.data.score;
   check("an occurrence can be logged against them", logged.status === 201 || logged.status === 200, logged.data);
   check("THEIR POINTS ARE STILL COUNTED", score && score.points_90 > 0, score && score.points_90);
-  check("and their standing moves to match -- a no-call/no-show is 5 points",
-    score && score.points_90 === 5 && /termination|final|written/i.test(score.discipline_level || ""),
+  // A NO-CALL/NO-SHOW IS A WRITTEN WARNING ON ITS OWN.
+  //
+  // It is 5 points, which on the moved ladder is only the first step -- so
+  // the points alone would make it a verbal reminder. The policy says this
+  // is the serious one, so it carries its own step: a floor, applied
+  // whatever the points total.
+  check("and their standing moves to match -- a no-call/no-show is a written"
+    + " warning on a single occurrence",
+    score && score.points_90 === 5 && score.discipline_level === "Written warning",
     score && { points: score.points_90, level: score.discipline_level });
+  check("which is above what 5 points alone would give them",
+    score && score.discipline_level !== "Verbal reminder", score && score.discipline_level);
   check("their monthly review level moves too",
     score && /leadership|improvement|coaching/i.test(score.review_level || ""),
     score && score.review_level);

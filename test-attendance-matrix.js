@@ -160,6 +160,51 @@ const daysAgo = (n) => {
   score = await scoreOf(ladderId);
   check("11 points is a Termination review", score.points_90 === 11 && score.discipline_level === "Termination review", score);
 
+  // ---- A NO-CALL/NO-SHOW CARRIES ITS OWN STEP ------------------------
+  //
+  // It is 5 points, which on this ladder is only the first step, so the
+  // arithmetic alone would call one a verbal reminder. The policy says it is
+  // the serious one, so it floors the standing at a written warning. These
+  // checks are the floor's three edges: it raises, it never lowers, and it
+  // lifts when the occurrence ages out of the window.
+  const ncnsEmp = await owner("/api/hr/employees", { method: "POST", body: {
+    name: "Ncns One " + stamp, email: `ncns.${stamp}@example.invalid`,
+    role_title: "RBT", status: "active", hire_date: daysAgo(300) } });
+  const ncnsId = ncnsEmp.data.id || (ncnsEmp.data.employee && ncnsEmp.data.employee.id);
+  await owner(`/api/attendance/employee/${ncnsId}`, { method: "POST", body: {
+    type_key: "ncns", incident_date: daysAgo(10), notify: false } });
+  score = await scoreOf(ncnsId);
+  check("a single no-call/no-show is 5 points", score.points_90 === 5, score.points_90);
+  check("AND IS A WRITTEN WARNING, not the verbal reminder 5 points alone would give",
+    score.discipline_level === "Written warning", score.discipline_level);
+  check("and the caseload is flagged with it",
+    score.caseload_risk === "Review caseload", score.caseload_risk);
+  check("the roster marks them as needing action",
+    score.discipline_needs_action === true, score.discipline_needs_action);
+
+  // IT RAISES, IT NEVER LOWERS. Enough points for a termination review plus
+  // a no-call/no-show must stay a termination review.
+  for (const d of [9, 8, 7]) {
+    await owner(`/api/attendance/employee/${ncnsId}`, { method: "POST", body: {
+      type_key: "left_early", incident_date: daysAgo(d), notify: false } });
+  }
+  score = await scoreOf(ncnsId);
+  check("with 11 points and a no-call/no-show they are at 11", score.points_90 === 11, score.points_90);
+  check("A FLOOR ONLY EVER RAISES THE STEP — they are not pulled back down"
+    + " to a written warning", score.discipline_level === "Termination review", score.discipline_level);
+
+  // AND IT LIFTS WITH THE WINDOW, like the points do.
+  const oldNcns = await owner("/api/hr/employees", { method: "POST", body: {
+    name: "Ncns Old " + stamp, email: `ncns.old.${stamp}@example.invalid`,
+    role_title: "RBT", status: "active", hire_date: daysAgo(400) } });
+  const oldId = oldNcns.data.id || (oldNcns.data.employee && oldNcns.data.employee.id);
+  await owner(`/api/attendance/employee/${oldId}`, { method: "POST", body: {
+    type_key: "ncns", incident_date: daysAgo(200), notify: false } });
+  score = await scoreOf(oldId);
+  check("a no-call/no-show from 200 days ago counts for no points", score.points_90 === 0, score.points_90);
+  check("AND FLOORS NOTHING — they are in good standing",
+    score.discipline_level === "Good standing", score.discipline_level);
+
   // None of those fall inside 30 days, so the monthly review reads clean.
   check("none of it lands in the 30-day window", score.points_30 === 0, score.points_30);
   check("so the monthly review reads Exceeds Expectations", score.review_level === "Exceeds Expectations", score.review_level);

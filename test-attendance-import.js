@@ -189,8 +189,12 @@ const usDate = (n) => {
     lin.flags.map((f) => Number(f.points)).sort().join(",") === "0.5,1,2",
     lin.flags.map((f) => f.points));
   check("their rolling 90-day total now reflects the history", lin.score.points_90 === 3.5, lin.score);
-  check("which puts them at a real discipline step rather than good standing",
-    lin.score.discipline_level === "Verbal reminder", lin.score.discipline_level);
+  // 3.5 rolling points used to be a Verbal reminder. The ladder now starts at
+  // 5, one point above the coaching line, so this imported history is good
+  // standing -- which is the point of the change rather than a regression:
+  // a conversation comes before anything is filed.
+  check("and 3.5 rolling points is good standing under the moved ladder",
+    lin.score.discipline_level === "Good standing", lin.score.discipline_level);
 
   const kate = (await owner(`/api/attendance/employee/${kateId}`)).data;
   check("the earn-back came across as a credit", kate.score.points_90 === 1, kate.score);

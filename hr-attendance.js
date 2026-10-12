@@ -75,6 +75,26 @@ module.exports = function initHrAttendance(ctx) {
     { at: 0, level: "Good standing" },
   ];
 
+  // SOME OCCURRENCES CARRY THEIR OWN STEP, whatever the points add up to.
+  //
+  // A no-call/no-show is 5 points, and moving the ladder up made 5 the first
+  // step -- so one of them became a verbal reminder where it used to be a
+  // written warning. The points arithmetic says that is consistent; the
+  // policy says a no-call/no-show is the serious one.
+  //
+  // WHY A FLOOR RATHER THAN MORE POINTS. Raising NCNS to 7 would reach the
+  // written warning too, and would also put two of them at termination
+  // review -- while the matrix line itself says "5+ may lead to
+  // termination". A floor does the one thing asked and leaves the rest of
+  // the arithmetic, and that 5+ intent, exactly as it was.
+  //
+  // It lifts with the window: once the occurrence is more than 90 days old
+  // it stops counting for points and stops flooring, like everything else
+  // on this ladder.
+  const DISCIPLINE_FLOORS = [
+    { type_key: "ncns", level: "Written warning" },
+  ];
+
   // The first step that is not good standing, and the step at which a
   // caseload gets looked at. Both read off the ladder.
   const DISCIPLINE_MIN = Math.min(...DISCIPLINE_STEPS.filter((x) => x.at > 0).map((x) => x.at));
@@ -392,9 +412,27 @@ module.exports = function initHrAttendance(ctx) {
     };
   }
 
-  function disciplineFor(points90) {
-    for (const step of DISCIPLINE_STEPS) if (points90 >= step.at) return step.level;
-    return "Good standing";
+  // The step somebody has reached, as a row rather than a label, so the
+  // things that depend on it -- the level, whether it needs action, whether
+  // the caseload gets looked at -- all read the same answer. Working any of
+  // them out from points separately is how caseload_risk came to say "OK"
+  // beside the words "Written warning".
+  function disciplineStepFor(points90, typeKeysInWindow = []) {
+    let reached = DISCIPLINE_STEPS.find((step) => points90 >= step.at)
+      || DISCIPLINE_STEPS[DISCIPLINE_STEPS.length - 1];
+    // THE HIGHER OF THE TWO, never the lower: a floor can only raise the
+    // step. Somebody at 11 points with one no-call/no-show is still a
+    // termination review, not pulled back down to a written warning.
+    for (const floor of DISCIPLINE_FLOORS) {
+      if (!(typeKeysInWindow || []).includes(floor.type_key)) continue;
+      const step = DISCIPLINE_STEPS.find((x) => x.level === floor.level);
+      if (step && step.at > reached.at) reached = step;
+    }
+    return reached;
+  }
+
+  function disciplineFor(points90, typeKeysInWindow = []) {
+    return disciplineStepFor(points90, typeKeysInWindow).level;
   }
 
   function monthlyReviewFor(points30) {
@@ -510,13 +548,21 @@ module.exports = function initHrAttendance(ctx) {
     // ladder applies to everybody. It is only the payout they are outside of.
     const exclusion = bonusExclusion(emp);
     const unsigned = (rows || []).filter((f) => countable(f) && !(f.acknowledged === true || f.acknowledged === "t")).length;
+    // Which kinds of occurrence fall inside the rolling window, for the
+    // floors. Same window and the same countable filter the points use, so a
+    // voided occurrence floors nothing and one that has aged out stops.
+    const typeKeys90 = [...new Set((rows || []).filter(countable).filter((f) => {
+      const d = String(f.incident_date || "").slice(0, 10);
+      return d && d >= daysBefore(asOf, 90) && d <= asOf;
+    }).map((f) => f.type_key).filter(Boolean))];
+    const step90 = disciplineStepFor(points90, typeKeys90);
     return {
       employee_id: emp && emp.id,
       name: emp && emp.name,
       role_title: (emp && emp.role_title) || "",
       hire_date: (emp && emp.hire_date) || null,
       points_90: points90,
-      discipline_level: disciplineFor(points90),
+      discipline_level: step90.level,
       points_30: points30,
       review_level: band.level,
       review_action: band.action,
@@ -530,7 +576,10 @@ module.exports = function initHrAttendance(ctx) {
       // Same reasoning as review_needs_action: the 90-day chip was coloured
       // by comparing against a hardcoded 3, which is the verbal-reminder step
       // written out again in a browser.
-      discipline_needs_action: points90 >= DISCIPLINE_MIN,
+      // Taken from the STEP, not from the points, now that a floor can raise
+      // it on its own. Comparing points against DISCIPLINE_MIN would show a
+      // green chip beside the words "Written warning".
+      discipline_needs_action: step90.at > 0,
       discipline_min: DISCIPLINE_MIN,
       bonus_impact: exclusion.excluded ? "Not in the attendance bonus" : band.bonus,
       bonus_eligible: exclusion.excluded ? false : bonus.eligible,
@@ -547,7 +596,10 @@ module.exports = function initHrAttendance(ctx) {
       // "Staff who demonstrate repeated call-offs ... may have their caseload
       // reduced or split" -- surfaced at the written-warning threshold, which
       // is where the sheet's own Client Assignment Risk column flips.
-      caseload_risk: CASELOAD_RISK_AT != null && points90 >= CASELOAD_RISK_AT ? "Review caseload" : "OK",
+      // Flips at the written-warning STEP, so a no-call/no-show that floors
+      // somebody there flags the caseload too -- which is the point of the
+      // sheet's Client Assignment Risk column.
+      caseload_risk: CASELOAD_RISK_AT != null && step90.at >= CASELOAD_RISK_AT ? "Review caseload" : "OK",
       occurrences_90: (rows || []).filter(countable).filter((f) => {
         const d = String(f.incident_date || "").slice(0, 10);
         return d && d >= daysBefore(asOf, 90) && d <= asOf;
@@ -1745,8 +1797,8 @@ module.exports = function initHrAttendance(ctx) {
     // once.
     matrixTypes, typeByKey, logEmpActivity, attendanceCompliance,
     _internal: {
-      buildAckPdf, REASONS, ATTENDANCE_MATRIX, DISCIPLINE_STEPS, MONTHLY_REVIEW, COACHING_MIN, DISCIPLINE_MIN, CASELOAD_RISK_AT,
-      scoreEmployee, disciplineFor, monthlyReviewFor, bonusCycle, bonusExclusion, noticeHours,
+      buildAckPdf, REASONS, ATTENDANCE_MATRIX, DISCIPLINE_STEPS, DISCIPLINE_FLOORS, MONTHLY_REVIEW, COACHING_MIN, DISCIPLINE_MIN, CASELOAD_RISK_AT,
+      scoreEmployee, disciplineFor, disciplineStepFor, monthlyReviewFor, bonusCycle, bonusExclusion, noticeHours,
       pointsBetween, daysBefore, addDays, lastDayOf, monthLabel, monthsBetween,
     },
   };
