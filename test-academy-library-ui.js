@@ -1,0 +1,349 @@
+// Step four on screen: training material, the hours log, the survey, the
+// reports, and the curriculum editor.
+//
+// The claims worth having in a browser are the ones where a silent
+// regression MISLEADS somebody rather than merely annoying them:
+//
+//   * the hours card says, in words, that these are not billable. Somebody
+//     logging eight hours of shadowing needs to know they have not just
+//     claimed eight hours of pay.
+//   * the survey says the link to their name is ABSENT, and warns that free
+//     text can still identify them. An over-promise here is the difference
+//     between honest answers and a careful fiction.
+//   * the curriculum editor says, BEFORE an edit, that it will fork and
+//     leave the people currently onboarding where they are.
+//   * sealed feedback looks sealed, and shows no answers.
+//   * an ordinary BCBA is offered none of the leadership screens.
+//
+//   BASE=http://127.0.0.1:3013 DATABASE_URL=... node test-academy-library-ui.js
+"use strict";
+const { chromium } = require("playwright");
+const { Pool } = require("pg");
+const crypto = require("crypto");
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false });
+const stamp = Date.now().toString(36);
+const today = () => new Date().toISOString().slice(0, 10);
+
+(async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
+  const page = await browser.newPage({ viewport: { width: 1400, height: 1100 } });
+  const errors = [];
+  page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
+
+  let pass = 0, fail = 0;
+  const check = (name, cond, detail) => {
+    if (cond) { pass++; console.log("  PASS  " + name); }
+    else { fail++; console.log("  FAIL  " + name + (detail !== undefined ? "  -> " + (typeof detail === "string" ? detail : JSON.stringify(detail)).slice(0, 400) : "")); }
+  };
+  const section = (t) => console.log("\n== " + t + " ==");
+  const BASE = process.env.BASE || "http://localhost:3013";
+  const hp = (pw) => {
+    const salt = crypto.randomBytes(16).toString("hex");
+    return { salt, hash: crypto.scryptSync(pw, salt, 64).toString("hex") };
+  };
+  const login = async (email, password) => {
+    await page.goto(BASE + "/", { waitUntil: "networkidle" });
+    await page.evaluate(async () => {
+      try { await fetch("/api/auth/logout", { method: "POST", credentials: "include" }); } catch (e) {}
+    });
+    await page.goto(BASE + "/", { waitUntil: "networkidle" });
+    await page.waitForSelector('#login-form input[name="email"]', { timeout: 15000 });
+    await page.fill('#login-form input[name="email"]', email);
+    await page.fill('#login-form input[name="password"]', password);
+    await page.click('#login-form button[type="submit"]');
+    await page.waitForTimeout(1600);
+  };
+  const openAcademy = async () => {
+    await page.goto(BASE + "/#/bcba-hub");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForSelector(".bh-tabs", { timeout: 15000 });
+    await page.click('.bh-tab[data-tab="academy"]');
+    await page.waitForSelector(".ac-wrap", { timeout: 15000 });
+    await page.waitForTimeout(800);
+  };
+
+  const purge = async () => {
+    const ids = "(SELECT id FROM hr_employees WHERE name LIKE 'AcadL4 %')";
+    const enr = `(SELECT id FROM academy_enrollments WHERE employee_id IN ${ids})`;
+    await pool.query(`DELETE FROM academy_hours WHERE enrollment_id IN ${enr}`).catch(() => {});
+    await pool.query(`DELETE FROM academy_survey_done WHERE enrollment_id IN ${enr}`).catch(() => {});
+    for (const t of ["academy_dev_plans", "academy_progress", "academy_audit", "academy_checkins",
+                     "academy_questions", "academy_gaps"]) {
+      await pool.query(`DELETE FROM ${t} WHERE enrollment_id IN ${enr}`).catch(() => {});
+    }
+    await pool.query(`DELETE FROM academy_enrollments WHERE employee_id IN ${ids}`).catch(() => {});
+    await pool.query("UPDATE academy_enrollments SET mentor_id = NULL WHERE mentor_id IN " + ids).catch(() => {});
+    await pool.query("DELETE FROM hr_employees WHERE name LIKE 'AcadL4 %'").catch(() => {});
+    await pool.query("DELETE FROM users WHERE email LIKE 'acadl4-%'").catch(() => {});
+    const progs = "(SELECT id FROM academy_programs WHERE key LIKE 'acadl4-%')";
+    await pool.query(`DELETE FROM academy_survey_responses WHERE program_id IN ${progs}`).catch(() => {});
+    await pool.query(`DELETE FROM academy_resources WHERE module_id IN (SELECT id FROM academy_modules WHERE program_id IN ${progs})`).catch(() => {});
+    await pool.query(`DELETE FROM academy_resources WHERE item_id IN (SELECT i.id FROM academy_items i JOIN academy_modules m ON m.id = i.module_id WHERE m.program_id IN ${progs})`).catch(() => {});
+    await pool.query(`DELETE FROM academy_items WHERE module_id IN (SELECT id FROM academy_modules WHERE program_id IN ${progs})`).catch(() => {});
+    await pool.query(`DELETE FROM academy_modules WHERE program_id IN ${progs}`).catch(() => {});
+    await pool.query(`DELETE FROM academy_enrollments WHERE program_id IN ${progs}`).catch(() => {});
+    await pool.query(`DELETE FROM academy_programs WHERE key LIKE 'acadl4-%'`).catch(() => {});
+    await pool.query("DELETE FROM crm_policies WHERE title LIKE 'AcadL4 %'").catch(() => {});
+  };
+
+  try {
+    await purge();
+
+    // ---- fixtures through the real API ---------------------------------
+    let cookie = "";
+    const asOwner = async (path, opts = {}) => {
+      const r = await fetch(BASE + path, {
+        method: opts.method || "GET",
+        headers: { ...(opts.body ? { "Content-Type": "application/json" } : {}), ...(cookie ? { Cookie: cookie } : {}) },
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+      const sc = r.headers.get("set-cookie"); if (sc) cookie = sc.split(";")[0];
+      let d = null; try { d = await r.json(); } catch (e) {}
+      return { status: r.status, data: d };
+    };
+    await asOwner("/api/auth/login", { method: "POST", body: {
+      email: "admin@spectrumsquadlv.com", password: "TestOwner123!" } });
+
+    const prog = (await asOwner("/api/academy/programs", { method: "POST", body: {
+      name: `AcadL4 Programme ${stamp}`, key: `acadl4-${stamp}`, weeks: 1, duration_days: 7 } })).data.program;
+    const mod = (await asOwner(`/api/academy/programs/${prog.id}/modules`, { method: "POST", body: {
+      week: 1, title: "Week 1 — Systems" } })).data.module;
+    const item = (await asOwner(`/api/academy/modules/${mod.id}/items`, { method: "POST", body: {
+      title: "Learn the authorization screen", kind: "reading" } })).data.item;
+    const pol = (await pool.query(
+      `INSERT INTO crm_policies (title, category, body, slug, published, created_at)
+       VALUES ('AcadL4 Attendance Policy','HR','Be on time.',$1,TRUE, now()::text) RETURNING id`,
+      [`acadl4-att-${stamp}`])).rows[0];
+    await asOwner("/api/academy/resources", { method: "POST", body: {
+      item_id: item.id, kind: "document", policy_id: pol.id } });
+    await asOwner("/api/academy/resources", { method: "POST", body: {
+      module_id: mod.id, kind: "video", title: "Our systems in ten minutes",
+      url: "https://www.loom.com/share/acadl4" } });
+
+    const email = `acadl4-new-${stamp}@example.invalid`;
+    const p1 = hp("AcadL4Pass123!");
+    await pool.query(
+      `INSERT INTO users (name, email, password_hash, password_salt, role, created_at)
+       VALUES ('AcadL4 Newbie',$1,$2,$3,'clinical', now())`, [email, p1.hash, p1.salt]);
+    const empId = (await pool.query(
+      `INSERT INTO hr_employees (name, email, role_title, hr_hire_date, status)
+       VALUES ('AcadL4 Newbie',$1,'BCBA',$2,'active') RETURNING id`, [email, today()])).rows[0].id;
+    const enr = (await asOwner("/api/academy/enrollments", { method: "POST", body: {
+      employee_id: empId, program_key: prog.key } })).data.enrollment;
+    check("the fixture is built through the real API", !!enr && !!enr.id, enr);
+
+    // =====================================================================
+    section("THE NEW BCBA SEES WHAT TO READ AND WATCH");
+    await login(email, "AcadL4Pass123!");
+    await openAcademy();
+    const txt = await page.textContent(".ac-wrap");
+    check("the week's video is on the page", /Our systems in ten minutes/.test(txt), txt.slice(0, 400));
+    check("and the SOP attached to the item", /AcadL4 Attendance Policy/.test(txt), txt.slice(0, 600));
+    const links = await page.evaluate(() => [...document.querySelectorAll(".ac-res a")].map((a) => ({
+      href: a.getAttribute("href"), rel: a.getAttribute("rel"), target: a.getAttribute("target"),
+    })));
+    check("the SOP links into the policy library, not a copy",
+      links.some((l) => /^\/policies#/.test(l.href || "")), links);
+    check("the video keeps its external link", links.some((l) => /loom\.com/.test(l.href || "")), links);
+    check("EVERY EXTERNAL LINK CARRIES rel=noopener — these are addresses"
+      + " somebody else pasted",
+      links.filter((l) => /^https?:/.test(l.href || "")).every((l) => /noopener/.test(l.rel || "")), links);
+
+    section("THE HOURS CARD SAYS WHERE THE HOURS DO NOT GO");
+    check("there is a training hours card", /Your training hours/.test(txt), txt.slice(0, 900));
+    check("IT SAYS IN WORDS THEY ARE NOT BILLABLE AND DO NOT REACH PAYROLL",
+      /not billable hours and they do not go to payroll/i.test(txt), txt.slice(0, 1400));
+    await page.fill("#ac-h-hours", "2.5");
+    await page.fill("#ac-h-act", "Shadowed two sessions");
+    await page.click("#ac-h-add");
+    await page.waitForTimeout(1200);
+    const afterH = await page.textContent(".ac-wrap");
+    check("logging hours works", /Shadowed two sessions/.test(afterH), afterH.slice(0, 900));
+    check("and the total moves", /2\.5/.test(afterH), afterH.slice(0, 900));
+    const stored = (await pool.query(
+      "SELECT * FROM academy_hours WHERE enrollment_id = $1", [enr.id])).rows;
+    check("the entry is in academy_hours and nowhere else", stored.length === 1, stored);
+
+    // The form clears itself after a successful log, which is right -- so a
+    // second entry is filled in again, the way a person would.
+    check("the form cleared itself after logging",
+      !(await page.inputValue("#ac-h-act")), await page.inputValue("#ac-h-act"));
+    await page.fill("#ac-h-hours", "1");
+    await page.fill("#ac-h-act", "Read the authorization SOP");
+    await page.click("#ac-h-add");
+    await page.waitForTimeout(1200);
+    check("a second entry on the same day is accepted — two sessions in one day is real",
+      (await pool.query("SELECT COUNT(*)::int AS n FROM academy_hours WHERE enrollment_id = $1",
+        [enr.id])).rows[0].n === 2);
+    await page.click("[data-h-del]");
+    await page.waitForTimeout(1000);
+    check("and they can remove their own mistake",
+      (await pool.query("SELECT COUNT(*)::int AS n FROM academy_hours WHERE enrollment_id = $1",
+        [enr.id])).rows[0].n === 1);
+
+    section("THE SURVEY PROMISES ONLY WHAT IT DELIVERS");
+    const sv = await page.textContent(".ac-wrap");
+    check("the survey is on their screen", /Tell us how the onboarding went/.test(sv), sv.slice(-900));
+    check("IT SAYS THE LINK IS ABSENT, NOT HIDDEN", /not hidden, absent/i.test(sv), sv.slice(-900));
+    check("AND WARNS FREE TEXT CAN STILL IDENTIFY THEM",
+      /own words could still identify you/i.test(sv), sv.slice(-900));
+    check("there are three rating scales",
+      await page.locator(".ac-scale").count() === 3, await page.locator(".ac-scale").count());
+    const early = await page.click("#ac-sv-send").then(() => page.waitForTimeout(900)).then(
+      () => page.textContent("#ac-sv-msg"));
+    check("sending it unanswered is refused, on the page", /1 to 5/i.test(early), early);
+    for (const k of ["prepared", "mentor_time", "set_up_to_do_job"]) {
+      await page.click(`[data-sv="${k}"][data-svv="4"]`);
+      await page.waitForTimeout(250);
+    }
+    await page.fill('[data-svt="missing"]', "Nobody showed me the authorization screen.");
+    await page.click("#ac-sv-send");
+    await page.waitForTimeout(1400);
+    const done = await page.textContent(".ac-wrap");
+    check("a complete one is accepted", /your feedback is in/i.test(done), done.slice(-500));
+    const anon = (await pool.query(
+      "SELECT * FROM academy_survey_responses WHERE program_id = $1", [prog.id])).rows;
+    check("the response is stored", anon.length === 1, anon);
+    check("WITH NO COLUMN ANYWHERE ON IT THAT NAMES THEM",
+      anon[0] && !Object.keys(anon[0]).some((k) => /employee|enrol|name|email|user/i.test(k)),
+      Object.keys(anon[0] || {}));
+
+    section("AN ORDINARY BCBA IS OFFERED NONE OF THE LEADERSHIP SCREENS");
+    check("no reports tab", await page.locator('[data-view="reports"]').count() === 0);
+    check("no curriculum tab", await page.locator('[data-view="curriculum"]').count() === 0);
+    check("in fact no tab bar at all, because they have nobody else to look at",
+      await page.locator(".ac-tab").count() === 0, await page.locator(".ac-tab").count());
+
+    section("A MENTOR GETS A TAB BAR AND STILL NOT THE LEADERSHIP SCREENS");
+    // This is the case the permission check in the tab bar exists for. An
+    // ordinary BCBA proves nothing about it: they are given no tab bar, so
+    // the check never runs for them.
+    const mEmail = `acadl4-mentor-${stamp}@example.invalid`;
+    const mp = hp("AcadL4Pass123!");
+    await pool.query(
+      `INSERT INTO users (name, email, password_hash, password_salt, role, created_at)
+       VALUES ('AcadL4 Mentor',$1,$2,$3,'clinical', now())`, [mEmail, mp.hash, mp.salt]);
+    const mentorId = (await pool.query(
+      `INSERT INTO hr_employees (name, email, role_title, hr_hire_date, status)
+       VALUES ('AcadL4 Mentor',$1,'BCBA',$2,'active') RETURNING id`, [mEmail, today()])).rows[0].id;
+    const pa = await asOwner(`/api/academy/enrollments/${enr.id}`, { method: "PATCH", body: { mentor_id: mentorId } });
+    check("a mentor is assigned", pa.status === 200, pa.data);
+    await login(mEmail, "AcadL4Pass123!");
+    await openAcademy();
+    check("the mentor DOES get a tab bar", await page.locator(".ac-tab").count() >= 2,
+      await page.locator(".ac-tab").count());
+    check("including their mentees", /My mentees/.test(await page.textContent(".ac-wrap")),
+      (await page.textContent(".ac-wrap")).slice(0, 200));
+    check("BUT NO REPORTS TAB — a mentor manages a person, not the programme",
+      await page.locator('[data-view="reports"]').count() === 0,
+      await page.locator('[data-view="reports"]').count());
+    check("AND NO CURRICULUM TAB", await page.locator('[data-view="curriculum"]').count() === 0,
+      await page.locator('[data-view="curriculum"]').count());
+    // And the server agrees, which is the half that actually matters.
+    const mRep = await page.evaluate(async () => {
+      const r = await fetch("/api/academy/reports", { credentials: "include" });
+      return r.status;
+    });
+    check("and the server refuses them the reports anyway", mRep === 403, mRep);
+
+    // =====================================================================
+    section("LEADERSHIP: THE REPORTS");
+    await login("admin@spectrumsquadlv.com", "TestOwner123!");
+    await openAcademy();
+    check("the owner gets a reports tab", await page.locator('[data-view="reports"]').count() === 1);
+    await page.click('[data-view="reports"]');
+    await page.waitForTimeout(1600);
+    const rep = await page.textContent(".ac-wrap");
+    check("the reports load", /enrolled/.test(rep), rep.slice(0, 500));
+    check("median days to complete is labelled as a median, and explains why",
+      /median days to complete/i.test(rep) && /one slow onboarding/i.test(rep), rep.slice(0, 2000));
+    check("TRAINING HOURS ARE LABELLED NOT BILLABLE HERE TOO",
+      /not billable/i.test(rep), rep.slice(0, 2000));
+    check("there is a CSV export", await page.locator('a[href*="reports.csv"]').count() >= 1);
+
+    section("THE SEALED FEEDBACK LOOKS SEALED");
+    check("with one response it says sealed", /sealed/i.test(rep), rep.slice(-1200));
+    check("AND SHOWS NO ANSWERS AT ALL",
+      !/authorization screen/i.test(rep), rep.slice(-1200));
+    check("while saying what would open it", /3 people have answered/i.test(rep), rep.slice(-1200));
+
+    // =====================================================================
+    section("LEADERSHIP: THE CURRICULUM EDITOR");
+    await page.click('[data-view="curriculum"]');
+    await page.waitForTimeout(1800);
+    const cu = await page.textContent(".ac-wrap");
+    check("the programme list loads", /Programmes/.test(cu), cu.slice(0, 400));
+    check("and says a programme is rows rather than code, for RBT and Squad Leader",
+      /RBT onboarding and Squad\s*Leader development/i.test(cu), cu.slice(0, 700));
+    const rows = await page.locator("[data-cu-pick]").count();
+    check("every programme can be opened", rows >= 2, rows);
+
+    // Open OUR programme, which has somebody enrolled.
+    const mine = await page.evaluate((key) => {
+      const tr = [...document.querySelectorAll("tr")].find((r) => r.textContent.includes(key));
+      const b = tr && tr.querySelector("[data-cu-pick]");
+      return b ? b.getAttribute("data-cu-pick") : null;
+    }, `AcadL4 Programme ${stamp}`);
+    check("ours is in the list", !!mine, mine);
+    await page.click(`[data-cu-pick="${mine}"]`);
+    await page.waitForTimeout(1600);
+    const open = await page.textContent(".ac-wrap");
+    check("its weeks and items show", /Learn the authorization screen/.test(open), open.slice(0, 1200));
+    check("THE EDITOR WARNS, BEFORE ANY EDIT, THAT IT WILL FORK",
+      /Editing anything here creates version 2/i.test(open), open.slice(0, 1500));
+    check("and says the enrolled person stays where they are",
+      /leaves all of them on version 1/i.test(open)
+        && /nobody's finished week changes under them/i.test(open), open.slice(0, 1600));
+    check("the attached material is shown in the editor too",
+      /Attendance Policy/.test(open), open.slice(0, 1400));
+    check("with a control to attach more",
+      await page.locator("[data-cu-res]").count() >= 1, await page.locator("[data-cu-res]").count());
+
+    section("ATTACHING AN SOP OFFERS THE POLICY LIBRARY, NOT A TEXT BOX");
+    await page.click("[data-cu-res]");
+    await page.waitForTimeout(500);
+    const form = await page.textContent(".ac-wrap");
+    check("the form explains a video is an embedded link",
+      /A video is an embedded link/i.test(form), form.slice(-800));
+    check("and that an SOP is picked rather than pasted",
+      /picked from the policy library rather than pasted/i.test(form), form.slice(-800));
+    const opts = await page.evaluate(() => [...document.querySelectorAll("#ac-nr-pol option")].map((o) => o.textContent));
+    check("THE POLICY LIBRARY ACTUALLY LOADED into the dropdown — a wrong key"
+      + " here would be a silently empty list",
+      opts.some((t) => /AcadL4 Attendance Policy/.test(t)), opts.slice(0, 8));
+
+    section("CREATING A SECOND PROGRAMME WITHOUT A DEVELOPER");
+    await page.click("#ac-cu-new");
+    await page.waitForTimeout(400);
+    const nf = await page.textContent(".ac-wrap");
+    check("the new-programme form warns about the auto-enrol role",
+      /Leave the role blank unless/i.test(nf), nf.slice(0, 1200));
+    await page.fill("#ac-np-name", `AcadL4 Squad Leader ${stamp}`);
+    await page.fill("#ac-np-weeks", "6");
+    await page.click("#ac-np-save");
+    await page.waitForTimeout(1800);
+    const made = (await pool.query(
+      "SELECT * FROM academy_programs WHERE name = $1", [`AcadL4 Squad Leader ${stamp}`])).rows[0];
+    check("A SQUAD LEADER PROGRAMME IS CREATED FROM THE SCREEN", !!made, made);
+    check("with the weeks asked for", made && Number(made.weeks) === 6, made && made.weeks);
+    check("AND NO ROLE TARGET, so nobody is swept onto a half-written curriculum",
+      made && !made.role_target, made && made.role_target);
+    if (made) {
+      await pool.query("DELETE FROM academy_programs WHERE id = $1", [made.id]).catch(() => {});
+    }
+
+    section("Nothing threw");
+    check("no page errors anywhere in that journey", errors.length === 0, errors.slice(0, 3));
+
+    await purge();
+  } catch (e) {
+    fail++;
+    console.log("  FAIL  the suite threw  -> " + e.message);
+    await purge().catch(() => {});
+  }
+
+  await browser.close();
+  console.log(`\n${pass} passed, ${fail} failed`);
+  await pool.end();
+  process.exit(fail ? 1 : 0);
+})();
