@@ -127,20 +127,38 @@ const daysAgo = (n) => {
   await logAt("left_early", 80);            // 2.0
   await logAt("calloff_gt4", 75);           // 1.0  -> 3.0
   score = await scoreOf(ladderId);
-  check("3 points is a Verbal reminder", score.points_90 === 3 && score.discipline_level === "Verbal reminder", score);
+  // THE ORDERING THIS LADDER MOVE EXISTS FOR. 3 rolling points used to be a
+  // filed verbal reminder, which arrived before the monthly review called
+  // for a conversation at all. It is now still good standing.
+  check("3 points is still Good standing — discipline no longer starts below"
+    + " the coaching conversation",
+    score.points_90 === 3 && score.discipline_level === "Good standing", score);
 
-  await logAt("left_early", 70);            // -> 5.0
+  await logAt("calloff_gt4", 74);           // -> 4.0
   score = await scoreOf(ladderId);
-  check("5 points is a Written warning", score.points_90 === 5 && score.discipline_level === "Written warning", score);
+  check("and 4 points, the coaching line, is still Good standing on the rolling ladder",
+    score.points_90 === 4 && score.discipline_level === "Good standing", score);
+
+  await logAt("late", 73);                  // -> 4.5
+  await logAt("late", 72);                  // -> 5.0
+  score = await scoreOf(ladderId);
+  check("5 points is a Verbal reminder — one point past the coaching line",
+    score.points_90 === 5 && score.discipline_level === "Verbal reminder", score);
+  check("and the caseload is not flagged yet", score.caseload_risk === "OK", score.caseload_risk);
+
+  await logAt("left_early", 70);            // -> 7.0
+  score = await scoreOf(ladderId);
+  check("7 points is a Written warning", score.points_90 === 7 && score.discipline_level === "Written warning", score);
   check("and flags the caseload for review", score.caseload_risk === "Review caseload", score.caseload_risk);
 
-  await logAt("left_early", 65);            // -> 7.0
+  await logAt("left_early", 65);            // -> 9.0
   score = await scoreOf(ladderId);
-  check("7 points is a Final warning or probation", score.discipline_level === "Final warning or probation", score.discipline_level);
+  check("9 points is a Final warning or probation",
+    score.points_90 === 9 && score.discipline_level === "Final warning or probation", score.discipline_level);
 
-  await logAt("left_early", 60);            // -> 9.0
+  await logAt("left_early", 60);            // -> 11.0
   score = await scoreOf(ladderId);
-  check("9 points is a Termination review", score.points_90 === 9 && score.discipline_level === "Termination review", score);
+  check("11 points is a Termination review", score.points_90 === 11 && score.discipline_level === "Termination review", score);
 
   // None of those fall inside 30 days, so the monthly review reads clean.
   check("none of it lands in the 30-day window", score.points_30 === 0, score.points_30);
@@ -154,7 +172,7 @@ const daysAgo = (n) => {
   });
   check("picking up a last-minute shift is worth -1", r.data.points === -1, r.data.points);
   score = await scoreOf(ladderId);
-  check("it comes off the 90-day total", score.points_90 === 8, score.points_90);
+  check("it comes off the 90-day total", score.points_90 === 10, score.points_90);
   check("which drops them back to Final warning", score.discipline_level === "Final warning or probation", score.discipline_level);
 
   // ============ the bonus cycle ============
@@ -204,7 +222,7 @@ const daysAgo = (n) => {
   const roster = Object.fromEntries((r.data.staff || []).map((s) => [s.employee_id, s]));
   check("it covers the staff we created", !!roster[empId] && !!roster[ladderId] && !!roster[cleanId]);
   check("it carries points, level and bonus for each",
-    roster[ladderId].points_90 === 8 && roster[ladderId].discipline_level === "Final warning or probation" && roster[ladderId].bonus_eligible === false,
+    roster[ladderId].points_90 === 10 && roster[ladderId].discipline_level === "Final warning or probation" && roster[ladderId].bonus_eligible === false,
     roster[ladderId]);
   check("the totals count who needs action", typeof r.data.totals.needing_action === "number", r.data.totals);
   check("and who is on track for the bonus", r.data.totals.bonus_eligible >= 1, r.data.totals);

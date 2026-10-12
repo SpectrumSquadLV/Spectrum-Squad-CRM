@@ -65,7 +65,8 @@
              // browser does not re-derive it from a number it would then
              // have to be kept in step with.
              score.review_needs_action ? ["#fef3c7", "#92400e"] : ["#dcfce7", "#166534"])
-        + " " + chip("90-day points", score.points_90, score.points_90 >= 3 ? ["#fee2e2", "#991b1b"] : ["#dcfce7", "#166534"])
+        + " " + chip("90-day points", score.points_90,
+                      score.discipline_needs_action ? ["#fee2e2", "#991b1b"] : ["#dcfce7", "#166534"])
         + " " + pill(score.discipline_level) + " " + pill(score.review_level)
         + " " + chip("Bonus", score.bonus_eligible ? "$50 on track" : score.bonus_status, score.bonus_eligible ? ["#dcfce7", "#166534"] : ["#f1f5f9", "#475569"])
       : chip("Flags in last 90 days", count90, count90 ? ["#fee2e2", "#991b1b"] : ["#dcfce7", "#166534"]);

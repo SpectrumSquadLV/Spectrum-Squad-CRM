@@ -49,13 +49,36 @@ module.exports = function initHrAttendance(ctx) {
   ];
 
   // Rolling 90-day disciplinary ladder. Read highest-threshold-first.
+  // The rolling 90-day discipline ladder, moved with the monthly matrix.
+  //
+  // IT USED TO START BELOW THE COACHING CONVERSATION. A verbal reminder fired
+  // at 3 rolling points while the monthly review only called for a
+  // conversation at 4, so somebody could collect a formal, filed reminder
+  // before anybody had sat down with them -- which is the wrong order for
+  // the same reason a development plan before a review is the wrong order.
+  //
+  // The first step is now one point ABOVE the coaching line: 30-day points
+  // are a subset of 90-day points, so a month that triggers coaching at 4
+  // puts somebody at 4 rolling, and they reach the verbal reminder only if
+  // it happens again. The conversation comes first, by arithmetic rather
+  // than by hoping.
+  //
+  // The two-point spacing between steps is the ladder's own and is kept.
   const DISCIPLINE_STEPS = [
-    { at: 9, level: "Termination review" },
-    { at: 7, level: "Final warning or probation" },
-    { at: 5, level: "Written warning" },
-    { at: 3, level: "Verbal reminder" },
+    { at: 11, level: "Termination review" },
+    { at: 9, level: "Final warning or probation" },
+    // The sheet's Client Assignment Risk column flips at the written
+    // warning. Flagged on the row rather than written as a number somewhere
+    // else, which is how the old 5 ended up duplicated in two files.
+    { at: 7, level: "Written warning", caseload_risk: true },
+    { at: 5, level: "Verbal reminder" },
     { at: 0, level: "Good standing" },
   ];
+
+  // The first step that is not good standing, and the step at which a
+  // caseload gets looked at. Both read off the ladder.
+  const DISCIPLINE_MIN = Math.min(...DISCIPLINE_STEPS.filter((x) => x.at > 0).map((x) => x.at));
+  const CASELOAD_RISK_AT = (DISCIPLINE_STEPS.find((x) => x.caseload_risk) || {}).at;
 
   // 30-Day Monthly Attendance Review Matrix.
   // `meets` marks the bands that count as a good month. It lives here, on the
@@ -504,6 +527,11 @@ module.exports = function initHrAttendance(ctx) {
       // threshold belongs.
       review_needs_action: band.meets !== true,
       coaching_min: COACHING_MIN,
+      // Same reasoning as review_needs_action: the 90-day chip was coloured
+      // by comparing against a hardcoded 3, which is the verbal-reminder step
+      // written out again in a browser.
+      discipline_needs_action: points90 >= DISCIPLINE_MIN,
+      discipline_min: DISCIPLINE_MIN,
       bonus_impact: exclusion.excluded ? "Not in the attendance bonus" : band.bonus,
       bonus_eligible: exclusion.excluded ? false : bonus.eligible,
       bonus_status: exclusion.excluded ? exclusion.reason : bonus.status,
@@ -519,7 +547,7 @@ module.exports = function initHrAttendance(ctx) {
       // "Staff who demonstrate repeated call-offs ... may have their caseload
       // reduced or split" -- surfaced at the written-warning threshold, which
       // is where the sheet's own Client Assignment Risk column flips.
-      caseload_risk: points90 >= 5 ? "Review caseload" : "OK",
+      caseload_risk: CASELOAD_RISK_AT != null && points90 >= CASELOAD_RISK_AT ? "Review caseload" : "OK",
       occurrences_90: (rows || []).filter(countable).filter((f) => {
         const d = String(f.incident_date || "").slice(0, 10);
         return d && d >= daysBefore(asOf, 90) && d <= asOf;
@@ -1717,7 +1745,7 @@ module.exports = function initHrAttendance(ctx) {
     // once.
     matrixTypes, typeByKey, logEmpActivity, attendanceCompliance,
     _internal: {
-      buildAckPdf, REASONS, ATTENDANCE_MATRIX, DISCIPLINE_STEPS, MONTHLY_REVIEW, COACHING_MIN,
+      buildAckPdf, REASONS, ATTENDANCE_MATRIX, DISCIPLINE_STEPS, MONTHLY_REVIEW, COACHING_MIN, DISCIPLINE_MIN, CASELOAD_RISK_AT,
       scoreEmployee, disciplineFor, monthlyReviewFor, bonusCycle, bonusExclusion, noticeHours,
       pointsBetween, daysBefore, addDays, lastDayOf, monthLabel, monthsBetween,
     },

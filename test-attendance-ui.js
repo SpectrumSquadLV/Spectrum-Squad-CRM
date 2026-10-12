@@ -124,11 +124,14 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   check("the staff card has an attendance section", (await att.count()) === 1);
   let atext = await att.innerText();
   check("it shows their points rather than a bare flag count", /30-day points/i.test(atext), atext.slice(0, 300));
-  // This staff member is carrying 4.0 rolling points, which the 90-day
-  // discipline ladder puts at the "Verbal reminder" step -- not good standing.
-  // That ladder is separate from the monthly review matrix and was not
-  // changed when the coaching line moved.
-  check("and their standing", /Verbal reminder/i.test(atext), atext.slice(0, 300));
+  // This staff member is carrying 4.0 rolling points: a Coaching Conversation
+  // on the monthly matrix and STILL GOOD STANDING on the 90-day ladder.
+  //
+  // That pairing is the point of moving the ladder. Before, 4.0 rolling was a
+  // filed verbal reminder, so somebody could collect formal discipline in the
+  // same breath as being told a conversation was needed. The conversation now
+  // comes first, and this screen is where you would see it.
+  check("and their standing", /Good standing/i.test(atext), atext.slice(0, 300));
   check("and their bonus position", /Bonus/i.test(atext), atext.slice(0, 300));
   // The points chip is amber for a month that needs a conversation and green
   // for one that does not, and the colour comes from the server's verdict
@@ -199,6 +202,48 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   check("it took its points from the matrix", Number(late.points) === 0.5, late.points);
   check("notice hours were computed as negative (told us after the shift started)", Number(late.notice_hours) === -0.5, late.notice_hours);
   check("the running total went up", after.body.score.points_30 === 4.5, after.body.score.points_30);
+
+  // ---- THE 90-DAY CHIP, both ways round -------------------------------
+  //
+  // It takes two cases to say where this colour comes from. At 4.5 rolling
+  // this person is still Good standing, so the chip is GREEN -- under the old
+  // hardcoded "points_90 >= 3" it would be red. And somebody actually on the
+  // ladder has to come back RED, or a chip that is always green would pass
+  // the first case on its own.
+  const ninetyTone = await owner.evaluate(() => {
+    const el = [...document.querySelectorAll(".tag")].find((t) => /90-day points/i.test(t.textContent));
+    return el ? el.getAttribute("style") || "" : null;
+  });
+  check("AT 4.5 ROLLING THE 90-DAY CHIP IS GREEN — the ladder now starts above"
+    + " the coaching line, and the colour follows it",
+    ninetyTone && /dcfce7/i.test(ninetyTone), ninetyTone);
+
+  const badEmp = await api(owner, "/api/hr/employees", { method: "POST", body: {
+    name: "UI Attend Ladder " + stamp, email: `ui.ladder.${stamp}@example.invalid`,
+    role_title: "RBT", status: "active", hire_date: daysAgo(400) } });
+  const badId = badEmp.body.id || (badEmp.body.employee && badEmp.body.employee.id);
+  // 2.0 x3 + 1.0 = 7.0, all outside the 30-day window so only the rolling
+  // ladder is in play: a Written warning, and the caseload flagged.
+  for (const d of [80, 75, 70]) {
+    await api(owner, `/api/attendance/employee/${badId}`, { method: "POST", body: {
+      type_key: "left_early", incident_date: daysAgo(d), notify: false } });
+  }
+  await api(owner, `/api/attendance/employee/${badId}`, { method: "POST", body: {
+    type_key: "calloff_gt4", incident_date: daysAgo(65), notify: false } });
+  await owner.evaluate(() => { document.querySelectorAll(".modal-backdrop").forEach((b) => b.remove()); });
+  await owner.waitForTimeout(600);
+  await owner.evaluate((id) => openStaffModal(id), badId);
+  await owner.waitForTimeout(2800);
+  const badText = await owner.locator(".modal-backdrop").last().locator("#staff-attendance").innerText();
+  check("they are at 7 rolling points", /\b7\b/.test(badText), badText.slice(0, 200));
+  check("which is a Written warning", /Written warning/i.test(badText), badText.slice(0, 300));
+  const badTone = await owner.evaluate(() => {
+    const el = [...document.querySelectorAll(".tag")].find((t) => /90-day points/i.test(t.textContent));
+    return el ? el.getAttribute("style") || "" : null;
+  });
+  check("AND THEIR 90-DAY CHIP IS RED — a chip that is always green would have"
+    + " passed the case above on its own",
+    badTone && /fee2e2/i.test(badTone), badTone);
 
   // ---------------- permissions ----------------
   section("Who can see it");
