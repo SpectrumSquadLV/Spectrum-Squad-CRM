@@ -353,4 +353,239 @@
       mount.innerHTML = `<div class="cmp-panel" style="padding:20px;"><strong>${esc(e.message)}</strong></div>`;
     }
   };
+
+  // ========================================================================
+  // MY TRAINING -- what one person has to do, for the person themselves.
+  //
+  // This is the page an employee account exists for, so it has to stand on
+  // its own: what is required, why, by when, and what to do about it. It
+  // deliberately shows a self-report as a CLAIM awaiting a check rather than
+  // as a tick, because a certificate is only earned on verified completion.
+  // ========================================================================
+  const T = { data: null, mount: null, busy: false, flash: null, open: null, err: null };
+
+  function trStyles() {
+    if (document.getElementById("mytr-styles")) return;
+    const el = document.createElement("style");
+    el.id = "mytr-styles";
+    el.textContent = `
+      .mytr-strip{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 16px;}
+      .mytr-stat{flex:1 1 120px;min-width:120px;border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface);}
+      .mytr-stat b{display:block;font-size:22px;line-height:1.1;}
+      .mytr-stat span{font-size:12px;color:var(--text-muted);}
+      .mytr-card{border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:12px;background:var(--surface);}
+      .mytr-top{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;justify-content:space-between;}
+      .mytr-title{font-weight:600;font-size:15.5px;}
+      .mytr-why{font-size:12.5px;color:var(--text-muted);margin-top:2px;}
+      .mytr-sum{font-size:13.5px;margin:8px 0 0;color:var(--text);}
+      .mytr-badge{font-size:11.5px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;
+        padding:3px 9px;border-radius:999px;white-space:nowrap;}
+      .mytr-overdue{background:#fee2e2;color:#991b1b;}
+      .mytr-due{background:#fef3c7;color:#92400e;}
+      .mytr-submitted{background:#e0f2fe;color:#075985;}
+      .mytr-complete{background:#dcfce7;color:#166534;}
+      .mytr-none{background:#f1f5f9;color:#475569;}
+      .mytr-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;}
+      .mytr-note{font-size:12.5px;color:var(--text-muted);margin-top:8px;}
+      .mytr-form{margin-top:12px;border-top:1px solid var(--border);padding-top:12px;}
+      .mytr-row{display:flex;flex-wrap:wrap;gap:10px;}
+      .mytr-row label{font-size:12px;color:var(--text-muted);display:block;}
+      .mytr-row input{padding:7px 9px;border:1px solid var(--border);border-radius:8px;font:inherit;max-width:100%;}
+      .mytr-hist{margin-top:10px;font-size:12.5px;color:var(--text-muted);}
+      .mytr-hist table{border-collapse:collapse;width:100%;margin-top:6px;}
+      .mytr-hist th,.mytr-hist td{text-align:left;padding:4px 8px 4px 0;font-weight:400;}
+      .mytr-flash{border:1px solid #bbf7d0;background:#f0fdf4;color:#166534;border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:13.5px;}
+      .mytr-err{border:1px solid #fecaca;background:#fef2f2;color:#991b1b;border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:13.5px;}
+      @media (max-width:640px){
+        .mytr-stat{flex:1 1 calc(50% - 10px);}
+        .mytr-top{flex-direction:column;align-items:flex-start;}
+      }`;
+    document.head.appendChild(el);
+  }
+
+  const BADGE = {
+    overdue: ["mytr-overdue", "Overdue"],
+    due: ["mytr-due", "Due"],
+    submitted: ["mytr-submitted", "Waiting to be checked"],
+    complete: ["mytr-complete", "Complete"],
+    no_deadline: ["mytr-none", "No deadline set"],
+    optional: ["mytr-none", "Optional"],
+  };
+
+  function whenText(r) {
+    if (r.state === "complete") {
+      const next = r.renewal_months && r.due_on ? ` · renews ${r.due_on}` : " · no renewal set";
+      return `Completed ${r.completed_on}${next}`;
+    }
+    if (r.state === "submitted") {
+      return `You reported completing this on ${r.submitted.completed_on}. It is waiting to be checked.`;
+    }
+    if (r.state === "overdue") {
+      return `Was due ${r.due_on} — ${Math.abs(r.days_left)} day${Math.abs(r.days_left) === 1 ? "" : "s"} ago`;
+    }
+    if (r.state === "due") {
+      return `Due ${r.due_on} — ${r.days_left} day${r.days_left === 1 ? "" : "s"} left`;
+    }
+    if (r.state === "optional") return "Optional — take it if you want it";
+    return "No deadline has been set for this yet";
+  }
+
+  // What this person actually has to DO, which depends entirely on how the
+  // course is delivered.
+  function actionsFor(r) {
+    const out = [];
+    if (r.delivery === "policy_ack") {
+      const acked = r.policy && r.policy.acknowledged_version && r.state !== "complete";
+      out.push(`<a class="btn" href="#/policies">${acked ? "Read the new version and acknowledge it" : "Read and acknowledge the policy"}</a>`);
+      if (acked) {
+        out.push(`<span class="mytr-note">You acknowledged version ${esc(r.policy.acknowledged_version)};`
+          + ` the current version is ${esc(r.policy.version)}.</span>`);
+      }
+      return out.join("");
+    }
+    if (r.external_url) {
+      out.push(`<a class="btn" href="${esc(r.external_url)}" target="_blank" rel="noopener noreferrer">Open the training${r.provider ? ` at ${esc(r.provider)}` : ""}</a>`);
+    }
+    if (r.state !== "submitted" && r.can_self_report) {
+      const label = r.delivery === "external_certificate" ? "File my certificate"
+        : r.state === "complete" ? "Record a renewal" : "I have completed this";
+      out.push(`<button class="btn btn-secondary mytr-report" data-c="${r.course_id}">${label}</button>`);
+    }
+    return out.join("");
+  }
+
+  function reportForm(r) {
+    const cert = r.delivery === "external_certificate";
+    return `<div class="mytr-form">
+      <div class="mytr-row">
+        <div><label for="mytr-on-${r.course_id}">Date completed</label>
+          <input id="mytr-on-${r.course_id}" type="date" data-f="completed_on" max="${esc(new Date().toISOString().slice(0, 10))}" value="${esc(new Date().toISOString().slice(0, 10))}"></div>
+        <div><label for="mytr-h-${r.course_id}">Hours (optional)</label>
+          <input id="mytr-h-${r.course_id}" type="number" step="0.25" min="0" data-f="hours" style="width:110px;"></div>
+        ${cert ? `<div><label for="mytr-x-${r.course_id}">Certificate expires</label>
+          <input id="mytr-x-${r.course_id}" type="date" data-f="expires_on"></div>` : ""}
+      </div>
+      <div class="mytr-row" style="margin-top:8px;">
+        <div style="flex:1 1 260px;"><label for="mytr-n-${r.course_id}">Anything to add (optional)</label>
+          <input id="mytr-n-${r.course_id}" type="text" data-f="evidence_note" placeholder="${cert ? "Certificate number, or where you have sent it" : "Where you took it, for example"}" style="width:100%;"></div>
+      </div>
+      <div class="mytr-acts">
+        <button class="btn mytr-send" data-c="${r.course_id}">Send it to HR</button>
+        <button class="btn btn-secondary mytr-cancel">Cancel</button>
+      </div>
+      <div class="mytr-note">This tells HR you have done it. They check it before it counts as complete${cert ? " — have the certificate ready to hand over" : ""}.</div>
+    </div>`;
+  }
+
+  function historyHtml(r) {
+    if (!r.history.length) return "";
+    return `<details class="mytr-hist"><summary>Your record for this course (${r.history.length})</summary>
+      <table><thead><tr><th>Completed</th><th>How</th><th>Hours</th><th>Checked</th></tr></thead><tbody>
+      ${r.history.slice().reverse().map((h) => `<tr>
+        <td>${esc(h.completed_on)}</td>
+        <td>${esc(h.source === "self_report" ? "You reported it" : h.source === "recorded" ? "HR recorded it" : h.source)}</td>
+        <td>${h.hours == null ? "—" : esc(h.hours)}</td>
+        <td>${h.verified_at ? `Yes, by ${esc(h.verified_by)}` : "Not yet"}</td>
+      </tr>`).join("")}
+      </tbody></table></details>`;
+  }
+
+  function cardHtml(r) {
+    const [cls, label] = BADGE[r.state] || BADGE.no_deadline;
+    return `<div class="mytr-card" data-course="${r.course_id}">
+      <div class="mytr-top">
+        <div><div class="mytr-title">${esc(r.title)}</div>
+          <div class="mytr-why">${esc(r.required_because)} · ${esc(r.delivery_label)}</div></div>
+        <span class="mytr-badge ${cls}">${label}</span>
+      </div>
+      ${r.summary ? `<p class="mytr-sum">${esc(r.summary)}</p>` : ""}
+      <div class="mytr-note">${esc(whenText(r))}</div>
+      ${r.superseded ? `<div class="mytr-note">You completed version ${r.earned_version} of this; it is now at version ${r.version}. It still counts unless Spectrum Squad asks you to retake it.</div>` : ""}
+      ${r.delivery === "internal" && !r.external_url ? `<div class="mytr-note">The material for this is being added here. Until then, ask HR how to take it.</div>` : ""}
+      <div class="mytr-acts">${actionsFor(r)}</div>
+      ${T.open === r.course_id ? reportForm(r) : ""}
+      ${historyHtml(r)}
+    </div>`;
+  }
+
+  function trRender() {
+    const d = T.data;
+    const head = `<div class="page-head"><div><h1>My Training</h1>
+      <p>Your required compliance training, and your own record of what you have completed.</p></div></div>`;
+    if (!d.linked) {
+      T.mount.innerHTML = head + `<div class="card" style="max-width:640px;"><div class="empty-state" style="padding:26px 20px;text-align:left;">
+        <strong style="display:block;margin-bottom:6px;">We cannot work out your training yet.</strong>
+        <span style="color:var(--text-muted);font-size:13.5px;">${esc(d.message || "")}</span></div></div>`;
+      return;
+    }
+    const s = d.summary;
+    const emp = d.employee;
+    const who = [emp.position_label || emp.role_title, emp.department].filter(Boolean).join(" · ");
+    const stat = (n, label) => `<div class="mytr-stat"><b>${n}</b><span>${label}</span></div>`;
+    const body = !d.required.length && !d.optional.length
+      ? `<div class="card" style="max-width:640px;"><div class="empty-state" style="padding:26px 20px;text-align:left;">
+          <strong style="display:block;margin-bottom:6px;">No training is required of you right now.</strong>
+          <span style="color:var(--text-muted);font-size:13.5px;">When Spectrum Squad requires a course of
+          ${esc(emp.position_label || "your position")}, it will appear here with what it covers and when it is due.</span></div></div>`
+      : `<div class="mytr-strip">
+          ${s.overdue ? stat(s.overdue, "overdue") : ""}
+          ${s.due ? stat(s.due, "coming up") : ""}
+          ${s.submitted ? stat(s.submitted, "waiting to be checked") : ""}
+          ${stat(s.complete, "complete")}
+          ${stat(s.total, "required of you")}
+        </div>
+        ${d.required.map(cardHtml).join("")}
+        ${d.optional.length ? `<h2 style="font-size:16px;margin:22px 0 10px;">Optional professional development</h2>
+          ${d.optional.map(cardHtml).join("")}` : ""}`;
+    T.mount.innerHTML = head
+      + (T.flash ? `<div class="mytr-flash">${esc(T.flash)}</div>` : "")
+      + (T.err ? `<div class="mytr-err">${esc(T.err)}</div>` : "")
+      + (who ? `<p class="mytr-note" style="margin:-6px 0 14px;">${esc(emp.name)} — ${esc(who)}</p>` : "")
+      + body;
+    T.flash = null;
+    T.err = null;
+    wireTraining();
+  }
+
+  function wireTraining() {
+    T.mount.querySelectorAll(".mytr-report").forEach((b) => b.addEventListener("click", () => {
+      T.open = Number(b.dataset.c); trRender();
+    }));
+    T.mount.querySelectorAll(".mytr-cancel").forEach((b) => b.addEventListener("click", () => {
+      T.open = null; trRender();
+    }));
+    T.mount.querySelectorAll(".mytr-send").forEach((b) => b.addEventListener("click", async () => {
+      if (T.busy) return;
+      const card = b.closest(".mytr-card");
+      const body = {};
+      card.querySelectorAll("[data-f]").forEach((i) => { if (i.value) body[i.dataset.f] = i.value; });
+      T.busy = true; b.disabled = true; b.textContent = "Sending…";
+      try {
+        await api(`/api/compliance/my-training/${Number(b.dataset.c)}/report`, { method: "POST", body });
+        T.open = null;
+        T.flash = "Thank you — that has gone to HR to be checked. It will show as complete once they have.";
+        await trReload();
+      } catch (e) {
+        T.err = e.message;
+        trRender();
+      } finally { T.busy = false; }
+    }));
+  }
+
+  async function trReload() {
+    T.data = await api("/api/compliance/my-training");
+    trRender();
+  }
+
+  window.__renderMyTraining = async function (mount) {
+    trStyles();
+    T.mount = mount;
+    T.open = null;
+    mount.innerHTML = `<div class="cmp-empty">Loading your training…</div>`;
+    try {
+      await trReload();
+    } catch (e) {
+      mount.innerHTML = `<div class="mytr-err">${esc(e.message)}</div>`;
+    }
+  };
 })();

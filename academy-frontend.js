@@ -1242,6 +1242,18 @@
     });
     var form = HOST.querySelector("#ac-cu-form");
     var form2 = HOST.querySelector("#ac-cu-form2");
+    // EVERY ONE OF THESE FORMS OPENS IN THE SAME BOX, AND THAT BOX IS AT THE
+    // BOTTOM OF THE WHOLE CURRICULUM. Click "Attach material" against an item
+    // in week 1 of a twelve-week programme and the form appears thousands of
+    // pixels further down: nothing moves, nothing is on screen, and the button
+    // reads as broken. It was reported as exactly that. So bring the form to
+    // the person and put the cursor in it.
+    function revealForm2() {
+      if (!form2) return;
+      try { form2.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) { form2.scrollIntoView(); }
+      var first = form2.querySelector("input, select, textarea");
+      if (first && first.focus) { try { first.focus({ preventScroll: true }); } catch (e) { first.focus(); } }
+    }
     var newProg = HOST.querySelector("#ac-cu-new");
     if (newProg && form) newProg.addEventListener("click", function () {
       form.innerHTML = '<div class="ac-plan" style="background:#f8fafc;border-color:var(--border,#e5e7eb);">'
@@ -1281,6 +1293,7 @@
         + '<button class="btn small" style="margin-top:8px;" id="ac-nw-save">Add it</button>'
         + '<span class="ac-sub" id="ac-nw-msg"></span></div>';
       wire();
+      revealForm2();
     });
     var nwSave = HOST.querySelector("#ac-nw-save");
     if (nwSave) nwSave.addEventListener("click", function () {
@@ -1309,6 +1322,7 @@
           + '<button class="btn small" style="margin-top:8px;" data-ni-save="' + b.getAttribute("data-cu-iadd") + '">Add it</button>'
           + '<span class="ac-sub" id="ac-ni-msg"></span></div>';
         wire();
+        revealForm2();
       });
     });
     HOST.querySelectorAll("[data-ni-save]").forEach(function (b) {
@@ -1365,6 +1379,7 @@
           + '<button class="btn small" style="margin-top:8px;" data-nr-save="' + id + '" data-nr-scope="' + scope + '">Attach it</button>'
           + '<span class="ac-sub" id="ac-nr-msg"></span></div>';
         wire();
+        revealForm2();
       });
     });
     HOST.querySelectorAll("[data-nr-save]").forEach(function (b) {

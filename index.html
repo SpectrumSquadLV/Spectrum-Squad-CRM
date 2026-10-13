@@ -1308,16 +1308,20 @@ async function route() {
 // bar, because an employee who signs in and sees "0 of 0 complete" has been
 // told they are up to date, and they have not been told anything.
 async function renderMyTraining(mount) {
+  // The real page lives in compliance-frontend.js, beside the rest of the
+  // compliance code. This stays as the fallback for the one case that matters:
+  // if that bundle fails to load, an employee whose ONLY page this is gets an
+  // explanation rather than a blank screen.
+  if (window.__renderMyTraining) return await window.__renderMyTraining(mount);
   mount.innerHTML = `
     <div class="page-head"><div><h1>My Training</h1>
       <p>Your required compliance training, and your own record of what you have completed.</p></div></div>
     <div class="card" style="max-width:640px;">
       <div class="empty-state" style="padding:26px 20px; text-align:left;">
-        <strong style="display:block; margin-bottom:6px;">No training has been assigned to you yet.</strong>
+        <strong style="display:block; margin-bottom:6px;">Your training could not be loaded.</strong>
         <span style="color:var(--text-muted); font-size:13.5px;">
-          When Spectrum Squad assigns you a course, it will appear here with what it covers,
-          what you need to do and when it is due. You will also be able to see and download
-          the certificates for anything you have already finished.
+          Please refresh the page. If it keeps happening, tell HR — your required
+          training is still recorded, this screen just could not fetch it.
         </span>
       </div>
     </div>`;
