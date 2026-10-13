@@ -161,6 +161,39 @@ module.exports = function initCompliance(ctx) {
     // Every change to a course or its rules, with who and when. A renewal
     // interval is a compliance decision; "it has always said 24 months" needs
     // to be answerable without anybody's word for it.
+    // WHAT ACTUALLY HAPPENED. Requirements are computed from the rules every
+    // time they are asked for (see the assignment engine below); completions
+    // are the durable half, because a transcript has to survive a rule being
+    // rewritten years later.
+    //
+    // There is deliberately NO unique key on (employee, course, version): a
+    // course that renews is completed again and again, and each sitting is a
+    // row. The key includes the DATE so that recording the same sitting twice
+    // is refused while a renewal is not.
+    //
+    // `hours` is TRAINING hours and nothing else. It is never written to any
+    // billable table and never counted as service delivery -- the brief asks
+    // for the two to be tracked separately, and mixing them would put
+    // training time into a client's authorisation.
+    await dbRun(`CREATE TABLE IF NOT EXISTS compliance_completions (
+      id SERIAL PRIMARY KEY,
+      employee_id INTEGER NOT NULL,
+      course_id INTEGER NOT NULL,
+      course_version INTEGER NOT NULL,
+      completed_on TEXT NOT NULL,
+      source TEXT NOT NULL,
+      hours REAL,
+      expires_on TEXT,
+      evidence_note TEXT,
+      verified_by TEXT,
+      verified_at TEXT,
+      recorded_by TEXT,
+      recorded_at TEXT,
+      UNIQUE (employee_id, course_id, course_version, completed_on)
+    )`).catch((e) => console.error("compliance_completions:", e.message));
+    await dbRun("CREATE INDEX IF NOT EXISTS compliance_completions_emp ON compliance_completions (employee_id)").catch(() => {});
+    await dbRun("CREATE INDEX IF NOT EXISTS compliance_completions_course ON compliance_completions (course_id)").catch(() => {});
+
     await dbRun(`CREATE TABLE IF NOT EXISTS compliance_audit (
       id SERIAL PRIMARY KEY,
       course_id INTEGER,
@@ -482,6 +515,351 @@ module.exports = function initCompliance(ctx) {
     return { status: 200, ok: true };
   }
 
+  // ======================= WHO HAS TO DO WHAT ==================
+  //
+  // THE ASSIGNMENT ENGINE. Requirements are COMPUTED, never stored as rows.
+  //
+  // That is the design the brief forces, in its own words: "avoid creating
+  // duplicate training records when a course is required by multiple
+  // onboarding programs", and nobody should "repeat the same current training
+  // simply because it appears in multiple onboarding programs". A computed set
+  // is keyed by course, so two programmes both asking for HIPAA produce ONE
+  // requirement and one completion satisfies both. There is no second row to
+  // go stale, and nothing to clean up when somebody changes department or a
+  // rule is rewritten -- the next read simply asks the rules again.
+  //
+  // What IS stored is what actually happened: completions, with who verified
+  // them. History is the durable half.
+
+  // Dates, kept small and explicit rather than pulling in a library.
+  function addDays(iso, n) {
+    if (!isDate(iso)) return null;
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+  function addMonths(iso, n) {
+    if (!isDate(iso)) return null;
+    const d = new Date(`${iso}T00:00:00Z`);
+    const day = d.getUTCDate();
+    d.setUTCMonth(d.getUTCMonth() + n);
+    // 31 January plus one month is the end of February, not the 3rd of March.
+    if (d.getUTCDate() < day) d.setUTCDate(0);
+    return d.toISOString().slice(0, 10);
+  }
+  function daysUntil(iso) {
+    if (!isDate(iso)) return null;
+    return Math.round((Date.parse(`${iso}T00:00:00Z`) - Date.parse(`${today()}T00:00:00Z`)) / 86400000);
+  }
+
+  // ONE employee database, as the brief requires: this looks the person up in
+  // hr_employees rather than keeping a second roster. user_id is the real
+  // link; the email match is the fallback for a record created before the
+  // login existed, which is the normal order of events in hiring.
+  async function employeeForUser(user) {
+    if (!user) return null;
+    let emp = null;
+    if (user.id != null) {
+      emp = await dbGet("SELECT * FROM hr_employees WHERE user_id = ?", [user.id]).catch(() => null);
+    }
+    if (!emp && clean(user.email)) {
+      emp = await dbGet("SELECT * FROM hr_employees WHERE LOWER(email) = LOWER(?)", [clean(user.email)]).catch(() => null);
+    }
+    return emp;
+  }
+
+  // Does this rule catch this person? Positions come from the shared title
+  // classifier so "RBT" means one thing across the CRM; departments come from
+  // the employee's own department field.
+  function appliesTo(rule, emp) {
+    if (rule.scope === "all") return true;
+    if (rule.scope === "position") {
+      return !!rule.position_group && rule.position_group === positionGroup(emp.role_title);
+    }
+    if (rule.scope === "department") {
+      return !!rule.department_key && rule.department_key === clean(emp.department_key);
+    }
+    return false; // optional is never required
+  }
+
+  function because(rule, deptNames) {
+    if (rule.scope === "all") return "Required of everybody";
+    if (rule.scope === "position") {
+      return `Required of ${(POSITIONS.find((p) => p.key === rule.position_group) || {}).label || rule.position_group}`;
+    }
+    if (rule.scope === "department") {
+      return `Required of ${deptNames.get(rule.department_key) || rule.department_key}`;
+    }
+    return "Optional professional development";
+  }
+
+  // Where one course stands for one person.
+  function evaluate(course, applicable, emp, comps, ack, deptNames, { optional = false } = {}) {
+    // SEVERAL RULES CAN CATCH ONE PERSON -- "everybody", plus "every RBT".
+    // That is one requirement, and where the rules disagree the stricter
+    // number wins: the shorter deadline, the shorter renewal. Two rules must
+    // never become two things to complete.
+    const nums = (f) => applicable.map((r) => r[f]).filter((v) => v != null)
+      .map(Number).filter((v) => Number.isFinite(v));
+    const dueDays = nums("due_days").length ? Math.min(...nums("due_days")) : null;
+    const renewal = nums("renewal_months").length ? Math.min(...nums("renewal_months")) : null;
+    const effective = applicable.map((r) => r.effective_from).filter(isDate).sort()[0] || null;
+
+    const mine = comps.filter((c) => c.course_id === course.id);
+    const verified = mine.filter((c) => !!c.verified_at)
+      .sort((a, b) => String(a.completed_on).localeCompare(String(b.completed_on)));
+    const waiting = mine.filter((c) => !c.verified_at)
+      .sort((a, b) => String(a.completed_on).localeCompare(String(b.completed_on)));
+
+    // A policy acknowledgment IS the completion, read from the existing
+    // acknowledgment table. Nothing is copied into compliance_completions for
+    // it -- that would be the duplicate record the brief rules out, and the
+    // acknowledgment is already one row per person per policy VERSION.
+    let latest = verified[verified.length - 1] || null;
+    let completed_on = latest ? latest.completed_on : null;
+    let earned_version = latest ? Number(latest.course_version) : null;
+    let completion_source = latest ? latest.source : null;
+    let verified_by = latest ? latest.verified_by : null;
+    if (course.delivery === "policy_ack") {
+      completed_on = ack && ack.current_on ? String(ack.current_on).slice(0, 10) : null;
+      earned_version = completed_on ? Number(course.version) : null;
+      completion_source = completed_on ? "policy_ack" : null;
+      // The system watched them do it, so there is nothing for a human to
+      // check -- but it says so rather than borrowing somebody's name.
+      verified_by = completed_on ? "Recorded automatically on acknowledgment" : null;
+      latest = null;
+    }
+
+    let state, due_on = null;
+    if (completed_on) {
+      if (renewal != null) {
+        due_on = addMonths(completed_on, renewal);
+        state = daysUntil(due_on) < 0 ? "overdue" : "complete";
+      } else {
+        state = "complete"; // once, and no renewal interval has been set
+      }
+    } else if (waiting.length) {
+      // SUBMITTED IS NOT COMPLETE. Self-reported training and a filed
+      // certificate both sit here until somebody checks them: the brief wants
+      // certificates generated only after VERIFIED completion, and nothing
+      // approved merely because time passed or a document was opened.
+      state = "submitted";
+    } else {
+      // The clock starts at the later of their hire date and the day the rule
+      // took effect, so a rule written this morning does not land on a
+      // five-year employee already overdue.
+      const anchor = [emp.hire_date, effective].filter(isDate).sort().pop() || null;
+      due_on = dueDays != null && anchor ? addDays(anchor, dueDays) : null;
+      state = due_on ? (daysUntil(due_on) < 0 ? "overdue" : "due") : "no_deadline";
+    }
+    if (optional) state = completed_on ? "complete" : "optional";
+
+    return {
+      course_id: course.id, key: course.key, title: course.title, summary: course.summary || null,
+      delivery: course.delivery,
+      delivery_label: (DELIVERY.find((d) => d.key === course.delivery) || {}).label || course.delivery,
+      provider: course.provider || null,
+      external_url: course.external_url || null,
+      policy_id: course.policy_id == null ? null : Number(course.policy_id),
+      version: Number(course.version || 1),
+      optional: !!optional,
+      required_because: optional ? "Optional professional development"
+        : applicable.map((r) => because(r, deptNames)).join("; "),
+      renewal_months: renewal,
+      due_days: dueDays,
+      state,
+      due_on,
+      days_left: due_on ? daysUntil(due_on) : null,
+      completed_on: completed_on || null,
+      completion_source,
+      verified_by: verified_by || null,
+      // Completed against an earlier version of the course. It still counts --
+      // they did the training, and nobody should be marked non-compliant
+      // because a link was corrected -- but it is visible so the owner can
+      // decide a retake is warranted. That is a judgement, not arithmetic.
+      earned_version,
+      superseded: earned_version != null && earned_version < Number(course.version || 1),
+      submitted: waiting.length
+        ? { id: waiting[waiting.length - 1].id, completed_on: waiting[waiting.length - 1].completed_on,
+            source: waiting[waiting.length - 1].source }
+        : null,
+      // TRAINING HISTORY, preserved: every sitting, oldest first.
+      history: mine
+        .sort((a, b) => String(a.completed_on).localeCompare(String(b.completed_on)))
+        .map((c) => ({
+          id: c.id, completed_on: c.completed_on, course_version: Number(c.course_version),
+          source: c.source, hours: c.hours == null ? null : Number(c.hours),
+          expires_on: c.expires_on || null,
+          verified_by: c.verified_by || null, verified_at: c.verified_at || null,
+        })),
+      policy: course.delivery === "policy_ack" && ack
+        ? { id: ack.policy_id, title: ack.title, version: ack.version,
+            acknowledged_version: ack.acknowledged_version || null }
+        : null,
+      // Acknowledging a policy happens on the policy, not here.
+      can_self_report: course.delivery !== "policy_ack",
+    };
+  }
+
+  const STATE_ORDER = { overdue: 0, due: 1, submitted: 2, no_deadline: 3, complete: 4, optional: 5 };
+
+  // One person's whole training picture.
+  async function trainingRecord(emp) {
+    const courses = await dbAll("SELECT * FROM compliance_courses WHERE active = TRUE ORDER BY title").catch(() => []);
+    const rules = await dbAll("SELECT * FROM compliance_course_rules ORDER BY id").catch(() => []);
+    const comps = await dbAll("SELECT * FROM compliance_completions WHERE employee_id = ?", [emp.id]).catch(() => []);
+    const depts = await dbAll("SELECT key, name FROM departments").catch(() => []);
+    const deptNames = new Map(depts.map((d) => [d.key, d.name]));
+
+    const byCourse = new Map();
+    rules.forEach((r) => {
+      if (!byCourse.has(r.course_id)) byCourse.set(r.course_id, []);
+      byCourse.get(r.course_id).push(r);
+    });
+
+    // Policy-acknowledgment courses, resolved against the live policy and the
+    // acknowledgments already on file. Acknowledgments are keyed on the USER
+    // id, which is why an employee with no login shows as not acknowledged
+    // rather than as mysteriously complete.
+    const policyIds = courses.filter((c) => c.delivery === "policy_ack" && c.policy_id).map((c) => Number(c.policy_id));
+    const ackByPolicy = new Map();
+    if (policyIds.length) {
+      for (const pid of [...new Set(policyIds)]) {
+        const pol = await dbGet("SELECT id, title, version FROM crm_policies WHERE id = ?", [pid]).catch(() => null);
+        if (!pol) continue;
+        const version = String((pol.version == null ? "1" : pol.version)).trim() || "1";
+        let rows = [];
+        if (emp.user_id != null) {
+          rows = await dbAll(
+            "SELECT policy_version, acknowledged_at FROM crm_policy_acknowledgments WHERE policy_id = ? AND employee_id = ?",
+            [pid, emp.user_id]).catch(() => []);
+        }
+        const current = rows.find((r) => String(r.policy_version).trim() === version) || null;
+        ackByPolicy.set(pid, {
+          policy_id: pid, title: pol.title, version,
+          current_on: current ? current.acknowledged_at : null,
+          // Acknowledged an EARLIER version: the policy changed under them, so
+          // it is not current and the page says which version they signed.
+          acknowledged_version: rows.length
+            ? rows.map((r) => String(r.policy_version).trim()).sort().pop() : null,
+        });
+      }
+    }
+
+    const required = [], optional = [];
+    for (const c of courses) {
+      const rs = byCourse.get(c.id) || [];
+      const applicable = rs.filter((r) => appliesTo(r, emp));
+      const isOptional = !applicable.length && rs.some((r) => r.scope === "optional");
+      if (!applicable.length && !isOptional) continue; // required of nobody, or not of them
+      const ack = c.delivery === "policy_ack" && c.policy_id ? ackByPolicy.get(Number(c.policy_id)) || null : null;
+      const row = evaluate(c, applicable, emp, comps, ack, deptNames, { optional: isOptional });
+      (isOptional ? optional : required).push(row);
+    }
+    const order = (a, b) => (STATE_ORDER[a.state] - STATE_ORDER[b.state])
+      || String(a.due_on || "9999").localeCompare(String(b.due_on || "9999"))
+      || a.title.localeCompare(b.title);
+    required.sort(order);
+    optional.sort(order);
+
+    const count = (st) => required.filter((r) => r.state === st).length;
+    return {
+      employee: {
+        id: emp.id, name: emp.name, email: emp.email || null,
+        role_title: emp.role_title || null,
+        position_group: positionGroup(emp.role_title),
+        position_label: (POSITIONS.find((p) => p.key === positionGroup(emp.role_title)) || {}).label || null,
+        department_key: emp.department_key || null,
+        department: emp.department_key ? deptNames.get(emp.department_key) || emp.department_key : null,
+        hire_date: emp.hire_date || null,
+      },
+      required, optional,
+      summary: {
+        total: required.length,
+        overdue: count("overdue"), due: count("due"), submitted: count("submitted"),
+        complete: count("complete"), no_deadline: count("no_deadline"),
+        // Training hours, kept apart from billable hours by design.
+        training_hours: required.concat(optional).reduce((n, r) => n
+          + r.history.filter((h) => h.verified_at).reduce((m, h) => m + (h.hours || 0), 0), 0),
+      },
+    };
+  }
+
+  // ---- RECORDING A COMPLETION -------------------------------------------
+  //
+  // VERIFYING SOMEBODY'S TRAINING IS AN HR ACT, NOT AN AUTHORING ONE. The
+  // owner alone writes the curriculum; HR runs onboarding and checks what
+  // comes in. Clinical leadership reads the compliance picture and verifies
+  // nothing, which is why this list is narrower than canView.
+  const VERIFY_ROLES = ["owner", "admin", "super_admin", "hr_admin"];
+  const canVerify = (u) => !!u && VERIFY_ROLES.includes(u.role);
+
+  function validateCompletion(b) {
+    const completed_on = clean(b.completed_on) || today();
+    if (!isDate(completed_on)) return { error: "Give the date it was completed as YYYY-MM-DD." };
+    if (completed_on > today()) return { error: "Training cannot be completed in the future." };
+    let hours = null;
+    if (b.hours !== undefined && b.hours !== null && clean(b.hours) !== "") {
+      hours = Number(b.hours);
+      if (!Number.isFinite(hours) || hours < 0 || hours > 200) return { error: "Training hours must be a number between 0 and 200." };
+    }
+    let expires_on = null;
+    if (clean(b.expires_on)) {
+      expires_on = clean(b.expires_on);
+      if (!isDate(expires_on)) return { error: "Give the expiry date as YYYY-MM-DD." };
+    }
+    return { fields: { completed_on, hours, expires_on, evidence_note: clean(b.evidence_note).slice(0, 1000) || null } };
+  }
+
+  // Shared by "I did this" and "HR recorded this for them". `verifiedNow` is
+  // the whole difference: a person reporting their own training never
+  // verifies it, whoever they are.
+  async function recordCompletion(emp, courseId, body, who, { verifiedNow, source }) {
+    const course = await dbGet("SELECT * FROM compliance_courses WHERE id = ? AND active = TRUE", [courseId]).catch(() => null);
+    if (!course) return { status: 404, error: "No such course." };
+    if (course.delivery === "policy_ack") {
+      return { status: 400, error: "This course is completed by acknowledging the policy, in Policies." };
+    }
+    // It has to be something they are actually asked to do, so a completion
+    // cannot be filed against training that was never required of them.
+    const rec = await trainingRecord(emp);
+    const row = rec.required.concat(rec.optional).find((r) => r.course_id === course.id);
+    if (!row) return { status: 400, error: "That course is not assigned to this person." };
+
+    const v = validateCompletion(body);
+    if (v.error) return { status: 400, error: v.error };
+    const f = v.fields;
+    const existing = await dbGet(
+      "SELECT id FROM compliance_completions WHERE employee_id = ? AND course_id = ? AND course_version = ? AND completed_on = ?",
+      [emp.id, course.id, Number(course.version || 1), f.completed_on]).catch(() => null);
+    if (existing) return { status: 409, error: "That sitting is already on record for this person." };
+
+    await dbRun(
+      `INSERT INTO compliance_completions
+         (employee_id, course_id, course_version, completed_on, source, hours, expires_on, evidence_note,
+          verified_by, verified_at, recorded_by, recorded_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [emp.id, course.id, Number(course.version || 1), f.completed_on, source, f.hours, f.expires_on,
+       f.evidence_note, verifiedNow ? who : null, verifiedNow ? nowISO() : null, who, nowISO()]);
+    await audit(course.id, verifiedNow
+      ? `Completion recorded and verified for ${emp.name} (completed ${f.completed_on}).`
+      : `Completion reported for ${emp.name} (completed ${f.completed_on}), waiting to be verified.`, who);
+    return { status: 201, ok: true, verified: !!verifiedNow };
+  }
+
+  async function setVerified(user, id, verified, note) {
+    const row = await dbGet("SELECT * FROM compliance_completions WHERE id = ?", [id]).catch(() => null);
+    if (!row) return { status: 404, error: "No such completion." };
+    const who = clean(user.name) || clean(user.email) || "HR";
+    const emp = await dbGet("SELECT name FROM hr_employees WHERE id = ?", [row.employee_id]).catch(() => null);
+    await dbRun("UPDATE compliance_completions SET verified_by = ?, verified_at = ? WHERE id = ?",
+      [verified ? who : null, verified ? nowISO() : null, id]);
+    await audit(row.course_id, `${verified ? "Verified" : "Verification withdrawn on"} the completion recorded for `
+      + `${(emp && emp.name) || "an employee"} (completed ${row.completed_on})`
+      + (clean(note) ? `: ${clean(note).slice(0, 300)}` : "."), who);
+    return { status: 200, ok: true };
+  }
+
   // ======================= ROUTES ==============================
   async function handleApi(req, res, pathname, method, user, query) {
     if (!pathname.startsWith("/api/compliance/")) return false;
@@ -543,12 +921,94 @@ module.exports = function initCompliance(ctx) {
       return true;
     }
 
+    // ---- A PERSON'S OWN TRAINING ---------------------------------------
+    //
+    // NOT canView-gated, and that is deliberate rather than an oversight.
+    // canView governs reading the compliance picture of OTHER people and it
+    // refuses the training-only role on purpose. Everybody who works here can
+    // see their own training, which for an employee account is the entire
+    // reason the login exists.
+    if (pathname === "/api/compliance/my-training" && method === "GET") {
+      if (!user) { json(res, 401, { error: "Sign in to see your training." }); return true; }
+      const emp = await employeeForUser(user);
+      if (!emp) {
+        // Said plainly instead of showing an empty list, which would read as
+        // "nothing is required of you" when the truth is that the login is
+        // not joined up to an employee record yet.
+        json(res, 200, {
+          linked: false,
+          message: "Your login is not linked to an employee record yet, so your training cannot be worked out. HR can link it.",
+          required: [], optional: [], summary: null,
+        });
+        return true;
+      }
+      const rec = await trainingRecord(emp);
+      json(res, 200, { linked: true, ...rec, can_verify: canVerify(user) });
+      return true;
+    }
+
+    // "I have done this." Never verifies: a self-report is a claim, and the
+    // brief asks that completion be verified before a certificate exists.
+    m = pathname.match(/^\/api\/compliance\/my-training\/(\d+)\/report$/);
+    if (m && method === "POST") {
+      if (!user) { json(res, 401, { error: "Sign in first." }); return true; }
+      const emp = await employeeForUser(user);
+      if (!emp) { json(res, 400, { error: "Your login is not linked to an employee record yet." }); return true; }
+      const who = clean(user.name) || clean(user.email) || "Employee";
+      const r = await recordCompletion(emp, Number(m[1]), await readBody(req), who,
+        { verifiedNow: false, source: "self_report" });
+      if (r.error) { json(res, r.status, { error: r.error }); return true; }
+      json(res, 201, { ok: true, verified: false });
+      return true;
+    }
+
+    // ---- SOMEBODY ELSE'S TRAINING --------------------------------------
+    m = pathname.match(/^\/api\/compliance\/employees\/(\d+)\/training$/);
+    if (m && method === "GET") {
+      if (!(await canView(user))) { json(res, 403, { error: "Not permitted" }); return true; }
+      const emp = await dbGet("SELECT * FROM hr_employees WHERE id = ?", [Number(m[1])]).catch(() => null);
+      if (!emp) { json(res, 404, { error: "No such employee." }); return true; }
+      const rec = await trainingRecord(emp);
+      json(res, 200, { ...rec, can_verify: canVerify(user) });
+      return true;
+    }
+
+    // HR recording training they have evidence of, which verifies it in the
+    // same step because they are the ones doing the checking.
+    m = pathname.match(/^\/api\/compliance\/employees\/(\d+)\/completions$/);
+    if (m && method === "POST") {
+      if (!canVerify(user)) { json(res, 403, { error: "Only the owner or HR can record somebody else's training." }); return true; }
+      const emp = await dbGet("SELECT * FROM hr_employees WHERE id = ?", [Number(m[1])]).catch(() => null);
+      if (!emp) { json(res, 404, { error: "No such employee." }); return true; }
+      const who = clean(user.name) || clean(user.email) || "HR";
+      // Read once: the body is a stream, and asking twice gets an empty
+      // object the second time.
+      const body = await readBody(req);
+      const r = await recordCompletion(emp, Number(body.course_id), body, who,
+        { verifiedNow: true, source: "recorded" });
+      if (r.error) { json(res, r.status, { error: r.error }); return true; }
+      json(res, 201, { ok: true, verified: true });
+      return true;
+    }
+
+    m = pathname.match(/^\/api\/compliance\/completions\/(\d+)\/verify$/);
+    if (m && method === "POST") {
+      if (!canVerify(user)) { json(res, 403, { error: "Only the owner or HR can verify training." }); return true; }
+      const b = await readBody(req);
+      const r = await setVerified(user, Number(m[1]), b.verified === undefined ? true : !!b.verified, b.note);
+      if (r.error) { json(res, r.status, { error: r.error }); return true; }
+      json(res, 200, { ok: true });
+      return true;
+    }
+
     return false;
   }
 
   return {
-    initTables, handleApi, library, canView, canManage,
-    _internal: { DELIVERY, DELIVERY_KEYS, SCOPES, SCOPE_KEYS, VERSIONED_FIELDS, SEED,
-                 validateCourse, validateRule, publicCourse, freeKey, seedLibrary, positionGroup },
+    initTables, handleApi, library, canView, canManage, canVerify, trainingRecord, employeeForUser,
+    _internal: { DELIVERY, DELIVERY_KEYS, SCOPES, SCOPE_KEYS, VERSIONED_FIELDS, SEED, VERIFY_ROLES,
+                 validateCourse, validateRule, publicCourse, freeKey, seedLibrary, positionGroup,
+                 appliesTo, evaluate, addDays, addMonths, daysUntil, validateCompletion,
+                 recordCompletion, setVerified, because },
   };
 };
