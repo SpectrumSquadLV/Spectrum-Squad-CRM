@@ -30,6 +30,13 @@
   var REVIEW = null;        // the loaded 30-day review, when VIEW === "review"
   var BACK_TO = "me";       // where Back goes: remembered, not guessed
   var CUR_PROG = null;      // the programme open in the curriculum editor
+  // THE CURRICULUM READS, UNTIL SOMEBODY TURNS EDITING ON.
+  //
+  // Everybody who runs onboarding can see what the training asks of the
+  // people they supervise. Only the practice owner can change it, and even
+  // she has to switch editing on first -- a screen you read every week
+  // should not have "Remove week" sitting under your cursor.
+  var CUR_EDIT = false;
 
   function api(path, opts) {
     opts = opts || {};
@@ -890,11 +897,27 @@
     if (!c) return '<div class="ac-card"><div class="ac-sub">Loading…</div></div>';
     var progs = c.programs || [];
     var sel = progs.filter(function (p) { return Number(p.id) === Number(CUR_PROG); })[0] || progs[0];
+    // `mayAuthor` is the owner's account; `editing` is whether she has turned
+    // it on. Everything that changes the training is behind BOTH, and the
+    // server refuses it regardless of what this screen draws.
+    var mayAuthor = !!(DATA.roster && DATA.roster.can_author);
+    var editing = mayAuthor && CUR_EDIT;
     var out = '<div class="ac-card"><div class="ac-row" style="justify-content:space-between;">'
       + "<h3 style=\"margin:0;font-size:15px;\">Programmes</h3>"
-      + '<button class="btn small" id="ac-cu-new">New programme</button></div>'
-      + '<div class="ac-sub" style="margin:3px 0 9px;">A programme is rows, not code — so RBT onboarding and Squad'
-      + " Leader development can be built here.</div>"
+      + '<div class="ac-row" style="gap:6px;">'
+        + (mayAuthor
+            ? '<button class="btn small' + (editing ? "" : " secondary") + '" id="ac-cu-edit">'
+              + (editing ? "Done editing" : "Edit curriculum") + "</button>"
+            : "")
+        + (editing ? '<button class="btn small" id="ac-cu-new">New programme</button>' : "")
+      + "</div></div>"
+      + '<div class="ac-sub" style="margin:3px 0 9px;">'
+      + (editing
+          ? "Editing is on. A programme is rows, not code — so RBT onboarding and Squad Leader development can be built here."
+          : mayAuthor
+            ? "This is the training as it stands. Switch editing on to change it."
+            : "This is the training as it stands, so you can see what the people you supervise are being asked to do. Only the practice owner changes it.")
+      + "</div>"
       + '<table class="ac-tbl"><thead><tr><th>Name</th><th>For</th><th>Weeks</th><th>Version</th>'
       + "<th>Enrolled</th><th>Content</th><th></th></tr></thead><tbody>"
       + progs.map(function (p) {
@@ -906,7 +929,7 @@
             + "<td>" + esc(p.weeks) + "</td><td>v" + esc(p.version) + "</td>"
             + "<td>" + esc(p.enrolled) + "</td>"
             + "<td>" + esc(p.modules) + " weeks, " + esc(p.items) + " items</td>"
-            + '<td><button class="btn small" data-cu-pick="' + p.id + '">Open</button></td></tr>';
+            + '<td><button class="btn small secondary" data-cu-pick="' + p.id + '">Open</button></td></tr>';
         }).join("")
       + "</tbody></table>"
       + '<div id="ac-cu-form"></div></div>';
@@ -915,35 +938,43 @@
     var body = c.body || {};
     out += '<div class="ac-card"><h3 style="margin:0 0 2px;font-size:15px;">' + esc(sel.name) + "</h3>"
       + '<div class="ac-sub" style="margin-bottom:9px;">'
-      + (Number(sel.enrolled) > 0
-          ? "<strong>" + esc(sel.enrolled) + " people are enrolled.</strong> Editing anything here creates version "
-            + esc(Number(sel.version) + 1) + " and leaves all of them on version " + esc(sel.version)
-            + " — nobody's finished week changes under them."
-          : "Nobody is enrolled yet, so edits change this version in place.")
+      + (!editing
+          ? esc(sel.enrolled) + " enrolled · version " + esc(sel.version)
+          : Number(sel.enrolled) > 0
+            ? "<strong>" + esc(sel.enrolled) + " people are enrolled.</strong> Editing anything here creates version "
+              + esc(Number(sel.version) + 1) + " and leaves all of them on version " + esc(sel.version)
+              + " — nobody's finished week changes under them."
+            : "Nobody is enrolled yet, so edits change this version in place.")
       + "</div>"
       + (body.modules || []).map(function (m) {
           return '<div class="ac-comp" style="margin-bottom:10px;background:#fff;border-color:var(--border,#e5e7eb);">'
             + '<div class="ac-row" style="justify-content:space-between;">'
               + "<div><strong>Week " + esc(m.week) + " — " + esc(m.title) + "</strong>"
               + (m.focus ? '<div class="ac-sub">' + esc(m.focus) + "</div>" : "") + "</div>"
-              + '<div><button class="btn small secondary" data-cu-mdel="' + m.id + '">Remove week</button></div>'
+              + (editing ? '<div><button class="btn small secondary" data-cu-mdel="' + m.id + '">Remove week</button></div>' : "")
             + "</div>"
             + (m.items || []).map(function (i) {
                 return '<div class="ac-item"><div style="flex:1;min-width:0;">'
                   + "<div>" + esc(i.title) + "</div>"
                   + '<div class="ac-sub">' + esc(i.kind) + (i.required ? "" : " · optional") + "</div>"
                   + resourcesHtml(i.resources)
-                  + '<div style="margin-top:6px;"><button class="btn small" data-cu-res="' + i.id
-                    + '" data-cu-res-kind="item">Attach material</button></div>'
+                  + (editing
+                      ? '<div style="margin-top:6px;"><button class="btn small" data-cu-res="' + i.id
+                        + '" data-cu-res-kind="item">Attach material</button></div>'
+                      : "")
                 + "</div>"
-                + '<div><button class="btn small secondary" data-cu-idel="' + i.id + '">Remove</button></div></div>';
+                + (editing ? '<div><button class="btn small secondary" data-cu-idel="' + i.id + '">Remove</button></div>' : "")
+                + "</div>";
               }).join("")
-            + '<div class="ac-row" style="margin-top:9px;">'
-              + '<button class="btn small" data-cu-iadd="' + m.id + '">Add an item</button>'
-              + '<button class="btn small" data-cu-res="' + m.id + '" data-cu-res-kind="module">Attach material to the week</button>'
-            + "</div></div>";
+            + (editing
+                ? '<div class="ac-row" style="margin-top:9px;">'
+                  + '<button class="btn small" data-cu-iadd="' + m.id + '">Add an item</button>'
+                  + '<button class="btn small" data-cu-res="' + m.id + '" data-cu-res-kind="module">Attach material to the week</button>'
+                + "</div>"
+                : "")
+            + "</div>";
         }).join("")
-      + '<button class="btn small" id="ac-cu-wadd">Add a week</button>'
+      + (editing ? '<button class="btn small" id="ac-cu-wadd">Add a week</button>' : "")
       + '<div id="ac-cu-form2"></div></div>';
     return out;
   }
@@ -965,9 +996,7 @@
         + (canManage ? "Everyone onboarding" : "My mentees") + "</button>"
         + (canManage
             ? '<button class="ac-tab' + (VIEW === "reports" ? " on" : "") + '" data-view="reports">Reports</button>'
-              + (canAuthor
-                  ? '<button class="ac-tab' + (VIEW === "curriculum" ? " on" : "") + '" data-view="curriculum">Curriculum</button>'
-                  : "")
+              + '<button class="ac-tab' + (VIEW === "curriculum" ? " on" : "") + '" data-view="curriculum">Curriculum</button>'
             : "")
         + "</div>";
     }
@@ -988,7 +1017,7 @@
            + threadsHtml(DATA.questions, DATA.gaps, true);
     } else if (VIEW === "reports" && canManage) {
       body = reportsHtml();
-    } else if (VIEW === "curriculum" && canAuthor) {
+    } else if (VIEW === "curriculum" && canManage) {
       body = curriculumHtml();
     } else {
       body = meHtml(DATA.me);
@@ -1169,6 +1198,13 @@
     });
 
     // ---- the curriculum editor -------------------------------------------
+    // The switch. Only drawn for the owner, so only she can reach it; the
+    // server refuses every write regardless of what this screen offers.
+    var cuEdit = HOST.querySelector("#ac-cu-edit");
+    if (cuEdit) cuEdit.addEventListener("click", function () {
+      CUR_EDIT = !CUR_EDIT;
+      render();
+    });
     HOST.querySelectorAll("[data-cu-pick]").forEach(function (b) {
       b.addEventListener("click", function () {
         CUR_PROG = Number(b.getAttribute("data-cu-pick"));

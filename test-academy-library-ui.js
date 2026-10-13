@@ -307,6 +307,35 @@ const today = () => new Date().toISOString().slice(0, 10);
       return r.status;
     });
     check("and the candidate list is refused them too", leadDenied === 403, leadDenied);
+
+    // THE DECIDING CASE FOR THE CURRICULUM, for the same reason as the picker
+    // above: the owner sees the switch and a plain BCBA sees no tab, so
+    // neither proves the line. Somebody who IS leadership but is NOT the
+    // owner is the person this rule exists for -- she supervises people
+    // through the programme and has to see what it asks of them, and she does
+    // not rewrite it.
+    await page.click('[data-view="curriculum"]');
+    await page.waitForTimeout(1800);
+    const leadCu = await page.textContent(".ac-wrap");
+    check("a clinical lead CAN open the curriculum", /Programmes/.test(leadCu), leadCu.slice(0, 300));
+    check("...and is told why she is looking at it",
+      /see what the people you supervise are being asked to do/i.test(leadCu), leadCu.slice(0, 500));
+    check("...and told whose it is to change", /Only the practice owner changes it/i.test(leadCu), leadCu.slice(0, 500));
+    check("SHE IS NOT OFFERED THE SWITCH AT ALL", await page.locator("#ac-cu-edit").count() === 0,
+      await page.locator("#ac-cu-edit").count());
+    check("...nor anything that removes a week", await page.locator("[data-cu-mdel]").count() === 0);
+    check("...nor anything that attaches a document", await page.locator("[data-cu-res]").count() === 0);
+    check("...nor a New programme button", await page.locator("#ac-cu-new").count() === 0);
+    check("but she can open a programme and read it", await page.locator("[data-cu-pick]").count() >= 2);
+    // And the server refuses her regardless of what the screen drew.
+    const cuDenied = await page.evaluate(async () => {
+      const r = await fetch("/api/academy/programs", { method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Hers" }) });
+      return { status: r.status, body: await r.json().catch(() => ({})) };
+    });
+    check("...and the API refuses her a new programme", cuDenied.status === 403, cuDenied);
+    check("...saying whose it is", /practice owner/i.test((cuDenied.body && cuDenied.body.error) || ""), cuDenied.body);
+
     await pool.query("UPDATE hr_employees SET academy_leadership = NULL WHERE id = $1", [mentorId]);
 
     section("AND IT IS NOT OFFERED TO STAFF");
@@ -349,11 +378,27 @@ const today = () => new Date().toISOString().slice(0, 10);
     check("while saying what would open it", /3 people have answered/i.test(rep), rep.slice(-1200));
 
     // =====================================================================
-    section("LEADERSHIP: THE CURRICULUM EDITOR");
+    section("THE CURRICULUM READS, UNTIL EDITING IS SWITCHED ON");
     await page.click('[data-view="curriculum"]');
     await page.waitForTimeout(1800);
+    const ro = await page.textContent(".ac-wrap");
+    check("the programme list loads", /Programmes/.test(ro), ro.slice(0, 400));
+    check("it opens READ-ONLY, even for the owner", /Switch editing on to change it/i.test(ro), ro.slice(0, 400));
+    check("...with nothing on screen that removes a week",
+      await page.locator("[data-cu-mdel]").count() === 0, await page.locator("[data-cu-mdel]").count());
+    check("...nothing that adds one", await page.locator("#ac-cu-wadd").count() === 0);
+    check("...nothing that attaches a document",
+      await page.locator("[data-cu-res]").count() === 0, await page.locator("[data-cu-res]").count());
+    check("...and no New programme button", await page.locator("#ac-cu-new").count() === 0);
+    check("but the programmes can still be opened and read",
+      await page.locator("[data-cu-pick]").count() >= 2, await page.locator("[data-cu-pick]").count());
+    check("the owner is offered the switch", await page.locator("#ac-cu-edit").count() === 1);
+
+    section("LEADERSHIP: THE CURRICULUM EDITOR");
+    await page.click("#ac-cu-edit");
+    await page.waitForTimeout(900);
     const cu = await page.textContent(".ac-wrap");
-    check("the programme list loads", /Programmes/.test(cu), cu.slice(0, 400));
+    check("switching it on says so", /Editing is on/i.test(cu), cu.slice(0, 300));
     check("and says a programme is rows rather than code, for RBT and Squad Leader",
       /RBT onboarding and Squad\s*Leader development/i.test(cu), cu.slice(0, 700));
     const rows = await page.locator("[data-cu-pick]").count();

@@ -2273,7 +2273,10 @@ module.exports = function initAcademy(ctx) {
     }
 
     if (pathname === "/api/academy/programs" && method === "GET") {
-      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
+      // READING the curriculum is leadership's; writing it is the owner's.
+      // A Clinical Director supervising somebody through a 30-day programme
+      // has to be able to see what that programme asks of them.
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can read the curriculum." }); return true; }
       const rows = await dbAll("SELECT * FROM academy_programs ORDER BY active DESC, name").catch(() => []);
       const out = [];
       for (const r of rows) {
