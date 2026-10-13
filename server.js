@@ -4964,9 +4964,13 @@ async function handle(req, res, pathname, method, query = {}) {
         // dashboard panel and follows the dashboard.
         pathname.startsWith("/api/payer-enrollments") ? "hr" :
         pathname.startsWith("/api/staff-progression") ? "dashboard" :
-        // The Credentialing Tracker follows the dashboard too: it is the
-        // Clinical Director's view, and HR's edits are checked in the module.
-        pathname.startsWith("/api/credentialing") ? "dashboard" :
+        // The Credentialing Tracker has its own key and its own entry in the
+        // Access editor. It rode on "dashboard" when it had no entry there,
+        // which meant it could not be given to or taken from one person
+        // without moving their whole dashboard. Edits are still checked in the
+        // module. (The progression WIDGET above is a dashboard panel, so it
+        // stays on "dashboard".)
+        pathname.startsWith("/api/credentialing") ? "credentialing" :
         pathname.startsWith("/api/ot/") ? "ot" :
         pathname.startsWith("/api/supervision") ? "supervision" :
         pathname.startsWith("/api/fin/") ? "financial-center" :
@@ -8953,6 +8957,10 @@ const staffProgression = require("./staff-progression")({
   // Credentialing settings (payer linking rules, onboarding deadlines, the
   // daily email) are the practice owner's alone.
   canConfigure: (u) => !!u && u.role === "owner",
+  // Lets an Access-editor grant open the read-only view for somebody whose
+  // role and leadership designations would not, and an explicit "Off" close it
+  // for somebody whose role otherwise would.
+  moduleGranted, moduleDenied,
 });
 
 const concerns = require("./concerns")({
