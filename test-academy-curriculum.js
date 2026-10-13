@@ -92,8 +92,43 @@ function session() {
     const pl = await plain("/api/auth/login", { method: "POST", body: { email: pe, password: "AcadCur123!" } });
     if (pl.status !== 200) throw new Error("plain login failed");
 
+    // A DESIGNATED CLINICAL DIRECTOR. She runs onboarding -- signs off
+    // competencies, approves completion -- and until now she could also
+    // rewrite the curriculum and add the training documents. That was asked
+    // to change: nobody but the practice owner authors the training.
+    const director = session();
+    const de = `acadcur-director-${stamp}@example.invalid`;
+    const dp = hp("AcadCur123!");
+    await pool.query(
+      `INSERT INTO users (name, email, password_hash, password_salt, role, created_at)
+       VALUES ('AcadCur Director',$1,$2,$3,'clinical', now())`, [de, dp.hash, dp.salt]);
+    const dirEmp = (await pool.query(
+      `INSERT INTO hr_employees (name, email, role_title, hr_hire_date, status)
+       VALUES ('AcadCur Director',$1,'Clinical Director',$2,'active') RETURNING id`,
+      [de, new Date().toISOString().slice(0, 10)])).rows[0].id;
+    await owner(`/api/academy/leadership/${dirEmp}`, { method: "PUT", body: { leadership: "clinical_director" } });
+    const dl = await director("/api/auth/login", { method: "POST", body: { email: de, password: "AcadCur123!" } });
+    if (dl.status !== 200) throw new Error("director login failed");
+
     // =====================================================================
-    section("ONLY LEADERSHIP TOUCHES THE CURRICULUM");
+    section("THE TRAINING IS THE OWNER'S TO WRITE, AND NOBODY ELSE'S");
+    // She is genuinely clinical leadership -- the roster proves it -- so the
+    // refusals below are about authoring and not about her being locked out.
+    const roster = await director("/api/academy/enrollments");
+    check("the Clinical Director does run onboarding", roster.status === 200 && roster.data.can_manage === true, roster.data && roster.data.can_manage);
+    check("...but is not told she may author the training", roster.data.can_author === false, roster.data && roster.data.can_author);
+    const ownerRoster = await owner("/api/academy/enrollments");
+    check("the owner is", ownerRoster.data.can_author === true, ownerRoster.data && ownerRoster.data.can_author);
+
+    const dNew = await director("/api/academy/programs", { method: "POST", body: { name: "Director's own programme" } });
+    check("she cannot create a programme", dNew.status === 403, dNew);
+    check("...and is told whose it is", /practice owner/i.test((dNew.data && dNew.data.error) || ""), dNew.data);
+    const dRes = await director("/api/academy/resources", { method: "POST", body: { kind: "link", title: "A doc of mine", url: "https://example.invalid/x", module_id: 1 } });
+    check("she cannot ADD A DOCUMENT to the training", dRes.status === 403, dRes);
+    check("...and is told whose it is", /practice owner/i.test((dRes.data && dRes.data.error) || ""), dRes.data);
+
+    // =====================================================================
+    section("ONLY THE OWNER TOUCHES THE CURRICULUM");
     const f1 = await plain("/api/academy/programs");
     check("an ordinary BCBA cannot list programmes", f1.status === 403, f1);
     const f2 = await plain("/api/academy/programs", { method: "POST", body: { name: "My own programme" } });

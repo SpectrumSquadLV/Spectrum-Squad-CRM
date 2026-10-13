@@ -879,6 +879,63 @@ module.exports = function initAcademy(ctx) {
     return /^https?:\/\/[^\s]+$/i.test(u) ? u : false;
   };
 
+  // ---- EMBEDDING A TRAINING VIDEO ----------------------------------------
+  //
+  // A video attached to a week used to be a link that opened a new tab, which
+  // is a worse way to watch training than it sounds: the employee leaves the
+  // checklist, and nothing on the page they come back to knows they went.
+  // Now a video from a host we recognise plays in the page.
+  //
+  // IT IS AN ALLOWLIST OF HOSTS, and that is a security decision rather than
+  // laziness. An embed is an iframe on a signed-in page; handing an arbitrary
+  // pasted address an iframe there is handing whoever owns that address a
+  // frame inside the CRM. Four hosts cover what a practice actually has --
+  // YouTube, Vimeo, Loom and a file in Google Drive -- and anything else
+  // stays exactly what it was, a link that opens in a new tab.
+  //
+  // DERIVED AT READ TIME, NEVER STORED. The row keeps the address somebody
+  // pasted. If this parser gets a host wrong, fixing it fixes every video
+  // already attached; a stored embed address would need a migration and the
+  // old rows would stay broken until somebody noticed.
+  function videoEmbed(raw) {
+    const u = clean(raw);
+    if (!u || !/^https?:\/\//i.test(u)) return null;
+    let parsed;
+    try { parsed = new URL(u); } catch (e) { return null; }
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    const id = (v) => /^[A-Za-z0-9_-]{6,64}$/.test(v) ? v : null;
+
+    if (host === "youtube.com" || host === "m.youtube.com") {
+      // Both the watch address people copy from the address bar and the
+      // /embed and /shorts forms.
+      const v = id(parsed.searchParams.get("v") || "");
+      if (v) return { provider: "YouTube", src: `https://www.youtube-nocookie.com/embed/${v}` };
+      const m = parsed.pathname.match(/^\/(?:embed|shorts|v)\/([A-Za-z0-9_-]{6,64})/);
+      if (m) return { provider: "YouTube", src: `https://www.youtube-nocookie.com/embed/${m[1]}` };
+      return null;
+    }
+    if (host === "youtu.be") {
+      const v = id(parsed.pathname.replace(/^\//, "").split("/")[0]);
+      return v ? { provider: "YouTube", src: `https://www.youtube-nocookie.com/embed/${v}` } : null;
+    }
+    if (host === "vimeo.com" || host === "player.vimeo.com") {
+      const m = parsed.pathname.match(/(\d{6,15})/);
+      return m ? { provider: "Vimeo", src: `https://player.vimeo.com/video/${m[1]}` } : null;
+    }
+    if (host === "loom.com") {
+      const m = parsed.pathname.match(/^\/(?:share|embed)\/([A-Za-z0-9]{8,64})/);
+      return m ? { provider: "Loom", src: `https://www.loom.com/embed/${m[1]}` } : null;
+    }
+    if (host === "drive.google.com") {
+      // A Drive video plays through /preview. Whoever opens it still needs
+      // permission on the file -- embedding grants nothing.
+      const m = parsed.pathname.match(/\/file\/d\/([A-Za-z0-9_-]{10,80})/)
+        || [null, id(parsed.searchParams.get("id") || "")];
+      return m && m[1] ? { provider: "Google Drive", src: `https://drive.google.com/file/d/${m[1]}/preview` } : null;
+    }
+    return null;
+  }
+
   async function resourcesFor(moduleIds, itemIds) {
     const mods = (moduleIds || []).map(Number).filter(Boolean);
     const items = (itemIds || []).map(Number).filter(Boolean);
@@ -898,6 +955,9 @@ module.exports = function initAcademy(ctx) {
       // has one, so renaming an SOP does not leave a stale name in a week.
       title: r.policy_id && r.policy_title ? r.policy_title : r.title,
       href: r.policy_id ? `/policies#p-${r.policy_slug || r.policy_id}` : r.url,
+      // null for a video on a host we do not embed, which is how the page
+      // knows to fall back to a link rather than draw an empty player.
+      embed: r.kind === "video" ? videoEmbed(r.url) : null,
     }));
   }
 
@@ -1014,6 +1074,18 @@ module.exports = function initAcademy(ctx) {
     const me = await employeeFor(user);
     const lead = await isClinicalLead(user);
     const owner = ["owner", "super_admin"].includes(user.role);
+    // WHO MAY AUTHOR THE TRAINING ITSELF -- the practice owner, and nobody
+    // else. Asked for in those words: nobody but her edits the training or
+    // adds the documents.
+    //
+    // It used to be clinical leadership, which is a designation held BY EMAIL
+    // and can be given to an assistant. What the practice requires of its
+    // staff, and the material handed to them to satisfy it, is what a
+    // licensing body or an insurer holds the owner to, so it is hers. Running
+    // onboarding is not affected: leadership still signs off competencies,
+    // approves completion, writes development plans and moves somebody's
+    // curriculum version. They just do not rewrite the curriculum.
+    const author = user.role === "owner";
     const actor = (user && (user.name || user.email)) || "unknown";
 
     // ---- who clinical leadership is ------------------------------------
@@ -1263,7 +1335,9 @@ module.exports = function initAcademy(ctx) {
           review_due: pr.day >= 30 && r.state === "active" && !(rv && rv.closed),
         });
       }
-      json(res, 200, { enrollments: out, can_manage: lead, is_owner: owner });
+      // can_manage: runs onboarding. can_author: writes the training itself,
+      // which is the owner's alone -- two different jobs, so two flags.
+      json(res, 200, { enrollments: out, can_manage: lead, is_owner: owner, can_author: author });
       return true;
     }
 
@@ -2259,7 +2333,10 @@ module.exports = function initAcademy(ctx) {
     }
 
     if (pathname === "/api/academy/programs" && method === "GET") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can manage the curriculum." }); return true; }
+      // READING the curriculum is leadership's; writing it is the owner's.
+      // A Clinical Director supervising somebody through a 30-day programme
+      // has to be able to see what that programme asks of them.
+      if (!lead) { json(res, 403, { error: "Only clinical leadership can read the curriculum." }); return true; }
       const rows = await dbAll("SELECT * FROM academy_programs ORDER BY active DESC, name").catch(() => []);
       const out = [];
       for (const r of rows) {
@@ -2274,7 +2351,7 @@ module.exports = function initAcademy(ctx) {
     }
 
     if (pathname === "/api/academy/programs" && method === "POST") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can create a programme." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can create a training programme." }); return true; }
       const b = await readBody(req).catch(() => ({}));
       const name = clean(b.name);
       if (!name) { json(res, 400, { error: "Give the programme a name." }); return true; }
@@ -2307,7 +2384,7 @@ module.exports = function initAcademy(ctx) {
 
     const progOne = pathname.match(/^\/api\/academy\/programs\/(\d+)$/);
     if (progOne && method === "PATCH") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can change a programme." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change a training programme." }); return true; }
       const prog = await dbGet("SELECT * FROM academy_programs WHERE id = ?", [Number(progOne[1])]).catch(() => null);
       if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
       const b = await readBody(req).catch(() => ({}));
@@ -2335,7 +2412,7 @@ module.exports = function initAcademy(ctx) {
 
     const progMods = pathname.match(/^\/api\/academy\/programs\/(\d+)\/modules$/);
     if (progMods && method === "POST") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
       const prog = await dbGet("SELECT * FROM academy_programs WHERE id = ?", [Number(progMods[1])]).catch(() => null);
       if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
       const b = await readBody(req).catch(() => ({}));
@@ -2361,7 +2438,7 @@ module.exports = function initAcademy(ctx) {
 
     const modOne = pathname.match(/^\/api\/academy\/modules\/(\d+)$/);
     if (modOne && (method === "PATCH" || method === "DELETE")) {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
       const mod = await dbGet("SELECT * FROM academy_modules WHERE id = ?", [Number(modOne[1])]).catch(() => null);
       if (!mod) { json(res, 404, { error: "No such week." }); return true; }
       if (mod.version_to !== null && mod.version_to !== undefined) {
@@ -2458,7 +2535,7 @@ module.exports = function initAcademy(ctx) {
 
     const modItems = pathname.match(/^\/api\/academy\/modules\/(\d+)\/items$/);
     if (modItems && method === "POST") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
       const mod = await dbGet("SELECT * FROM academy_modules WHERE id = ?", [Number(modItems[1])]).catch(() => null);
       if (!mod) { json(res, 404, { error: "No such week." }); return true; }
       if (mod.version_to !== null && mod.version_to !== undefined) {
@@ -2484,7 +2561,7 @@ module.exports = function initAcademy(ctx) {
 
     const itemEdit = pathname.match(/^\/api\/academy\/items\/(\d+)$/);
     if (itemEdit && (method === "PATCH" || method === "DELETE")) {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
       const item = await dbGet("SELECT * FROM academy_items WHERE id = ?", [Number(itemEdit[1])]).catch(() => null);
       if (!item) { json(res, 404, { error: "No such item." }); return true; }
       if (item.version_to !== null && item.version_to !== undefined) {
@@ -2545,7 +2622,7 @@ module.exports = function initAcademy(ctx) {
 
     // ---- THE TRAINING LIBRARY, as leadership manages it ------------------
     if (pathname === "/api/academy/resources" && method === "POST") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can add training material." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can add training material." }); return true; }
       const b = await readBody(req).catch(() => ({}));
       const kind = clean(b.kind) || "link";
       if (!RESOURCE_KINDS.includes(kind)) {
@@ -2604,7 +2681,7 @@ module.exports = function initAcademy(ctx) {
 
     const resOne = pathname.match(/^\/api\/academy\/resources\/(\d+)$/);
     if (resOne && method === "DELETE") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can remove training material." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can remove training material." }); return true; }
       const id = Number(resOne[1]);
       const row = await dbGet("SELECT * FROM academy_resources WHERE id = ?", [id]).catch(() => null);
       if (!row) { json(res, 404, { error: "No such resource." }); return true; }
@@ -2694,6 +2771,9 @@ module.exports = function initAcademy(ctx) {
     // move exists, it is explicit, and it is audited. It is never automatic.
     const verMove = pathname.match(/^\/api\/academy\/enrollments\/(\d+)\/curriculum-version$/);
     if (verMove && method === "POST") {
+      // Deliberately still leadership's: this moves ONE PERSON onto a
+      // different version of the curriculum, which is managing their record
+      // rather than authoring the training.
       if (!lead) { json(res, 403, { error: "Only clinical leadership can move somebody's curriculum version." }); return true; }
       const enrId = Number(verMove[1]);
       const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);
@@ -2725,7 +2805,7 @@ module.exports = function initAcademy(ctx) {
     initTables, handleApi, enrol, autoEnrolSweep, scheduleCheckins, checkinsFor, backfillCheckins,
     reviewFor, leadership, leadershipEmails, isClinicalLead,
     employeeFor, progressFor, itemsFor, modulesFor, resourcesFor, seedBcbaProgram,
-    _internal: { STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
+    _internal: { videoEmbed, STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
                  addDays, CHECKIN_DAYS, GAP_STATUSES, GAP_LABELS, URGENCIES,
                  DOMAINS, DOMAIN_KEYS, RATINGS, RATING_LABELS, REVIEW_STATES, isClosed,
                  RESOURCE_KINDS, safeUrl },

@@ -1352,7 +1352,7 @@ module.exports = function initStaffProgression(ctx) {
 
   return {
     initTables, handleApi, progression, canSee, dailySweep, runDaily,
-    _internal: { positionGroup, payerState, linkState, samePayer, pacific, isDue, MILESTONES, PAYER_STATUSES, PAYER_KINDS,
+    _internal: { positionGroup, POSITIONS, POSITION_LABEL, payerState, linkState, samePayer, pacific, isDue, MILESTONES, PAYER_STATUSES, PAYER_KINDS,
                  DOC_REQUEST_STALE_DAYS, PAYER_SLOW_DAYS, APPROVED_VISIBLE_DAYS, DEFAULT_DUE_DAYS, buildEmail, subjectFor,
                  mergeVerificationMilestone },
   };

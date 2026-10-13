@@ -201,6 +201,69 @@ module.exports = function initHr(ctx) {
   }
 
   // ============================ SCHEMA ============================
+  // ---- DEPARTMENTS, INFERRED ONCE FROM THE JOB TITLE -----------------------
+  //
+  // Nobody is going to set a department by hand on a roster that already
+  // exists, and training that targets departments is useless until they are
+  // set. So each employee gets a STARTING VALUE read from their job title,
+  // once, and marked as inferred so it can be told from a choice somebody
+  // made. The patterns are deliberately the same vocabulary
+  // staff-progression.js already classifies titles with, so the two do not
+  // drift into disagreeing about what an "RBT" is.
+  //
+  // THREE THINGS IT WILL NOT DO. It never overwrites a department that is
+  // already set, whether chosen or inferred. It never guesses from a blank or
+  // unrecognised title -- those stay unset and visible as unset, because a
+  // wrong department silently assigns somebody the wrong training. And it
+  // runs once: a title corrected later is for a person to act on, not for
+  // the next restart to quietly re-decide.
+  const DEPT_BY_TITLE = [
+    [/\bhr\b|human resources|recruit|talent/i, "hr"],
+    [/\bowner\b|clinical director|chief|\bceo\b|\bcoo\b|director of/i, "leadership"],
+    [/\brbt\b|registered behavior|behavior tech|behavior therapist|behavioral tech/i, "rbt"],
+    [/\bbcba\b|\bbcaba\b|board certified behavior analyst|behavior analyst|\blba\b/i, "clinical"],
+    [/squad lead/i, "rbt"],
+    [/\bcota\b|\botr?\b|occupational/i, "clinical"],
+    [/speech|\bslp\b|case manager|\btherap/i, "clinical"],
+    [/billing|biller|insurance|authorization/i, "billing"],
+    [/schedul/i, "scheduling"],
+    [/intake/i, "intake"],
+    [/admin|office|front desk|reception|payroll|marketing|accountant|bookkeep|operations/i, "administration"],
+  ];
+  function departmentForTitle(title) {
+    const t = String(title || "").trim();
+    if (!t) return null;
+    for (const [re, key] of DEPT_BY_TITLE) if (re.test(t)) return key;
+    return null;
+  }
+  async function inferDepartments() {
+    const done = await getSetting("departments_inferred", "").catch(() => "");
+    if (String(done) === "1") return;
+    let rows = [];
+    try {
+      rows = await dbAll(
+        `SELECT id, name, role_title FROM hr_employees
+          WHERE (department_key IS NULL OR department_key = '')
+            AND COALESCE(role_title, '') <> ''`);
+    } catch (e) { return; }
+    let set = 0, unmatched = 0;
+    for (const r of rows) {
+      const key = departmentForTitle(r.role_title);
+      if (!key) { unmatched++; continue; }
+      try {
+        await dbRun(
+          "UPDATE hr_employees SET department_key = ?, department_source = 'inferred' WHERE id = ? AND (department_key IS NULL OR department_key = '')",
+          [key, r.id]);
+        set++;
+      } catch (e) { /* leave it unset rather than half-written */ }
+    }
+    if (set || unmatched) {
+      console.log(`HR: department inferred for ${set} employee(s) from their job title; ${unmatched} left unset for someone to choose.`);
+    }
+    await setSetting("departments_inferred", "1").catch(() => {});
+  }
+
+
   async function initTables() {
     // ---- recruiting core ----
     await dbRun(`CREATE TABLE IF NOT EXISTS hr_positions (
@@ -603,7 +666,26 @@ module.exports = function initHr(ctx) {
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_pref_location TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_pref_language TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS hr_pref_notes TEXT`).catch(() => {});
-    // Document tracker: one row per (employee, doc_key). social/id store status only.
+    // WHICH DEPARTMENT THIS PERSON IS IN, by departments.key.
+    //
+    // The CRM has had departments since the beginning, but only ever on a
+    // LOGIN: users.department_id. Most employees have no login, so for the
+    // majority of the workforce the question "what department are they in"
+    // had no answer anywhere. Company-wide training is assigned by
+    // department, so now it does.
+    //
+    // Deliberately the key and not the id: the key is stable, readable in a
+    // payload, and a department row can be renamed without rewriting every
+    // employee. An unrecognised or missing key reads as "not set" and is
+    // never guessed at read time.
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS department_key TEXT`).catch(() => {});
+    await dbRun(`CREATE INDEX IF NOT EXISTS hr_employees_dept_idx ON hr_employees (department_key)`).catch(() => {});
+    // Where an inferred department came from, so one that nobody has looked
+    // at yet can be told apart from one a person actually chose.
+    await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS department_source TEXT`).catch(() => {});
+    await inferDepartments();
+  
+  // Document tracker: one row per (employee, doc_key). social/id store status only.
     await dbRun(`CREATE TABLE IF NOT EXISTS hr_doc_tracker (
       id SERIAL PRIMARY KEY,
       employee_id INTEGER NOT NULL,
@@ -2854,7 +2936,7 @@ module.exports = function initHr(ctx) {
         const allowed = ["name", "email", "role_title", "employment_type", "hire_date", "phone", "address", "certifications", "status", "rethink_id",
           "hr_stage", "hr_hire_date", "hr_offer_accepted_date", "hr_availability", "hr_stipulations",
           "hr_pref_hours", "hr_pref_location", "hr_pref_language", "hr_pref_notes",
-          "termination_date", "termination_reason", "termination_type"];
+          "termination_date", "termination_reason", "termination_type", "department_key"];
         const empId = Number(empDetailMatch[1]);
         const before = await dbGet("SELECT status, termination_date FROM hr_employees WHERE id = ?", [empId]);
         if (!before) return json(res, 404, { error: "Not found" });
@@ -2870,6 +2952,21 @@ module.exports = function initHr(ctx) {
         if (Object.prototype.hasOwnProperty.call(b, "termination_type") && b.termination_type
             && !["voluntary", "involuntary", "unknown"].includes(String(b.termination_type))) {
           return json(res, 400, { error: "Termination type must be voluntary, involuntary or unknown." });
+        }
+        // A department has to be a department. Training is assigned by this
+        // key, so a typo would quietly create a department of one person that
+        // no rule ever matches -- and nobody would see the training was
+        // missing. Blank clears it back to unset.
+        if (Object.prototype.hasOwnProperty.call(b, "department_key")) {
+          const key = String(b.department_key || "").trim();
+          if (key) {
+            const dept = await dbGet("SELECT key FROM departments WHERE key = ?", [key]).catch(() => null);
+            if (!dept) return json(res, 400, { error: "That is not one of the departments on file." });
+          }
+          b.department_key = key || null;
+          // Somebody chose this, so it is no longer a guess from a job title.
+          fields.push("department_source");
+          b.department_source = key ? "chosen" : null;
         }
 
         await dbRun(`UPDATE hr_employees SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`, [...fields.map((f) => b[f]), empId]);
@@ -7106,6 +7203,7 @@ Write body as plain text with line breaks (no HTML).`;
       parseXlsx, buildPayrollTimecards, findSheet, groupVerifiedSessions, periodDay, periodsOverlap,
       classifyBillable, timecardTotals, shapeTimecardPreview, timecardEmailHtml, timecardVerifyHtml, saveTimecardPdf,
       parsePlatformApplication, matchPosition, handlePlatformApplication,
+      departmentForTitle, inferDepartments,
     },
   };
 };

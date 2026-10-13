@@ -30,6 +30,13 @@
   var REVIEW = null;        // the loaded 30-day review, when VIEW === "review"
   var BACK_TO = "me";       // where Back goes: remembered, not guessed
   var CUR_PROG = null;      // the programme open in the curriculum editor
+  // THE CURRICULUM READS, UNTIL SOMEBODY TURNS EDITING ON.
+  //
+  // Everybody who runs onboarding can see what the training asks of the
+  // people they supervise. Only the practice owner can change it, and even
+  // she has to switch editing on first -- a screen you read every week
+  // should not have "Remove week" sitting under your cursor.
+  var CUR_EDIT = false;
 
   function api(path, opts) {
     opts = opts || {};
@@ -100,6 +107,12 @@
       ".ac-grid2{display:grid;grid-template-columns:1fr 1fr;gap:9px;}",
       ".ac-res{display:flex;gap:8px;align-items:baseline;padding:5px 0;font-size:13px;}",
       ".ac-res a{color:var(--brand-navy,#1b2a6b);}",
+      // A video sits above its caption rather than beside its label, and the
+      // player keeps a 16:9 box so the page does not jump as each one loads.
+      ".ac-vid{align-items:flex-start;}",
+      ".ac-vidbox{position:relative;width:100%;max-width:640px;aspect-ratio:16/9;background:#11131a;"
+        + "border-radius:10px;overflow:hidden;}",
+      ".ac-vidbox iframe{position:absolute;inset:0;width:100%;height:100%;border:0;}",
       ".ac-rk{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted,#64748b);",
       "border:1px solid var(--border,#e5e7eb);border-radius:999px;padding:1px 7px;white-space:nowrap;}",
       ".ac-stat{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;}",
@@ -308,6 +321,29 @@
       var label = '<span class="ac-rk">' + esc(RES_LABEL[r.kind] || r.kind) + "</span>";
       if (r.kind === "note") {
         return '<div class="ac-res">' + label + "<span>" + esc(r.title) + " — " + esc(r.body || "") + "</span></div>";
+      }
+      // A TRAINING VIDEO PLAYS HERE. It used to be a link that opened a new
+      // tab, which meant the employee left their checklist to watch it. The
+      // server decides whether a video is embeddable -- an allowlist of hosts,
+      // because an embed is an iframe on a signed-in page -- and hands back
+      // the player address. Anything else falls through to the link below,
+      // which is what a .mp4 on somebody's own website still gets.
+      //
+      // The link stays alongside the player either way: a frame that will not
+      // load, because the viewer is signed out of Drive or the file is not
+      // shared with them, otherwise leaves them with a black box and no way
+      // to reach the video.
+      if (r.kind === "video" && r.embed && r.embed.src) {
+        return '<div class="ac-res ac-vid">' + label
+          + '<div style="flex:1;min-width:0;">'
+            + '<div style="font-size:13px;margin-bottom:5px;">' + esc(r.title) + "</div>"
+            + '<div class="ac-vidbox"><iframe src="' + esc(r.embed.src) + '" title="' + esc(r.title)
+              + '" loading="lazy" allowfullscreen'
+              + ' referrerpolicy="strict-origin-when-cross-origin"'
+              + ' sandbox="allow-scripts allow-same-origin allow-presentation"></iframe></div>'
+            + '<div class="ac-sub" style="margin-top:4px;">' + esc(r.embed.provider)
+              + ' · <a href="' + esc(r.href || "#") + '" target="_blank" rel="noopener noreferrer">open it in a new tab</a></div>'
+          + "</div></div>";
       }
       // rel=noopener because these are links somebody else pasted, and
       // target=_blank without it hands the new page a handle on this one.
@@ -890,11 +926,27 @@
     if (!c) return '<div class="ac-card"><div class="ac-sub">Loading…</div></div>';
     var progs = c.programs || [];
     var sel = progs.filter(function (p) { return Number(p.id) === Number(CUR_PROG); })[0] || progs[0];
+    // `mayAuthor` is the owner's account; `editing` is whether she has turned
+    // it on. Everything that changes the training is behind BOTH, and the
+    // server refuses it regardless of what this screen draws.
+    var mayAuthor = !!(DATA.roster && DATA.roster.can_author);
+    var editing = mayAuthor && CUR_EDIT;
     var out = '<div class="ac-card"><div class="ac-row" style="justify-content:space-between;">'
       + "<h3 style=\"margin:0;font-size:15px;\">Programmes</h3>"
-      + '<button class="btn small" id="ac-cu-new">New programme</button></div>'
-      + '<div class="ac-sub" style="margin:3px 0 9px;">A programme is rows, not code — so RBT onboarding and Squad'
-      + " Leader development can be built here.</div>"
+      + '<div class="ac-row" style="gap:6px;">'
+        + (mayAuthor
+            ? '<button class="btn small' + (editing ? "" : " secondary") + '" id="ac-cu-edit">'
+              + (editing ? "Done editing" : "Edit curriculum") + "</button>"
+            : "")
+        + (editing ? '<button class="btn small" id="ac-cu-new">New programme</button>' : "")
+      + "</div></div>"
+      + '<div class="ac-sub" style="margin:3px 0 9px;">'
+      + (editing
+          ? "Editing is on. A programme is rows, not code — so RBT onboarding and Squad Leader development can be built here."
+          : mayAuthor
+            ? "This is the training as it stands. Switch editing on to change it."
+            : "This is the training as it stands, so you can see what the people you supervise are being asked to do. Only the practice owner changes it.")
+      + "</div>"
       + '<table class="ac-tbl"><thead><tr><th>Name</th><th>For</th><th>Weeks</th><th>Version</th>'
       + "<th>Enrolled</th><th>Content</th><th></th></tr></thead><tbody>"
       + progs.map(function (p) {
@@ -906,7 +958,7 @@
             + "<td>" + esc(p.weeks) + "</td><td>v" + esc(p.version) + "</td>"
             + "<td>" + esc(p.enrolled) + "</td>"
             + "<td>" + esc(p.modules) + " weeks, " + esc(p.items) + " items</td>"
-            + '<td><button class="btn small" data-cu-pick="' + p.id + '">Open</button></td></tr>';
+            + '<td><button class="btn small secondary" data-cu-pick="' + p.id + '">Open</button></td></tr>';
         }).join("")
       + "</tbody></table>"
       + '<div id="ac-cu-form"></div></div>';
@@ -915,35 +967,43 @@
     var body = c.body || {};
     out += '<div class="ac-card"><h3 style="margin:0 0 2px;font-size:15px;">' + esc(sel.name) + "</h3>"
       + '<div class="ac-sub" style="margin-bottom:9px;">'
-      + (Number(sel.enrolled) > 0
-          ? "<strong>" + esc(sel.enrolled) + " people are enrolled.</strong> Editing anything here creates version "
-            + esc(Number(sel.version) + 1) + " and leaves all of them on version " + esc(sel.version)
-            + " — nobody's finished week changes under them."
-          : "Nobody is enrolled yet, so edits change this version in place.")
+      + (!editing
+          ? esc(sel.enrolled) + " enrolled · version " + esc(sel.version)
+          : Number(sel.enrolled) > 0
+            ? "<strong>" + esc(sel.enrolled) + " people are enrolled.</strong> Editing anything here creates version "
+              + esc(Number(sel.version) + 1) + " and leaves all of them on version " + esc(sel.version)
+              + " — nobody's finished week changes under them."
+            : "Nobody is enrolled yet, so edits change this version in place.")
       + "</div>"
       + (body.modules || []).map(function (m) {
           return '<div class="ac-comp" style="margin-bottom:10px;background:#fff;border-color:var(--border,#e5e7eb);">'
             + '<div class="ac-row" style="justify-content:space-between;">'
               + "<div><strong>Week " + esc(m.week) + " — " + esc(m.title) + "</strong>"
               + (m.focus ? '<div class="ac-sub">' + esc(m.focus) + "</div>" : "") + "</div>"
-              + '<div><button class="btn small secondary" data-cu-mdel="' + m.id + '">Remove week</button></div>'
+              + (editing ? '<div><button class="btn small secondary" data-cu-mdel="' + m.id + '">Remove week</button></div>' : "")
             + "</div>"
             + (m.items || []).map(function (i) {
                 return '<div class="ac-item"><div style="flex:1;min-width:0;">'
                   + "<div>" + esc(i.title) + "</div>"
                   + '<div class="ac-sub">' + esc(i.kind) + (i.required ? "" : " · optional") + "</div>"
                   + resourcesHtml(i.resources)
-                  + '<div style="margin-top:6px;"><button class="btn small" data-cu-res="' + i.id
-                    + '" data-cu-res-kind="item">Attach material</button></div>'
+                  + (editing
+                      ? '<div style="margin-top:6px;"><button class="btn small" data-cu-res="' + i.id
+                        + '" data-cu-res-kind="item">Attach material</button></div>'
+                      : "")
                 + "</div>"
-                + '<div><button class="btn small secondary" data-cu-idel="' + i.id + '">Remove</button></div></div>';
+                + (editing ? '<div><button class="btn small secondary" data-cu-idel="' + i.id + '">Remove</button></div>' : "")
+                + "</div>";
               }).join("")
-            + '<div class="ac-row" style="margin-top:9px;">'
-              + '<button class="btn small" data-cu-iadd="' + m.id + '">Add an item</button>'
-              + '<button class="btn small" data-cu-res="' + m.id + '" data-cu-res-kind="module">Attach material to the week</button>'
-            + "</div></div>";
+            + (editing
+                ? '<div class="ac-row" style="margin-top:9px;">'
+                  + '<button class="btn small" data-cu-iadd="' + m.id + '">Add an item</button>'
+                  + '<button class="btn small" data-cu-res="' + m.id + '" data-cu-res-kind="module">Attach material to the week</button>'
+                + "</div>"
+                : "")
+            + "</div>";
         }).join("")
-      + '<button class="btn small" id="ac-cu-wadd">Add a week</button>'
+      + (editing ? '<button class="btn small" id="ac-cu-wadd">Add a week</button>' : "")
       + '<div id="ac-cu-form2"></div></div>';
     return out;
   }
@@ -954,6 +1014,9 @@
     var showRoster = DATA.roster && (DATA.roster.enrollments || []).length >= 0
       && (DATA.roster.can_manage || (DATA.roster.enrollments || []).length > 0);
     var canManage = !!(DATA.roster && DATA.roster.can_manage);
+    // Authoring the training is the owner's; running onboarding is
+    // leadership's. The Curriculum tab is the former.
+    var canAuthor = !!(DATA.roster && DATA.roster.can_author);
     var tabs = "";
     if (showRoster) {
       tabs = '<div style="margin-bottom:12px;">'
@@ -1164,6 +1227,13 @@
     });
 
     // ---- the curriculum editor -------------------------------------------
+    // The switch. Only drawn for the owner, so only she can reach it; the
+    // server refuses every write regardless of what this screen offers.
+    var cuEdit = HOST.querySelector("#ac-cu-edit");
+    if (cuEdit) cuEdit.addEventListener("click", function () {
+      CUR_EDIT = !CUR_EDIT;
+      render();
+    });
     HOST.querySelectorAll("[data-cu-pick]").forEach(function (b) {
       b.addEventListener("click", function () {
         CUR_PROG = Number(b.getAttribute("data-cu-pick"));
@@ -1277,10 +1347,12 @@
         var scope = b.getAttribute("data-cu-res-kind");
         form2.innerHTML = '<div class="ac-plan" style="background:#f8fafc;border-color:var(--border,#e5e7eb);">'
           + '<strong style="font-size:13px;">Attach training material</strong>'
-          + '<div class="ac-sub" style="margin:2px 0 8px;">A video is an embedded link — Loom, YouTube or Vimeo.'
+          + '<div class="ac-sub" style="margin:2px 0 8px;">A video <strong>plays in the page</strong> when it is on'
+          + " YouTube, Vimeo, Loom or Google Drive — paste the address you would normally share."
+          + " Anything else is kept as a link that opens in a new tab."
           + " An SOP is picked from the policy library rather than pasted in, so an amended SOP stays correct here.</div>"
           + '<div class="ac-grid2"><label class="ac-sub">Kind<select id="ac-nr-kind">'
-            + '<option value="video">Video (link)</option><option value="link">Link</option>'
+            + '<option value="video">Video — plays in the page</option><option value="link">Link</option>'
             + '<option value="document">SOP or policy from the library</option>'
             + '<option value="note">A note</option></select></label>'
             + '<label class="ac-sub">Title<input id="ac-nr-title" placeholder="What it is"></label></div>'

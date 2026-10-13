@@ -1587,6 +1587,15 @@ const ROLE_CATALOG = [
   { key: "interviewer", label: "Interviewer", privileged: false, description: "HR & Recruiting: view assigned candidates and interviews only." },
   { key: "ot_admin", label: "OT Admin", privileged: false, description: "Occupational Therapy: full OT access + OT settings. Shared family demographics only — no ABA clinical, authorization, billing, or financial data." },
   { key: "ot_staff", label: "OT Staff", privileged: false, description: "Occupational Therapy: OT clients, intake, and documents. Shared family demographics only — no ABA clinical, authorization, billing, or financial data." },
+  // THE LOWEST TIER, AND DELIBERATELY EMPTY. Company-wide compliance training
+  // has to reach every employee -- RBTs, Squad Leaders, front desk -- and most
+  // of them had no CRM account at all: adding somebody to hr_employees has
+  // never created a login. This role is that login and nothing more. It
+  // appears in no access list anywhere in the CRM, which is what makes it
+  // safe: every module gates on a list of roles, so a role on none of them
+  // reaches none of them. The role matrix snapshot is where that is checked
+  // rather than asserted -- see test-role-matrix-core.js.
+  { key: "employee", label: "Employee (training only)", privileged: false, description: "Their own required training and their own training record. No client records, no staff records, no HR, no financials — the account exists so an employee can complete the training the practice requires of them." },
 ];
 const VALID_ROLE_KEYS = ROLE_CATALOG.map((r) => r.key);
 
@@ -4951,6 +4960,35 @@ async function handle(req, res, pathname, method, query = {}) {
     }
   }
 
+  // ---- THE TRAINING-ONLY FLOOR ------------------------------------------
+  //
+  // The "employee" role exists so that every employee -- RBTs, Squad Leaders,
+  // front desk -- can be given a login for company-wide compliance training,
+  // and for nothing else.
+  //
+  // IT IS AN ALLOWLIST, NOT A LIST OF ROLES TO EXCLUDE, and that is the whole
+  // point. Most of this CRM gates on "is your role in this list", so a role
+  // on no list reaches nothing -- but not everything does. The role matrix
+  // snapshot showed this role arriving with the dashboard, Tasks & Alerts,
+  // the practice group and /api/staff, which hands over every colleague's
+  // name and email, because those modules deliberately admit any signed-in
+  // user. Listing what to block would then have to be revisited every time a
+  // module is added, and the failure is silent. Listing what to ALLOW means a
+  // new module is closed to this role until somebody decides otherwise.
+  //
+  // Policies are in because acknowledging a policy IS part of the training.
+  if (user && user.role === "employee" && pathname.startsWith("/api/")) {
+    const allowed =
+      pathname.startsWith("/api/auth/")
+      || pathname === "/api/nav-order"
+      || pathname.startsWith("/api/compliance/")
+      || pathname.startsWith("/api/policies");
+    if (!allowed) {
+      json(res, 403, { error: "This account is for your required training only." });
+      return true;
+    }
+  }
+
   // Per-user granular module access: if the owner explicitly turned a module OFF
   // for this user, block its API here (public sub-routes are exempt). Absent =
   // role defaults apply, so existing users are unaffected.
@@ -4971,6 +5009,8 @@ async function handle(req, res, pathname, method, query = {}) {
         // module. (The progression WIDGET above is a dashboard panel, so it
         // stays on "dashboard".)
         pathname.startsWith("/api/credentialing") ? "credentialing" :
+        // The Compliance Hub is its own section with its own Access entry.
+        pathname.startsWith("/api/compliance") ? "compliance" :
         pathname.startsWith("/api/ot/") ? "ot" :
         pathname.startsWith("/api/supervision") ? "supervision" :
         pathname.startsWith("/api/fin/") ? "financial-center" :
@@ -5181,6 +5221,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/staff-progression") || pathname.startsWith("/api/payer-enrollments") || pathname.startsWith("/api/credentialing")) {
     const handled = await staffProgression.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/compliance/")) {
+    const handled = await compliance.handleApi(req, res, pathname, method, user, query);
     if (handled) return true;
   }
 
@@ -5762,6 +5807,7 @@ async function handle(req, res, pathname, method, query = {}) {
         // Whether the Credentialing entry is drawn. HR, owner/admin and the
         // designated Clinical Director / Assistants; the API enforces the same rule.
         credentialing_access: await staffProgression.canSee(user).catch(() => false),
+        compliance_access: await compliance.canView(user).catch(() => false),
       });
     }
 
@@ -8291,6 +8337,29 @@ async function seedDepartments() {
   }
 }
 
+// THE DEPARTMENTS STAFF ACTUALLY BELONG TO.
+//
+// The four seeded above mirror the CRM's office roles, and they were enough
+// while a department only ever decorated a login. Company-wide training
+// targets departments, and the people it targets are mostly NOT office
+// staff -- an RBT in the field is not "Clinical (BCBA)" and a Squad Leader is
+// not "Intake / Admin". These are added rather than seeded, because an
+// install past its first boot never runs seedDepartments again.
+const STAFF_DEPARTMENTS = [
+  { key: "rbt", name: "Clinical — RBT", color: "#3f9f8f", notify_email: null },
+  { key: "administration", name: "Administration", color: "#6b6a86", notify_email: null },
+  { key: "hr", name: "Human Resources", color: "#b45309", notify_email: null },
+  { key: "leadership", name: "Leadership", color: "#1b2a6b", notify_email: null },
+];
+async function ensureStaffDepartments() {
+  for (const d of STAFF_DEPARTMENTS) {
+    await dbRun(
+      "INSERT INTO departments (key, name, color, notify_email) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING",
+      [d.key, d.name, d.color, d.notify_email]
+    ).catch((e) => console.error("ensureStaffDepartments:", e.message));
+  }
+}
+
 async function deptId(key) {
   const row = await dbGet("SELECT id FROM departments WHERE key = ?", [key]);
   return row.id;
@@ -8616,6 +8685,7 @@ const PUBLIC_FILES = new Set([
   // The Clinical Director's Staff Progression widget on that dashboard, and
   // the payer enrollment section of the HR Hub staff card that feeds it.
   "/staff-progression-frontend.js",
+  "/compliance-frontend.js",
   "/screener-admin.js",
   "/hr-recruiting.js",
   "/ot-frontend.js",
@@ -8961,6 +9031,17 @@ const staffProgression = require("./staff-progression")({
   // role and leadership designations would not, and an explicit "Off" close it
   // for somebody whose role otherwise would.
   moduleGranted, moduleDenied,
+});
+
+// ===== COMPLIANCE & CERTIFICATION HUB add-on: the company-wide course
+// library and who each course is required of. Owns /api/compliance/*. =====
+const compliance = require("./compliance")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting,
+  // One vocabulary for positions, shared with the credentialing tracker, so
+  // "RBT" cannot come to mean two different things in two places.
+  positionGroup: (t) => staffProgression._internal.positionGroup(t),
+  POSITIONS: staffProgression._internal.POSITIONS,
+  isClinicalLead: (u) => academy.isClinicalLead(u),
 });
 
 const concerns = require("./concerns")({
@@ -9481,6 +9562,7 @@ async function start() {
   await concerns.initTables().catch((e) => console.error("Concerns initTables failed:", e));
   await staffPortal.initTables().catch((e) => console.error("Staff portal initTables failed:", e));
   await academy.initTables().catch((e) => console.error("Academy initTables failed:", e));
+  await compliance.initTables().catch((e) => console.error("Compliance initTables failed:", e));
   await policyChanges.initTables().catch((e) => console.error("Policy change requests initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
   await fidelity.initTables().catch((e) => console.error("Fidelity initTables failed:", e));
@@ -9601,6 +9683,11 @@ async function start() {
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
   await hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));
   await ensureSeeded();
+  // AFTER ensureSeeded, and that ordering is load-bearing: ensureSeeded asks
+  // "is departments empty?" to decide whether this is a first run. Adding
+  // departments before it answers that question tells a brand-new install it
+  // is already seeded, and it comes up with no users at all.
+  await ensureStaffDepartments();
   await retireDefaultPasswords().catch((e) => console.error("Default-password retirement failed:", e.message));
   await pipeline.checkOverdueTasks();
 

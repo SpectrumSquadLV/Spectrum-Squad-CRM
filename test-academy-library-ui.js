@@ -307,6 +307,35 @@ const today = () => new Date().toISOString().slice(0, 10);
       return r.status;
     });
     check("and the candidate list is refused them too", leadDenied === 403, leadDenied);
+
+    // THE DECIDING CASE FOR THE CURRICULUM, for the same reason as the picker
+    // above: the owner sees the switch and a plain BCBA sees no tab, so
+    // neither proves the line. Somebody who IS leadership but is NOT the
+    // owner is the person this rule exists for -- she supervises people
+    // through the programme and has to see what it asks of them, and she does
+    // not rewrite it.
+    await page.click('[data-view="curriculum"]');
+    await page.waitForTimeout(1800);
+    const leadCu = await page.textContent(".ac-wrap");
+    check("a clinical lead CAN open the curriculum", /Programmes/.test(leadCu), leadCu.slice(0, 300));
+    check("...and is told why she is looking at it",
+      /see what the people you supervise are being asked to do/i.test(leadCu), leadCu.slice(0, 500));
+    check("...and told whose it is to change", /Only the practice owner changes it/i.test(leadCu), leadCu.slice(0, 500));
+    check("SHE IS NOT OFFERED THE SWITCH AT ALL", await page.locator("#ac-cu-edit").count() === 0,
+      await page.locator("#ac-cu-edit").count());
+    check("...nor anything that removes a week", await page.locator("[data-cu-mdel]").count() === 0);
+    check("...nor anything that attaches a document", await page.locator("[data-cu-res]").count() === 0);
+    check("...nor a New programme button", await page.locator("#ac-cu-new").count() === 0);
+    check("but she can open a programme and read it", await page.locator("[data-cu-pick]").count() >= 2);
+    // And the server refuses her regardless of what the screen drew.
+    const cuDenied = await page.evaluate(async () => {
+      const r = await fetch("/api/academy/programs", { method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Hers" }) });
+      return { status: r.status, body: await r.json().catch(() => ({})) };
+    });
+    check("...and the API refuses her a new programme", cuDenied.status === 403, cuDenied);
+    check("...saying whose it is", /practice owner/i.test((cuDenied.body && cuDenied.body.error) || ""), cuDenied.body);
+
     await pool.query("UPDATE hr_employees SET academy_leadership = NULL WHERE id = $1", [mentorId]);
 
     section("AND IT IS NOT OFFERED TO STAFF");
@@ -349,11 +378,27 @@ const today = () => new Date().toISOString().slice(0, 10);
     check("while saying what would open it", /3 people have answered/i.test(rep), rep.slice(-1200));
 
     // =====================================================================
-    section("LEADERSHIP: THE CURRICULUM EDITOR");
+    section("THE CURRICULUM READS, UNTIL EDITING IS SWITCHED ON");
     await page.click('[data-view="curriculum"]');
     await page.waitForTimeout(1800);
+    const ro = await page.textContent(".ac-wrap");
+    check("the programme list loads", /Programmes/.test(ro), ro.slice(0, 400));
+    check("it opens READ-ONLY, even for the owner", /Switch editing on to change it/i.test(ro), ro.slice(0, 400));
+    check("...with nothing on screen that removes a week",
+      await page.locator("[data-cu-mdel]").count() === 0, await page.locator("[data-cu-mdel]").count());
+    check("...nothing that adds one", await page.locator("#ac-cu-wadd").count() === 0);
+    check("...nothing that attaches a document",
+      await page.locator("[data-cu-res]").count() === 0, await page.locator("[data-cu-res]").count());
+    check("...and no New programme button", await page.locator("#ac-cu-new").count() === 0);
+    check("but the programmes can still be opened and read",
+      await page.locator("[data-cu-pick]").count() >= 2, await page.locator("[data-cu-pick]").count());
+    check("the owner is offered the switch", await page.locator("#ac-cu-edit").count() === 1);
+
+    section("LEADERSHIP: THE CURRICULUM EDITOR");
+    await page.click("#ac-cu-edit");
+    await page.waitForTimeout(900);
     const cu = await page.textContent(".ac-wrap");
-    check("the programme list loads", /Programmes/.test(cu), cu.slice(0, 400));
+    check("switching it on says so", /Editing is on/i.test(cu), cu.slice(0, 300));
     check("and says a programme is rows rather than code, for RBT and Squad Leader",
       /RBT onboarding and Squad\s*Leader development/i.test(cu), cu.slice(0, 700));
     const rows = await page.locator("[data-cu-pick]").count();
@@ -377,6 +422,51 @@ const today = () => new Date().toISOString().slice(0, 10);
         && /nobody's finished week changes under them/i.test(open), open.slice(0, 1600));
     check("the attached material is shown in the editor too",
       /Attendance Policy/.test(open), open.slice(0, 1400));
+    // ---- A TRAINING VIDEO PLAYS IN THE PAGE ---------------------------
+    // It used to be a link that opened a new tab, which meant the employee
+    // left their checklist to watch the training.
+    const vidItem = await page.locator("[data-cu-res][data-cu-res-kind='item']").first();
+    await vidItem.click();
+    await page.waitForTimeout(500);
+    await page.selectOption("#ac-nr-kind", "video");
+    await page.fill("#ac-nr-title", "How we run a session");
+    await page.fill("#ac-nr-url", "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    check("the form says which hosts play in the page",
+      /YouTube, Vimeo, Loom or Google Drive/.test(await page.textContent("#ac-cu-form2")),
+      await page.textContent("#ac-cu-form2"));
+    await page.click("[data-nr-save]");
+    await page.waitForTimeout(2000);
+    const frame = page.locator(".ac-vidbox iframe").first();
+    check("THE VIDEO IS EMBEDDED, not left as a link", await page.locator(".ac-vidbox iframe").count() >= 1,
+      await page.locator(".ac-vidbox iframe").count());
+    const vsrc = await frame.getAttribute("src");
+    check("...pointing at a player rather than the page that was pasted",
+      vsrc === "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ", vsrc);
+    check("...sandboxed", (await frame.getAttribute("sandbox") || "").includes("allow-scripts"), await frame.getAttribute("sandbox"));
+    check("...and loaded lazily, so a week of videos does not fetch them all at once",
+      (await frame.getAttribute("loading")) === "lazy");
+    check("...with the provider named and a way out to a new tab",
+      /YouTube/.test(await page.textContent(".ac-vid")) && /open it in a new tab/.test(await page.textContent(".ac-vid")),
+      await page.textContent(".ac-vid"));
+    const box = await page.locator(".ac-vidbox").first().boundingBox();
+    check("...in a 16:9 box rather than a collapsed strip",
+      box && box.height > 100 && Math.abs(box.width / box.height - 16 / 9) < 0.2, box);
+
+    // A host nobody allowlisted stays a link, which is the safe answer.
+    await vidItem.click();
+    await page.waitForTimeout(500);
+    await page.selectOption("#ac-nr-kind", "video");
+    await page.fill("#ac-nr-title", "A file on our own server");
+    await page.fill("#ac-nr-url", "https://example.invalid/training.mp4");
+    await page.click("[data-nr-save]");
+    await page.waitForTimeout(2000);
+    check("a video on a host we do not embed is kept as a link, not a broken player",
+      await page.locator(".ac-vidbox iframe").count() === 1
+      && /A file on our own server/.test(await page.textContent(".ac-wrap")),
+      await page.locator(".ac-vidbox iframe").count());
+    const anyBad = await page.locator('iframe[src*="example.invalid"]').count();
+    check("...and nothing from that host is framed in the page", anyBad === 0, anyBad);
+
     check("with a control to attach more",
       await page.locator("[data-cu-res]").count() >= 1, await page.locator("[data-cu-res]").count());
 
@@ -384,8 +474,10 @@ const today = () => new Date().toISOString().slice(0, 10);
     await page.click("[data-cu-res]");
     await page.waitForTimeout(500);
     const form = await page.textContent(".ac-wrap");
-    check("the form explains a video is an embedded link",
-      /A video is an embedded link/i.test(form), form.slice(-800));
+    check("the form explains that a video plays in the page, and where from",
+      /plays in the page/i.test(form) && /YouTube, Vimeo, Loom or Google Drive/.test(form), form.slice(-800));
+    check("...and that anything else is kept as a link",
+      /Anything else is kept as a link that opens in a new tab/i.test(form), form.slice(-800));
     check("and that an SOP is picked rather than pasted",
       /picked from the policy library rather than pasted/i.test(form), form.slice(-800));
     const opts = await page.evaluate(() => [...document.querySelectorAll("#ac-nr-pol option")].map((o) => o.textContent));
