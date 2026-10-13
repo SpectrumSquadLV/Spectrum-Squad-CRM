@@ -124,6 +124,13 @@ const BASE = process.env.BASE || "http://localhost:3009";
   // is wired and silently do nothing, which reads afterwards as "the button is
   // missing" and sent three runs of this chasing the wrong thing.
   await page.evaluate(() => { location.hash = "#/hr/timecards"; });
+  // The Timecard Hub shows one pay period at a time and opens on the newest
+  // open one, which here is tc2's. Pick tcId's period from the selector.
+  await page.waitForSelector("#tc-period", { timeout: 30000 }).catch(() => {});
+  await page.selectOption("#tc-period", "2026-08-03|2026-08-09").catch(() => {});
+  await page.waitForSelector(`[data-tcmenu="${tcId}"]`, { timeout: 30000 }).catch(() => {});
+  // History lives in the row's action menu now, not as a button on the row.
+  await page.locator(`[data-tcmenu="${tcId}"]`).click().catch(() => {});
   const found = await page.waitForSelector(`[data-tcsent="${tcId}"]`, { timeout: 30000 })
     .then(() => true).catch(() => false);
   check("there is a Sent email button on a timecard that has been sent", found,
@@ -131,8 +138,21 @@ const BASE = process.env.BASE || "http://localhost:3009";
     // hang the suite for another 30 seconds when the screen never rendered.
     await page.locator("#hr-body").innerText({ timeout: 3000 })
       .then((t) => t.slice(0, 200)).catch((e) => "hr-body unreadable: " + e.message));
+  // tc2 (never sent) is in the other period: open its menu there and confirm
+  // there is no history entry for something nobody sent.
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => document.querySelectorAll(".tch-menu").forEach((m) => m.remove()));
+  await page.selectOption("#tc-period", "2026-08-10|2026-08-16").catch(() => {});
+  await page.waitForSelector(`[data-tcmenu="${tc2}"]`, { timeout: 15000 }).catch(() => {});
+  await page.locator(`[data-tcmenu="${tc2}"]`).click().catch(() => {});
+  await page.waitForTimeout(300);
   check("and none on the one that has not been sent",
-    await page.locator(`[data-tcsent="${tc2}"]`).count() === 0);
+    await page.locator(".tch-menu").count() === 1 && await page.locator(`[data-tcsent="${tc2}"]`).count() === 0);
+  await page.evaluate(() => document.querySelectorAll(".tch-menu").forEach((m) => m.remove()));
+  await page.selectOption("#tc-period", "2026-08-03|2026-08-09").catch(() => {});
+  await page.waitForSelector(`[data-tcmenu="${tcId}"]`, { timeout: 15000 }).catch(() => {});
+  await page.locator(`[data-tcmenu="${tcId}"]`).click().catch(() => {});
+  await page.waitForTimeout(300);
 
   if (await page.locator(`[data-tcsent="${tcId}"]`).count()) {
     await page.locator(`[data-tcsent="${tcId}"]`).click();
