@@ -9777,6 +9777,15 @@ async function start() {
     hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));
   }, 15 * 60 * 1000);
 
+  // Timecard Hub signature reminders. Hourly, and a no-op unless the office
+  // switched automatic reminders on (HR > Timecards > Reminder settings). The
+  // spacing between reminders is the setting, not this interval.
+  setInterval(() => {
+    hr.processTimecardReminders()
+      .then((r) => { if (r && r.sent) console.log(`[timecards] ${r.sent} signature reminder(s) sent`); })
+      .catch((e) => console.error("Timecard reminder sweep failed:", e.message));
+  }, 60 * 60 * 1000);
+
   // HR daily recruiting summary: fires once/day at the configured UTC hour.
   setInterval(() => {
     hr.processDailySummary().catch((e) => console.error("HR daily summary failed:", e));

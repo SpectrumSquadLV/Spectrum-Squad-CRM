@@ -572,6 +572,22 @@ module.exports = function initHr(ctx) {
     // Office-side corrections made from the bulk review screen, before send.
     await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS admin_edited_at TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS admin_edited_by TEXT`).catch(() => {});
+    // Timecard Hub signature tracking (additive). verification_requested_at is
+    // overwritten on every send, so it answers "when did it last go out" but
+    // not "how long has this person had it". first_sent_at keeps the original
+    // send, which is what Overdue is measured from -- a reminder must not make
+    // an overdue timecard look fresh again.
+    await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS first_sent_at TEXT`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS send_count INTEGER DEFAULT 0`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS reminder_count INTEGER DEFAULT 0`).catch(() => {});
+    await dbRun(`ALTER TABLE hr_timecards ADD COLUMN IF NOT EXISTS last_reminder_at TEXT`).catch(() => {});
+    // Timecards sent before these columns existed: their only known send is the
+    // latest one. Idempotent -- touches only rows that have never been stamped.
+    await dbRun(`UPDATE hr_timecards SET first_sent_at = verification_requested_at
+                  WHERE first_sent_at IS NULL AND verification_requested_at IS NOT NULL`).catch(() => {});
+    await dbRun(`UPDATE hr_timecards SET send_count = 1
+                  WHERE (send_count IS NULL OR send_count = 0) AND verification_requested_at IS NOT NULL`).catch(() => {});
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_hr_timecards_period ON hr_timecards(pay_period_end, pay_period_start)`).catch(() => {});
     // Staff directory fields (populated from the Rethink payroll sheet -- no pay).
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS phone TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS address TEXT`).catch(() => {});
@@ -3131,6 +3147,121 @@ module.exports = function initHr(ctx) {
         );
         return json(res, 200, rows);
       }
+
+      // ---- Timecard Hub: one pay period at a time ----
+      // Every period that has timecards (for the selector and the archive), and
+      // the timecards of the one being looked at. Without a period it opens on
+      // the newest period that still has someone left to sign -- the one the
+      // office actually needs -- or the newest period if all are done.
+      // With q and no period it searches every period by employee name, which
+      // is how a signed timecard from months ago is found without scrolling.
+      if (pathname === "/api/hr/timecards/hub" && method === "GET") {
+        const settings = await getTimecardHubSettings();
+        const all = await hubTimecardRows({});
+        const periods = summarizePeriods(all, settings);
+        const q = String(query.q || "").trim();
+        const hasPeriod = query.period_end !== undefined || query.period_start !== undefined;
+        let selected = null, rows;
+        if (hasPeriod) {
+          selected = periods.find((p) => (p.pay_period_end || "") === (query.period_end || "")
+            && (p.pay_period_start || "") === (query.period_start || "")) || null;
+          rows = all.filter((t) => (t.pay_period_end || "") === (query.period_end || "")
+            && (t.pay_period_start || "") === (query.period_start || ""));
+        } else if (q) {
+          rows = all;
+        } else {
+          selected = periods.find((p) => !p.complete) || periods[0] || null;
+          rows = selected ? all.filter((t) => periodKey(t) === `${selected.pay_period_start || ""}|${selected.pay_period_end || ""}`) : [];
+        }
+        if (q) rows = rows.filter((t) => String(t.employee_name || "").toLowerCase().includes(q.toLowerCase()));
+        return json(res, 200, {
+          settings,
+          periods,
+          selected_period: selected,
+          searching_all: !hasPeriod && !!q,
+          timecards: rows.map((t) => decorateHubRow(t, settings)),
+          caps: { canManage, canDelete: user.role === "owner" },
+        });
+      }
+
+      if (pathname === "/api/hr/timecards/hub-settings" && method === "GET") {
+        return json(res, 200, await getTimecardHubSettings());
+      }
+      if (pathname === "/api/hr/timecards/hub-settings" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const cur = await getTimecardHubSettings();
+        const next = {
+          overdue_days: b.overdue_days !== undefined ? b.overdue_days : cur.overdue_days,
+          auto_reminders: b.auto_reminders !== undefined ? b.auto_reminders === true : cur.auto_reminders,
+          reminder_days: b.reminder_days !== undefined ? b.reminder_days : cur.reminder_days,
+          max_reminders: b.max_reminders !== undefined ? b.max_reminders : cur.max_reminders,
+        };
+        await setSetting("timecard_hub_settings", JSON.stringify(next));
+        const saved = await getTimecardHubSettings();
+        await audit(actor, "timecard_hub_settings_changed", "timecard", null,
+          `overdue_days=${saved.overdue_days} auto_reminders=${saved.auto_reminders} reminder_days=${saved.reminder_days} max_reminders=${saved.max_reminders}`);
+        return json(res, 200, { ok: true, settings: saved });
+      }
+
+      // Every signed PDF in a selection, or in a whole pay period, as one ZIP.
+      // Only signed timecards with a filed PDF go in -- anything else is listed
+      // back as skipped rather than silently dropped.
+      if (pathname === "/api/hr/timecards/signed-zip" && method === "POST") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const b = await readBody(req);
+        const ids = (Array.isArray(b.ids) ? b.ids : []).map(Number).filter((n) => n > 0);
+        let rows;
+        if (ids.length) rows = await hubTimecardRows({ ids: [...new Set(ids)] });
+        else if (b.pay_period_end !== undefined) rows = await hubTimecardRows({ periodStart: b.pay_period_start || "", periodEnd: b.pay_period_end || "" });
+        else return json(res, 400, { error: "Pick timecards or a pay period." });
+        const files = [], skipped = [], used = new Set();
+        for (const tc of rows) {
+          if (tc.status !== "accepted" || !tc.pdf_doc_id) { skipped.push(tc.employee_name || `#${tc.id}`); continue; }
+          const doc = await dbGet("SELECT stored_name FROM hr_documents WHERE id = ?", [tc.pdf_doc_id]);
+          const full = doc && path.join(RESUME_DIR, doc.stored_name);
+          if (!full || !fs.existsSync(full)) { skipped.push(tc.employee_name || `#${tc.id}`); continue; }
+          let name = `${safeFilePart(tc.employee_name)}_${safeFilePart(tc.pay_period_start)}_to_${safeFilePart(tc.pay_period_end)}`;
+          let n = 2; const base = name;
+          while (used.has(name)) name = `${base}_${n++}`;
+          used.add(name);
+          files.push({ name: name + ".pdf", data: fs.readFileSync(full) });
+        }
+        if (!files.length) return json(res, 400, { error: "None of these timecards has a signed PDF yet.", skipped });
+        await audit(actor, "timecard_pdfs_bulk_downloaded", "timecard", null,
+          `files=${files.length} skipped=${skipped.length}${ids.length ? " ids=" + ids.slice(0, 40).join(",") : ` period=${b.pay_period_start || ""}->${b.pay_period_end || ""}`}`);
+        const label = ids.length ? "selected" : `${safeFilePart(b.pay_period_start)}_to_${safeFilePart(b.pay_period_end)}`;
+        res.setHeader("X-Skipped-Count", String(skipped.length));
+        return sendFile(res, 200, buildZip(files), "application/zip", `signed-timecards_${label}.zip`);
+      }
+
+      // Timecard summary for a pay period (or a selection) as a CSV that opens
+      // straight in Excel. Hours and signature dates only -- no pay.
+      if (pathname === "/api/hr/timecards/export.csv" && method === "GET") {
+        if (!canManage) return json(res, 403, { error: "Not permitted" });
+        const settings = await getTimecardHubSettings();
+        const ids = String(query.ids || "").split(",").map(Number).filter((n) => n > 0);
+        const rows = ids.length
+          ? await hubTimecardRows({ ids })
+          : await hubTimecardRows({ periodStart: query.period_start || "", periodEnd: query.period_end || "" });
+        const label = { signed: "Signed", changes: "Changes requested", overdue: "Overdue", awaiting: "Awaiting signature", not_sent: "Not sent" };
+        const head = ["Employee", "Position", "Pay period start", "Pay period end", "Total hours", "Billable hours",
+          "Non-billable hours", "Status", "Generated", "First sent", "Last sent", "Times sent", "Reminders", "Signed", "Signed as"];
+        const lines = [head.map(csvCell).join(",")];
+        for (const tc of rows) {
+          const d = decorateHubRow(tc, settings);
+          lines.push([d.employee_name || "", d.role_title || "", d.pay_period_start || "", d.pay_period_end || "",
+            d.total_hours, d.billable_hours, d.non_billable_hours, label[d.hub_status] || d.hub_status,
+            d.created_at || "", d.first_sent_at || "", d.verification_requested_at || "", Number(d.send_count || 0),
+            Number(d.reminder_count || 0), d.accepted_at || "", d.signed_name || ""].map(csvCell).join(","));
+        }
+        await audit(actor, "timecard_summary_exported", "timecard", null,
+          `rows=${rows.length}${ids.length ? " ids" : ` period=${query.period_start || ""}->${query.period_end || ""}`}`);
+        const label2 = ids.length ? "selected" : `${safeFilePart(query.period_start)}_to_${safeFilePart(query.period_end)}`;
+        // BOM so Excel reads the file as UTF-8 and names with accents survive.
+        return sendFile(res, 200, Buffer.from("﻿" + lines.join("\r\n") + "\r\n", "utf8"), "text/csv; charset=utf-8", `timecards_${label2}.csv`);
+      }
+
       if (pathname === "/api/hr/timecards/import" && method === "POST") {
         if (!canManage) return json(res, 403, { error: "Not permitted" });
         const b = await readBody(req);
@@ -3169,6 +3300,20 @@ module.exports = function initHr(ctx) {
         const full = path.join(RESUME_DIR, doc.stored_name);
         if (!fs.existsSync(full)) return json(res, 404, { error: "File missing" });
         const buffer = fs.readFileSync(full);
+        // ?inline=1 lets the Timecard Hub show a signed PDF in its detail panel
+        // instead of forcing a download. PDFs only: anything else (an uploaded
+        // file of any type) keeps downloading, so nothing a person uploaded can
+        // be rendered as a page on this origin.
+        if (query.inline === "1" && (doc.mime_type || "application/pdf") === "application/pdf") {
+          res.writeHead(200, {
+            "Content-Type": "application/pdf",
+            "Content-Disposition": `inline; filename="${encodeURIComponent(doc.filename || "timecard.pdf")}"`,
+            "Content-Length": buffer.length,
+            "X-Content-Type-Options": "nosniff",
+          });
+          res.end(buffer);
+          return true;
+        }
         return sendFile(res, 200, buffer, doc.mime_type || "application/pdf", doc.filename || "timecard.pdf");
       }
       const tcIdMatch = pathname.match(/^\/api\/hr\/timecards\/(\d+)$/);
@@ -3331,16 +3476,23 @@ module.exports = function initHr(ctx) {
         const ids = (Array.isArray(b.ids) ? b.ids : []).map((n) => Number(n)).filter((n) => n > 0);
         if (!ids.length) return json(res, 400, { error: "Select at least one timecard." });
         let sent = 0;
-        const skipped = [];
-        for (const id of ids) {
+        // skipped keeps its old meaning (no email on file) so existing callers
+        // read it the same way; the other reasons a card was left alone are
+        // reported separately so the results summary can say which is which.
+        const skipped = [], alreadySigned = [], justSent = [];
+        for (const id of [...new Set(ids)]) {
           const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [id]);
           if (!tc) continue;
+          // Bulk only touches eligible records: a signed timecard is a record,
+          // and re-sending its review link would invite a second signature.
+          if (tc.status === "accepted") { alreadySigned.push(await employeeName(tc.employee_id)); continue; }
           const r = await sendTimecardVerification(tc);
           if (r.sent) sent++;
+          else if (r.reason === "just_sent" || r.reason === "in_progress") justSent.push(await employeeName(tc.employee_id));
           else skipped.push(await employeeName(tc.employee_id));
-          await audit(actor, "timecard_verification_requested", "timecard", tc.id, "bulk");
+          if (r.sent || r.reason === "no_email") await audit(actor, "timecard_verification_requested", "timecard", tc.id, "bulk");
         }
-        return json(res, 200, { ok: true, sent, skipped });
+        return json(res, 200, { ok: true, sent, skipped, already_signed: alreadySigned, just_sent: justSent });
       }
 
       // What was actually emailed to this person about this timecard.
@@ -3412,8 +3564,8 @@ module.exports = function initHr(ctx) {
         const tc = await dbGet("SELECT * FROM hr_timecards WHERE id = ?", [tcVerifyMatch[1]]);
         if (!tc) return json(res, 404, { error: "Not found" });
         const r = await sendTimecardVerification(tc);
-        await audit(actor, "timecard_verification_requested", "timecard", tc.id, "");
-        return json(res, 200, { ok: true, url: r.url, sent: r.sent });
+        if (r.reason !== "just_sent" && r.reason !== "in_progress") await audit(actor, "timecard_verification_requested", "timecard", tc.id, "");
+        return json(res, 200, { ok: true, url: r.url, sent: r.sent, reason: r.reason || null });
       }
       // Send (or resend) the review email to EVERY timecard that hasn't been
       // accepted yet and whose employee has an email on file. Reports how many
@@ -3425,15 +3577,22 @@ module.exports = function initHr(ctx) {
         let sql = "SELECT * FROM hr_timecards WHERE status != 'accepted'";
         const params = [];
         if (b.pay_period_end) { sql += " AND pay_period_end = ?"; params.push(b.pay_period_end); }
+        if (b.pay_period_start) { sql += " AND pay_period_start = ?"; params.push(b.pay_period_start); }
+        // Timecard Hub "Resend to all pending": only people who already have it
+        // and haven't signed. Never-sent cards and ones the employee sent back
+        // for edits (which need the office first) are left out.
+        if (b.only_pending) sql += " AND verification_requested_at IS NOT NULL AND status != 'edit_requested'";
         const cards = await dbAll(sql + " ORDER BY id DESC", params);
-        let sent = 0; const skipped = [];
+        let sent = 0; const skipped = [], justSent = [];
         for (const tc of cards) {
-          const r = await sendTimecardVerification(tc);
+          const r = await sendTimecardVerification(tc, { reminder: !!b.only_pending });
           if (r.sent) sent++;
+          else if (r.reason === "just_sent" || r.reason === "in_progress") justSent.push(await employeeName(tc.employee_id));
           else skipped.push(await employeeName(tc.employee_id));
         }
-        await audit(actor, "timecard_send_all", "timecard", null, `sent=${sent} skipped=${skipped.length}`);
-        return json(res, 200, { ok: true, sent, skipped });
+        await audit(actor, b.only_pending ? "timecard_resend_pending" : "timecard_send_all", "timecard", null,
+          `sent=${sent} skipped=${skipped.length} just_sent=${justSent.length}${b.pay_period_end ? ` period=${b.pay_period_start || ""}->${b.pay_period_end}` : ""}`);
+        return json(res, 200, { ok: true, sent, skipped, just_sent: justSent });
       }
 
       // Build timecards straight from Rethink's verified sessions for a date
@@ -5576,16 +5735,58 @@ Write body as plain text with line breaks (no HTML).`;
 
   // Creates/reuses the token, emails the employee (if they have an email), and
   // marks the timecard as verification-requested. Returns { url, sent, reason }.
-  async function sendTimecardVerification(tc) {
-    const token = await getOrCreateTimecardLink(tc.id);
-    const url = `${APP_BASE_URL}/verify-timecard/${token}`;
-    await dbRun("UPDATE hr_timecards SET verification_requested_at = ? WHERE id = ?", [nowISO(), tc.id]);
+  //
+  // DOUBLE-SEND GUARD. Two things put the same email in somebody's inbox twice:
+  // a second click while the first request is still in flight, and a bulk
+  // "resend" fired moments after a single send. The first is stopped by the
+  // in-flight set; the second by a short cooldown measured from the last send.
+  // A guarded call still hands back the link -- it just does not email again.
+  const TC_RESEND_COOLDOWN_MS = 60 * 1000;
+  const tcSendInFlight = new Set();
+  async function sendTimecardVerification(tc, opts = {}) {
+    const id = Number(tc.id);
+    // Checked and claimed with no await in between, so two requests that
+    // arrive together can't both get past it.
+    if (tcSendInFlight.has(id)) {
+      const token = await getOrCreateTimecardLink(id);
+      return { url: `${APP_BASE_URL}/verify-timecard/${token}`, sent: false, reason: "in_progress" };
+    }
+    tcSendInFlight.add(id);
+    try {
+      const token = await getOrCreateTimecardLink(id);
+      const url = `${APP_BASE_URL}/verify-timecard/${token}`;
+      // Re-read: the row the caller holds may be from before another send.
+      const fresh = await dbGet("SELECT verification_requested_at FROM hr_timecards WHERE id = ?", [id]).catch(() => null);
+      const lastIso = (fresh && fresh.verification_requested_at) || tc.verification_requested_at;
+      const last = lastIso ? new Date(lastIso).getTime() : 0;
+      if (!opts.force && last && Date.now() - last < TC_RESEND_COOLDOWN_MS) {
+        return { url, sent: false, reason: "just_sent" };
+      }
+      return await sendTimecardVerificationUnguarded(tc, url, opts);
+    } finally {
+      tcSendInFlight.delete(id);
+    }
+  }
+  async function sendTimecardVerificationUnguarded(tc, url, opts) {
     const emp = tc.employee_id ? await dbGet("SELECT name, email FROM hr_employees WHERE id = ?", [tc.employee_id]) : null;
-    if (!emp || !emp.email) return { url, sent: false, reason: "no_email" };
+    const now = nowISO();
+    // Stamped before the email goes so a crash mid-send can't leave a second
+    // click looking eligible. Only counted as a send when there is somebody to
+    // send it to; a link minted for a person with no email is not a send.
+    if (!emp || !emp.email) {
+      await dbRun("UPDATE hr_timecards SET verification_requested_at = ? WHERE id = ?", [now, tc.id]);
+      return { url, sent: false, reason: "no_email" };
+    }
+    await dbRun(
+      `UPDATE hr_timecards SET verification_requested_at = ?, first_sent_at = COALESCE(first_sent_at, ?),
+              send_count = COALESCE(send_count, 0) + 1 WHERE id = ?`,
+      [now, now, tc.id]);
     const period = `${tc.pay_period_start || ""} – ${tc.pay_period_end || ""}`;
     await sendEmail({
       to: emp.email,
-      subject: "✨ Your timecard is ready to review — Spectrum Squad",
+      subject: opts.reminder
+        ? "Reminder: your timecard is waiting for your signature — Spectrum Squad"
+        : "✨ Your timecard is ready to review — Spectrum Squad",
       html: timecardEmailHtml(firstNameOf(emp.name), period, url, timecardTotals(parseJson(tc.entries, []))),
       type: "hr_timecard",
       // Stamped with the timecard it is about, so "what did we actually send
@@ -5596,6 +5797,199 @@ Write body as plain text with line breaks (no HTML).`;
       refId: tc.id,
     }).catch((e) => console.error("timecard verify email failed:", e.message));
     return { url, sent: true };
+  }
+
+  // ============================ TIMECARD HUB ============================
+  // Settings, status, archive, bulk download and reminders for the HR ›
+  // Timecards dashboard. Everything here READS timecards or sends the same
+  // review email the single Send button sends. Nothing in this block changes
+  // hours, entries, signatures or a signed PDF.
+
+  const TC_HUB_DEFAULTS = { overdue_days: 3, auto_reminders: false, reminder_days: 2, max_reminders: 3 };
+  async function getTimecardHubSettings() {
+    const raw = await getSetting("timecard_hub_settings", "").catch(() => "");
+    let s = {};
+    try { s = raw ? JSON.parse(raw) : {}; } catch (e) { s = {}; }
+    const int = (v, d, lo, hi) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= lo && n <= hi ? n : d; };
+    return {
+      overdue_days: int(s.overdue_days, TC_HUB_DEFAULTS.overdue_days, 1, 60),
+      auto_reminders: s.auto_reminders === true,
+      reminder_days: int(s.reminder_days, TC_HUB_DEFAULTS.reminder_days, 1, 30),
+      max_reminders: int(s.max_reminders, TC_HUB_DEFAULTS.max_reminders, 1, 10),
+    };
+  }
+
+  // One word for where a timecard stands, derived from what actually happened
+  // (sent, signed, rejected) -- never stored, so it can't disagree with the
+  // timestamps it is read from.
+  //   signed          the employee accepted and signed
+  //   changes         the employee rejected it and asked for edits
+  //   overdue         sent, unsigned, and older than the overdue window
+  //   awaiting        sent, unsigned, still inside the window
+  //   not_sent        never emailed
+  function timecardHubStatus(tc, settings, now = Date.now()) {
+    if (tc.status === "accepted") return "signed";
+    if (tc.status === "edit_requested") return "changes";
+    // send_count is only counted for real emails; a link minted for someone
+    // with no email on file stamps verification_requested_at but sends
+    // nothing, so it must still read as Not sent. A NULL count is a row from
+    // before the column existed, where the stamp is all there is to go on.
+    const sends = tc.send_count == null ? (tc.verification_requested_at ? 1 : 0) : Number(tc.send_count);
+    const sentAt = tc.first_sent_at || tc.verification_requested_at;
+    if (!sentAt || !sends) return "not_sent";
+    const age = now - new Date(sentAt).getTime();
+    return age > settings.overdue_days * 86400000 ? "overdue" : "awaiting";
+  }
+
+  function periodKey(tc) { return `${tc.pay_period_start || ""}|${tc.pay_period_end || ""}`; }
+
+  // Rolls a set of timecards up into one row per pay period. A period is
+  // "complete" -- and so belongs in the archive -- once every timecard in it
+  // is signed. Nothing is ever deleted to get it there.
+  function summarizePeriods(rows, settings) {
+    const map = new Map();
+    for (const tc of rows) {
+      const k = periodKey(tc);
+      if (!map.has(k)) map.set(k, {
+        pay_period_start: tc.pay_period_start || null, pay_period_end: tc.pay_period_end || null,
+        total: 0, signed: 0, awaiting: 0, overdue: 0, not_sent: 0, changes: 0, total_hours: 0,
+      });
+      const p = map.get(k);
+      const st = timecardHubStatus(tc, settings);
+      p.total++; p[st]++;
+      p.total_hours = round2(p.total_hours + timecardTotals(parseJson(tc.entries, [])).total_hours);
+    }
+    return [...map.values()]
+      .map((p) => ({ ...p, pending: p.awaiting + p.overdue, complete: p.total > 0 && p.signed === p.total }))
+      .sort((a, b) => String(b.pay_period_end || "").localeCompare(String(a.pay_period_end || ""))
+        || String(b.pay_period_start || "").localeCompare(String(a.pay_period_start || "")));
+  }
+
+  // Minimal ZIP writer (deflate via zlib, no dependency). Enough for a folder
+  // of signed PDFs; not a general archiver.
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+    return t;
+  })();
+  function crc32(buf) {
+    let c = 0xffffffff;
+    for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  }
+  function buildZip(files) {
+    const zlib = require("zlib");
+    const locals = [], centrals = [];
+    let offset = 0;
+    const d = new Date();
+    const dosTime = ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)) & 0xffff;
+    const dosDate = (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) & 0xffff;
+    for (const f of files) {
+      const name = Buffer.from(f.name, "utf8");
+      const data = f.data;
+      const comp = zlib.deflateRawSync(data);
+      const crc = crc32(data);
+      const lh = Buffer.alloc(30);
+      lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x0800, 6); lh.writeUInt16LE(8, 8);
+      lh.writeUInt16LE(dosTime, 10); lh.writeUInt16LE(dosDate, 12); lh.writeUInt32LE(crc, 14);
+      lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(name.length, 26); lh.writeUInt16LE(0, 28);
+      locals.push(lh, name, comp);
+      const ch = Buffer.alloc(46);
+      ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(0x0800, 8); ch.writeUInt16LE(8, 10);
+      ch.writeUInt16LE(dosTime, 12); ch.writeUInt16LE(dosDate, 14); ch.writeUInt32LE(crc, 16);
+      ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(name.length, 28);
+      ch.writeUInt16LE(0, 30); ch.writeUInt16LE(0, 32); ch.writeUInt16LE(0, 34); ch.writeUInt16LE(0, 36); ch.writeUInt32LE(0, 38);
+      ch.writeUInt32LE(offset, 42);
+      centrals.push(ch, name);
+      offset += 30 + name.length + comp.length;
+    }
+    const cd = Buffer.concat(centrals);
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(0, 4); end.writeUInt16LE(0, 6);
+    end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10);
+    end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16); end.writeUInt16LE(0, 20);
+    return Buffer.concat([...locals, cd, end]);
+  }
+
+  function safeFilePart(s) {
+    return String(s || "").normalize("NFKD").replace(/[^\w.-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "").slice(0, 60) || "timecard";
+  }
+
+  // A cell a spreadsheet could read as a formula is prefixed so it is shown,
+  // not run. Payroll exports get opened in Excel; that is the whole point.
+  function csvCell(v) {
+    if (v == null) return "";
+    let s = String(v);
+    if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+
+  // Timecards matching a hub query, joined to who they belong to. Filters are
+  // applied in SQL where they narrow the set (period, ids, name search);
+  // derived ones (status) are applied by the caller.
+  async function hubTimecardRows({ periodStart, periodEnd, ids, q } = {}) {
+    const where = [], params = [];
+    if (periodEnd !== undefined) { where.push("COALESCE(t.pay_period_end, '') = ?"); params.push(periodEnd || ""); }
+    if (periodStart !== undefined) { where.push("COALESCE(t.pay_period_start, '') = ?"); params.push(periodStart || ""); }
+    if (Array.isArray(ids) && ids.length) { where.push(`t.id IN (${ids.map(() => "?").join(",")})`); params.push(...ids); }
+    if (q) { where.push("LOWER(COALESCE(e.name, '')) LIKE ?"); params.push("%" + String(q).toLowerCase().slice(0, 80) + "%"); }
+    return dbAll(
+      `SELECT t.*, e.name AS employee_name, e.role_title, e.status AS employee_status,
+              (CASE WHEN e.email IS NOT NULL AND e.email <> '' THEN 1 ELSE 0 END) AS has_email,
+              (SELECT COUNT(*) FROM hr_timecard_flags f WHERE f.timecard_id = t.id) AS flag_count,
+              (SELECT COUNT(*) FROM hr_timecard_flags f WHERE f.timecard_id = t.id AND f.status IN ('open','explained')) AS open_flags,
+              (SELECT d.id FROM hr_documents d
+                WHERE d.timecard_id = t.id AND d.kind = 'timecard'
+                ORDER BY d.id DESC LIMIT 1) AS pdf_doc_id
+         FROM hr_timecards t LEFT JOIN hr_employees e ON e.id = t.employee_id
+        ${where.length ? "WHERE " + where.join(" AND ") : ""}
+        ORDER BY LOWER(COALESCE(e.name, '')), t.id DESC`, params);
+  }
+
+  function decorateHubRow(tc, settings) {
+    const t = timecardTotals(parseJson(tc.entries, []));
+    return {
+      ...tc,
+      has_email: !!Number(tc.has_email),
+      total_hours: t.total_hours,
+      billable_hours: t.billable_hours,
+      non_billable_hours: t.non_billable_hours,
+      hub_status: timecardHubStatus(tc, settings),
+    };
+  }
+
+  // Automatic signature reminders. Off unless the office turns it on. Each
+  // timecard gets at most max_reminders, spaced reminder_days apart, measured
+  // from whichever went last -- the original send or the previous reminder.
+  // The claim is a conditional UPDATE, so two sweeps racing (a redeploy
+  // overlapping the old instance) can't both send the same reminder.
+  async function processTimecardReminders() {
+    const settings = await getTimecardHubSettings();
+    if (!settings.auto_reminders) return { sent: 0, skipped: "disabled" };
+    const rows = await dbAll(
+      `SELECT t.* FROM hr_timecards t JOIN hr_employees e ON e.id = t.employee_id
+        WHERE t.status NOT IN ('accepted', 'edit_requested')
+          AND t.verification_requested_at IS NOT NULL
+          AND e.email IS NOT NULL AND e.email <> ''
+          AND COALESCE(t.reminder_count, 0) < ?`, [settings.max_reminders]);
+    const gap = settings.reminder_days * 86400000;
+    let sent = 0;
+    for (const tc of rows) {
+      const lastAt = tc.last_reminder_at || tc.verification_requested_at;
+      if (Date.now() - new Date(lastAt).getTime() < gap) continue;
+      const now = nowISO();
+      const claim = await dbRun(
+        `UPDATE hr_timecards SET reminder_count = COALESCE(reminder_count, 0) + 1, last_reminder_at = ?
+          WHERE id = ? AND COALESCE(reminder_count, 0) = ? AND status NOT IN ('accepted', 'edit_requested')`,
+        [now, tc.id, Number(tc.reminder_count || 0)]).catch(() => null);
+      if (!claim || !claim.rowCount) continue;
+      const r = await sendTimecardVerification(tc, { reminder: true, force: true }).catch(() => ({ sent: false }));
+      if (r.sent) {
+        sent++;
+        await audit("system", "timecard_reminder_sent", "timecard", tc.id, `reminder=${Number(tc.reminder_count || 0) + 1}`);
+      }
+    }
+    return { sent };
   }
 
   // Formats an ISO datetime (or plain time) into a friendly "8:00 AM".
@@ -7088,6 +7482,7 @@ Write body as plain text with line breaks (no HTML).`;
     processCredentialAlerts,
     processHrDocFollowups,
     processHrMilestones,
+    processTimecardReminders,
     milestonesThisWeek,
     // The dashboard tile asks for this directly; the route above owns the
     // permission check, and the dashboard applies its own before calling.
@@ -7104,6 +7499,7 @@ Write body as plain text with line breaks (no HTML).`;
       handleInbound, draftReply, parseCsv, extractEmail,
       detectTimecardAnomalies, importTimecard, upsertPeriodTimecard, buildDailySummary,
       parseXlsx, buildPayrollTimecards, findSheet, groupVerifiedSessions, periodDay, periodsOverlap,
+      timecardHubStatus, summarizePeriods, buildZip, crc32, csvCell, getTimecardHubSettings,
       classifyBillable, timecardTotals, shapeTimecardPreview, timecardEmailHtml, timecardVerifyHtml, saveTimecardPdf,
       parsePlatformApplication, matchPosition, handlePlatformApplication,
     },
