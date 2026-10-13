@@ -562,8 +562,8 @@ const today = () => new Date().toISOString().slice(0, 10);
     const after = await orderOf();
     check("THE FIRST TWO MODULES SWAPPED", after[0] === before[1] && after[1] === before[0],
       { before: before.slice(0, 3), after: after.slice(0, 3) });
-    check("...and nothing was lost in the move", after.length === before.length,
-      { before: before.length, after: after.length });
+    check("...and nothing was lost or duplicated in the move", after.length === before.length,
+      { before: before, after: after });
     check("...and no error was reported",
       (await page.textContent("#ac-cu-order-msg")).trim() === "",
       await page.textContent("#ac-cu-order-msg"));

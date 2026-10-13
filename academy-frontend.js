@@ -37,6 +37,12 @@
   // she has to switch editing on first -- a screen you read every week
   // should not have "Remove week" sitting under your cursor.
   var CUR_EDIT = false;
+  // ONE flag for the whole module, not one per wire() call. wire() re-binds
+  // every control each time it runs, and it runs again whenever a form is
+  // opened -- so the move arrows ended up carrying several listeners, and a
+  // per-call flag gave each of them its own. One click then sent two
+  // identical reorders, both forked, and two modules came back as four.
+  var ORDER_BUSY = false;
 
   function api(path, opts) {
     opts = opts || {};
@@ -1403,17 +1409,25 @@
         };
       });
     }
-    var orderBusy = false;
     function putOrder(lay) {
-      if (orderBusy) return;
-      orderBusy = true;
-      api("/api/academy/programs/" + CUR_PROG + "/order", { method: "PUT", body: { layout: lay } })
+      if (ORDER_BUSY) return;
+      ORDER_BUSY = true;
+      // The version this layout was built from, so the server can refuse a
+      // move aimed at a curriculum that has since changed -- another tab, or
+      // a second request from this one.
+      var sel = ((DATA.curriculum || {}).programs || []).filter(function (p) {
+        return Number(p.id) === Number(CUR_PROG);
+      })[0];
+      api("/api/academy/programs/" + CUR_PROG + "/order", {
+        method: "PUT",
+        body: { layout: lay, version: sel ? Number(sel.version) : undefined },
+      })
         .then(function () { return loadCurriculum(); })
         .catch(function (e) {
-          orderBusy = false;
           var box = HOST.querySelector("#ac-cu-order-msg");
           if (box) box.textContent = e.message;
-        });
+        })
+        .then(function () { ORDER_BUSY = false; });
     }
     function removeFrom(lay, id) {
       for (var w = 0; w < lay.length; w++) {
@@ -1424,6 +1438,8 @@
     }
 
     HOST.querySelectorAll("[data-cu-wmove]").forEach(function (b) {
+      if (b.__acBound) return;
+      b.__acBound = true;
       b.addEventListener("click", function () {
         if (b.disabled) return;
         var lay = layoutNow();
@@ -1444,6 +1460,8 @@
     });
 
     HOST.querySelectorAll("[data-cu-mmove]").forEach(function (b) {
+      if (b.__acBound) return;
+      b.__acBound = true;
       b.addEventListener("click", function () {
         if (b.disabled) return;
         var lay = layoutNow();
@@ -1472,6 +1490,8 @@
 
     var dragId = null;
     HOST.querySelectorAll("[data-cu-mod]").forEach(function (el) {
+      if (el.__acBound) return;
+      el.__acBound = true;
       el.addEventListener("dragstart", function (ev) {
         dragId = Number(el.getAttribute("data-cu-mod"));
         if (ev.dataTransfer) {
@@ -1499,6 +1519,8 @@
       });
     });
     HOST.querySelectorAll("[data-cu-drop]").forEach(function (zone) {
+      if (zone.__acBound) return;
+      zone.__acBound = true;
       zone.addEventListener("dragover", function (ev) { ev.preventDefault(); zone.style.background = "#f1f5f9"; });
       zone.addEventListener("dragleave", function () { zone.style.background = ""; });
       zone.addEventListener("drop", function (ev) {

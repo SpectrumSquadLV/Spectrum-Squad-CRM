@@ -2499,7 +2499,39 @@ module.exports = function initAcademy(ctx) {
         return true;
       }
 
-      const { version, forked } = await versionForEdit(prog);
+      // TWO REORDERS AT ONCE MUST NOT BOTH APPLY, and this is not theoretical:
+      // the screen re-binds its controls on every render, so one click was
+      // able to fire two identical requests, and BOTH forked and BOTH wrote a
+      // copy -- two modules came back as four. A test caught it.
+      //
+      // So the fork is a COMPARE-AND-SWAP on the version rather than a read
+      // followed by a write. Only one request can move the programme from v
+      // to v+1; the loser is told the curriculum moved under it. This also
+      // covers the case no flag in the browser could: the same curriculum
+      // open in two tabs.
+      //
+      // `version` in the body is the version the layout was built from. It is
+      // optional so an older screen still works, but when it is sent and it
+      // no longer matches, the move is refused rather than applied to a
+      // curriculum that is not the one the person was looking at.
+      const basedOn = num(b.version);
+      if (basedOn && Number(prog.version) !== basedOn) {
+        json(res, 409, { error: "The curriculum has changed since this screen loaded. Reload and try the move again." });
+        return true;
+      }
+      let version = Number(prog.version), forked = false;
+      if (await programInUse(prog.id)) {
+        const won = await dbGet(
+          `UPDATE academy_programs SET version = version + 1, updated_at = ?
+            WHERE id = ? AND version = ? RETURNING version`,
+          [nowISO(), prog.id, Number(prog.version)]).catch(() => null);
+        if (!won) {
+          json(res, 409, { error: "The curriculum has changed since this screen loaded. Reload and try the move again." });
+          return true;
+        }
+        version = Number(won.version);
+        forked = true;
+      }
       const itemById = new Map(liveItems.map((i) => [i.id, i]));
       const modById = new Map(liveMods.map((m) => [m.id, m]));
 

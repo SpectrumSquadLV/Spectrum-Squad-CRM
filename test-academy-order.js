@@ -320,6 +320,42 @@ function session() {
     check("one more version, not several", Number((await progNow()).version) === vFresh + 1,
       { was: vFresh, now: (await progNow()).version });
 
+    section("TWO REORDERS AT ONCE: ONE WINS, AND NOTHING IS DUPLICATED");
+    // THIS IS A BUG THAT HAPPENED. The screen re-binds its controls on every
+    // render, so the move arrows ended up with several listeners and one
+    // click sent two identical reorders. Both forked, both wrote a copy, and
+    // two modules came back as four. The browser flag is fixed, but the
+    // server must not depend on the browser behaving: the fork is a
+    // compare-and-swap on the version, so only one request can win.
+    const curC = await read();
+    const vC = Number((await progNow()).version);
+    const layC = layoutOf(curC);
+    layC[0].items = layC[0].items.slice().reverse();
+    const both = await Promise.all([put(layC), put(layC)]);
+    const oks = both.filter((r) => r.status === 200).length;
+    check("EXACTLY ONE of the two is applied", oks === 1, both.map((r) => r.status));
+    check("...and the loser is told the curriculum moved under it",
+      both.some((r) => r.status === 409 && /changed since/i.test((r.data && r.data.error) || "")),
+      both.map((r) => [r.status, r.data && r.data.error]));
+    const curD = await read();
+    check("AND THE MODULES ARE NOT DUPLICATED — two must not come back as four",
+      flat(curD).length === flat(curC).length, { before: flat(curC), after: flat(curD) });
+    check("...with the version moved by one, not two",
+      Number((await progNow()).version) === vC + 1, { was: vC, now: (await progNow()).version });
+
+    section("A LAYOUT BUILT FROM AN OLDER VERSION IS REFUSED");
+    const curE = await read();
+    const vE = Number((await progNow()).version);
+    const rStale = await owner(`/api/academy/programs/${prog.id}/order`, {
+      method: "PUT", body: { layout: layoutOf(curE), version: vE - 1 } });
+    check("the move is refused", rStale.status === 409, rStale.status);
+    check("...and says to reload", /reload/i.test((rStale.data && rStale.data.error) || ""), rStale.data);
+    check("...and the version did not move", Number((await progNow()).version) === vE,
+      { was: vE, now: (await progNow()).version });
+    const rGood = await owner(`/api/academy/programs/${prog.id}/order`, {
+      method: "PUT", body: { layout: layoutOf(curE), version: vE } });
+    check("the SAME layout with the right version is accepted", rGood.status === 200, rGood.data);
+
     if (failures.length) { console.log("\n--- failures ---"); failures.forEach((f) => console.log("  " + f)); }
     console.log(`\n${pass} passed, ${fail} failed`);
     await purge();
