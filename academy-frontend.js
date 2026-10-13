@@ -119,6 +119,10 @@
       ".ac-vidbox{position:relative;width:100%;max-width:640px;aspect-ratio:16/9;background:#11131a;"
         + "border-radius:10px;overflow:hidden;}",
       ".ac-vidbox iframe{position:absolute;inset:0;width:100%;height:100%;border:0;}",
+      ".ac-vidbox video{position:absolute;inset:0;width:100%;height:100%;background:#11131a;}",
+      ".ac-watch{height:6px;border-radius:999px;background:#eef0f4;overflow:hidden;margin:6px 0 3px;max-width:640px;}",
+      ".ac-watch>div{height:100%;background:var(--brand-navy,#1b2a6b);transition:width .3s;}",
+      ".ac-watch.done>div{background:#16a34a;}",
       ".ac-rk{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted,#64748b);",
       "border:1px solid var(--border,#e5e7eb);border-radius:999px;padding:1px 7px;white-space:nowrap;}",
       ".ac-stat{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;}",
@@ -348,6 +352,32 @@
               + ' referrerpolicy="strict-origin-when-cross-origin"'
               + ' sandbox="allow-scripts allow-same-origin allow-presentation"></iframe></div>'
             + '<div class="ac-sub" style="margin-top:4px;">' + esc(r.embed.provider)
+              + ' · <a href="' + esc(r.href || "#") + '" target="_blank" rel="noopener noreferrer">open it in a new tab</a></div>'
+          + "</div></div>";
+      }
+      // AN MP4 BY LINK, PLAYED HERE. The browser's own player brings the play
+      // icon and the scrub bar with it; the bar underneath is how far through
+      // they actually got, which the player reports as it plays.
+      if (r.kind === "video" && r.file && r.file.src) {
+        var vp = (DATA.videoProgress || {})[r.id] || null;
+        var pct = vp && vp.percent != null ? vp.percent : 0;
+        var resume = vp && vp.last_position ? Number(vp.last_position) : 0;
+        return '<div class="ac-res ac-vid">' + label
+          + '<div style="flex:1;min-width:0;">'
+            + '<div style="font-size:13px;margin-bottom:5px;">' + esc(r.title) + "</div>"
+            + '<div class="ac-vidbox"><video data-ac-vid="' + r.id + '"'
+              + (resume > 5 ? ' data-ac-resume="' + esc(resume) + '"' : "")
+              + ' src="' + esc(r.file.src) + '" controls preload="metadata" playsinline'
+              + ' referrerpolicy="strict-origin-when-cross-origin"></video></div>'
+            + '<div class="ac-watch' + (vp && vp.finished ? " done" : "") + '" data-ac-bar="' + r.id + '">'
+              + '<div style="width:' + pct + '%"></div></div>'
+            + '<div class="ac-sub" data-ac-watchlbl="' + r.id + '">'
+              + (vp && vp.finished ? "Watched to the end"
+                 : vp && vp.percent != null ? "Watched " + vp.percent + "%"
+                 : vp ? "Started" : "Not started yet")
+              + (resume > 5 && !(vp && vp.finished) ? " · picks up where you left off" : "")
+            + "</div>"
+            + '<div class="ac-sub" style="margin-top:2px;">' + esc(r.file.provider)
               + ' · <a href="' + esc(r.href || "#") + '" target="_blank" rel="noopener noreferrer">open it in a new tab</a></div>'
           + "</div></div>";
       }
@@ -1095,7 +1125,66 @@
     wire();
   }
 
+  // ---- THE TRAINING VIDEO PLAYER --------------------------------------
+  //
+  // Bound once per element. wire() runs again whenever a form opens, and a
+  // second timeupdate listener on the same video would report every tick
+  // twice -- the same mistake that turned two modules into four.
+  function wirePlayers() {
+    HOST.querySelectorAll("[data-ac-vid]").forEach(function (v) {
+      if (v.__acBound) return;
+      v.__acBound = true;
+      var id = Number(v.getAttribute("data-ac-vid"));
+      var last = 0;
+      var bar = HOST.querySelector('[data-ac-bar="' + id + '"]');
+      var lbl = HOST.querySelector('[data-ac-watchlbl="' + id + '"]');
+      var furthest = 0;
+
+      v.addEventListener("loadedmetadata", function () {
+        var at = Number(v.getAttribute("data-ac-resume") || 0);
+        // Not if they were within ten seconds of the end: dropping somebody
+        // back at the credits of a video they have finished is worse than
+        // starting it again.
+        if (at > 5 && v.duration && at < v.duration - 10) {
+          try { v.currentTime = at; } catch (e) {}
+        }
+      });
+
+      function paint() {
+        if (!v.duration) return;
+        var pc = Math.max(0, Math.min(100, Math.round((furthest / v.duration) * 100)));
+        if (bar && bar.firstChild) bar.firstChild.style.width = pc + "%";
+        if (lbl) lbl.textContent = pc >= 95 ? "Watched to the end" : "Watched " + pc + "%";
+        if (bar && pc >= 95) bar.classList.add("done");
+      }
+
+      function send(force) {
+        if (!Number.isFinite(v.currentTime)) return;
+        var now = Date.now();
+        // Every ten seconds while playing, or straight away when they stop:
+        // a report per timeupdate would be several a second.
+        if (!force && now - last < 10000) return;
+        last = now;
+        api("/api/academy/videos/" + id + "/progress", {
+          method: "POST",
+          body: { position: v.currentTime, duration: v.duration || undefined },
+        }).then(function (d) {
+          if (d && d.progress) DATA.videoProgress[id] = d.progress;
+        }).catch(function () { /* a lost tick is not worth interrupting them for */ });
+      }
+
+      v.addEventListener("timeupdate", function () {
+        if (v.currentTime > furthest) { furthest = v.currentTime; paint(); }
+        send(false);
+      });
+      v.addEventListener("pause", function () { send(true); });
+      v.addEventListener("ended", function () { furthest = v.duration || furthest; paint(); send(true); });
+      v.addEventListener("seeked", function () { send(true); });
+    });
+  }
+
   function wire() {
+    wirePlayers();
     HOST.querySelectorAll("[data-view]").forEach(function (b) {
       b.addEventListener("click", function () {
         VIEW = b.dataset.view;
@@ -1546,6 +1635,8 @@
           + '<strong style="font-size:13px;">Attach training material</strong>'
           + '<div class="ac-sub" style="margin:2px 0 8px;">A video <strong>plays in the page</strong> when it is on'
           + " YouTube, Vimeo, Loom or Google Drive — paste the address you would normally share."
+          + " A direct https link to an <strong>.mp4</strong>, .m4v, .webm or .ogg file plays here too,"
+          + " with a play button, a scrub bar and a record of how far each person got."
           + " Anything else is kept as a link that opens in a new tab."
           + " An SOP is picked from the policy library rather than pasted in, so an amended SOP stays correct here.</div>"
           + '<div class="ac-grid2"><label class="ac-sub">Kind<select id="ac-nr-kind">'
@@ -1778,9 +1869,12 @@
       api("/api/academy/gaps").catch(function () { return { gaps: [] }; }),
       api("/api/academy/survey").catch(function () { return { can_submit: false }; }),
       api("/api/academy/leadership").catch(function () { return null; }),
+      // How far they have got through each training video. Empty for anybody
+      // with no employee record, which is an answer rather than a failure.
+      api("/api/academy/videos/progress").catch(function () { return { progress: {} }; }),
     ]).then(function (r) {
       DATA = { me: r[0], roster: r[1], questions: (r[2] || {}).questions, gaps: (r[3] || {}).gaps,
-               survey: r[4], leadership: r[5] };
+               survey: r[4], leadership: r[5], videoProgress: (r[6] || {}).progress || {} };
       if (DATA.me && DATA.me.enrolled) {
         return api("/api/academy/enrollments/" + DATA.me.enrollment.id + "/checkins")
           .then(function (c) { DATA.checkins = c.checkins; return loadHours(); })

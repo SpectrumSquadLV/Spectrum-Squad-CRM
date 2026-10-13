@@ -245,6 +245,35 @@ module.exports = function initAcademy(ctx) {
       created_by TEXT,
       created_at TEXT
     )`).catch((e) => console.error("academy_resources:", e.message));
+    // HOW FAR THROUGH A VIDEO SOMEBODY ACTUALLY GOT.
+    //
+    // Only a player we own can report this. An embedded YouTube or Vimeo
+    // iframe cannot be asked how far it has played without loading that
+    // provider's own script into the page, so the bar is honest about
+    // covering the files we play ourselves and says nothing about the rest.
+    //
+    // WATCHING IS NOT COMPLETING, and nothing here marks anything complete.
+    // The brief is explicit that an activity must not be ticked off because
+    // somebody opened it; this records what happened and leaves completion to
+    // the deliberate act it already is.
+    //
+    // Keyed on the EMPLOYEE rather than the enrolment: the same video is
+    // reached from onboarding and from compliance training, and somebody who
+    // is re-enrolled has not unwatched it.
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_video_progress (
+      id SERIAL PRIMARY KEY,
+      resource_id INTEGER NOT NULL,
+      employee_id INTEGER NOT NULL,
+      furthest_seconds NUMERIC NOT NULL DEFAULT 0,
+      last_position NUMERIC NOT NULL DEFAULT 0,
+      duration_seconds NUMERIC,
+      first_played_at TEXT,
+      finished_at TEXT,
+      updated_at TEXT,
+      UNIQUE (resource_id, employee_id)
+    )`).catch((e) => console.error("academy_video_progress:", e.message));
+    await dbRun("CREATE INDEX IF NOT EXISTS academy_vidprog_emp ON academy_video_progress (employee_id)").catch(() => {});
+
     await dbRun("CREATE INDEX IF NOT EXISTS academy_res_module ON academy_resources (module_id)").catch(() => {});
     await dbRun("CREATE INDEX IF NOT EXISTS academy_res_item ON academy_resources (item_id)").catch(() => {});
 
@@ -936,6 +965,64 @@ module.exports = function initAcademy(ctx) {
     return null;
   }
 
+  // ---- AN MP4 (OR WEBM) BY LINK, PLAYED IN THE PAGE ----------------------
+  //
+  // The practice's own training videos are MP4 files, and a direct link to a
+  // file matched none of the hosts above -- so it fell through to "open it in
+  // a new tab", which is the one case with no player at all and therefore no
+  // play button. Now it gets a real player, in the page, with the browser's
+  // own controls: a play icon and a scrub bar come with it.
+  //
+  // NO HOST ALLOWLIST HERE, and the asymmetry with videoEmbed is deliberate
+  // rather than an oversight. The allowlist above exists because an embed is
+  // an IFRAME on a signed-in page: handing an arbitrary address a frame there
+  // hands its owner a frame inside the CRM. A <video> element is not that --
+  // it decodes media and cannot run script or reach this page's DOM. What it
+  // does do is tell that host somebody fetched the file, which is the same
+  // thing the link already did. Only the practice owner can attach material,
+  // so the address is hers either way.
+  //
+  // HTTPS ONLY. The CRM is served over https, so an http video is blocked as
+  // mixed content: the player would sit there dead with no reason given.
+  // Falling back to a link is worse than playing it and better than lying.
+  //
+  // The extensions are the ones a browser will actually decode. .mov, .avi,
+  // .wmv and .mkv stay links on purpose -- a player that cannot play what it
+  // was given is indistinguishable from a broken page.
+  const PLAYABLE_VIDEO = /\.(mp4|m4v|webm|ogv|ogg)$/i;
+  function videoFile(raw) {
+    const u = clean(raw);
+    if (!u || !/^https:\/\//i.test(u)) return null;
+    let parsed;
+    try { parsed = new URL(u); } catch (e) { return null; }
+    // The EXTENSION is read from the path, never the whole address: a signed
+    // link carries ?X-Amz-Signature=... after it, and testing the full string
+    // would refuse every signed URL there is.
+    if (!PLAYABLE_VIDEO.test(parsed.pathname)) return null;
+    const ext = (parsed.pathname.match(PLAYABLE_VIDEO) || [])[1] || "";
+    return {
+      src: parsed.href,
+      provider: `${ext.toLowerCase() === "webm" ? "WebM" : ext.toUpperCase()} video`,
+      type: /mp4|m4v/i.test(ext) ? "video/mp4" : /webm/i.test(ext) ? "video/webm" : "video/ogg",
+    };
+  }
+
+  function publicVideoProgress(r) {
+    const dur = r.duration_seconds == null ? null : Number(r.duration_seconds);
+    const far = Number(r.furthest_seconds || 0);
+    return {
+      resource_id: Number(r.resource_id),
+      furthest_seconds: far,
+      last_position: Number(r.last_position || 0),
+      duration_seconds: dur,
+      // null rather than 0 when the length is unknown, so the page can say
+      // "started" instead of drawing an empty bar that looks like nothing
+      // was watched.
+      percent: dur ? Math.max(0, Math.min(100, Math.round((far / dur) * 100))) : null,
+      finished: !!r.finished_at,
+    };
+  }
+
   async function resourcesFor(moduleIds, itemIds) {
     const mods = (moduleIds || []).map(Number).filter(Boolean);
     const items = (itemIds || []).map(Number).filter(Boolean);
@@ -958,6 +1045,10 @@ module.exports = function initAcademy(ctx) {
       // null for a video on a host we do not embed, which is how the page
       // knows to fall back to a link rather than draw an empty player.
       embed: r.kind === "video" ? videoEmbed(r.url) : null,
+      // A direct link to a video FILE, played with the browser's own player.
+      // Only consulted when there is no embed, so a host we recognise keeps
+      // its own player.
+      file: r.kind === "video" && !videoEmbed(r.url) ? videoFile(r.url) : null,
     }));
   }
 
@@ -2452,6 +2543,72 @@ module.exports = function initAcademy(ctx) {
     // list is refused rather than guessed at, because the difference between
     // "this module moved" and "this module was left out" is not recoverable
     // from a partial list, and guessing it wrong silently drops training.
+    // ---- WATCHING A TRAINING VIDEO -------------------------------------
+    //
+    // Reported by the player as it plays, so the bar under it reflects what
+    // was actually watched rather than whether the page was opened. It never
+    // completes anything: the brief rules out ticking an activity off because
+    // somebody opened it, and this is the same principle one step earlier.
+    const vidProg = pathname.match(/^\/api\/academy\/videos\/(\d+)\/progress$/);
+    if (vidProg && method === "POST") {
+      if (!me) { json(res, 403, { error: "Your login is not linked to an employee record yet." }); return true; }
+      const r = await dbGet("SELECT id, kind FROM academy_resources WHERE id = ?", [Number(vidProg[1])]).catch(() => null);
+      if (!r || r.kind !== "video") { json(res, 404, { error: "No such video." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const pos = Number(b.position);
+      const durRaw = b.duration === undefined || b.duration === null || clean(b.duration) === "" ? null : Number(b.duration);
+      if (!Number.isFinite(pos) || pos < 0) { json(res, 400, { error: "That is not a position in the video." }); return true; }
+      if (durRaw !== null && (!Number.isFinite(durRaw) || durRaw <= 0)) {
+        json(res, 400, { error: "That is not a length." }); return true;
+      }
+      // A position past the end is a broken player, not somebody who watched
+      // more of the video than exists.
+      const position = durRaw !== null ? Math.min(pos, durRaw) : pos;
+      const now = nowISO();
+      const row = await dbGet(
+        `INSERT INTO academy_video_progress
+           (resource_id, employee_id, furthest_seconds, last_position, duration_seconds, first_played_at, updated_at)
+         VALUES (?,?,?,?,?,?,?)
+         ON CONFLICT (resource_id, employee_id) DO UPDATE SET
+           furthest_seconds = GREATEST(academy_video_progress.furthest_seconds, EXCLUDED.furthest_seconds),
+           last_position = EXCLUDED.last_position,
+           duration_seconds = COALESCE(EXCLUDED.duration_seconds, academy_video_progress.duration_seconds),
+           updated_at = EXCLUDED.updated_at
+         RETURNING *`,
+        [r.id, me.id, position, position, durRaw, now, now]).catch((e) => {
+          console.error("video progress:", e.message); return null;
+        });
+      if (!row) { json(res, 500, { error: "That could not be recorded." }); return true; }
+      // "Watched to the end" allows the last few seconds, because almost
+      // nobody sits through the credits and a bar stuck at 97% reads as a
+      // fault. It records that they reached the end; it completes nothing.
+      if (!row.finished_at && row.duration_seconds
+          && Number(row.furthest_seconds) >= Number(row.duration_seconds) * 0.95) {
+        await dbRun("UPDATE academy_video_progress SET finished_at = ? WHERE id = ? AND finished_at IS NULL",
+                    [now, row.id]).catch(() => {});
+        row.finished_at = now;
+      }
+      json(res, 200, { ok: true, progress: publicVideoProgress(row) });
+      return true;
+    }
+
+    // Their own watching, or -- for whoever runs onboarding -- somebody
+    // else's, which is the point of a tracker.
+    if (pathname === "/api/academy/videos/progress" && method === "GET") {
+      let empId = me ? me.id : null;
+      const asked = Number((query && query.employee) || 0);
+      if (asked) {
+        if (!lead) { json(res, 403, { error: "Only clinical leadership can see somebody else's training." }); return true; }
+        empId = asked;
+      }
+      if (!empId) { json(res, 200, { progress: {} }); return true; }
+      const rows = await dbAll("SELECT * FROM academy_video_progress WHERE employee_id = ?", [empId]).catch(() => []);
+      const out = {};
+      rows.forEach((r) => { out[r.resource_id] = publicVideoProgress(r); });
+      json(res, 200, { progress: out });
+      return true;
+    }
+
     const progOrder = pathname.match(/^\/api\/academy\/programs\/(\d+)\/order$/);
     if (progOrder && method === "PUT") {
       if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
@@ -2953,7 +3110,7 @@ module.exports = function initAcademy(ctx) {
     initTables, handleApi, enrol, autoEnrolSweep, scheduleCheckins, checkinsFor, backfillCheckins,
     reviewFor, leadership, leadershipEmails, isClinicalLead,
     employeeFor, progressFor, itemsFor, modulesFor, resourcesFor, seedBcbaProgram,
-    _internal: { videoEmbed, STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
+    _internal: { videoEmbed, videoFile, PLAYABLE_VIDEO, publicVideoProgress, STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
                  addDays, CHECKIN_DAYS, GAP_STATUSES, GAP_LABELS, URGENCIES,
                  DOMAINS, DOMAIN_KEYS, RATINGS, RATING_LABELS, REVIEW_STATES, isClosed,
                  RESOURCE_KINDS, safeUrl },
