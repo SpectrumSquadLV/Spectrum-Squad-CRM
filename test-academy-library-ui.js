@@ -422,6 +422,51 @@ const today = () => new Date().toISOString().slice(0, 10);
         && /nobody's finished week changes under them/i.test(open), open.slice(0, 1600));
     check("the attached material is shown in the editor too",
       /Attendance Policy/.test(open), open.slice(0, 1400));
+    // ---- A TRAINING VIDEO PLAYS IN THE PAGE ---------------------------
+    // It used to be a link that opened a new tab, which meant the employee
+    // left their checklist to watch the training.
+    const vidItem = await page.locator("[data-cu-res][data-cu-res-kind='item']").first();
+    await vidItem.click();
+    await page.waitForTimeout(500);
+    await page.selectOption("#ac-nr-kind", "video");
+    await page.fill("#ac-nr-title", "How we run a session");
+    await page.fill("#ac-nr-url", "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    check("the form says which hosts play in the page",
+      /YouTube, Vimeo, Loom or Google Drive/.test(await page.textContent("#ac-cu-form2")),
+      await page.textContent("#ac-cu-form2"));
+    await page.click("[data-nr-save]");
+    await page.waitForTimeout(2000);
+    const frame = page.locator(".ac-vidbox iframe").first();
+    check("THE VIDEO IS EMBEDDED, not left as a link", await page.locator(".ac-vidbox iframe").count() >= 1,
+      await page.locator(".ac-vidbox iframe").count());
+    const vsrc = await frame.getAttribute("src");
+    check("...pointing at a player rather than the page that was pasted",
+      vsrc === "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ", vsrc);
+    check("...sandboxed", (await frame.getAttribute("sandbox") || "").includes("allow-scripts"), await frame.getAttribute("sandbox"));
+    check("...and loaded lazily, so a week of videos does not fetch them all at once",
+      (await frame.getAttribute("loading")) === "lazy");
+    check("...with the provider named and a way out to a new tab",
+      /YouTube/.test(await page.textContent(".ac-vid")) && /open it in a new tab/.test(await page.textContent(".ac-vid")),
+      await page.textContent(".ac-vid"));
+    const box = await page.locator(".ac-vidbox").first().boundingBox();
+    check("...in a 16:9 box rather than a collapsed strip",
+      box && box.height > 100 && Math.abs(box.width / box.height - 16 / 9) < 0.2, box);
+
+    // A host nobody allowlisted stays a link, which is the safe answer.
+    await vidItem.click();
+    await page.waitForTimeout(500);
+    await page.selectOption("#ac-nr-kind", "video");
+    await page.fill("#ac-nr-title", "A file on our own server");
+    await page.fill("#ac-nr-url", "https://example.invalid/training.mp4");
+    await page.click("[data-nr-save]");
+    await page.waitForTimeout(2000);
+    check("a video on a host we do not embed is kept as a link, not a broken player",
+      await page.locator(".ac-vidbox iframe").count() === 1
+      && /A file on our own server/.test(await page.textContent(".ac-wrap")),
+      await page.locator(".ac-vidbox iframe").count());
+    const anyBad = await page.locator('iframe[src*="example.invalid"]').count();
+    check("...and nothing from that host is framed in the page", anyBad === 0, anyBad);
+
     check("with a control to attach more",
       await page.locator("[data-cu-res]").count() >= 1, await page.locator("[data-cu-res]").count());
 
@@ -429,8 +474,10 @@ const today = () => new Date().toISOString().slice(0, 10);
     await page.click("[data-cu-res]");
     await page.waitForTimeout(500);
     const form = await page.textContent(".ac-wrap");
-    check("the form explains a video is an embedded link",
-      /A video is an embedded link/i.test(form), form.slice(-800));
+    check("the form explains that a video plays in the page, and where from",
+      /plays in the page/i.test(form) && /YouTube, Vimeo, Loom or Google Drive/.test(form), form.slice(-800));
+    check("...and that anything else is kept as a link",
+      /Anything else is kept as a link that opens in a new tab/i.test(form), form.slice(-800));
     check("and that an SOP is picked rather than pasted",
       /picked from the policy library rather than pasted/i.test(form), form.slice(-800));
     const opts = await page.evaluate(() => [...document.querySelectorAll("#ac-nr-pol option")].map((o) => o.textContent));

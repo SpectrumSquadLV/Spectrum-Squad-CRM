@@ -107,6 +107,12 @@
       ".ac-grid2{display:grid;grid-template-columns:1fr 1fr;gap:9px;}",
       ".ac-res{display:flex;gap:8px;align-items:baseline;padding:5px 0;font-size:13px;}",
       ".ac-res a{color:var(--brand-navy,#1b2a6b);}",
+      // A video sits above its caption rather than beside its label, and the
+      // player keeps a 16:9 box so the page does not jump as each one loads.
+      ".ac-vid{align-items:flex-start;}",
+      ".ac-vidbox{position:relative;width:100%;max-width:640px;aspect-ratio:16/9;background:#11131a;"
+        + "border-radius:10px;overflow:hidden;}",
+      ".ac-vidbox iframe{position:absolute;inset:0;width:100%;height:100%;border:0;}",
       ".ac-rk{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted,#64748b);",
       "border:1px solid var(--border,#e5e7eb);border-radius:999px;padding:1px 7px;white-space:nowrap;}",
       ".ac-stat{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;}",
@@ -315,6 +321,29 @@
       var label = '<span class="ac-rk">' + esc(RES_LABEL[r.kind] || r.kind) + "</span>";
       if (r.kind === "note") {
         return '<div class="ac-res">' + label + "<span>" + esc(r.title) + " — " + esc(r.body || "") + "</span></div>";
+      }
+      // A TRAINING VIDEO PLAYS HERE. It used to be a link that opened a new
+      // tab, which meant the employee left their checklist to watch it. The
+      // server decides whether a video is embeddable -- an allowlist of hosts,
+      // because an embed is an iframe on a signed-in page -- and hands back
+      // the player address. Anything else falls through to the link below,
+      // which is what a .mp4 on somebody's own website still gets.
+      //
+      // The link stays alongside the player either way: a frame that will not
+      // load, because the viewer is signed out of Drive or the file is not
+      // shared with them, otherwise leaves them with a black box and no way
+      // to reach the video.
+      if (r.kind === "video" && r.embed && r.embed.src) {
+        return '<div class="ac-res ac-vid">' + label
+          + '<div style="flex:1;min-width:0;">'
+            + '<div style="font-size:13px;margin-bottom:5px;">' + esc(r.title) + "</div>"
+            + '<div class="ac-vidbox"><iframe src="' + esc(r.embed.src) + '" title="' + esc(r.title)
+              + '" loading="lazy" allowfullscreen'
+              + ' referrerpolicy="strict-origin-when-cross-origin"'
+              + ' sandbox="allow-scripts allow-same-origin allow-presentation"></iframe></div>'
+            + '<div class="ac-sub" style="margin-top:4px;">' + esc(r.embed.provider)
+              + ' · <a href="' + esc(r.href || "#") + '" target="_blank" rel="noopener noreferrer">open it in a new tab</a></div>'
+          + "</div></div>";
       }
       // rel=noopener because these are links somebody else pasted, and
       // target=_blank without it hands the new page a handle on this one.
@@ -1318,10 +1347,12 @@
         var scope = b.getAttribute("data-cu-res-kind");
         form2.innerHTML = '<div class="ac-plan" style="background:#f8fafc;border-color:var(--border,#e5e7eb);">'
           + '<strong style="font-size:13px;">Attach training material</strong>'
-          + '<div class="ac-sub" style="margin:2px 0 8px;">A video is an embedded link — Loom, YouTube or Vimeo.'
+          + '<div class="ac-sub" style="margin:2px 0 8px;">A video <strong>plays in the page</strong> when it is on'
+          + " YouTube, Vimeo, Loom or Google Drive — paste the address you would normally share."
+          + " Anything else is kept as a link that opens in a new tab."
           + " An SOP is picked from the policy library rather than pasted in, so an amended SOP stays correct here.</div>"
           + '<div class="ac-grid2"><label class="ac-sub">Kind<select id="ac-nr-kind">'
-            + '<option value="video">Video (link)</option><option value="link">Link</option>'
+            + '<option value="video">Video — plays in the page</option><option value="link">Link</option>'
             + '<option value="document">SOP or policy from the library</option>'
             + '<option value="note">A note</option></select></label>'
             + '<label class="ac-sub">Title<input id="ac-nr-title" placeholder="What it is"></label></div>'

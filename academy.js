@@ -879,6 +879,63 @@ module.exports = function initAcademy(ctx) {
     return /^https?:\/\/[^\s]+$/i.test(u) ? u : false;
   };
 
+  // ---- EMBEDDING A TRAINING VIDEO ----------------------------------------
+  //
+  // A video attached to a week used to be a link that opened a new tab, which
+  // is a worse way to watch training than it sounds: the employee leaves the
+  // checklist, and nothing on the page they come back to knows they went.
+  // Now a video from a host we recognise plays in the page.
+  //
+  // IT IS AN ALLOWLIST OF HOSTS, and that is a security decision rather than
+  // laziness. An embed is an iframe on a signed-in page; handing an arbitrary
+  // pasted address an iframe there is handing whoever owns that address a
+  // frame inside the CRM. Four hosts cover what a practice actually has --
+  // YouTube, Vimeo, Loom and a file in Google Drive -- and anything else
+  // stays exactly what it was, a link that opens in a new tab.
+  //
+  // DERIVED AT READ TIME, NEVER STORED. The row keeps the address somebody
+  // pasted. If this parser gets a host wrong, fixing it fixes every video
+  // already attached; a stored embed address would need a migration and the
+  // old rows would stay broken until somebody noticed.
+  function videoEmbed(raw) {
+    const u = clean(raw);
+    if (!u || !/^https?:\/\//i.test(u)) return null;
+    let parsed;
+    try { parsed = new URL(u); } catch (e) { return null; }
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    const id = (v) => /^[A-Za-z0-9_-]{6,64}$/.test(v) ? v : null;
+
+    if (host === "youtube.com" || host === "m.youtube.com") {
+      // Both the watch address people copy from the address bar and the
+      // /embed and /shorts forms.
+      const v = id(parsed.searchParams.get("v") || "");
+      if (v) return { provider: "YouTube", src: `https://www.youtube-nocookie.com/embed/${v}` };
+      const m = parsed.pathname.match(/^\/(?:embed|shorts|v)\/([A-Za-z0-9_-]{6,64})/);
+      if (m) return { provider: "YouTube", src: `https://www.youtube-nocookie.com/embed/${m[1]}` };
+      return null;
+    }
+    if (host === "youtu.be") {
+      const v = id(parsed.pathname.replace(/^\//, "").split("/")[0]);
+      return v ? { provider: "YouTube", src: `https://www.youtube-nocookie.com/embed/${v}` } : null;
+    }
+    if (host === "vimeo.com" || host === "player.vimeo.com") {
+      const m = parsed.pathname.match(/(\d{6,15})/);
+      return m ? { provider: "Vimeo", src: `https://player.vimeo.com/video/${m[1]}` } : null;
+    }
+    if (host === "loom.com") {
+      const m = parsed.pathname.match(/^\/(?:share|embed)\/([A-Za-z0-9]{8,64})/);
+      return m ? { provider: "Loom", src: `https://www.loom.com/embed/${m[1]}` } : null;
+    }
+    if (host === "drive.google.com") {
+      // A Drive video plays through /preview. Whoever opens it still needs
+      // permission on the file -- embedding grants nothing.
+      const m = parsed.pathname.match(/\/file\/d\/([A-Za-z0-9_-]{10,80})/)
+        || [null, id(parsed.searchParams.get("id") || "")];
+      return m && m[1] ? { provider: "Google Drive", src: `https://drive.google.com/file/d/${m[1]}/preview` } : null;
+    }
+    return null;
+  }
+
   async function resourcesFor(moduleIds, itemIds) {
     const mods = (moduleIds || []).map(Number).filter(Boolean);
     const items = (itemIds || []).map(Number).filter(Boolean);
@@ -898,6 +955,9 @@ module.exports = function initAcademy(ctx) {
       // has one, so renaming an SOP does not leave a stale name in a week.
       title: r.policy_id && r.policy_title ? r.policy_title : r.title,
       href: r.policy_id ? `/policies#p-${r.policy_slug || r.policy_id}` : r.url,
+      // null for a video on a host we do not embed, which is how the page
+      // knows to fall back to a link rather than draw an empty player.
+      embed: r.kind === "video" ? videoEmbed(r.url) : null,
     }));
   }
 
@@ -2745,7 +2805,7 @@ module.exports = function initAcademy(ctx) {
     initTables, handleApi, enrol, autoEnrolSweep, scheduleCheckins, checkinsFor, backfillCheckins,
     reviewFor, leadership, leadershipEmails, isClinicalLead,
     employeeFor, progressFor, itemsFor, modulesFor, resourcesFor, seedBcbaProgram,
-    _internal: { STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
+    _internal: { videoEmbed, STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
                  addDays, CHECKIN_DAYS, GAP_STATUSES, GAP_LABELS, URGENCIES,
                  DOMAINS, DOMAIN_KEYS, RATINGS, RATING_LABELS, REVIEW_STATES, isClosed,
                  RESOURCE_KINDS, safeUrl },
