@@ -472,7 +472,31 @@ const today = () => new Date().toISOString().slice(0, 10);
 
     section("ATTACHING AN SOP OFFERS THE POLICY LIBRARY, NOT A TEXT BOX");
     await page.click("[data-cu-res]");
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(900);
+
+    // THE FORM HAS TO BE WHERE SHE IS LOOKING. All three of these forms open
+    // in one box at the bottom of the entire curriculum, so on a real
+    // twelve-week programme the form lands far below the fold: nothing visibly
+    // happens and the button reads as broken. It was reported as exactly that.
+    // Reading the form with textContent -- which is what this suite used to do
+    // -- passes whether or not a human can see it, which is why it went
+    // unnoticed. These two assert what the person actually gets.
+    const vp = await page.evaluate(() => {
+      const f = document.querySelector("#ac-cu-form2");
+      if (!f || !f.children.length) return { missing: true };
+      const r = f.getBoundingClientRect();
+      return {
+        top: Math.round(r.top), viewportHeight: window.innerHeight,
+        onScreen: r.top < window.innerHeight && r.bottom > 0,
+        focusInside: f.contains(document.activeElement),
+        focusTag: document.activeElement ? document.activeElement.tagName : null,
+      };
+    });
+    check("THE ATTACH FORM IS SCROLLED TO WHERE SHE IS LOOKING, not left below the fold",
+      vp.onScreen && vp.top < vp.viewportHeight * 0.75, vp);
+    check("...and the cursor is already in it, so she can just type",
+      vp.focusInside === true, vp);
+
     const form = await page.textContent(".ac-wrap");
     check("the form explains that a video plays in the page, and where from",
       /plays in the page/i.test(form) && /YouTube, Vimeo, Loom or Google Drive/.test(form), form.slice(-800));
