@@ -1014,6 +1014,18 @@ module.exports = function initAcademy(ctx) {
     const me = await employeeFor(user);
     const lead = await isClinicalLead(user);
     const owner = ["owner", "super_admin"].includes(user.role);
+    // WHO MAY AUTHOR THE TRAINING ITSELF -- the practice owner, and nobody
+    // else. Asked for in those words: nobody but her edits the training or
+    // adds the documents.
+    //
+    // It used to be clinical leadership, which is a designation held BY EMAIL
+    // and can be given to an assistant. What the practice requires of its
+    // staff, and the material handed to them to satisfy it, is what a
+    // licensing body or an insurer holds the owner to, so it is hers. Running
+    // onboarding is not affected: leadership still signs off competencies,
+    // approves completion, writes development plans and moves somebody's
+    // curriculum version. They just do not rewrite the curriculum.
+    const author = user.role === "owner";
     const actor = (user && (user.name || user.email)) || "unknown";
 
     // ---- who clinical leadership is ------------------------------------
@@ -1263,7 +1275,9 @@ module.exports = function initAcademy(ctx) {
           review_due: pr.day >= 30 && r.state === "active" && !(rv && rv.closed),
         });
       }
-      json(res, 200, { enrollments: out, can_manage: lead, is_owner: owner });
+      // can_manage: runs onboarding. can_author: writes the training itself,
+      // which is the owner's alone -- two different jobs, so two flags.
+      json(res, 200, { enrollments: out, can_manage: lead, is_owner: owner, can_author: author });
       return true;
     }
 
@@ -2259,7 +2273,7 @@ module.exports = function initAcademy(ctx) {
     }
 
     if (pathname === "/api/academy/programs" && method === "GET") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can manage the curriculum." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
       const rows = await dbAll("SELECT * FROM academy_programs ORDER BY active DESC, name").catch(() => []);
       const out = [];
       for (const r of rows) {
@@ -2274,7 +2288,7 @@ module.exports = function initAcademy(ctx) {
     }
 
     if (pathname === "/api/academy/programs" && method === "POST") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can create a programme." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can create a training programme." }); return true; }
       const b = await readBody(req).catch(() => ({}));
       const name = clean(b.name);
       if (!name) { json(res, 400, { error: "Give the programme a name." }); return true; }
@@ -2307,7 +2321,7 @@ module.exports = function initAcademy(ctx) {
 
     const progOne = pathname.match(/^\/api\/academy\/programs\/(\d+)$/);
     if (progOne && method === "PATCH") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can change a programme." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change a training programme." }); return true; }
       const prog = await dbGet("SELECT * FROM academy_programs WHERE id = ?", [Number(progOne[1])]).catch(() => null);
       if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
       const b = await readBody(req).catch(() => ({}));
@@ -2335,7 +2349,7 @@ module.exports = function initAcademy(ctx) {
 
     const progMods = pathname.match(/^\/api\/academy\/programs\/(\d+)\/modules$/);
     if (progMods && method === "POST") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
       const prog = await dbGet("SELECT * FROM academy_programs WHERE id = ?", [Number(progMods[1])]).catch(() => null);
       if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
       const b = await readBody(req).catch(() => ({}));
@@ -2361,7 +2375,7 @@ module.exports = function initAcademy(ctx) {
 
     const modOne = pathname.match(/^\/api\/academy\/modules\/(\d+)$/);
     if (modOne && (method === "PATCH" || method === "DELETE")) {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
       const mod = await dbGet("SELECT * FROM academy_modules WHERE id = ?", [Number(modOne[1])]).catch(() => null);
       if (!mod) { json(res, 404, { error: "No such week." }); return true; }
       if (mod.version_to !== null && mod.version_to !== undefined) {
@@ -2458,7 +2472,7 @@ module.exports = function initAcademy(ctx) {
 
     const modItems = pathname.match(/^\/api\/academy\/modules\/(\d+)\/items$/);
     if (modItems && method === "POST") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
       const mod = await dbGet("SELECT * FROM academy_modules WHERE id = ?", [Number(modItems[1])]).catch(() => null);
       if (!mod) { json(res, 404, { error: "No such week." }); return true; }
       if (mod.version_to !== null && mod.version_to !== undefined) {
@@ -2484,7 +2498,7 @@ module.exports = function initAcademy(ctx) {
 
     const itemEdit = pathname.match(/^\/api\/academy\/items\/(\d+)$/);
     if (itemEdit && (method === "PATCH" || method === "DELETE")) {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can change the curriculum." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
       const item = await dbGet("SELECT * FROM academy_items WHERE id = ?", [Number(itemEdit[1])]).catch(() => null);
       if (!item) { json(res, 404, { error: "No such item." }); return true; }
       if (item.version_to !== null && item.version_to !== undefined) {
@@ -2545,7 +2559,7 @@ module.exports = function initAcademy(ctx) {
 
     // ---- THE TRAINING LIBRARY, as leadership manages it ------------------
     if (pathname === "/api/academy/resources" && method === "POST") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can add training material." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can add training material." }); return true; }
       const b = await readBody(req).catch(() => ({}));
       const kind = clean(b.kind) || "link";
       if (!RESOURCE_KINDS.includes(kind)) {
@@ -2604,7 +2618,7 @@ module.exports = function initAcademy(ctx) {
 
     const resOne = pathname.match(/^\/api\/academy\/resources\/(\d+)$/);
     if (resOne && method === "DELETE") {
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can remove training material." }); return true; }
+      if (!author) { json(res, 403, { error: "Only the practice owner can remove training material." }); return true; }
       const id = Number(resOne[1]);
       const row = await dbGet("SELECT * FROM academy_resources WHERE id = ?", [id]).catch(() => null);
       if (!row) { json(res, 404, { error: "No such resource." }); return true; }
@@ -2694,6 +2708,9 @@ module.exports = function initAcademy(ctx) {
     // move exists, it is explicit, and it is audited. It is never automatic.
     const verMove = pathname.match(/^\/api\/academy\/enrollments\/(\d+)\/curriculum-version$/);
     if (verMove && method === "POST") {
+      // Deliberately still leadership's: this moves ONE PERSON onto a
+      // different version of the curriculum, which is managing their record
+      // rather than authoring the training.
       if (!lead) { json(res, 403, { error: "Only clinical leadership can move somebody's curriculum version." }); return true; }
       const enrId = Number(verMove[1]);
       const enr = await dbGet("SELECT * FROM academy_enrollments WHERE id = ?", [enrId]).catch(() => null);

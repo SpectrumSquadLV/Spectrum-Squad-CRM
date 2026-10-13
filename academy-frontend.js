@@ -954,6 +954,9 @@
     var showRoster = DATA.roster && (DATA.roster.enrollments || []).length >= 0
       && (DATA.roster.can_manage || (DATA.roster.enrollments || []).length > 0);
     var canManage = !!(DATA.roster && DATA.roster.can_manage);
+    // Authoring the training is the owner's; running onboarding is
+    // leadership's. The Curriculum tab is the former.
+    var canAuthor = !!(DATA.roster && DATA.roster.can_author);
     var tabs = "";
     if (showRoster) {
       tabs = '<div style="margin-bottom:12px;">'
@@ -962,7 +965,9 @@
         + (canManage ? "Everyone onboarding" : "My mentees") + "</button>"
         + (canManage
             ? '<button class="ac-tab' + (VIEW === "reports" ? " on" : "") + '" data-view="reports">Reports</button>'
-              + '<button class="ac-tab' + (VIEW === "curriculum" ? " on" : "") + '" data-view="curriculum">Curriculum</button>'
+              + (canAuthor
+                  ? '<button class="ac-tab' + (VIEW === "curriculum" ? " on" : "") + '" data-view="curriculum">Curriculum</button>'
+                  : "")
             : "")
         + "</div>";
     }
@@ -983,7 +988,7 @@
            + threadsHtml(DATA.questions, DATA.gaps, true);
     } else if (VIEW === "reports" && canManage) {
       body = reportsHtml();
-    } else if (VIEW === "curriculum" && canManage) {
+    } else if (VIEW === "curriculum" && canAuthor) {
       body = curriculumHtml();
     } else {
       body = meHtml(DATA.me);

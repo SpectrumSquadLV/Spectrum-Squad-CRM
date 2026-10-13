@@ -647,6 +647,7 @@ const state = {
   // answers, and an empty value draws no entry rather than a dead link.
   rethinkUrl: "",
   credentialingAccess: false,
+  complianceAccess: false,
   navReorder: false,
   clients: [],
   stages: [],
@@ -929,6 +930,7 @@ async function loadNavOrder() {
     state.navOrderCanEdit = !!d.can_edit;
     state.rethinkUrl = /^https:\/\//.test(d.rethink_url || "") ? d.rethink_url : "";
     state.credentialingAccess = !!d.credentialing_access;
+    state.complianceAccess = !!d.compliance_access;
   } catch (e) {
     // Never fatal. The sidebar is how you get anywhere; it renders in its
     // natural order rather than not at all.
@@ -936,6 +938,7 @@ async function loadNavOrder() {
     state.navOrderCanEdit = false;
     state.rethinkUrl = "";
     state.credentialingAccess = false;
+    state.complianceAccess = false;
   }
 }
 
@@ -1265,6 +1268,7 @@ async function route() {
   else if (hash.startsWith("#/billable")) { if (window.__renderBillable) await window.__renderBillable(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/pto")) { if (window.__renderPto) await window.__renderPto(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/credentialing")) { if (window.__renderCredentialing) await window.__renderCredentialing(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/compliance")) { if (window.__renderCompliance) await window.__renderCompliance(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/supervision")) { if (window.__renderSupervision) await window.__renderSupervision(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/client-behavior")) { if (window.__renderClientBehavior) await window.__renderClientBehavior(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/bcba-hub")) { if (window.__renderBcbaHub) await window.__renderBcbaHub(mount); else await renderDashboard(mount); }
@@ -1410,6 +1414,10 @@ const MODULE_CATALOG = {
   // somebody who was. A grant here gives the read-only view; editing stays
   // with HR and the settings stay with the owner.
   credentialing: { label: "Credentialing", icon: "◈", hash: "#/credentialing" },
+  // The company-wide training library and who each course is required of.
+  // Separate from "training", which is one employee's own view of their own
+  // courses: one is administration, the other is a person's own record.
+  compliance: { label: "Compliance Training", icon: "▣", hash: "#/compliance" },
   outbox: { label: "Message Outbox", icon: "✉" },
   "financial-center": { label: "Financial Center", icon: "▧" },
   "signnow-import": { label: "SignNow Import", icon: "⇩" },
@@ -1561,6 +1569,11 @@ function renderShell(active) {
   // nav-order call every session already makes, and enforces the same rule.
   if (!OT_ONLY && state.credentialingAccess)
     navItems.push({ key: "credentialing", label: "Credentialing", icon: "◈", hash: "#/credentialing" });
+  // Company-wide compliance training. Not a role either: HR and the owner
+  // administer it, clinical leadership reads it, and the server says which on
+  // the nav-order call every session already makes.
+  if (!OT_ONLY && state.complianceAccess)
+    navItems.push({ key: "compliance", label: "Compliance Training", icon: "▣", hash: "#/compliance" });
   // RBT Fidelity sits beside RBT Supervision because they are about the same
   // people, and stays SEPARATE because they answer different questions.
   //
@@ -7634,6 +7647,7 @@ function openAccessModal(u, onDone) {
   <script src="authorization-requests-frontend.js"></script>
   <script src="bcba-dashboard-frontend.js"></script>
   <script src="staff-progression-frontend.js"></script>
+  <script src="compliance-frontend.js"></script>
   <script src="people-frontend.js"></script>
   <script src="signnow-import-frontend.js"></script>
 

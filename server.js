@@ -5009,6 +5009,8 @@ async function handle(req, res, pathname, method, query = {}) {
         // module. (The progression WIDGET above is a dashboard panel, so it
         // stays on "dashboard".)
         pathname.startsWith("/api/credentialing") ? "credentialing" :
+        // The Compliance Hub is its own section with its own Access entry.
+        pathname.startsWith("/api/compliance") ? "compliance" :
         pathname.startsWith("/api/ot/") ? "ot" :
         pathname.startsWith("/api/supervision") ? "supervision" :
         pathname.startsWith("/api/fin/") ? "financial-center" :
@@ -5219,6 +5221,11 @@ async function handle(req, res, pathname, method, query = {}) {
 
   if (pathname.startsWith("/api/staff-progression") || pathname.startsWith("/api/payer-enrollments") || pathname.startsWith("/api/credentialing")) {
     const handled = await staffProgression.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  if (pathname.startsWith("/api/compliance/")) {
+    const handled = await compliance.handleApi(req, res, pathname, method, user, query);
     if (handled) return true;
   }
 
@@ -5800,6 +5807,7 @@ async function handle(req, res, pathname, method, query = {}) {
         // Whether the Credentialing entry is drawn. HR, owner/admin and the
         // designated Clinical Director / Assistants; the API enforces the same rule.
         credentialing_access: await staffProgression.canSee(user).catch(() => false),
+        compliance_access: await compliance.canView(user).catch(() => false),
       });
     }
 
@@ -8677,6 +8685,7 @@ const PUBLIC_FILES = new Set([
   // The Clinical Director's Staff Progression widget on that dashboard, and
   // the payer enrollment section of the HR Hub staff card that feeds it.
   "/staff-progression-frontend.js",
+  "/compliance-frontend.js",
   "/screener-admin.js",
   "/hr-recruiting.js",
   "/ot-frontend.js",
@@ -9022,6 +9031,17 @@ const staffProgression = require("./staff-progression")({
   // role and leadership designations would not, and an explicit "Off" close it
   // for somebody whose role otherwise would.
   moduleGranted, moduleDenied,
+});
+
+// ===== COMPLIANCE & CERTIFICATION HUB add-on: the company-wide course
+// library and who each course is required of. Owns /api/compliance/*. =====
+const compliance = require("./compliance")({
+  dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, setAppSetting,
+  // One vocabulary for positions, shared with the credentialing tracker, so
+  // "RBT" cannot come to mean two different things in two places.
+  positionGroup: (t) => staffProgression._internal.positionGroup(t),
+  POSITIONS: staffProgression._internal.POSITIONS,
+  isClinicalLead: (u) => academy.isClinicalLead(u),
 });
 
 const concerns = require("./concerns")({
@@ -9542,6 +9562,7 @@ async function start() {
   await concerns.initTables().catch((e) => console.error("Concerns initTables failed:", e));
   await staffPortal.initTables().catch((e) => console.error("Staff portal initTables failed:", e));
   await academy.initTables().catch((e) => console.error("Academy initTables failed:", e));
+  await compliance.initTables().catch((e) => console.error("Compliance initTables failed:", e));
   await policyChanges.initTables().catch((e) => console.error("Policy change requests initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
   await fidelity.initTables().catch((e) => console.error("Fidelity initTables failed:", e));
