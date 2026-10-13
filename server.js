@@ -1587,6 +1587,15 @@ const ROLE_CATALOG = [
   { key: "interviewer", label: "Interviewer", privileged: false, description: "HR & Recruiting: view assigned candidates and interviews only." },
   { key: "ot_admin", label: "OT Admin", privileged: false, description: "Occupational Therapy: full OT access + OT settings. Shared family demographics only — no ABA clinical, authorization, billing, or financial data." },
   { key: "ot_staff", label: "OT Staff", privileged: false, description: "Occupational Therapy: OT clients, intake, and documents. Shared family demographics only — no ABA clinical, authorization, billing, or financial data." },
+  // THE LOWEST TIER, AND DELIBERATELY EMPTY. Company-wide compliance training
+  // has to reach every employee -- RBTs, Squad Leaders, front desk -- and most
+  // of them had no CRM account at all: adding somebody to hr_employees has
+  // never created a login. This role is that login and nothing more. It
+  // appears in no access list anywhere in the CRM, which is what makes it
+  // safe: every module gates on a list of roles, so a role on none of them
+  // reaches none of them. The role matrix snapshot is where that is checked
+  // rather than asserted -- see test-role-matrix-core.js.
+  { key: "employee", label: "Employee (training only)", privileged: false, description: "Their own required training and their own training record. No client records, no staff records, no HR, no financials — the account exists so an employee can complete the training the practice requires of them." },
 ];
 const VALID_ROLE_KEYS = ROLE_CATALOG.map((r) => r.key);
 
@@ -4951,6 +4960,35 @@ async function handle(req, res, pathname, method, query = {}) {
     }
   }
 
+  // ---- THE TRAINING-ONLY FLOOR ------------------------------------------
+  //
+  // The "employee" role exists so that every employee -- RBTs, Squad Leaders,
+  // front desk -- can be given a login for company-wide compliance training,
+  // and for nothing else.
+  //
+  // IT IS AN ALLOWLIST, NOT A LIST OF ROLES TO EXCLUDE, and that is the whole
+  // point. Most of this CRM gates on "is your role in this list", so a role
+  // on no list reaches nothing -- but not everything does. The role matrix
+  // snapshot showed this role arriving with the dashboard, Tasks & Alerts,
+  // the practice group and /api/staff, which hands over every colleague's
+  // name and email, because those modules deliberately admit any signed-in
+  // user. Listing what to block would then have to be revisited every time a
+  // module is added, and the failure is silent. Listing what to ALLOW means a
+  // new module is closed to this role until somebody decides otherwise.
+  //
+  // Policies are in because acknowledging a policy IS part of the training.
+  if (user && user.role === "employee" && pathname.startsWith("/api/")) {
+    const allowed =
+      pathname.startsWith("/api/auth/")
+      || pathname === "/api/nav-order"
+      || pathname.startsWith("/api/compliance/")
+      || pathname.startsWith("/api/policies");
+    if (!allowed) {
+      json(res, 403, { error: "This account is for your required training only." });
+      return true;
+    }
+  }
+
   // Per-user granular module access: if the owner explicitly turned a module OFF
   // for this user, block its API here (public sub-routes are exempt). Absent =
   // role defaults apply, so existing users are unaffected.
@@ -8291,6 +8329,29 @@ async function seedDepartments() {
   }
 }
 
+// THE DEPARTMENTS STAFF ACTUALLY BELONG TO.
+//
+// The four seeded above mirror the CRM's office roles, and they were enough
+// while a department only ever decorated a login. Company-wide training
+// targets departments, and the people it targets are mostly NOT office
+// staff -- an RBT in the field is not "Clinical (BCBA)" and a Squad Leader is
+// not "Intake / Admin". These are added rather than seeded, because an
+// install past its first boot never runs seedDepartments again.
+const STAFF_DEPARTMENTS = [
+  { key: "rbt", name: "Clinical — RBT", color: "#3f9f8f", notify_email: null },
+  { key: "administration", name: "Administration", color: "#6b6a86", notify_email: null },
+  { key: "hr", name: "Human Resources", color: "#b45309", notify_email: null },
+  { key: "leadership", name: "Leadership", color: "#1b2a6b", notify_email: null },
+];
+async function ensureStaffDepartments() {
+  for (const d of STAFF_DEPARTMENTS) {
+    await dbRun(
+      "INSERT INTO departments (key, name, color, notify_email) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING",
+      [d.key, d.name, d.color, d.notify_email]
+    ).catch((e) => console.error("ensureStaffDepartments:", e.message));
+  }
+}
+
 async function deptId(key) {
   const row = await dbGet("SELECT id FROM departments WHERE key = ?", [key]);
   return row.id;
@@ -9601,6 +9662,11 @@ async function start() {
   await hr.processFollowups().catch((e) => console.error("HR follow-up sweep failed:", e));
   await hr.processReminders().catch((e) => console.error("HR interview reminder sweep failed:", e));
   await ensureSeeded();
+  // AFTER ensureSeeded, and that ordering is load-bearing: ensureSeeded asks
+  // "is departments empty?" to decide whether this is a first run. Adding
+  // departments before it answers that question tells a brand-new install it
+  // is already seeded, and it comes up with no users at all.
+  await ensureStaffDepartments();
   await retireDefaultPasswords().catch((e) => console.error("Default-password retirement failed:", e.message));
   await pipeline.checkOverdueTasks();
 

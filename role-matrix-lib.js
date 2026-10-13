@@ -20,7 +20,10 @@ const UPDATE = process.env.UPDATE_MATRIX === "1";
 // Halved so each suite fits the cap. Order is the catalogue's own.
 const PART = {
   core: ["owner", "super_admin", "admin", "intake", "clinical", "billing"],
-  support: ["scheduling", "hr_admin", "hiring_manager", "interviewer", "ot_admin", "ot_staff"],
+  // "employee" is the training-only login. It belongs in the matrix more than
+  // any other role does: it exists to reach ONE thing, so the snapshot is the
+  // record that it reaches nothing else.
+  support: ["scheduling", "hr_admin", "hiring_manager", "interviewer", "ot_admin", "ot_staff", "employee"],
 };
 
 // Every role the CRM offers. Read from the server so a role added to

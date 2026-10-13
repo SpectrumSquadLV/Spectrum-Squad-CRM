@@ -1204,6 +1204,13 @@ async function route() {
     ...(mayLoadClients ? [loadStages(), loadClients(), loadTherapists()] : []),
   ]);
 
+  // A training-only account has one screen, so send them to it rather than to
+  // a dashboard the server will refuse.
+  if (state.user.role === "employee" && !hash.startsWith("#/training") && !hash.startsWith("#/policies")) {
+    location.hash = "#/training";
+    return;
+  }
+
   const [, rawView, param] = hash.split("/");
   // The milestone pipeline lives at #/pipeline-v2 but is the same nav section
   // (and the same permission key) as "pipeline".
@@ -1252,6 +1259,7 @@ async function route() {
   else if (hash.startsWith("#/pipeline")) await renderPipeline(mount);
   else if (hash.startsWith("#/tasks")) await renderTasks(mount);
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
+  else if (hash.startsWith("#/training")) await renderMyTraining(mount);
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
   else if (hash.startsWith("#/attendance")) { if (window.__renderAttendance) await window.__renderAttendance(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/billable")) { if (window.__renderBillable) await window.__renderBillable(mount); else await renderDashboard(mount); }
@@ -1288,11 +1296,39 @@ async function route() {
   if (param && hash.startsWith("#/pipeline/")) openClientModal(param);
 }
 
+// MY TRAINING -- the whole of the CRM for a training-only account.
+//
+// A HOLDING SCREEN, AND IT SAYS SO. The Compliance & Certification Hub it
+// belongs to is being built; no courses exist yet, so there is nothing to
+// list. It says that in those words rather than drawing an empty progress
+// bar, because an employee who signs in and sees "0 of 0 complete" has been
+// told they are up to date, and they have not been told anything.
+async function renderMyTraining(mount) {
+  mount.innerHTML = `
+    <div class="page-head"><div><h1>My Training</h1>
+      <p>Your required compliance training, and your own record of what you have completed.</p></div></div>
+    <div class="card" style="max-width:640px;">
+      <div class="empty-state" style="padding:26px 20px; text-align:left;">
+        <strong style="display:block; margin-bottom:6px;">No training has been assigned to you yet.</strong>
+        <span style="color:var(--text-muted); font-size:13.5px;">
+          When Spectrum Squad assigns you a course, it will appear here with what it covers,
+          what you need to do and when it is due. You will also be able to see and download
+          the certificates for anything you have already finished.
+        </span>
+      </div>
+    </div>`;
+}
+
 async function loadStages() {
   state.stages = await api("/api/stages");
 }
 async function loadDepartments() {
-  state.departments = await api("/api/departments");
+  // Tolerant on purpose. The training-only role cannot read this, and a boot
+  // loader that throws takes the whole shell down -- the screen goes blank and
+  // the only clue is a permission message in the console. An empty list is a
+  // worse department picker; a blank page is a broken CRM.
+  try { state.departments = await api("/api/departments"); }
+  catch (e) { state.departments = []; }
 }
 async function loadClients() {
   state.clients = await api("/api/clients");
@@ -1409,7 +1445,27 @@ function fidelityGranted(key) {
   const ma = getModuleAccess(state.user);
   return !!ma && ma[key] === true;
 }
+// EVERY add-on bundle asks this before it draws anything, and they all honour
+// an explicit false -- that is the one lever in the shell that reaches all of
+// them, including ones not written yet. So the training-only role answers it
+// as a denial of everything except its own two sections, rather than each
+// bundle having to learn about a role.
+//
+// It matters because the add-ons do not go through navItems: maintenance,
+// requests and policy-change-requests insert their own buttons into the
+// sidebar next to supply, falling back to the first nav item if supply is not
+// there. Filtering navItems alone left all of them on an RBT's sidebar.
+const EMPLOYEE_ROLE_ALLOWS = ["training", "policies"];
 function getModuleAccess(user) {
+  if (user && user.role === "employee") {
+    const deny = {};
+    Object.keys(MODULE_CATALOG).forEach((k) => { deny[k] = false; });
+    // The keys the add-ons check are their own, and some are not in the
+    // catalogue, so deny those by name too.
+    ["maintenance", "policy_changes", "requests", "supply", "concerns", "training"].forEach((k) => { deny[k] = false; });
+    EMPLOYEE_ROLE_ALLOWS.forEach((k) => { delete deny[k]; });
+    return deny;
+  }
   if (!user || !user.module_access) return null;
   try { return typeof user.module_access === "string" ? JSON.parse(user.module_access) : user.module_access; }
   catch (e) { return null; }
@@ -1552,6 +1608,17 @@ function renderShell(active) {
     navItems.push({ key: "email-templates", label: "Email Templates", icon: "✎" });
     navItems.push({ key: "failed-emails", label: "Failed Emails", icon: "⚠" });
     navItems.push({ key: "admin", label: "Admin Settings", icon: "⚙" });
+  }
+
+  // THE TRAINING-ONLY ROLE gets its training and the policies it has to
+  // acknowledge, and nothing else. Done by keeping rather than removing, for
+  // the same reason the server's floor is an allowlist: a section added later
+  // should not quietly appear on this person's sidebar. The server refuses the
+  // rest regardless -- this is so they are not shown buttons that 403.
+  if (state.user.role === "employee") {
+    navItems.push({ key: "training", label: "My Training", icon: "◳", hash: "#/training" });
+    const KEEP = new Set(["training", "policies"]);
+    for (let i = navItems.length - 1; i >= 0; i--) if (!KEEP.has(navItems[i].key)) navItems.splice(i, 1);
   }
 
   // Per-user granular access overrides: an explicit false hides a module; an
@@ -5631,6 +5698,10 @@ async function openStaffModal(id, pageMount) {
           ${HR_STAGES.map((s) => `<option value="${s}" ${emp.hr_stage === s ? "selected" : ""}>${s}</option>`).join("")}
         </select></div>
         <div class="field"><label>Hire date (start)</label><input data-f="hr_hire_date" type="date" value="${staffEsc((emp.hr_hire_date || emp.hire_date || "").slice(0,10))}" /></div>
+        <div class="field"><label>Department${emp.department_source === "inferred" ? ` <span style="font-weight:400;color:var(--text-muted);">(read from their title — check it)</span>` : ""}</label><select data-f="department_key">
+          <option value="">Not set</option>
+          ${(state.departments || []).map((d) => `<option value="${staffEsc(d.key)}" ${d.key === emp.department_key ? "selected" : ""}>${staffEsc(d.name)}</option>`).join("")}
+        </select></div>
         <div class="field"><label>Employment status</label><select data-f="status" id="staff-status">
           ${["active", "onboarding", "leave", "terminated"].map((s) => `<option value="${s}" ${emp.status === s ? "selected" : ""}>${s}</option>`).join("")}
         </select></div>

@@ -667,35 +667,38 @@
           "can_edit": false
         }
       },
-      "/api/admin/users": {
-        "status": 403
-      },
-      "/api/dashboard/pipeline-v2": {
-        "status": 200
-      },
       "/api/hr/employees": {
         "status": 403
       },
-      "/api/billable/summary": {
+      "/api/admin/users": {
         "status": 403
       },
       "/api/staff": {
         "status": 200
       },
-      "/api/staff-tasks": {
-        "status": 200
+      "/api/billable/summary": {
+        "status": 403
       },
       "/api/bcba/forms": {
         "status": 403
       },
+      "/api/dashboard/pipeline-v2": {
+        "status": 200
+      },
+      "/api/staff-tasks": {
+        "status": 200
+      },
       "/api/bcba/cheatsheet": {
+        "status": 403
+      },
+      "/api/caseload/bcbas": {
         "status": 403
       },
       "/api/auth/view-as/log": {
         "status": 403
       },
-      "/api/caseload/bcbas": {
-        "status": 403
+      "/api/clients": {
+        "status": 200
       },
       "/api/caseload/dashboard": {
         "status": 200,
@@ -703,9 +706,6 @@
           "can_pick": false,
           "is_bcba_role": false
         }
-      },
-      "/api/clients": {
-        "status": 200
       }
     }
   },
@@ -746,6 +746,12 @@
       "/api/clients": {
         "status": 403
       },
+      "/api/dashboard/pipeline-v2": {
+        "status": 403
+      },
+      "/api/admin/users": {
+        "status": 403
+      },
       "/api/nav-order": {
         "status": 200,
         "flags": {
@@ -755,22 +761,13 @@
       "/api/staff": {
         "status": 200
       },
-      "/api/admin/users": {
-        "status": 403
-      },
-      "/api/dashboard/pipeline-v2": {
-        "status": 403
-      },
       "/api/staff-tasks": {
         "status": 200
       },
-      "/api/bcba/cheatsheet": {
+      "/api/bcba/forms": {
         "status": 403
       },
-      "/api/billable/summary": {
-        "status": 200
-      },
-      "/api/bcba/forms": {
+      "/api/bcba/cheatsheet": {
         "status": 403
       },
       "/api/caseload/dashboard": {
@@ -784,6 +781,9 @@
       },
       "/api/auth/view-as/log": {
         "status": 403
+      },
+      "/api/billable/summary": {
+        "status": 200
       }
     }
   },
@@ -830,20 +830,17 @@
           "can_edit": false
         }
       },
-      "/api/billable/summary": {
-        "status": 403
-      },
-      "/api/staff-tasks": {
+      "/api/staff": {
         "status": 200
       },
-      "/api/staff": {
+      "/api/staff-tasks": {
         "status": 200
       },
       "/api/bcba/forms": {
         "status": 403
       },
-      "/api/hr/employees": {
-        "status": 200
+      "/api/caseload/dashboard": {
+        "status": 403
       },
       "/api/caseload/bcbas": {
         "status": 403
@@ -851,11 +848,14 @@
       "/api/bcba/cheatsheet": {
         "status": 403
       },
+      "/api/billable/summary": {
+        "status": 403
+      },
       "/api/auth/view-as/log": {
         "status": 403
       },
-      "/api/caseload/dashboard": {
-        "status": 403
+      "/api/hr/employees": {
+        "status": 200
       }
     }
   },
@@ -887,13 +887,13 @@
       "external_links": []
     },
     "api": {
+      "/api/dashboard/pipeline-v2": {
+        "status": 403
+      },
       "/api/clients": {
         "status": 403
       },
       "/api/admin/users": {
-        "status": 403
-      },
-      "/api/dashboard/pipeline-v2": {
         "status": 403
       },
       "/api/nav-order": {
@@ -914,13 +914,13 @@
       "/api/bcba/forms": {
         "status": 403
       },
+      "/api/caseload/dashboard": {
+        "status": 403
+      },
       "/api/bcba/cheatsheet": {
         "status": 403
       },
       "/api/caseload/bcbas": {
-        "status": 403
-      },
-      "/api/caseload/dashboard": {
         "status": 403
       },
       "/api/hr/employees": {
@@ -963,13 +963,10 @@
       "/api/staff-tasks": {
         "status": 403
       },
-      "/api/clients": {
-        "status": 403
-      },
-      "/api/admin/users": {
-        "status": 403
-      },
       "/api/dashboard/pipeline-v2": {
+        "status": 403
+      },
+      "/api/clients": {
         "status": 403
       },
       "/api/hr/employees": {
@@ -978,16 +975,19 @@
       "/api/billable/summary": {
         "status": 403
       },
-      "/api/bcba/cheatsheet": {
+      "/api/bcba/forms": {
         "status": 403
       },
-      "/api/bcba/forms": {
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/caseload/dashboard": {
         "status": 403
       },
       "/api/caseload/bcbas": {
         "status": 403
       },
-      "/api/caseload/dashboard": {
+      "/api/bcba/cheatsheet": {
         "status": 403
       },
       "/api/auth/view-as/log": {
@@ -1027,19 +1027,22 @@
       "/api/staff-tasks": {
         "status": 403
       },
-      "/api/dashboard/pipeline-v2": {
+      "/api/admin/users": {
         "status": 403
       },
       "/api/clients": {
         "status": 403
       },
-      "/api/billable/summary": {
-        "status": 403
-      },
-      "/api/admin/users": {
+      "/api/dashboard/pipeline-v2": {
         "status": 403
       },
       "/api/hr/employees": {
+        "status": 403
+      },
+      "/api/caseload/dashboard": {
+        "status": 403
+      },
+      "/api/caseload/bcbas": {
         "status": 403
       },
       "/api/bcba/forms": {
@@ -1048,13 +1051,72 @@
       "/api/bcba/cheatsheet": {
         "status": 403
       },
-      "/api/caseload/bcbas": {
+      "/api/auth/view-as/log": {
+        "status": 403
+      },
+      "/api/billable/summary": {
+        "status": 403
+      }
+    }
+  },
+  "employee": {
+    "nav": {
+      "top": [
+        "group:grp-practice",
+        "training"
+      ],
+      "grouped": {
+        "grp-practice": [
+          "policies"
+        ]
+      }
+    },
+    "shell": {
+      "reorder_in_sidebar": false,
+      "view_as_buttons": false,
+      "external_links": []
+    },
+    "api": {
+      "/api/staff": {
+        "status": 403
+      },
+      "/api/staff-tasks": {
+        "status": 403
+      },
+      "/api/dashboard/pipeline-v2": {
+        "status": 403
+      },
+      "/api/clients": {
+        "status": 403
+      },
+      "/api/hr/employees": {
+        "status": 403
+      },
+      "/api/admin/users": {
+        "status": 403
+      },
+      "/api/billable/summary": {
+        "status": 403
+      },
+      "/api/nav-order": {
+        "status": 200,
+        "flags": {
+          "can_edit": false
+        }
+      },
+      "/api/bcba/forms": {
+        "status": 403
+      },
+      "/api/bcba/cheatsheet": {
         "status": 403
       },
       "/api/caseload/dashboard": {
         "status": 403
       },
       "/api/auth/view-as/log": {
+        "status": 403
+      },
+      "/api/caseload/bcbas": {
         "status": 403
       }
     }

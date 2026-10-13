@@ -25,7 +25,15 @@
   const ACCENT = "#1b2a6b";
 
   function canSee() {
-    return typeof state !== "undefined" && !!state.user && !!state.user.id;
+    if (typeof state === "undefined" || !state.user || !state.user.id) return false;
+    // The training-only role is the one signed-in account this is NOT for.
+    // It exists so an employee can do their compliance training; the server
+    // refuses every other API to it, so drawing this would put a button on
+    // their sidebar that answers "this account is for your required training
+    // only". Whether the Requests Hub should be opened up to every employee is a
+    // decision to make deliberately, not one to inherit from a login.
+    if (state.user.role === "employee") return false;
+    return true;
   }
   function shellReady() { return typeof state !== "undefined" && !!state.user; }
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
