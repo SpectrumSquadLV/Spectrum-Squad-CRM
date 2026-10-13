@@ -208,6 +208,61 @@ function api(cookie) {
   await page.keyboard.press("Escape");
 
   // ------------------------------------------------------------------
+  // REPORTED AS: "the credentialing menu navigation needs to be added in
+  // access." Credentialing had no row in the Access editor, so there was no
+  // way to give one person the view or take it from somebody who had it.
+  section("Credentialing is in the Access editor, and granting it works");
+  const userList = async () => (await o("/api/admin/users")).data.users || [];
+  const billingUser = (await userList()).find((x) => String(x.email).startsWith("billing"));
+  check("the billing account is there to grant to", !!billingUser, billingUser);
+  await go("#/admin");
+  await page.waitForTimeout(800);
+  await page.evaluate((u) => openAccessModal(u, null), billingUser);
+  await page.waitForSelector('[data-mod="credentialing"]', { state: "attached", timeout: 8000 }).catch(() => {});
+  check("the Access editor has a Credentialing row", !!(await page.$('[data-mod="credentialing"]')));
+  const accLabel = await page.$eval('[data-mod="credentialing"]', (e) => e.closest("div").textContent.trim()).catch(() => "");
+  check("...labelled Credentialing", /Credentialing/.test(accLabel), accLabel);
+  const accOpts = await page.$$eval('[data-mod="credentialing"] option', (els) => els.map((e) => e.textContent));
+  check("...with the same three settings as every other section",
+    accOpts.join("|") === "Role default|On (grant)|Off (hide)", accOpts);
+  await page.selectOption('[data-mod="credentialing"]', "true");
+  await page.click("#acc-save");
+  await page.waitForTimeout(1200);
+  const saved = (await userList()).find((x) => x.id === billingUser.id) || {};
+  check("the grant saves against the user", /"credentialing":true/.test(String(saved.module_access || "")), saved.module_access);
+
+  // The whole point: the person it was granted to gets the sidebar entry and
+  // the page actually opens, rather than a button that says Not permitted.
+  await login("billing@spectrumsquadlv.com", "TestStaff123!");
+  await page.waitForTimeout(600);
+  // The nav entry by key, not by the word appearing anywhere on the page --
+  // "Credentialing" is also in a staff-card section heading.
+  const navEntry = () => page.$('#nav-list [data-nav="credentialing"]');
+  check("the granted account sees Credentialing in the sidebar", !!(await navEntry()));
+  await go("#/credentialing");
+  await page.waitForSelector("#cr-rows", { timeout: 10000 }).catch(() => {});
+  // Scoped to the page itself: "Not permitted" elsewhere in the shell is not
+  // this page refusing them.
+  const granteeBody = await page.textContent("#view-mount");
+  check("...and the page loads for them, not a refusal",
+    !!(await page.$("#cr-rows")) && !/Not permitted/i.test(granteeBody), granteeBody.slice(0, 300));
+  check("...showing the same new hires, not an empty screen",
+    (await page.$$("#cr-rows tr[data-emp]")).length > 0, (await page.$$("#cr-rows tr[data-emp]")).length);
+  check("...read-only: no settings and no edit buttons",
+    !(await page.$("#cr-settings")) && !(await page.$("#cr-track")));
+  check("...and told whose the settings are", /set by the practice owner/.test(granteeBody), granteeBody.slice(0, 200));
+  // Put it back, and confirm the off switch reaches the page too.
+  await login("admin@spectrumsquadlv.com", "TestOwner123!");
+  await o("/api/admin/users/" + billingUser.id, { method: "PATCH", body: { module_access: { credentialing: false } } });
+  await login("billing@spectrumsquadlv.com", "TestStaff123!");
+  await page.waitForTimeout(600);
+  check("switching it off takes the sidebar entry away again", !(await navEntry()));
+  await login("admin@spectrumsquadlv.com", "TestOwner123!");
+  await o("/api/admin/users/" + billingUser.id, { method: "PATCH", body: { module_access: {} } });
+  await go("#/credentialing");
+  await page.waitForSelector("#cr-rows tr[data-emp]", { timeout: 10000 }).catch(() => {});
+
+  // ------------------------------------------------------------------
   section("HR edits payer linking on the staff card");
   await go("#/staff");
   await page.evaluate((id) => openStaffModal(String(id), document.createElement("div")), rbt);

@@ -1367,6 +1367,13 @@ const MODULE_CATALOG = {
   policies: { label: "Policies & SOPs", icon: "▦" },
   map: { label: "Map", icon: "◈" },
   hr: { label: "HR & Recruiting", icon: "◐" },
+  // Credentialing is its OWN access key, not a slice of the dashboard. It used
+  // to ride on "dashboard" server-side and have no entry here at all, so there
+  // was no way to give one person the new-hire credentialing view without
+  // making them HR or the Clinical Director -- and no way to take it away from
+  // somebody who was. A grant here gives the read-only view; editing stays
+  // with HR and the settings stay with the owner.
+  credentialing: { label: "Credentialing", icon: "◈", hash: "#/credentialing" },
   outbox: { label: "Message Outbox", icon: "✉" },
   "financial-center": { label: "Financial Center", icon: "▧" },
   "signnow-import": { label: "SignNow Import", icon: "⇩" },

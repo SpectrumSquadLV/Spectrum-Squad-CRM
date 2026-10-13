@@ -1019,9 +1019,18 @@ module.exports = function initStaffProgression(ctx) {
   }
 
   // ======================= ROUTES ============================
+  // A per-user grant from the Access editor unlocks the read-only view even
+  // when the role list and the leadership designations would not. Editing
+  // (HR) and the settings (the owner) stay where they are. An explicit "Off"
+  // is answered here as well as by the API gate, so the nav flag this module
+  // supplies tells the truth instead of relying on the sidebar to hide it.
+  const granted = (u, k) => !!(ctx.moduleGranted && ctx.moduleGranted(u, k));
+  const denied = (u, k) => !!(ctx.moduleDenied && ctx.moduleDenied(u, k));
   async function canSee(user) {
     if (!user) return false;
+    if (denied(user, "credentialing")) return false;
     if (hrCanManage(user)) return true;
+    if (granted(user, "credentialing")) return true;
     return await isClinicalLead(user);
   }
   async function isDesignatedLead(user) {
