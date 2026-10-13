@@ -2436,6 +2436,122 @@ module.exports = function initAcademy(ctx) {
       return true;
     }
 
+    // ---- REORDERING THE CURRICULUM, IN ONE GO ---------------------------
+    //
+    // ONE ENDPOINT FOR THE WHOLE LAYOUT, and that is a correctness
+    // requirement rather than a convenience. Editing a curriculum somebody is
+    // enrolled on FORKS a new version, and versionForEdit bumps the version
+    // every time it is called -- so dragging five modules into a new order
+    // through the per-module PATCH would mint FIVE curriculum versions for one
+    // reorder, each closing and reopening rows the last one had just written.
+    // The whole new order therefore arrives as a single request, forks at most
+    // once, and either applies completely or not at all.
+    //
+    // The layout sent is the COMPLETE live set, not a patch: every live week
+    // and every live module, in the order they should now be in. A partial
+    // list is refused rather than guessed at, because the difference between
+    // "this module moved" and "this module was left out" is not recoverable
+    // from a partial list, and guessing it wrong silently drops training.
+    const progOrder = pathname.match(/^\/api\/academy\/programs\/(\d+)\/order$/);
+    if (progOrder && method === "PUT") {
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
+      const prog = await dbGet("SELECT * FROM academy_programs WHERE id = ?", [Number(progOrder[1])]).catch(() => null);
+      if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const layout = Array.isArray(b.layout) ? b.layout : null;
+      if (!layout || !layout.length) { json(res, 400, { error: "Send the new order." }); return true; }
+
+      const liveMods = await modulesFor(prog.id, Number(prog.version));
+      const liveItems = await dbAll(
+        `SELECT i.* FROM academy_items i JOIN academy_modules m ON m.id = i.module_id
+          WHERE m.program_id = ? AND m.version_to IS NULL AND i.version_to IS NULL`,
+        [prog.id]).catch(() => []);
+
+      const wantMods = [], wantItems = [];
+      for (const row of layout) {
+        const mid = num(row && row.module_id);
+        if (!mid) { json(res, 400, { error: "Every week in the order needs its id." }); return true; }
+        const w = num(row.week);
+        if (!w || w < 1 || w > Number(prog.weeks)) {
+          json(res, 400, { error: `Week must be between 1 and ${prog.weeks}.` }); return true;
+        }
+        wantMods.push({ module_id: mid, week: w, items: Array.isArray(row.items) ? row.items.map(num) : [] });
+        for (const it of wantMods[wantMods.length - 1].items) {
+          if (!it) { json(res, 400, { error: "Every module in the order needs its id." }); return true; }
+          wantItems.push(it);
+        }
+      }
+
+      // The order has to name each live row exactly once. Anything else means
+      // the screen was working from a stale copy -- somebody else added a week
+      // in another tab -- and the safe answer is to refuse and let them look.
+      const sameSet = (want, live) => {
+        const a = [...new Set(want)].sort((x, y) => x - y);
+        const bb = [...new Set(live)].sort((x, y) => x - y);
+        return want.length === a.length && a.length === bb.length && a.every((v, i) => v === bb[i]);
+      };
+      if (!sameSet(wantMods.map((m) => m.module_id), liveMods.map((m) => m.id))) {
+        json(res, 409, { error: "The curriculum has changed since this screen loaded. Reload and try the move again." });
+        return true;
+      }
+      if (!sameSet(wantItems, liveItems.map((i) => i.id))) {
+        json(res, 409, { error: "The curriculum has changed since this screen loaded. Reload and try the move again." });
+        return true;
+      }
+
+      const { version, forked } = await versionForEdit(prog);
+      const itemById = new Map(liveItems.map((i) => [i.id, i]));
+      const modById = new Map(liveMods.map((m) => [m.id, m]));
+
+      if (!forked) {
+        // Nobody is on this programme: move the rows and keep the version.
+        for (let w = 0; w < wantMods.length; w++) {
+          const row = wantMods[w];
+          await dbRun("UPDATE academy_modules SET week = ?, position = ?, updated_at = ? WHERE id = ?",
+                      [row.week, w, nowISO(), row.module_id]);
+          for (let n = 0; n < row.items.length; n++) {
+            await dbRun("UPDATE academy_items SET module_id = ?, position = ? WHERE id = ?",
+                        [row.module_id, n, row.items[n]]);
+          }
+        }
+        json(res, 200, { ok: true, version, forked: false });
+        return true;
+      }
+
+      // FORKED. Close every live week and module at the new version, then
+      // write the whole curriculum again in its new order. Attachments come
+      // across with their module, because a reordered week that lost
+      // everything to read would look complete and be useless.
+      for (const m of liveMods) {
+        await dbRun("UPDATE academy_modules SET version_to = ? WHERE id = ?", [version, m.id]);
+      }
+      for (const i of liveItems) {
+        await dbRun("UPDATE academy_items SET version_to = ? WHERE id = ?", [version, i.id]);
+      }
+      for (let w = 0; w < wantMods.length; w++) {
+        const row = wantMods[w];
+        const old = modById.get(row.module_id);
+        const fresh = await dbGet(
+          `INSERT INTO academy_modules (program_id, week, position, title, focus, body, video_url,
+             archived, version_from, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?, FALSE, ?, ?, ?) RETURNING *`,
+          [prog.id, row.week, w, old.title, old.focus, old.body, old.video_url, version, nowISO(), nowISO()]
+        ).catch(() => null);
+        if (!fresh) { json(res, 500, { error: "The order could not be saved." }); return true; }
+        for (let n = 0; n < row.items.length; n++) {
+          const it = itemById.get(row.items[n]);
+          const copy = await dbGet(
+            `INSERT INTO academy_items (module_id, kind, title, detail, required, position, archived, version_from, created_at)
+             VALUES (?,?,?,?,?,?, FALSE, ?, ?) RETURNING id`,
+            [fresh.id, it.kind, it.title, it.detail, it.required, n, version, nowISO()]).catch(() => null);
+          if (copy) await copyResources({ fromItem: it.id, toItem: copy.id, actor });
+        }
+        await copyResources({ fromModule: old.id, toModule: fresh.id, actor });
+      }
+      json(res, 200, { ok: true, version, forked: true });
+      return true;
+    }
+
     const modOne = pathname.match(/^\/api\/academy\/modules\/(\d+)$/);
     if (modOne && (method === "PATCH" || method === "DELETE")) {
       if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }

@@ -957,7 +957,7 @@
               + (p.role_target ? '<div class="ac-sub">auto-enrols</div>' : "") + "</td>"
             + "<td>" + esc(p.weeks) + "</td><td>v" + esc(p.version) + "</td>"
             + "<td>" + esc(p.enrolled) + "</td>"
-            + "<td>" + esc(p.modules) + " weeks, " + esc(p.items) + " items</td>"
+            + "<td>" + esc(p.modules) + " weeks, " + esc(p.items) + " modules</td>"
             + '<td><button class="btn small secondary" data-cu-pick="' + p.id + '">Open</button></td></tr>';
         }).join("")
       + "</tbody></table>"
@@ -975,34 +975,68 @@
               + " — nobody's finished week changes under them."
             : "Nobody is enrolled yet, so edits change this version in place.")
       + "</div>"
-      + (body.modules || []).map(function (m) {
-          return '<div class="ac-comp" style="margin-bottom:10px;background:#fff;border-color:var(--border,#e5e7eb);">'
-            + '<div class="ac-row" style="justify-content:space-between;">'
-              + "<div><strong>Week " + esc(m.week) + " — " + esc(m.title) + "</strong>"
-              + (m.focus ? '<div class="ac-sub">' + esc(m.focus) + "</div>" : "") + "</div>"
-              + (editing ? '<div><button class="btn small secondary" data-cu-mdel="' + m.id + '">Remove week</button></div>' : "")
-            + "</div>"
-            + (m.items || []).map(function (i) {
-                return '<div class="ac-item"><div style="flex:1;min-width:0;">'
-                  + "<div>" + esc(i.title) + "</div>"
-                  + '<div class="ac-sub">' + esc(i.kind) + (i.required ? "" : " · optional") + "</div>"
-                  + resourcesHtml(i.resources)
+      + '<div id="ac-cu-order-msg" class="ac-sub" style="color:#b91c1c;margin:-4px 0 8px;"></div>' 
+      // EACH ITEM IS A MODULE, numbered straight through the programme so
+      // "module 7" means one thing wherever it sits, and both the weeks and
+      // the modules inside them can be moved. The whole new order goes to the
+      // server in ONE request -- see the note on /order in academy.js.
+      + (function () {
+          var weeks = body.modules || [];
+          var n = 0;
+          return weeks.map(function (m, wi) {
+            var mods = m.items || [];
+            return '<div class="ac-comp" data-cu-week="' + m.id + '" style="margin-bottom:10px;background:#fff;border-color:var(--border,#e5e7eb);">'
+              + '<div class="ac-row" style="justify-content:space-between;">'
+                + "<div><strong>Week " + esc(m.week) + " — " + esc(m.title) + "</strong>"
+                + (m.focus ? '<div class="ac-sub">' + esc(m.focus) + "</div>" : "") + "</div>"
+                + (editing
+                    ? '<div class="ac-row" style="gap:4px;">'
+                      + '<button class="btn small secondary" data-cu-wmove="' + m.id + '" data-cu-dir="-1"'
+                        + (wi === 0 ? " disabled" : "") + ' title="Move this week earlier">&uarr;</button>'
+                      + '<button class="btn small secondary" data-cu-wmove="' + m.id + '" data-cu-dir="1"'
+                        + (wi === weeks.length - 1 ? " disabled" : "") + ' title="Move this week later">&darr;</button>'
+                      + '<button class="btn small secondary" data-cu-mdel="' + m.id + '">Remove week</button>'
+                    + "</div>"
+                    : "")
+              + "</div>"
+              + '<div data-cu-drop="' + m.id + '" style="min-height:' + (editing ? "30px" : "0") + ';border-radius:8px;">'
+              + mods.map(function (i) {
+                  n++;
+                  return '<div class="ac-item" data-cu-mod="' + i.id + '" data-cu-in="' + m.id + '"'
+                    + (editing ? ' draggable="true" style="cursor:grab;"' : "") + ">"
+                    + '<div style="flex:1;min-width:0;">'
+                    + "<div><strong>" + n + '.</strong> <span data-cu-modtitle>' + esc(i.title) + "</span></div>"
+                    + '<div class="ac-sub">' + esc(i.kind) + (i.required ? "" : " · optional") + "</div>"
+                    + resourcesHtml(i.resources)
+                    + (editing
+                        ? '<div style="margin-top:6px;"><button class="btn small" data-cu-res="' + i.id
+                          + '" data-cu-res-kind="item">Attach material</button></div>'
+                        : "")
+                  + "</div>"
                   + (editing
-                      ? '<div style="margin-top:6px;"><button class="btn small" data-cu-res="' + i.id
-                        + '" data-cu-res-kind="item">Attach material</button></div>'
+                      ? '<div class="ac-row" style="gap:4px;align-items:flex-start;">'
+                        + '<button class="btn small secondary" data-cu-mmove="' + i.id + '" data-cu-dir="-1"'
+                          + (n === 1 ? " disabled" : "") + ' title="Move this module up">&uarr;</button>'
+                        + '<button class="btn small secondary" data-cu-mmove="' + i.id + '" data-cu-dir="1"'
+                          + ' title="Move this module down">&darr;</button>'
+                        + '<button class="btn small secondary" data-cu-idel="' + i.id + '">Remove</button>'
+                      + "</div>"
                       : "")
-                + "</div>"
-                + (editing ? '<div><button class="btn small secondary" data-cu-idel="' + i.id + '">Remove</button></div>' : "")
-                + "</div>";
-              }).join("")
-            + (editing
-                ? '<div class="ac-row" style="margin-top:9px;">'
-                  + '<button class="btn small" data-cu-iadd="' + m.id + '">Add an item</button>'
-                  + '<button class="btn small" data-cu-res="' + m.id + '" data-cu-res-kind="module">Attach material to the week</button>'
-                + "</div>"
-                : "")
-            + "</div>";
-        }).join("")
+                  + "</div>";
+                }).join("")
+              + (editing && !mods.length
+                  ? '<div class="ac-sub" style="padding:7px 9px;">No modules in this week yet — add one, or drag one here.</div>'
+                  : "")
+              + "</div>"
+              + (editing
+                  ? '<div class="ac-row" style="margin-top:9px;">'
+                    + '<button class="btn small" data-cu-iadd="' + m.id + '">Add a module</button>'
+                    + '<button class="btn small" data-cu-res="' + m.id + '" data-cu-res-kind="module">Attach material to the week</button>'
+                  + "</div>"
+                  : "")
+              + "</div>";
+          }).join("");
+        })()
       + (editing ? '<button class="btn small" id="ac-cu-wadd">Add a week</button>' : "")
       + '<div id="ac-cu-form2"></div></div>';
     return out;
@@ -1310,11 +1344,11 @@
       b.addEventListener("click", function () {
         if (!form2) return;
         form2.innerHTML = '<div class="ac-plan" style="background:#f8fafc;border-color:var(--border,#e5e7eb);">'
-          + '<strong style="font-size:13px;">A new item</strong>'
+          + '<strong style="font-size:13px;">A new module</strong>'
           + '<input id="ac-ni-title" placeholder="What they do" style="margin-top:7px;">'
           + '<div class="ac-grid2" style="margin-top:8px;">'
             + '<label class="ac-sub">Kind<select id="ac-ni-kind">'
-              + '<option value="reading">Reading</option><option value="checklist">Checklist item</option>'
+              + '<option value="reading">Reading</option><option value="checklist">Checklist</option>'
               + '<option value="competency">Competency (signed off by a supervisor)</option>'
               + '<option value="quiz">Quiz</option></select></label>'
             + '<label class="ac-sub">Detail<input id="ac-ni-detail" placeholder="optional"></label>'
@@ -1351,7 +1385,134 @@
     });
     HOST.querySelectorAll("[data-cu-idel]").forEach(function (b) {
       b.addEventListener("click", del("/api/academy/items/" + b.getAttribute("data-cu-idel"),
-        "Remove this item? Anybody already enrolled keeps it."));
+        "Remove this module? Anybody already enrolled keeps it."));
+    });
+
+    // ---- MOVING WEEKS AND MODULES ---------------------------------------
+    //
+    // THE WHOLE LAYOUT GOES IN ONE REQUEST. Sending a move per module would
+    // fork a new curriculum version for each one of them -- see the note on
+    // /order in academy.js -- so the screen works out the complete new order
+    // and sends it once.
+    function layoutNow() {
+      return (((DATA.curriculum || {}).body || {}).modules || []).map(function (m) {
+        return {
+          module_id: Number(m.id),
+          week: Number(m.week),
+          items: (m.items || []).map(function (i) { return Number(i.id); }),
+        };
+      });
+    }
+    var orderBusy = false;
+    function putOrder(lay) {
+      if (orderBusy) return;
+      orderBusy = true;
+      api("/api/academy/programs/" + CUR_PROG + "/order", { method: "PUT", body: { layout: lay } })
+        .then(function () { return loadCurriculum(); })
+        .catch(function (e) {
+          orderBusy = false;
+          var box = HOST.querySelector("#ac-cu-order-msg");
+          if (box) box.textContent = e.message;
+        });
+    }
+    function removeFrom(lay, id) {
+      for (var w = 0; w < lay.length; w++) {
+        var ix = lay[w].items.indexOf(id);
+        if (ix >= 0) { lay[w].items.splice(ix, 1); return true; }
+      }
+      return false;
+    }
+
+    HOST.querySelectorAll("[data-cu-wmove]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (b.disabled) return;
+        var lay = layoutNow();
+        var id = Number(b.getAttribute("data-cu-wmove"));
+        var dir = Number(b.getAttribute("data-cu-dir"));
+        var at = -1;
+        lay.forEach(function (r, ix) { if (r.module_id === id) at = ix; });
+        var to = at + dir;
+        if (at < 0 || to < 0 || to >= lay.length) return;
+        // Swap the week NUMBER as well as the slot. Weeks are read in
+        // (week, position) order, so swapping only one of the two leaves the
+        // move invisible in one of the two shapes this data can take.
+        var aw = lay[at].week, bw = lay[to].week;
+        lay[at].week = bw; lay[to].week = aw;
+        var tmp = lay[at]; lay[at] = lay[to]; lay[to] = tmp;
+        putOrder(lay);
+      });
+    });
+
+    HOST.querySelectorAll("[data-cu-mmove]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (b.disabled) return;
+        var lay = layoutNow();
+        var id = Number(b.getAttribute("data-cu-mmove"));
+        var dir = Number(b.getAttribute("data-cu-dir"));
+        // Flattened across the whole programme, so moving up from the top of
+        // a week lands at the end of the week before instead of doing
+        // nothing -- the numbering runs straight through, so the arrows
+        // should too.
+        var flat = [];
+        lay.forEach(function (r, wi) {
+          r.items.forEach(function (it, ii) { flat.push({ w: wi, i: ii, id: it }); });
+        });
+        var at = -1;
+        flat.forEach(function (f, ix) { if (f.id === id) at = ix; });
+        if (at < 0) return;
+        var to = at + dir;
+        if (to < 0 || to >= flat.length) return;
+        var from = flat[at], dest = flat[to];
+        lay[from.w].items.splice(from.i, 1);
+        var insertAt = from.w === dest.w ? dest.i : (dir < 0 ? lay[dest.w].items.length : 0);
+        lay[dest.w].items.splice(insertAt, 0, id);
+        putOrder(lay);
+      });
+    });
+
+    var dragId = null;
+    HOST.querySelectorAll("[data-cu-mod]").forEach(function (el) {
+      el.addEventListener("dragstart", function (ev) {
+        dragId = Number(el.getAttribute("data-cu-mod"));
+        if (ev.dataTransfer) {
+          ev.dataTransfer.effectAllowed = "move";
+          try { ev.dataTransfer.setData("text/plain", String(dragId)); } catch (e) {}
+        }
+        el.style.opacity = "0.5";
+      });
+      el.addEventListener("dragend", function () { el.style.opacity = ""; dragId = null; });
+      el.addEventListener("dragover", function (ev) { ev.preventDefault(); });
+      el.addEventListener("drop", function (ev) {
+        ev.preventDefault();
+        // Dropping ONTO a module means "put it here", so the week-level zone
+        // underneath must not also append it to the end.
+        ev.stopPropagation();
+        var onto = Number(el.getAttribute("data-cu-mod"));
+        var id = dragId || Number((ev.dataTransfer && ev.dataTransfer.getData("text/plain")) || 0);
+        if (!id || id === onto) return;
+        var lay = layoutNow();
+        if (!removeFrom(lay, id)) return;
+        for (var w = 0; w < lay.length; w++) {
+          var ix = lay[w].items.indexOf(onto);
+          if (ix >= 0) { lay[w].items.splice(ix, 0, id); putOrder(lay); return; }
+        }
+      });
+    });
+    HOST.querySelectorAll("[data-cu-drop]").forEach(function (zone) {
+      zone.addEventListener("dragover", function (ev) { ev.preventDefault(); zone.style.background = "#f1f5f9"; });
+      zone.addEventListener("dragleave", function () { zone.style.background = ""; });
+      zone.addEventListener("drop", function (ev) {
+        ev.preventDefault();
+        zone.style.background = "";
+        var id = dragId || Number((ev.dataTransfer && ev.dataTransfer.getData("text/plain")) || 0);
+        if (!id) return;
+        var weekId = Number(zone.getAttribute("data-cu-drop"));
+        var lay = layoutNow();
+        if (!removeFrom(lay, id)) return;
+        for (var w = 0; w < lay.length; w++) {
+          if (lay[w].module_id === weekId) { lay[w].items.push(id); putOrder(lay); return; }
+        }
+      });
     });
 
     HOST.querySelectorAll("[data-cu-res]").forEach(function (b) {
