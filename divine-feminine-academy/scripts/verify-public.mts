@@ -64,7 +64,6 @@ const PUBLIC = [
   '/programs',
   '/quiz',
   '/quiz/the-commander',
-  '/assessment',
   '/legal/privacy',
   '/legal/terms',
   '/legal/disclaimer',
@@ -79,6 +78,16 @@ const HIDDEN = ['/stories']
 const MOVED: Array<[from: string, to: string]> = [
   ['/me-vs-her', '/challenges/me-vs-her'],
   ['/listen', '/podcast'],
+  /*
+   * /assessment was a SECOND instrument - "Where are you, honestly?" - whose
+   * live page carried a staff note telling strangers its questions were
+   * placeholders. The archetype quiz already produces the four area scores
+   * AND the archetype from one set of answers, so it asked women to answer a
+   * weaker second set for information the first set already gives.
+   *
+   * It is listed here rather than deleted because the URL is in the wild.
+   */
+  ['/assessment', '/quiz'],
 ]
 
 /**

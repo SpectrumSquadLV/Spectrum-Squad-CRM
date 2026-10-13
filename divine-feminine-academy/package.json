@@ -36,6 +36,7 @@
     "verify:contrast": "tsx scripts/verify-contrast.mts",
     "preflight": "tsx --conditions=react-server scripts/preflight.mts",
     "verify:preflight": "tsx scripts/verify-preflight.mts",
+    "verify:origin": "tsx scripts/verify-origin.mts",
     "verify:migrations": "tsx scripts/verify-migrations.mts",
     "verify:db-url": "tsx scripts/verify-db-url.mts",
     "verify:me-vs-her": "tsx --conditions=react-server scripts/verify-me-vs-her.mts",
@@ -54,7 +55,8 @@
     "verify:photo-type": "tsx scripts/verify-photo-type.mts",
     "verify:podcast": "tsx --conditions=react-server scripts/verify-podcast.mts",
     "verify:public": "tsx scripts/verify-public.mts",
-    "content-bank": "tsx scripts/content-bank.mts"
+    "content-bank": "tsx scripts/content-bank.mts",
+    "verify:scenes": "tsx scripts/verify-scenes.mts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",

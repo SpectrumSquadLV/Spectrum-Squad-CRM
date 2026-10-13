@@ -164,12 +164,26 @@ export function runPreflight(env: Env): PreflightReport {
   }
 
   // --- Payments ----------------------------------------------------------
+  /*
+   * This said the app "refuses to start this way in production". It does not.
+   *
+   * paymentProvider() throws, and it is only called when a woman presses the
+   * button that takes her money - so the container boots, the health check
+   * passes, every page renders, and the ONLY broken thing is the purchase.
+   * She fills in her name and her email, presses Continue to payment, and is
+   * told checkout is unavailable. Nothing else on the site tells anyone.
+   *
+   * That wording is why this survived to be found by a customer instead of by
+   * this check: it read as though the boot already protected her, which made
+   * running the check look optional. It is the only thing standing between a
+   * left-over default and a sale that cannot happen.
+   */
   if (env.PAYMENTS_PROVIDER === 'fake') {
     results.push({
       key: 'PAYMENTS_PROVIDER',
       severity: isProduction ? 'error' : 'warning',
       message: isProduction
-        ? 'Set to "fake", which approves every payment. The app refuses to start this way in production, and so does this check.'
+        ? 'Set to "fake", which approves every payment. The app will still boot and every page will work — checkout is the only thing that fails, and it fails at the moment someone tries to pay.'
         : 'Using the fake provider. No money moves.',
     })
   } else {
@@ -189,13 +203,85 @@ export function runPreflight(env: Env): PreflightReport {
           ? 'Set.'
           : 'Not set while Stripe IS. Every webhook will be rejected, so women will pay and get nothing.',
       })
-      if (present(env.STRIPE_SECRET_KEY) && env.STRIPE_SECRET_KEY.startsWith('sk_test')) {
+      const key = env.STRIPE_SECRET_KEY ?? ''
+
+      /*
+       * Restricted keys count. `sk_` is not the only prefix.
+       *
+       * Stripe issues rk_live_/rk_test_ for a key with chosen permissions -
+       * which is what "Full access, except sensitive operations" produces,
+       * and that is the option a careful person picks. Matching only `sk_`
+       * meant a production deploy on a restricted key skipped BOTH branches
+       * below: the test-key gate did not fire, and neither did the live-key
+       * warning, which is the one that stands between taking real money and
+       * granting nothing. The check reported zero errors and zero warnings
+       * and had in fact looked at nothing.
+       */
+      const mode = /^[sr]k_live/.test(key)
+        ? 'live'
+        : /^[sr]k_test/.test(key)
+          ? 'test'
+          : 'unknown'
+
+      if (mode === 'test') {
+        /*
+         * An ERROR in production, not a warning.
+         *
+         * It used to be a warning, on the reasoning that a test key is
+         * obvious because real cards decline. That is exactly backwards.
+         * The person who finds out is a woman standing at a checkout with
+         * her card in her hand being told it was declined - she does not
+         * think "test mode", she thinks her card was refused, and she
+         * leaves. Nothing appears in any log, because nothing went wrong:
+         * Stripe did precisely what a test key asks for.
+         *
+         * Launching in test mode is the single most likely way to lose a
+         * sale on day one, and it is a one-line environment variable, so it
+         * gates the deploy.
+         */
         results.push({
           key: 'STRIPE_SECRET_KEY',
-          severity: isProduction ? 'warning' : 'ok',
+          severity: isProduction ? 'error' : 'ok',
           message: isProduction
-            ? 'This is a TEST key. No real money will move.'
+            ? 'This is a TEST key in production. Real cards will be DECLINED and no money will move.'
             : 'Test key, as expected.',
+        })
+      }
+
+      if (mode === 'live') {
+        /*
+         * The mismatch nothing can detect.
+         *
+         * Stripe's webhook secrets are `whsec_...` in both modes, with
+         * nothing in the string to say which. So a LIVE key paired with a
+         * TEST-mode webhook secret passes every check here and is the worst
+         * failure the product has: her card is really charged, the webhook
+         * signature fails, fulfilment never runs, and she has paid real
+         * money for nothing. It cannot be detected from the environment, so
+         * it is said out loud instead.
+         */
+        results.push({
+          key: 'STRIPE_WEBHOOK_SECRET',
+          severity: 'warning',
+          message:
+            'Live key in use. This secret MUST come from the live-mode endpoint — a test-mode one takes real money and grants nothing, and nothing can detect it.',
+        })
+      }
+
+      if (mode === 'unknown') {
+        /*
+         * Silence here would be a lie.
+         *
+         * A key whose prefix is not recognised has been neither cleared as
+         * live nor caught as test — so saying nothing would report a clean
+         * check on a key nobody has looked at, which is how the restricted
+         * key slipped through in the first place.
+         */
+        results.push({
+          key: 'STRIPE_SECRET_KEY',
+          severity: isProduction ? 'error' : 'warning',
+          message:
+            'Set, but the prefix is not one Stripe issues (sk_live/sk_test/rk_live/rk_test). Neither the test-key gate nor the live-key warning applies, so this key has NOT been checked.',
         })
       }
     }

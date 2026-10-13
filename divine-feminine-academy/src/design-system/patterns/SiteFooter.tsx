@@ -20,8 +20,10 @@ const columns = [
     links: [
       { href: '/podcast', label: 'Brown Girls Need Healing Too' },
       { href: '/writing', label: 'Writing' },
-      { href: '/quiz', label: 'Which version of you?' },
-      { href: '/assessment', label: 'Free assessment' },
+      // One entry, because there is one instrument. "Free assessment" used
+      // to point at a second, weaker set of questions whose live page told
+      // strangers its questions were placeholders.
+      { href: '/quiz', label: 'Which woman is running your life?' },
     ],
   },
   {
