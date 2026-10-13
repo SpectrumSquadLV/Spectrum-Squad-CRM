@@ -245,6 +245,35 @@ module.exports = function initAcademy(ctx) {
       created_by TEXT,
       created_at TEXT
     )`).catch((e) => console.error("academy_resources:", e.message));
+    // HOW FAR THROUGH A VIDEO SOMEBODY ACTUALLY GOT.
+    //
+    // Only a player we own can report this. An embedded YouTube or Vimeo
+    // iframe cannot be asked how far it has played without loading that
+    // provider's own script into the page, so the bar is honest about
+    // covering the files we play ourselves and says nothing about the rest.
+    //
+    // WATCHING IS NOT COMPLETING, and nothing here marks anything complete.
+    // The brief is explicit that an activity must not be ticked off because
+    // somebody opened it; this records what happened and leaves completion to
+    // the deliberate act it already is.
+    //
+    // Keyed on the EMPLOYEE rather than the enrolment: the same video is
+    // reached from onboarding and from compliance training, and somebody who
+    // is re-enrolled has not unwatched it.
+    await dbRun(`CREATE TABLE IF NOT EXISTS academy_video_progress (
+      id SERIAL PRIMARY KEY,
+      resource_id INTEGER NOT NULL,
+      employee_id INTEGER NOT NULL,
+      furthest_seconds NUMERIC NOT NULL DEFAULT 0,
+      last_position NUMERIC NOT NULL DEFAULT 0,
+      duration_seconds NUMERIC,
+      first_played_at TEXT,
+      finished_at TEXT,
+      updated_at TEXT,
+      UNIQUE (resource_id, employee_id)
+    )`).catch((e) => console.error("academy_video_progress:", e.message));
+    await dbRun("CREATE INDEX IF NOT EXISTS academy_vidprog_emp ON academy_video_progress (employee_id)").catch(() => {});
+
     await dbRun("CREATE INDEX IF NOT EXISTS academy_res_module ON academy_resources (module_id)").catch(() => {});
     await dbRun("CREATE INDEX IF NOT EXISTS academy_res_item ON academy_resources (item_id)").catch(() => {});
 
@@ -936,6 +965,64 @@ module.exports = function initAcademy(ctx) {
     return null;
   }
 
+  // ---- AN MP4 (OR WEBM) BY LINK, PLAYED IN THE PAGE ----------------------
+  //
+  // The practice's own training videos are MP4 files, and a direct link to a
+  // file matched none of the hosts above -- so it fell through to "open it in
+  // a new tab", which is the one case with no player at all and therefore no
+  // play button. Now it gets a real player, in the page, with the browser's
+  // own controls: a play icon and a scrub bar come with it.
+  //
+  // NO HOST ALLOWLIST HERE, and the asymmetry with videoEmbed is deliberate
+  // rather than an oversight. The allowlist above exists because an embed is
+  // an IFRAME on a signed-in page: handing an arbitrary address a frame there
+  // hands its owner a frame inside the CRM. A <video> element is not that --
+  // it decodes media and cannot run script or reach this page's DOM. What it
+  // does do is tell that host somebody fetched the file, which is the same
+  // thing the link already did. Only the practice owner can attach material,
+  // so the address is hers either way.
+  //
+  // HTTPS ONLY. The CRM is served over https, so an http video is blocked as
+  // mixed content: the player would sit there dead with no reason given.
+  // Falling back to a link is worse than playing it and better than lying.
+  //
+  // The extensions are the ones a browser will actually decode. .mov, .avi,
+  // .wmv and .mkv stay links on purpose -- a player that cannot play what it
+  // was given is indistinguishable from a broken page.
+  const PLAYABLE_VIDEO = /\.(mp4|m4v|webm|ogv|ogg)$/i;
+  function videoFile(raw) {
+    const u = clean(raw);
+    if (!u || !/^https:\/\//i.test(u)) return null;
+    let parsed;
+    try { parsed = new URL(u); } catch (e) { return null; }
+    // The EXTENSION is read from the path, never the whole address: a signed
+    // link carries ?X-Amz-Signature=... after it, and testing the full string
+    // would refuse every signed URL there is.
+    if (!PLAYABLE_VIDEO.test(parsed.pathname)) return null;
+    const ext = (parsed.pathname.match(PLAYABLE_VIDEO) || [])[1] || "";
+    return {
+      src: parsed.href,
+      provider: `${ext.toLowerCase() === "webm" ? "WebM" : ext.toUpperCase()} video`,
+      type: /mp4|m4v/i.test(ext) ? "video/mp4" : /webm/i.test(ext) ? "video/webm" : "video/ogg",
+    };
+  }
+
+  function publicVideoProgress(r) {
+    const dur = r.duration_seconds == null ? null : Number(r.duration_seconds);
+    const far = Number(r.furthest_seconds || 0);
+    return {
+      resource_id: Number(r.resource_id),
+      furthest_seconds: far,
+      last_position: Number(r.last_position || 0),
+      duration_seconds: dur,
+      // null rather than 0 when the length is unknown, so the page can say
+      // "started" instead of drawing an empty bar that looks like nothing
+      // was watched.
+      percent: dur ? Math.max(0, Math.min(100, Math.round((far / dur) * 100))) : null,
+      finished: !!r.finished_at,
+    };
+  }
+
   async function resourcesFor(moduleIds, itemIds) {
     const mods = (moduleIds || []).map(Number).filter(Boolean);
     const items = (itemIds || []).map(Number).filter(Boolean);
@@ -958,6 +1045,10 @@ module.exports = function initAcademy(ctx) {
       // null for a video on a host we do not embed, which is how the page
       // knows to fall back to a link rather than draw an empty player.
       embed: r.kind === "video" ? videoEmbed(r.url) : null,
+      // A direct link to a video FILE, played with the browser's own player.
+      // Only consulted when there is no embed, so a host we recognise keeps
+      // its own player.
+      file: r.kind === "video" && !videoEmbed(r.url) ? videoFile(r.url) : null,
     }));
   }
 
@@ -2436,6 +2527,220 @@ module.exports = function initAcademy(ctx) {
       return true;
     }
 
+    // ---- REORDERING THE CURRICULUM, IN ONE GO ---------------------------
+    //
+    // ONE ENDPOINT FOR THE WHOLE LAYOUT, and that is a correctness
+    // requirement rather than a convenience. Editing a curriculum somebody is
+    // enrolled on FORKS a new version, and versionForEdit bumps the version
+    // every time it is called -- so dragging five modules into a new order
+    // through the per-module PATCH would mint FIVE curriculum versions for one
+    // reorder, each closing and reopening rows the last one had just written.
+    // The whole new order therefore arrives as a single request, forks at most
+    // once, and either applies completely or not at all.
+    //
+    // The layout sent is the COMPLETE live set, not a patch: every live week
+    // and every live module, in the order they should now be in. A partial
+    // list is refused rather than guessed at, because the difference between
+    // "this module moved" and "this module was left out" is not recoverable
+    // from a partial list, and guessing it wrong silently drops training.
+    // ---- WATCHING A TRAINING VIDEO -------------------------------------
+    //
+    // Reported by the player as it plays, so the bar under it reflects what
+    // was actually watched rather than whether the page was opened. It never
+    // completes anything: the brief rules out ticking an activity off because
+    // somebody opened it, and this is the same principle one step earlier.
+    const vidProg = pathname.match(/^\/api\/academy\/videos\/(\d+)\/progress$/);
+    if (vidProg && method === "POST") {
+      if (!me) { json(res, 403, { error: "Your login is not linked to an employee record yet." }); return true; }
+      const r = await dbGet("SELECT id, kind FROM academy_resources WHERE id = ?", [Number(vidProg[1])]).catch(() => null);
+      if (!r || r.kind !== "video") { json(res, 404, { error: "No such video." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const pos = Number(b.position);
+      const durRaw = b.duration === undefined || b.duration === null || clean(b.duration) === "" ? null : Number(b.duration);
+      if (!Number.isFinite(pos) || pos < 0) { json(res, 400, { error: "That is not a position in the video." }); return true; }
+      if (durRaw !== null && (!Number.isFinite(durRaw) || durRaw <= 0)) {
+        json(res, 400, { error: "That is not a length." }); return true;
+      }
+      // A position past the end is a broken player, not somebody who watched
+      // more of the video than exists.
+      const position = durRaw !== null ? Math.min(pos, durRaw) : pos;
+      const now = nowISO();
+      const row = await dbGet(
+        `INSERT INTO academy_video_progress
+           (resource_id, employee_id, furthest_seconds, last_position, duration_seconds, first_played_at, updated_at)
+         VALUES (?,?,?,?,?,?,?)
+         ON CONFLICT (resource_id, employee_id) DO UPDATE SET
+           furthest_seconds = GREATEST(academy_video_progress.furthest_seconds, EXCLUDED.furthest_seconds),
+           last_position = EXCLUDED.last_position,
+           duration_seconds = COALESCE(EXCLUDED.duration_seconds, academy_video_progress.duration_seconds),
+           updated_at = EXCLUDED.updated_at
+         RETURNING *`,
+        [r.id, me.id, position, position, durRaw, now, now]).catch((e) => {
+          console.error("video progress:", e.message); return null;
+        });
+      if (!row) { json(res, 500, { error: "That could not be recorded." }); return true; }
+      // "Watched to the end" allows the last few seconds, because almost
+      // nobody sits through the credits and a bar stuck at 97% reads as a
+      // fault. It records that they reached the end; it completes nothing.
+      if (!row.finished_at && row.duration_seconds
+          && Number(row.furthest_seconds) >= Number(row.duration_seconds) * 0.95) {
+        await dbRun("UPDATE academy_video_progress SET finished_at = ? WHERE id = ? AND finished_at IS NULL",
+                    [now, row.id]).catch(() => {});
+        row.finished_at = now;
+      }
+      json(res, 200, { ok: true, progress: publicVideoProgress(row) });
+      return true;
+    }
+
+    // Their own watching, or -- for whoever runs onboarding -- somebody
+    // else's, which is the point of a tracker.
+    if (pathname === "/api/academy/videos/progress" && method === "GET") {
+      let empId = me ? me.id : null;
+      const asked = Number((query && query.employee) || 0);
+      if (asked) {
+        if (!lead) { json(res, 403, { error: "Only clinical leadership can see somebody else's training." }); return true; }
+        empId = asked;
+      }
+      if (!empId) { json(res, 200, { progress: {} }); return true; }
+      const rows = await dbAll("SELECT * FROM academy_video_progress WHERE employee_id = ?", [empId]).catch(() => []);
+      const out = {};
+      rows.forEach((r) => { out[r.resource_id] = publicVideoProgress(r); });
+      json(res, 200, { progress: out });
+      return true;
+    }
+
+    const progOrder = pathname.match(/^\/api\/academy\/programs\/(\d+)\/order$/);
+    if (progOrder && method === "PUT") {
+      if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
+      const prog = await dbGet("SELECT * FROM academy_programs WHERE id = ?", [Number(progOrder[1])]).catch(() => null);
+      if (!prog) { json(res, 404, { error: "No such programme." }); return true; }
+      const b = await readBody(req).catch(() => ({}));
+      const layout = Array.isArray(b.layout) ? b.layout : null;
+      if (!layout || !layout.length) { json(res, 400, { error: "Send the new order." }); return true; }
+
+      const liveMods = await modulesFor(prog.id, Number(prog.version));
+      const liveItems = await dbAll(
+        `SELECT i.* FROM academy_items i JOIN academy_modules m ON m.id = i.module_id
+          WHERE m.program_id = ? AND m.version_to IS NULL AND i.version_to IS NULL`,
+        [prog.id]).catch(() => []);
+
+      const wantMods = [], wantItems = [];
+      for (const row of layout) {
+        const mid = num(row && row.module_id);
+        if (!mid) { json(res, 400, { error: "Every week in the order needs its id." }); return true; }
+        const w = num(row.week);
+        if (!w || w < 1 || w > Number(prog.weeks)) {
+          json(res, 400, { error: `Week must be between 1 and ${prog.weeks}.` }); return true;
+        }
+        wantMods.push({ module_id: mid, week: w, items: Array.isArray(row.items) ? row.items.map(num) : [] });
+        for (const it of wantMods[wantMods.length - 1].items) {
+          if (!it) { json(res, 400, { error: "Every module in the order needs its id." }); return true; }
+          wantItems.push(it);
+        }
+      }
+
+      // The order has to name each live row exactly once. Anything else means
+      // the screen was working from a stale copy -- somebody else added a week
+      // in another tab -- and the safe answer is to refuse and let them look.
+      const sameSet = (want, live) => {
+        const a = [...new Set(want)].sort((x, y) => x - y);
+        const bb = [...new Set(live)].sort((x, y) => x - y);
+        return want.length === a.length && a.length === bb.length && a.every((v, i) => v === bb[i]);
+      };
+      if (!sameSet(wantMods.map((m) => m.module_id), liveMods.map((m) => m.id))) {
+        json(res, 409, { error: "The curriculum has changed since this screen loaded. Reload and try the move again." });
+        return true;
+      }
+      if (!sameSet(wantItems, liveItems.map((i) => i.id))) {
+        json(res, 409, { error: "The curriculum has changed since this screen loaded. Reload and try the move again." });
+        return true;
+      }
+
+      // TWO REORDERS AT ONCE MUST NOT BOTH APPLY, and this is not theoretical:
+      // the screen re-binds its controls on every render, so one click was
+      // able to fire two identical requests, and BOTH forked and BOTH wrote a
+      // copy -- two modules came back as four. A test caught it.
+      //
+      // So the fork is a COMPARE-AND-SWAP on the version rather than a read
+      // followed by a write. Only one request can move the programme from v
+      // to v+1; the loser is told the curriculum moved under it. This also
+      // covers the case no flag in the browser could: the same curriculum
+      // open in two tabs.
+      //
+      // `version` in the body is the version the layout was built from. It is
+      // optional so an older screen still works, but when it is sent and it
+      // no longer matches, the move is refused rather than applied to a
+      // curriculum that is not the one the person was looking at.
+      const basedOn = num(b.version);
+      if (basedOn && Number(prog.version) !== basedOn) {
+        json(res, 409, { error: "The curriculum has changed since this screen loaded. Reload and try the move again." });
+        return true;
+      }
+      let version = Number(prog.version), forked = false;
+      if (await programInUse(prog.id)) {
+        const won = await dbGet(
+          `UPDATE academy_programs SET version = version + 1, updated_at = ?
+            WHERE id = ? AND version = ? RETURNING version`,
+          [nowISO(), prog.id, Number(prog.version)]).catch(() => null);
+        if (!won) {
+          json(res, 409, { error: "The curriculum has changed since this screen loaded. Reload and try the move again." });
+          return true;
+        }
+        version = Number(won.version);
+        forked = true;
+      }
+      const itemById = new Map(liveItems.map((i) => [i.id, i]));
+      const modById = new Map(liveMods.map((m) => [m.id, m]));
+
+      if (!forked) {
+        // Nobody is on this programme: move the rows and keep the version.
+        for (let w = 0; w < wantMods.length; w++) {
+          const row = wantMods[w];
+          await dbRun("UPDATE academy_modules SET week = ?, position = ?, updated_at = ? WHERE id = ?",
+                      [row.week, w, nowISO(), row.module_id]);
+          for (let n = 0; n < row.items.length; n++) {
+            await dbRun("UPDATE academy_items SET module_id = ?, position = ? WHERE id = ?",
+                        [row.module_id, n, row.items[n]]);
+          }
+        }
+        json(res, 200, { ok: true, version, forked: false });
+        return true;
+      }
+
+      // FORKED. Close every live week and module at the new version, then
+      // write the whole curriculum again in its new order. Attachments come
+      // across with their module, because a reordered week that lost
+      // everything to read would look complete and be useless.
+      for (const m of liveMods) {
+        await dbRun("UPDATE academy_modules SET version_to = ? WHERE id = ?", [version, m.id]);
+      }
+      for (const i of liveItems) {
+        await dbRun("UPDATE academy_items SET version_to = ? WHERE id = ?", [version, i.id]);
+      }
+      for (let w = 0; w < wantMods.length; w++) {
+        const row = wantMods[w];
+        const old = modById.get(row.module_id);
+        const fresh = await dbGet(
+          `INSERT INTO academy_modules (program_id, week, position, title, focus, body, video_url,
+             archived, version_from, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?, FALSE, ?, ?, ?) RETURNING *`,
+          [prog.id, row.week, w, old.title, old.focus, old.body, old.video_url, version, nowISO(), nowISO()]
+        ).catch(() => null);
+        if (!fresh) { json(res, 500, { error: "The order could not be saved." }); return true; }
+        for (let n = 0; n < row.items.length; n++) {
+          const it = itemById.get(row.items[n]);
+          const copy = await dbGet(
+            `INSERT INTO academy_items (module_id, kind, title, detail, required, position, archived, version_from, created_at)
+             VALUES (?,?,?,?,?,?, FALSE, ?, ?) RETURNING id`,
+            [fresh.id, it.kind, it.title, it.detail, it.required, n, version, nowISO()]).catch(() => null);
+          if (copy) await copyResources({ fromItem: it.id, toItem: copy.id, actor });
+        }
+        await copyResources({ fromModule: old.id, toModule: fresh.id, actor });
+      }
+      json(res, 200, { ok: true, version, forked: true });
+      return true;
+    }
+
     const modOne = pathname.match(/^\/api\/academy\/modules\/(\d+)$/);
     if (modOne && (method === "PATCH" || method === "DELETE")) {
       if (!author) { json(res, 403, { error: "Only the practice owner can change the training curriculum." }); return true; }
@@ -2805,7 +3110,7 @@ module.exports = function initAcademy(ctx) {
     initTables, handleApi, enrol, autoEnrolSweep, scheduleCheckins, checkinsFor, backfillCheckins,
     reviewFor, leadership, leadershipEmails, isClinicalLead,
     employeeFor, progressFor, itemsFor, modulesFor, resourcesFor, seedBcbaProgram,
-    _internal: { videoEmbed, STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
+    _internal: { videoEmbed, videoFile, PLAYABLE_VIDEO, publicVideoProgress, STATUSES, STATUS_LABELS, EMPLOYEE_SETTABLE, ITEM_KINDS, ENROLMENT_STATES, BCBA_WEEKS,
                  addDays, CHECKIN_DAYS, GAP_STATUSES, GAP_LABELS, URGENCIES,
                  DOMAINS, DOMAIN_KEYS, RATINGS, RATING_LABELS, REVIEW_STATES, isClosed,
                  RESOURCE_KINDS, safeUrl },

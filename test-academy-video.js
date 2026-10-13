@@ -34,7 +34,7 @@ const mod = require("./academy.js")({
   dbGet: async () => null, dbAll: async () => [], dbRun: async () => {},
   nowISO: () => new Date().toISOString(), readBody: async () => ({}), json: () => {},
 });
-const { videoEmbed } = mod._internal;
+const { videoEmbed, videoFile } = mod._internal;
 
 (async () => {
   // ==================================================================
@@ -106,6 +106,74 @@ const { videoEmbed } = mod._internal;
       require("fs").readFileSync(require("path").join(__dirname, "academy-frontend.js"), "utf8")));
   check("...and the link is kept beside it, so a frame that will not load is not a dead end",
     /open it in a new tab/.test(require("fs").readFileSync(require("path").join(__dirname, "academy-frontend.js"), "utf8")));
+
+  // ==================================================================
+  section("AN MP4 BY LINK PLAYS IN THE PAGE");
+  // The practice's own training videos are MP4 files. A direct link to one
+  // matched none of the hosts above, so it fell through to "open it in a new
+  // tab" -- the one case with no player and therefore no play button.
+  const mp4 = videoFile("https://files.spectrumsquadlv.com/training/hipaa.mp4");
+  check("an https .mp4 link becomes a player", !!(mp4 && mp4.src), mp4);
+  check("...pointing at the file itself, unchanged",
+    mp4.src === "https://files.spectrumsquadlv.com/training/hipaa.mp4", mp4.src);
+  check("...and carries the type, so the browser does not have to guess",
+    mp4.type === "video/mp4", mp4.type);
+  check("the extension is matched whatever its case",
+    !!videoFile("https://x.test/a/B.MP4"), videoFile("https://x.test/a/B.MP4"));
+  ["m4v", "webm", "ogv", "ogg"].forEach((e) => {
+    check(`.${e} plays too`, !!videoFile(`https://x.test/a/v.${e}`), e);
+  });
+  check("webm is named as webm rather than shouted",
+    (videoFile("https://x.test/a/v.webm") || {}).provider === "WebM video",
+    (videoFile("https://x.test/a/v.webm") || {}).provider);
+
+  section("A SIGNED LINK STILL PLAYS, WHICH IS HOW REAL FILE HOSTS HAND THEM OUT");
+  // The extension has to be read from the PATH. Testing the whole address
+  // would refuse every signed URL there is -- and signed URLs are exactly
+  // what S3, R2, Drive and Dropbox give you for a private file.
+  const signed = videoFile("https://bucket.s3.amazonaws.com/training/hipaa.mp4?X-Amz-Signature=abc123&X-Amz-Expires=600");
+  check("a query string after the extension does not stop it playing", !!signed, signed);
+  check("...and the query string is preserved, or the link would 403",
+    signed && /X-Amz-Signature=abc123/.test(signed.src), signed && signed.src);
+
+  section("WHAT MUST NOT BECOME A PLAYER");
+  check("HTTP IS REFUSED, because the page is https and the player would sit there dead",
+    videoFile("http://x.test/a/v.mp4") === null, videoFile("http://x.test/a/v.mp4"));
+  ["mov", "avi", "mkv", "wmv", "flv"].forEach((e) => {
+    check(`.${e} stays a link, because the browser cannot play it`,
+      videoFile(`https://x.test/a/v.${e}`) === null, e);
+  });
+  check("an address that merely MENTIONS an mp4 in its query is not a video file",
+    videoFile("https://x.test/watch?file=hipaa.mp4") === null,
+    videoFile("https://x.test/watch?file=hipaa.mp4"));
+  check("...nor is one that mentions it in a fragment",
+    videoFile("https://x.test/watch#a.mp4") === null, videoFile("https://x.test/watch#a.mp4"));
+  check("javascript: is refused", videoFile("javascript:alert(1)//a.mp4") === null);
+  check("data: is refused", videoFile("data:video/mp4;base64,AAAA") === null);
+  check("nothing at all is refused", videoFile("") === null && videoFile(null) === null);
+  check("a YouTube page is not a file, and is left to the embed path",
+    videoFile("https://www.youtube.com/watch?v=dQw4w9WgXcQ") === null);
+
+  section("THE TWO PATHS DO NOT FIGHT OVER THE SAME VIDEO");
+  check("a host we embed is NOT also offered as a file",
+    /file: r\.kind === "video" && !videoEmbed\(r\.url\) \? videoFile\(r\.url\) : null/.test(src),
+    "resourcesFor should only consult videoFile when there is no embed");
+  check("an mp4 link gets no embed, so it cannot be framed",
+    videoEmbed("https://files.spectrumsquadlv.com/training/hipaa.mp4") === null);
+
+  section("THE PLAYER BRINGS A PLAY BUTTON AND A BAR WITH IT");
+  const fe = require("fs").readFileSync(require("path").join(__dirname, "academy-frontend.js"), "utf8");
+  check("the file player is a <video> element, not an iframe",
+    /<video data-ac-vid=/.test(fe));
+  check("...with the browser's own controls, which is the play icon",
+    /controls preload="metadata" playsinline/.test(fe), "controls attribute");
+  check("...and it is NOT sandboxed like an iframe, because a video element needs no sandbox",
+    !/<video[^>]*sandbox/.test(fe));
+  check("a watched-progress bar is drawn under it", /data-ac-bar=/.test(fe) && /ac-watch/.test(fe));
+  check("the player is bound once, so a second render does not double-report",
+    /\.__acBound/.test(fe));
+  check("progress is reported on a throttle rather than every tick",
+    /now - last < 10000/.test(fe), "a report per timeupdate would be several a second");
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) { console.log("\nFailures:"); failures.forEach((f) => console.log("  - " + f)); }

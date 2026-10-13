@@ -37,6 +37,15 @@
   // she has to switch editing on first -- a screen you read every week
   // should not have "Remove week" sitting under your cursor.
   var CUR_EDIT = false;
+  // ONE flag for the whole module, not one per wire() call. wire() re-binds
+  // every control each time it runs, and it runs again whenever a form is
+  // opened -- so the move arrows ended up carrying several listeners, and a
+  // per-call flag gave each of them its own. One click then sent two
+  // identical reorders, both forked, and two modules came back as four.
+  var ORDER_BUSY = false;
+  // Which module or week is being renamed, and one busy flag for the save --
+  // same reasoning as ORDER_BUSY above.
+  var REN_MOD = null, REN_WEEK = null, REN_BUSY = false;
 
   function api(path, opts) {
     opts = opts || {};
@@ -113,6 +122,10 @@
       ".ac-vidbox{position:relative;width:100%;max-width:640px;aspect-ratio:16/9;background:#11131a;"
         + "border-radius:10px;overflow:hidden;}",
       ".ac-vidbox iframe{position:absolute;inset:0;width:100%;height:100%;border:0;}",
+      ".ac-vidbox video{position:absolute;inset:0;width:100%;height:100%;background:#11131a;}",
+      ".ac-watch{height:6px;border-radius:999px;background:#eef0f4;overflow:hidden;margin:6px 0 3px;max-width:640px;}",
+      ".ac-watch>div{height:100%;background:var(--brand-navy,#1b2a6b);transition:width .3s;}",
+      ".ac-watch.done>div{background:#16a34a;}",
       ".ac-rk{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted,#64748b);",
       "border:1px solid var(--border,#e5e7eb);border-radius:999px;padding:1px 7px;white-space:nowrap;}",
       ".ac-stat{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;}",
@@ -342,6 +355,32 @@
               + ' referrerpolicy="strict-origin-when-cross-origin"'
               + ' sandbox="allow-scripts allow-same-origin allow-presentation"></iframe></div>'
             + '<div class="ac-sub" style="margin-top:4px;">' + esc(r.embed.provider)
+              + ' · <a href="' + esc(r.href || "#") + '" target="_blank" rel="noopener noreferrer">open it in a new tab</a></div>'
+          + "</div></div>";
+      }
+      // AN MP4 BY LINK, PLAYED HERE. The browser's own player brings the play
+      // icon and the scrub bar with it; the bar underneath is how far through
+      // they actually got, which the player reports as it plays.
+      if (r.kind === "video" && r.file && r.file.src) {
+        var vp = (DATA.videoProgress || {})[r.id] || null;
+        var pct = vp && vp.percent != null ? vp.percent : 0;
+        var resume = vp && vp.last_position ? Number(vp.last_position) : 0;
+        return '<div class="ac-res ac-vid">' + label
+          + '<div style="flex:1;min-width:0;">'
+            + '<div style="font-size:13px;margin-bottom:5px;">' + esc(r.title) + "</div>"
+            + '<div class="ac-vidbox"><video data-ac-vid="' + r.id + '"'
+              + (resume > 5 ? ' data-ac-resume="' + esc(resume) + '"' : "")
+              + ' src="' + esc(r.file.src) + '" controls preload="metadata" playsinline'
+              + ' referrerpolicy="strict-origin-when-cross-origin"></video></div>'
+            + '<div class="ac-watch' + (vp && vp.finished ? " done" : "") + '" data-ac-bar="' + r.id + '">'
+              + '<div style="width:' + pct + '%"></div></div>'
+            + '<div class="ac-sub" data-ac-watchlbl="' + r.id + '">'
+              + (vp && vp.finished ? "Watched to the end"
+                 : vp && vp.percent != null ? "Watched " + vp.percent + "%"
+                 : vp ? "Started" : "Not started yet")
+              + (resume > 5 && !(vp && vp.finished) ? " · picks up where you left off" : "")
+            + "</div>"
+            + '<div class="ac-sub" style="margin-top:2px;">' + esc(r.file.provider)
               + ' · <a href="' + esc(r.href || "#") + '" target="_blank" rel="noopener noreferrer">open it in a new tab</a></div>'
           + "</div></div>";
       }
@@ -957,7 +996,7 @@
               + (p.role_target ? '<div class="ac-sub">auto-enrols</div>' : "") + "</td>"
             + "<td>" + esc(p.weeks) + "</td><td>v" + esc(p.version) + "</td>"
             + "<td>" + esc(p.enrolled) + "</td>"
-            + "<td>" + esc(p.modules) + " weeks, " + esc(p.items) + " items</td>"
+            + "<td>" + esc(p.modules) + " weeks, " + esc(p.items) + " modules</td>"
             + '<td><button class="btn small secondary" data-cu-pick="' + p.id + '">Open</button></td></tr>';
         }).join("")
       + "</tbody></table>"
@@ -975,34 +1014,82 @@
               + " — nobody's finished week changes under them."
             : "Nobody is enrolled yet, so edits change this version in place.")
       + "</div>"
-      + (body.modules || []).map(function (m) {
-          return '<div class="ac-comp" style="margin-bottom:10px;background:#fff;border-color:var(--border,#e5e7eb);">'
-            + '<div class="ac-row" style="justify-content:space-between;">'
-              + "<div><strong>Week " + esc(m.week) + " — " + esc(m.title) + "</strong>"
-              + (m.focus ? '<div class="ac-sub">' + esc(m.focus) + "</div>" : "") + "</div>"
-              + (editing ? '<div><button class="btn small secondary" data-cu-mdel="' + m.id + '">Remove week</button></div>' : "")
-            + "</div>"
-            + (m.items || []).map(function (i) {
-                return '<div class="ac-item"><div style="flex:1;min-width:0;">'
-                  + "<div>" + esc(i.title) + "</div>"
-                  + '<div class="ac-sub">' + esc(i.kind) + (i.required ? "" : " · optional") + "</div>"
-                  + resourcesHtml(i.resources)
+      + '<div id="ac-cu-order-msg" class="ac-sub" style="color:#b91c1c;margin:-4px 0 8px;"></div>' 
+      // EACH ITEM IS A MODULE, numbered straight through the programme so
+      // "module 7" means one thing wherever it sits, and both the weeks and
+      // the modules inside them can be moved. The whole new order goes to the
+      // server in ONE request -- see the note on /order in academy.js.
+      + (function () {
+          var weeks = body.modules || [];
+          var n = 0;
+          return weeks.map(function (m, wi) {
+            var mods = m.items || [];
+            return '<div class="ac-comp" data-cu-week="' + m.id + '" style="margin-bottom:10px;background:#fff;border-color:var(--border,#e5e7eb);">'
+              + '<div class="ac-row" style="justify-content:space-between;">'
+                + (editing && REN_WEEK === m.id
+                    ? '<div style="flex:1;min-width:0;"><input data-cu-wrenin="' + m.id + '" value="'
+                      + esc(m.title) + '" style="width:100%;max-width:420px;" aria-label="Week title">'
+                      + '<div class="ac-row" style="gap:6px;margin-top:6px;">'
+                      + '<button class="btn small" data-cu-wrensave="' + m.id + '">Save</button>'
+                      + '<button class="btn small secondary" data-cu-rencancel="1">Cancel</button></div></div>'
+                    : "<div><strong>Week " + esc(m.week) + ' — <span data-cu-wktitle>' + esc(m.title) + "</span></strong>"
+                      + (m.focus ? '<div class="ac-sub">' + esc(m.focus) + "</div>" : "") + "</div>")
+                + (editing
+                    ? '<div class="ac-row" style="gap:4px;">'
+                      + '<button class="btn small secondary" data-cu-wmove="' + m.id + '" data-cu-dir="-1"'
+                        + (wi === 0 ? " disabled" : "") + ' title="Move this week earlier">&uarr;</button>'
+                      + '<button class="btn small secondary" data-cu-wmove="' + m.id + '" data-cu-dir="1"'
+                        + (wi === weeks.length - 1 ? " disabled" : "") + ' title="Move this week later">&darr;</button>'
+                      + '<button class="btn small secondary" data-cu-wren="' + m.id + '">Rename</button>'
+                      + '<button class="btn small secondary" data-cu-mdel="' + m.id + '">Remove week</button>'
+                    + "</div>"
+                    : "")
+              + "</div>"
+              + '<div data-cu-drop="' + m.id + '" style="min-height:' + (editing ? "30px" : "0") + ';border-radius:8px;">'
+              + mods.map(function (i) {
+                  n++;
+                  return '<div class="ac-item" data-cu-mod="' + i.id + '" data-cu-in="' + m.id + '"'
+                    + (editing && REN_MOD !== i.id ? ' draggable="true" style="cursor:grab;"' : "") + ">"
+                    + '<div style="flex:1;min-width:0;">'
+                    + (editing && REN_MOD === i.id
+                        ? '<div><strong>' + n + '.</strong> <input data-cu-mrenin="' + i.id + '" value="'
+                          + esc(i.title) + '" style="width:100%;max-width:420px;" aria-label="Module name">'
+                          + '<div class="ac-row" style="gap:6px;margin-top:6px;">'
+                          + '<button class="btn small" data-cu-mrensave="' + i.id + '">Save</button>'
+                          + '<button class="btn small secondary" data-cu-rencancel="1">Cancel</button></div></div>'
+                        : "<div><strong>" + n + '.</strong> <span data-cu-modtitle>' + esc(i.title) + "</span></div>")
+                    + '<div class="ac-sub">' + esc(i.kind) + (i.required ? "" : " · optional") + "</div>"
+                    + resourcesHtml(i.resources)
+                    + (editing
+                        ? '<div style="margin-top:6px;"><button class="btn small" data-cu-res="' + i.id
+                          + '" data-cu-res-kind="item">Attach material</button></div>'
+                        : "")
+                  + "</div>"
                   + (editing
-                      ? '<div style="margin-top:6px;"><button class="btn small" data-cu-res="' + i.id
-                        + '" data-cu-res-kind="item">Attach material</button></div>'
+                      ? '<div class="ac-row" style="gap:4px;align-items:flex-start;">'
+                        + '<button class="btn small secondary" data-cu-mmove="' + i.id + '" data-cu-dir="-1"'
+                          + (n === 1 ? " disabled" : "") + ' title="Move this module up">&uarr;</button>'
+                        + '<button class="btn small secondary" data-cu-mmove="' + i.id + '" data-cu-dir="1"'
+                          + ' title="Move this module down">&darr;</button>'
+                        + '<button class="btn small secondary" data-cu-mren="' + i.id + '">Rename</button>'
+                        + '<button class="btn small secondary" data-cu-idel="' + i.id + '">Remove</button>'
+                      + "</div>"
                       : "")
-                + "</div>"
-                + (editing ? '<div><button class="btn small secondary" data-cu-idel="' + i.id + '">Remove</button></div>' : "")
-                + "</div>";
-              }).join("")
-            + (editing
-                ? '<div class="ac-row" style="margin-top:9px;">'
-                  + '<button class="btn small" data-cu-iadd="' + m.id + '">Add an item</button>'
-                  + '<button class="btn small" data-cu-res="' + m.id + '" data-cu-res-kind="module">Attach material to the week</button>'
-                + "</div>"
-                : "")
-            + "</div>";
-        }).join("")
+                  + "</div>";
+                }).join("")
+              + (editing && !mods.length
+                  ? '<div class="ac-sub" style="padding:7px 9px;">No modules in this week yet — add one, or drag one here.</div>'
+                  : "")
+              + "</div>"
+              + (editing
+                  ? '<div class="ac-row" style="margin-top:9px;">'
+                    + '<button class="btn small" data-cu-iadd="' + m.id + '">Add a module</button>'
+                    + '<button class="btn small" data-cu-res="' + m.id + '" data-cu-res-kind="module">Attach material to the week</button>'
+                  + "</div>"
+                  : "")
+              + "</div>";
+          }).join("");
+        })()
       + (editing ? '<button class="btn small" id="ac-cu-wadd">Add a week</button>' : "")
       + '<div id="ac-cu-form2"></div></div>';
     return out;
@@ -1055,7 +1142,66 @@
     wire();
   }
 
+  // ---- THE TRAINING VIDEO PLAYER --------------------------------------
+  //
+  // Bound once per element. wire() runs again whenever a form opens, and a
+  // second timeupdate listener on the same video would report every tick
+  // twice -- the same mistake that turned two modules into four.
+  function wirePlayers() {
+    HOST.querySelectorAll("[data-ac-vid]").forEach(function (v) {
+      if (v.__acBound) return;
+      v.__acBound = true;
+      var id = Number(v.getAttribute("data-ac-vid"));
+      var last = 0;
+      var bar = HOST.querySelector('[data-ac-bar="' + id + '"]');
+      var lbl = HOST.querySelector('[data-ac-watchlbl="' + id + '"]');
+      var furthest = 0;
+
+      v.addEventListener("loadedmetadata", function () {
+        var at = Number(v.getAttribute("data-ac-resume") || 0);
+        // Not if they were within ten seconds of the end: dropping somebody
+        // back at the credits of a video they have finished is worse than
+        // starting it again.
+        if (at > 5 && v.duration && at < v.duration - 10) {
+          try { v.currentTime = at; } catch (e) {}
+        }
+      });
+
+      function paint() {
+        if (!v.duration) return;
+        var pc = Math.max(0, Math.min(100, Math.round((furthest / v.duration) * 100)));
+        if (bar && bar.firstChild) bar.firstChild.style.width = pc + "%";
+        if (lbl) lbl.textContent = pc >= 95 ? "Watched to the end" : "Watched " + pc + "%";
+        if (bar && pc >= 95) bar.classList.add("done");
+      }
+
+      function send(force) {
+        if (!Number.isFinite(v.currentTime)) return;
+        var now = Date.now();
+        // Every ten seconds while playing, or straight away when they stop:
+        // a report per timeupdate would be several a second.
+        if (!force && now - last < 10000) return;
+        last = now;
+        api("/api/academy/videos/" + id + "/progress", {
+          method: "POST",
+          body: { position: v.currentTime, duration: v.duration || undefined },
+        }).then(function (d) {
+          if (d && d.progress) DATA.videoProgress[id] = d.progress;
+        }).catch(function () { /* a lost tick is not worth interrupting them for */ });
+      }
+
+      v.addEventListener("timeupdate", function () {
+        if (v.currentTime > furthest) { furthest = v.currentTime; paint(); }
+        send(false);
+      });
+      v.addEventListener("pause", function () { send(true); });
+      v.addEventListener("ended", function () { furthest = v.duration || furthest; paint(); send(true); });
+      v.addEventListener("seeked", function () { send(true); });
+    });
+  }
+
   function wire() {
+    wirePlayers();
     HOST.querySelectorAll("[data-view]").forEach(function (b) {
       b.addEventListener("click", function () {
         VIEW = b.dataset.view;
@@ -1310,11 +1456,11 @@
       b.addEventListener("click", function () {
         if (!form2) return;
         form2.innerHTML = '<div class="ac-plan" style="background:#f8fafc;border-color:var(--border,#e5e7eb);">'
-          + '<strong style="font-size:13px;">A new item</strong>'
+          + '<strong style="font-size:13px;">A new module</strong>'
           + '<input id="ac-ni-title" placeholder="What they do" style="margin-top:7px;">'
           + '<div class="ac-grid2" style="margin-top:8px;">'
             + '<label class="ac-sub">Kind<select id="ac-ni-kind">'
-              + '<option value="reading">Reading</option><option value="checklist">Checklist item</option>'
+              + '<option value="reading">Reading</option><option value="checklist">Checklist</option>'
               + '<option value="competency">Competency (signed off by a supervisor)</option>'
               + '<option value="quiz">Quiz</option></select></label>'
             + '<label class="ac-sub">Detail<input id="ac-ni-detail" placeholder="optional"></label>'
@@ -1351,7 +1497,213 @@
     });
     HOST.querySelectorAll("[data-cu-idel]").forEach(function (b) {
       b.addEventListener("click", del("/api/academy/items/" + b.getAttribute("data-cu-idel"),
-        "Remove this item? Anybody already enrolled keeps it."));
+        "Remove this module? Anybody already enrolled keeps it."));
+    });
+
+    // ---- MOVING WEEKS AND MODULES ---------------------------------------
+    //
+    // THE WHOLE LAYOUT GOES IN ONE REQUEST. Sending a move per module would
+    // fork a new curriculum version for each one of them -- see the note on
+    // /order in academy.js -- so the screen works out the complete new order
+    // and sends it once.
+    function layoutNow() {
+      return (((DATA.curriculum || {}).body || {}).modules || []).map(function (m) {
+        return {
+          module_id: Number(m.id),
+          week: Number(m.week),
+          items: (m.items || []).map(function (i) { return Number(i.id); }),
+        };
+      });
+    }
+    function putOrder(lay) {
+      if (ORDER_BUSY) return;
+      ORDER_BUSY = true;
+      // The version this layout was built from, so the server can refuse a
+      // move aimed at a curriculum that has since changed -- another tab, or
+      // a second request from this one.
+      var sel = ((DATA.curriculum || {}).programs || []).filter(function (p) {
+        return Number(p.id) === Number(CUR_PROG);
+      })[0];
+      api("/api/academy/programs/" + CUR_PROG + "/order", {
+        method: "PUT",
+        body: { layout: lay, version: sel ? Number(sel.version) : undefined },
+      })
+        .then(function () { return loadCurriculum(); })
+        .catch(function (e) {
+          var box = HOST.querySelector("#ac-cu-order-msg");
+          if (box) box.textContent = e.message;
+        })
+        .then(function () { ORDER_BUSY = false; });
+    }
+    function removeFrom(lay, id) {
+      for (var w = 0; w < lay.length; w++) {
+        var ix = lay[w].items.indexOf(id);
+        if (ix >= 0) { lay[w].items.splice(ix, 1); return true; }
+      }
+      return false;
+    }
+
+    // ---- RENAMING A WEEK OR A MODULE ------------------------------------
+    //
+    // The server already took a new title on both; there was simply no way to
+    // ask for one. Renaming forks a new curriculum version when somebody is
+    // enrolled, exactly as any other edit does, so their copy keeps the name
+    // it had when they started.
+    function rename(url, value, whenDone) {
+      var title = String(value == null ? "" : value).trim();
+      var box = HOST.querySelector("#ac-cu-order-msg");
+      if (!title) { if (box) box.textContent = "It needs a name."; return; }
+      if (REN_BUSY) return;
+      REN_BUSY = true;
+      api(url, { method: "PATCH", body: { title: title } })
+        .then(function () { REN_MOD = null; REN_WEEK = null; return loadCurriculum(); })
+        .catch(function (e) { if (box) box.textContent = e.message; })
+        .then(function () { REN_BUSY = false; whenDone && whenDone(); });
+    }
+
+    HOST.querySelectorAll("[data-cu-mren]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        REN_MOD = Number(b.getAttribute("data-cu-mren")); REN_WEEK = null; render();
+      });
+    });
+    HOST.querySelectorAll("[data-cu-wren]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        REN_WEEK = Number(b.getAttribute("data-cu-wren")); REN_MOD = null; render();
+      });
+    });
+    HOST.querySelectorAll("[data-cu-rencancel]").forEach(function (b) {
+      b.addEventListener("click", function () { REN_MOD = null; REN_WEEK = null; render(); });
+    });
+    HOST.querySelectorAll("[data-cu-mrensave]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var id = Number(b.getAttribute("data-cu-mrensave"));
+        var input = HOST.querySelector('[data-cu-mrenin="' + id + '"]');
+        rename("/api/academy/items/" + id, input && input.value);
+      });
+    });
+    HOST.querySelectorAll("[data-cu-wrensave]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var id = Number(b.getAttribute("data-cu-wrensave"));
+        var input = HOST.querySelector('[data-cu-wrenin="' + id + '"]');
+        rename("/api/academy/modules/" + id, input && input.value);
+      });
+    });
+    // Enter saves and Escape gives up, because reaching for the mouse to
+    // confirm a name you have just typed is a small irritation repeated once
+    // per module.
+    HOST.querySelectorAll("[data-cu-mrenin], [data-cu-wrenin]").forEach(function (input) {
+      var isWeek = input.hasAttribute("data-cu-wrenin");
+      var id = Number(input.getAttribute(isWeek ? "data-cu-wrenin" : "data-cu-mrenin"));
+      input.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          rename((isWeek ? "/api/academy/modules/" : "/api/academy/items/") + id, input.value);
+        } else if (ev.key === "Escape") {
+          ev.preventDefault(); REN_MOD = null; REN_WEEK = null; render();
+        }
+      });
+      // Put the cursor in the box being renamed, at the end of the name.
+      try { input.focus(); input.setSelectionRange(input.value.length, input.value.length); } catch (e) {}
+    });
+
+    HOST.querySelectorAll("[data-cu-wmove]").forEach(function (b) {
+      if (b.__acBound) return;
+      b.__acBound = true;
+      b.addEventListener("click", function () {
+        if (b.disabled) return;
+        var lay = layoutNow();
+        var id = Number(b.getAttribute("data-cu-wmove"));
+        var dir = Number(b.getAttribute("data-cu-dir"));
+        var at = -1;
+        lay.forEach(function (r, ix) { if (r.module_id === id) at = ix; });
+        var to = at + dir;
+        if (at < 0 || to < 0 || to >= lay.length) return;
+        // Swap the week NUMBER as well as the slot. Weeks are read in
+        // (week, position) order, so swapping only one of the two leaves the
+        // move invisible in one of the two shapes this data can take.
+        var aw = lay[at].week, bw = lay[to].week;
+        lay[at].week = bw; lay[to].week = aw;
+        var tmp = lay[at]; lay[at] = lay[to]; lay[to] = tmp;
+        putOrder(lay);
+      });
+    });
+
+    HOST.querySelectorAll("[data-cu-mmove]").forEach(function (b) {
+      if (b.__acBound) return;
+      b.__acBound = true;
+      b.addEventListener("click", function () {
+        if (b.disabled) return;
+        var lay = layoutNow();
+        var id = Number(b.getAttribute("data-cu-mmove"));
+        var dir = Number(b.getAttribute("data-cu-dir"));
+        // Flattened across the whole programme, so moving up from the top of
+        // a week lands at the end of the week before instead of doing
+        // nothing -- the numbering runs straight through, so the arrows
+        // should too.
+        var flat = [];
+        lay.forEach(function (r, wi) {
+          r.items.forEach(function (it, ii) { flat.push({ w: wi, i: ii, id: it }); });
+        });
+        var at = -1;
+        flat.forEach(function (f, ix) { if (f.id === id) at = ix; });
+        if (at < 0) return;
+        var to = at + dir;
+        if (to < 0 || to >= flat.length) return;
+        var from = flat[at], dest = flat[to];
+        lay[from.w].items.splice(from.i, 1);
+        var insertAt = from.w === dest.w ? dest.i : (dir < 0 ? lay[dest.w].items.length : 0);
+        lay[dest.w].items.splice(insertAt, 0, id);
+        putOrder(lay);
+      });
+    });
+
+    var dragId = null;
+    HOST.querySelectorAll("[data-cu-mod]").forEach(function (el) {
+      if (el.__acBound) return;
+      el.__acBound = true;
+      el.addEventListener("dragstart", function (ev) {
+        dragId = Number(el.getAttribute("data-cu-mod"));
+        if (ev.dataTransfer) {
+          ev.dataTransfer.effectAllowed = "move";
+          try { ev.dataTransfer.setData("text/plain", String(dragId)); } catch (e) {}
+        }
+        el.style.opacity = "0.5";
+      });
+      el.addEventListener("dragend", function () { el.style.opacity = ""; dragId = null; });
+      el.addEventListener("dragover", function (ev) { ev.preventDefault(); });
+      el.addEventListener("drop", function (ev) {
+        ev.preventDefault();
+        // Dropping ONTO a module means "put it here", so the week-level zone
+        // underneath must not also append it to the end.
+        ev.stopPropagation();
+        var onto = Number(el.getAttribute("data-cu-mod"));
+        var id = dragId || Number((ev.dataTransfer && ev.dataTransfer.getData("text/plain")) || 0);
+        if (!id || id === onto) return;
+        var lay = layoutNow();
+        if (!removeFrom(lay, id)) return;
+        for (var w = 0; w < lay.length; w++) {
+          var ix = lay[w].items.indexOf(onto);
+          if (ix >= 0) { lay[w].items.splice(ix, 0, id); putOrder(lay); return; }
+        }
+      });
+    });
+    HOST.querySelectorAll("[data-cu-drop]").forEach(function (zone) {
+      if (zone.__acBound) return;
+      zone.__acBound = true;
+      zone.addEventListener("dragover", function (ev) { ev.preventDefault(); zone.style.background = "#f1f5f9"; });
+      zone.addEventListener("dragleave", function () { zone.style.background = ""; });
+      zone.addEventListener("drop", function (ev) {
+        ev.preventDefault();
+        zone.style.background = "";
+        var id = dragId || Number((ev.dataTransfer && ev.dataTransfer.getData("text/plain")) || 0);
+        if (!id) return;
+        var weekId = Number(zone.getAttribute("data-cu-drop"));
+        var lay = layoutNow();
+        if (!removeFrom(lay, id)) return;
+        for (var w = 0; w < lay.length; w++) {
+          if (lay[w].module_id === weekId) { lay[w].items.push(id); putOrder(lay); return; }
+        }
+      });
     });
 
     HOST.querySelectorAll("[data-cu-res]").forEach(function (b) {
@@ -1363,6 +1715,8 @@
           + '<strong style="font-size:13px;">Attach training material</strong>'
           + '<div class="ac-sub" style="margin:2px 0 8px;">A video <strong>plays in the page</strong> when it is on'
           + " YouTube, Vimeo, Loom or Google Drive — paste the address you would normally share."
+          + " A direct https link to an <strong>.mp4</strong>, .m4v, .webm or .ogg file plays here too,"
+          + " with a play button, a scrub bar and a record of how far each person got."
           + " Anything else is kept as a link that opens in a new tab."
           + " An SOP is picked from the policy library rather than pasted in, so an amended SOP stays correct here.</div>"
           + '<div class="ac-grid2"><label class="ac-sub">Kind<select id="ac-nr-kind">'
@@ -1595,9 +1949,12 @@
       api("/api/academy/gaps").catch(function () { return { gaps: [] }; }),
       api("/api/academy/survey").catch(function () { return { can_submit: false }; }),
       api("/api/academy/leadership").catch(function () { return null; }),
+      // How far they have got through each training video. Empty for anybody
+      // with no employee record, which is an answer rather than a failure.
+      api("/api/academy/videos/progress").catch(function () { return { progress: {} }; }),
     ]).then(function (r) {
       DATA = { me: r[0], roster: r[1], questions: (r[2] || {}).questions, gaps: (r[3] || {}).gaps,
-               survey: r[4], leadership: r[5] };
+               survey: r[4], leadership: r[5], videoProgress: (r[6] || {}).progress || {} };
       if (DATA.me && DATA.me.enrolled) {
         return api("/api/academy/enrollments/" + DATA.me.enrollment.id + "/checkins")
           .then(function (c) { DATA.checkins = c.checkins; return loadHours(); })

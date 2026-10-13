@@ -325,6 +325,12 @@ const today = () => new Date().toISOString().slice(0, 10);
       await page.locator("#ac-cu-edit").count());
     check("...nor anything that removes a week", await page.locator("[data-cu-mdel]").count() === 0);
     check("...nor anything that attaches a document", await page.locator("[data-cu-res]").count() === 0);
+    check("...nor anything that renames a week or a module",
+      await page.locator("[data-cu-mren]").count() === 0 && await page.locator("[data-cu-wren]").count() === 0,
+      [await page.locator("[data-cu-mren]").count(), await page.locator("[data-cu-wren]").count()]);
+    check("...nor anything that reorders the curriculum",
+      await page.locator("[data-cu-wmove]").count() === 0 && await page.locator("[data-cu-mmove]").count() === 0,
+      [await page.locator("[data-cu-wmove]").count(), await page.locator("[data-cu-mmove]").count()]);
     check("...nor a New programme button", await page.locator("#ac-cu-new").count() === 0);
     check("but she can open a programme and read it", await page.locator("[data-cu-pick]").count() >= 2);
     // And the server refuses her regardless of what the screen drew.
@@ -389,6 +395,15 @@ const today = () => new Date().toISOString().slice(0, 10);
     check("...nothing that adds one", await page.locator("#ac-cu-wadd").count() === 0);
     check("...nothing that attaches a document",
       await page.locator("[data-cu-res]").count() === 0, await page.locator("[data-cu-res]").count());
+    check("...nothing that renames anything",
+      await page.locator("[data-cu-mren]").count() === 0 && await page.locator("[data-cu-wren]").count() === 0,
+      [await page.locator("[data-cu-mren]").count(), await page.locator("[data-cu-wren]").count()]);
+    check("...nothing that moves a week or a module",
+      await page.locator("[data-cu-wmove]").count() === 0 && await page.locator("[data-cu-mmove]").count() === 0,
+      [await page.locator("[data-cu-wmove]").count(), await page.locator("[data-cu-mmove]").count()]);
+    check("...and nothing can be dragged",
+      await page.locator('[data-cu-mod][draggable="true"]').count() === 0,
+      await page.locator('[data-cu-mod][draggable="true"]').count());
     check("...and no New programme button", await page.locator("#ac-cu-new").count() === 0);
     check("but the programmes can still be opened and read",
       await page.locator("[data-cu-pick]").count() >= 2, await page.locator("[data-cu-pick]").count());
@@ -422,6 +437,37 @@ const today = () => new Date().toISOString().slice(0, 10);
         && /nobody's finished week changes under them/i.test(open), open.slice(0, 1600));
     check("the attached material is shown in the editor too",
       /Attendance Policy/.test(open), open.slice(0, 1400));
+
+    // ---- EACH ITEM IS A MODULE, AND THEY MOVE --------------------------
+    section("THE WEEKS HOLD MODULES, AND BOTH CAN BE MOVED");
+    check("what sits in a week is called a module now",
+      /Add a module/.test(open) && !/Add an item/.test(open), open.slice(0, 1600));
+    // This programme ships with one module, and one module cannot demonstrate
+    // an order. Adding the second through the screen also exercises the
+    // renamed form.
+    await page.locator("[data-cu-iadd]").first().click();
+    await page.waitForTimeout(400);
+    const addForm = await page.textContent(".ac-wrap");
+    check("the add form calls it a module", /A new module/.test(addForm), addForm.slice(-700));
+    await page.fill("#ac-ni-title", "Second module for ordering");
+    await page.click("[data-ni-save]");
+    await page.waitForTimeout(2200);
+
+    check("every module can be picked up",
+      await page.locator('[data-cu-mod][draggable="true"]').count() >= 2,
+      await page.locator("[data-cu-mod]").count());
+    check("...and has arrows, so it can be moved without dragging",
+      await page.locator("[data-cu-mmove]").count() >= 2, await page.locator("[data-cu-mmove]").count());
+    check("each week can be moved too",
+      await page.locator("[data-cu-wmove]").count() >= 1, await page.locator("[data-cu-wmove]").count());
+    check("THE NUMBERING RUNS STRAIGHT THROUGH THE PROGRAMME, 1..N across the weeks"
+      + " rather than restarting in each one",
+      await page.evaluate(() => {
+        const ns = [...document.querySelectorAll("[data-cu-mod] strong")].map((e) => e.textContent.trim());
+        return ns.length >= 2 && ns.every((v, i) => v === (i + 1) + ".");
+      }), await page.evaluate(() => [...document.querySelectorAll("[data-cu-mod] strong")].map((e) => e.textContent.trim())));
+    check("the first module's up arrow is disabled, because there is nothing above it",
+      await page.locator("[data-cu-mmove][data-cu-dir='-1']").first().isDisabled());
     // ---- A TRAINING VIDEO PLAYS IN THE PAGE ---------------------------
     // It used to be a link that opened a new tab, which meant the employee
     // left their checklist to watch the training.
@@ -508,6 +554,83 @@ const today = () => new Date().toISOString().slice(0, 10);
     check("THE POLICY LIBRARY ACTUALLY LOADED into the dropdown — a wrong key"
       + " here would be a silently empty list",
       opts.some((t) => /AcadL4 Attendance Policy/.test(t)), opts.slice(0, 8));
+
+    section("MOVING A MODULE ACTUALLY MOVES IT");
+    // End to end, through the API and back onto the screen. The order is sent
+    // as one request for the whole layout, so this also proves the screen
+    // builds that layout correctly rather than just calling something.
+    const orderOf = () => page.evaluate(() =>
+      [...document.querySelectorAll("[data-cu-modtitle]")].map((e) => e.textContent.trim()));
+    const before = await orderOf();
+    check("there are at least two modules to swap", before.length >= 2, before);
+    await page.locator("[data-cu-mmove][data-cu-dir='1']").first().click();
+    await page.waitForTimeout(2000);
+    const after = await orderOf();
+    check("THE FIRST TWO MODULES SWAPPED", after[0] === before[1] && after[1] === before[0],
+      { before: before.slice(0, 3), after: after.slice(0, 3) });
+    check("...and nothing was lost or duplicated in the move", after.length === before.length,
+      { before: before, after: after });
+    check("...and no error was reported",
+      (await page.textContent("#ac-cu-order-msg")).trim() === "",
+      await page.textContent("#ac-cu-order-msg"));
+
+    section("RENAMING A MODULE, AND RENAMING A WEEK");
+    // The server already accepted a new title on both; there was simply no
+    // way to ask for one from the screen.
+    const beforeRen = await orderOf();
+    await page.locator("[data-cu-mren]").first().click();
+    await page.waitForTimeout(500);
+    check("a rename box opens on the module", await page.locator("[data-cu-mrenin]").count() === 1);
+    check("...with the name already in it, so it is an edit rather than a retype",
+      (await page.locator("[data-cu-mrenin]").inputValue()) === beforeRen[0],
+      [await page.locator("[data-cu-mrenin]").inputValue(), beforeRen[0]]);
+    check("...and that module cannot be dragged while it is being typed in",
+      await page.locator('[data-cu-mod][draggable="true"]').count() < await page.locator("[data-cu-mod]").count(),
+      [await page.locator('[data-cu-mod][draggable="true"]').count(), await page.locator("[data-cu-mod]").count()]);
+    await page.fill("[data-cu-mrenin]", "Renamed by the owner");
+    await page.click("[data-cu-mrensave]");
+    await page.waitForTimeout(2200);
+    const afterRen = await orderOf();
+    check("THE MODULE IS RENAMED", afterRen[0] === "Renamed by the owner", afterRen);
+    check("...the others are untouched",
+      afterRen.slice(1).join("|") === beforeRen.slice(1).join("|"), { afterRen, beforeRen });
+    check("...and none were lost or duplicated", afterRen.length === beforeRen.length,
+      { before: beforeRen.length, after: afterRen.length });
+    check("...with no error reported",
+      (await page.textContent("#ac-cu-order-msg")).trim() === "", await page.textContent("#ac-cu-order-msg"));
+
+    const weekTitles = () => page.evaluate(() =>
+      [...document.querySelectorAll("[data-cu-wktitle]")].map((e) => e.textContent.trim()));
+    const wkBefore = await weekTitles();
+    await page.locator("[data-cu-wren]").first().click();
+    await page.waitForTimeout(500);
+    check("a rename box opens on the week", await page.locator("[data-cu-wrenin]").count() === 1);
+    check("...with the week's own title in it, and not the 'Week 1 — ' label",
+      (await page.locator("[data-cu-wrenin]").inputValue()) === wkBefore[0],
+      [await page.locator("[data-cu-wrenin]").inputValue(), wkBefore[0]]);
+    await page.fill("[data-cu-wrenin]", "Week renamed by the owner");
+    await page.click("[data-cu-wrensave]");
+    await page.waitForTimeout(2200);
+    check("THE WEEK IS RENAMED", (await weekTitles())[0] === "Week renamed by the owner", await weekTitles());
+    check("...and its modules are still under it", (await orderOf()).length === afterRen.length,
+      await orderOf());
+
+    section("A NAME CANNOT BE EMPTIED");
+    await page.locator("[data-cu-mren]").first().click();
+    await page.waitForTimeout(400);
+    await page.fill("[data-cu-mrenin]", "   ");
+    await page.click("[data-cu-mrensave]");
+    await page.waitForTimeout(900);
+    check("a blank name is refused and said so",
+      /needs a name/i.test(await page.textContent("#ac-cu-order-msg")),
+      await page.textContent("#ac-cu-order-msg"));
+    // Cancel FIRST: while a module is being renamed its title is an input, so
+    // it has no title span to read and orderOf() would see only the others.
+    await page.locator("[data-cu-rencancel]").first().click();
+    await page.waitForTimeout(600);
+    check("...and the module keeps the name it had",
+      (await orderOf())[0] === "Renamed by the owner", await orderOf());
+    check("...with both modules back on screen", (await orderOf()).length === 2, await orderOf());
 
     section("CREATING A SECOND PROGRAMME WITHOUT A DEVELOPER");
     await page.click("#ac-cu-new");
