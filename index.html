@@ -5588,6 +5588,20 @@ async function openStaffModal(id, pageMount) {
   const timecardsHtml = id ? safe(() => (emp.timecards || []).length
     ? emp.timecards.map((t) => `<div class="task-row"><div class="info"><strong>${t.pay_period_start ? fmtDate(t.pay_period_start) : "Period"} – ${t.pay_period_end ? fmtDate(t.pay_period_end) : ""}</strong><div class="due">Status: ${staffEsc(t.status)}${Number(t.open_flags) ? ` · ${t.open_flags} open flag(s)` : ""}</div></div><button class="btn small secondary" data-req-sig="${t.id}">Request signature</button></div>`).join("")
     : `<div class="empty-state">No timecards yet. Import a payroll export to create them.</div>`) : "";
+  // Timecards fold. A person with two years of pay periods had a card you
+  // could not scroll past, and the sections under it -- supervision,
+  // attendance, availability -- were effectively unreachable. Closed by
+  // default, with the count and anything outstanding on the header, so
+  // folding it away still tells you whether it needs opening.
+  const tcChip = !id ? null : (() => { try {
+    const list = emp.timecards || [];
+    if (!list.length) return ["None", "none"];
+    const flagged = list.reduce((n, t) => n + (Number(t.open_flags) || 0), 0);
+    if (flagged) return [`${list.length} · ${flagged} open flag${flagged === 1 ? "" : "s"}`, "warn"];
+    const unsigned = list.filter((t) => !/signed|complete/i.test(String(t.status || ""))).length;
+    if (unsigned) return [`${list.length} · ${unsigned} unsigned`, "warn"];
+    return [`${list.length} signed`, "ok"];
+  } catch (e) { return null; } })();
   backdrop.innerHTML = `
     <div class="modal" style="width:620px;">
       <div class="modal-header"><h2>${id ? staffEsc(emp.name) : "Add Staff"}</h2><button class="close-btn">✕</button></div>
@@ -5631,7 +5645,8 @@ async function openStaffModal(id, pageMount) {
       ${id ? `<div class="section-title">Payer Enrollment (Group Linking &amp; Credentialing)</div><div id="staff-payers"></div>` : ""}
       ${id ? `<div class="section-title">Onboarding Paperwork</div><div id="staff-packet"></div>` : ""}
       ${id ? `<div class="section-title">Documents</div><div id="staff-docs"></div>` : ""}
-      ${id ? `<div class="section-title">Timecards</div><div id="staff-timecards">${timecardsHtml}</div>` : ""}
+      ${id ? cs("staff-timecards", null, `Timecards`, `<div id="staff-timecards">${timecardsHtml}</div>`,
+        { chip: tcChip }) : ""}
       ${id ? `<div class="section-title">Supervision</div><div id="staff-supervision"></div>` : ""}
       ${id ? `<div data-fid-wrap style="display:none;"><div class="section-title">RBT Fidelity</div><div id="staff-fidelity"></div></div>` : ""}
       ${id ? `<div class="section-title">Attendance</div><div id="staff-attendance"></div>` : ""}
@@ -5639,6 +5654,10 @@ async function openStaffModal(id, pageMount) {
       ${id ? `<div class="section-title">Activity log</div><div id="staff-activity">${activityHtml}</div>` : ""}
     </div>`;
   document.body.appendChild(backdrop);
+  // Remember whether this person leaves the folded sections open.
+  backdrop.querySelectorAll("details.cs").forEach((d) => {
+    d.addEventListener("toggle", () => csRemember(d.dataset.cs, d.open));
+  });
   const close = () => backdrop.remove();
   backdrop.querySelector(".close-btn").addEventListener("click", close);
   backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });

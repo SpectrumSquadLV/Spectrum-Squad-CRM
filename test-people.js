@@ -188,6 +188,58 @@ function check(name, cond, detail) {
   check("terminated staff are skipped", r.data.sent.length === 0 && r.data.skipped.some((s) => /no longer active/.test(s.why)), r.data);
   await req(`/api/hr/employees/${emp.id}`, { method: "PATCH", body: { status: "active" } });
 
+  // ---- the RBT ladder: 45 / 30 / 15, then nagging that never stops --------
+  console.log("\n== RBT certification reminder ladder ==");
+  const rbtEmp = (await req("/api/hr/employees", { method: "POST", body: { name: "Rhonda RBT", email: "rhondarbt@example.com", role_title: "RBT" } })).data;
+  // Each certification keeps its own notice history, so one per case.
+  const mkCert = async (name, days) => (await req("/api/people/certifications", { method: "POST", body: { employee_id: rbtEmp.id, name, expiration_date: iso(days) } })).data;
+  const cases = [
+    ["RBT", 50, undefined], ["RBT", 45, "45"], ["RBT", 31, "45"],
+    ["RBT", 30, "30"], ["RBT", 20, "30"], ["RBT", 15, "15"], ["RBT", 1, "15"],
+    ["RBT", 0, "expired"], ["RBT", -3, "expired"],
+    ["RBT", -8, "overdue-7"], ["RBT", -15, "overdue-14"], ["RBT", -40, "overdue-35"],
+    ["RBT", -400, "overdue-399"],
+  ];
+  const ids = [];
+  for (const [name, days] of cases) ids.push((await mkCert(name, days)).id);
+  // A non-RBT certification for contrast, on the same sweep.
+  const bcbaFar = await mkCert("BCBA", 45);
+  const bcbaDead = await mkCert("Safety Care", -400);
+
+  r = await req("/api/people/certifications/sweep", { method: "POST", body: { dry_run: true } });
+  const stageOf = (id) => (r.data.sent.find((x) => x.id === id) || {}).stage;
+  cases.forEach(([name, days, want], i) => {
+    check(`RBT ${days >= 0 ? days + " days out" : Math.abs(days) + " days overdue"} -> ${want || "no notice"}`,
+      stageOf(ids[i]) === want, { got: stageOf(ids[i]), want });
+  });
+  check("an RBT certification 400 days overdue is still nagged, not given up on",
+    !r.data.skipped.some((x) => x.id === ids[ids.length - 1]), r.data.skipped);
+  check("a non-RBT certification keeps the old ladder (45 days out is the 60-day notice)",
+    stageOf(bcbaFar.id) === "60", stageOf(bcbaFar.id));
+  check("a non-RBT certification 400 days overdue still stops after the final notice",
+    r.data.skipped.some((x) => x.id === bcbaDead.id && /final overdue notice/.test(x.why)), r.data.skipped);
+
+  // Send for real, then confirm the same week is never sent twice.
+  r = await req("/api/people/certifications/sweep", { method: "POST", body: {} });
+  const sentIds = r.data.sent.map((x) => x.id);
+  check("every due RBT notice actually sends", cases.every(([, , want], i) => !want || sentIds.includes(ids[i])),
+    cases.filter(([, , want], i) => want && !sentIds.includes(ids[i])));
+  check("the one that is not due yet does not send", !sentIds.includes(ids[0]));
+  r = await req("/api/people/certifications/sweep", { method: "POST", body: {} });
+  check("a second sweep on the same day sends no RBT notice twice", r.data.sent.length === 0, r.data.sent);
+
+  // Updating the expiration date is what stops the nagging.
+  const nagging = ids[ids.length - 2];
+  r = await req(`/api/people/certifications/${nagging}`, { method: "PATCH", body: { expiration_date: iso(400) } });
+  check("renewing an overdue RBT certification clears it", r.data.state.days === 400, r.data.state);
+  r = await req("/api/people/certifications/sweep", { method: "POST", body: { dry_run: true } });
+  check("...and the nagging stops", !r.data.sent.some((x) => x.id === nagging), r.data.sent);
+  r = await req("/api/people/certifications");
+  check("the roll-up reports both ladders, not just the general one",
+    (r.data.stages || []).includes("90") && (r.data.rbt_stages || []).join() === "45,30,15,expired",
+    { stages: r.data.stages, rbt: r.data.rbt_stages });
+  await req(`/api/hr/employees/${rbtEmp.id}`, { method: "PATCH", body: { status: "terminated" } });
+
   // ---------------- new-hire packet ----------------
   console.log("\n== new-hire employment packet ==");
   r = await req(`/api/hr/employees/${emp.id}/newhire-packet`);

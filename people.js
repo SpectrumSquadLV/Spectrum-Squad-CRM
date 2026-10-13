@@ -17,8 +17,8 @@
 //      are identical and the access rules are the only thing that differs.
 //
 //   3. CERTIFICATION EXPIRY. Staff certifications with real expiry dates, and
-//      staged notices at 90/60/30/14/7/1 days out, on the expiry date, and
-//      weekly after that. Each stage sends at most once per certification --
+//      staged notices at 90/60/30/14/7/1 days out (RBT: 45/30/15), on the expiry date, and
+//      weekly after that -- forever, for an RBT. Each stage sends at most once --
 //      the send is recorded before the email goes out, so a crash mid-sweep
 //      can never turn into a duplicate blast. The Clinical Director address
 //      comes from the configurable app setting, never a hard-coded address.
@@ -139,7 +139,8 @@ module.exports = function initPeople(ctx) {
     await dbRun(`CREATE TABLE IF NOT EXISTS certification_notices (
       id SERIAL PRIMARY KEY,
       certification_id INTEGER NOT NULL,
-      stage TEXT NOT NULL,               -- 90 | 60 | 30 | 14 | 7 | 1 | expired | overdue-7 ...
+      stage TEXT NOT NULL,               -- 90|60|30|14|7|1, or RBT's 45|30|15,
+                                         -- then expired | overdue-7 | overdue-14 ...
       expiration_date TEXT,              -- snapshot, so moving the date re-arms the stages
       sent_to TEXT,
       sent_at TEXT,
@@ -216,6 +217,22 @@ module.exports = function initPeople(ctx) {
     { key: "overdue-30", days: -30, level: "expired", tone: "#991b1b" },
   ];
 
+  // RBT certifications run on their own ladder: 45, 30 and 15 days out, then
+  // the expiry date, and after that the reminder DOES NOT STOP. An RBT whose
+  // certification has lapsed cannot deliver billable care, so the nag goes
+  // out every week, for as long as it takes, until someone puts a new
+  // expiration date on the record. Nothing else expires this consequentially.
+  const RBT_CERT_STAGES = [
+    { key: "45", days: 45, level: "heads up", tone: "#0891b2" },
+    { key: "30", days: 30, level: "action needed", tone: "#d97706" },
+    { key: "15", days: 15, level: "urgent", tone: "#dc2626" },
+    { key: "expired", days: 0, level: "expired", tone: "#991b1b" },
+  ];
+  const NAG_EVERY_DAYS = 7;
+  // Matched on the name HR typed, which is the only type signal the row has.
+  const isRbtCert = (cert) => /\brbt\b|registered\s+behavio[u]?r\s+technician/i.test(clean(cert && cert.name));
+  const stagesFor = (cert) => (isRbtCert(cert) ? RBT_CERT_STAGES : CERT_STAGES);
+
   const DAY = 24 * 60 * 60 * 1000;
 
   function daysUntil(dateStr) {
@@ -237,10 +254,18 @@ module.exports = function initPeople(ctx) {
   // urgent threshold that has been crossed so a certification added late (or a
   // sweep that did not run for a week) still sends the right notice instead of
   // silently skipping every stage it slept through.
-  function dueStage(daysLeft) {
+  function dueStage(daysLeft, stages = CERT_STAGES, { nagForever = false } = {}) {
     if (daysLeft == null) return null;
+    if (nagForever && daysLeft < 0) {
+      // One nag per week, numbered, so the per-stage dedupe lets each new
+      // week through and never the same week twice. There is no last stage.
+      const weeks = Math.floor(-daysLeft / NAG_EVERY_DAYS);
+      if (weeks < 1) return stages.find((s) => s.key === "expired") || null;
+      const overdue = weeks * NAG_EVERY_DAYS;
+      return { key: `overdue-${overdue}`, days: -overdue, level: "expired", tone: "#991b1b" };
+    }
     let chosen = null;
-    for (const s of CERT_STAGES) {
+    for (const s of stages) {
       if (daysLeft <= s.days) chosen = s; // list is ordered most-distant first
     }
     return chosen;
@@ -358,10 +383,13 @@ module.exports = function initPeople(ctx) {
         continue;
       }
       const daysLeft = daysUntil(cert.expiration_date);
-      const stage = dueStage(daysLeft);
+      const stages = stagesFor(cert);
+      const nagForever = isRbtCert(cert);
+      const stage = dueStage(daysLeft, stages, { nagForever });
       if (!stage) continue;
-      // Past the last nag: stop.
-      if (daysLeft < CERT_STAGES[CERT_STAGES.length - 1].days) {
+      // Past the last nag: stop -- unless this is an RBT certification, which
+      // has no last nag.
+      if (!nagForever && daysLeft < stages[stages.length - 1].days) {
         results.skipped.push({ id: cert.id, why: "past the final overdue notice" });
         continue;
       }
@@ -646,7 +674,9 @@ module.exports = function initPeople(ctx) {
                 ORDER BY c.expiration_date NULLS LAST, e.name`
             );
         for (const r of rows) r.state = certStatusOf(r);
-        json(res, 200, { certifications: rows, stages: CERT_STAGES.map((s) => s.key) });
+        // Two ladders now, so saying only one would misreport what an RBT
+        // certification actually sends.
+        json(res, 200, { certifications: rows, stages: CERT_STAGES.map((s) => s.key), rbt_stages: RBT_CERT_STAGES.map((s) => s.key) });
         return true;
       }
 
@@ -770,6 +800,6 @@ module.exports = function initPeople(ctx) {
     handleApi,
     certificationSweep,
     listDepartments,
-    _lib: { CERT_STAGES, daysUntil, dueStage, certStatusOf, slugify },
+    _lib: { CERT_STAGES, RBT_CERT_STAGES, isRbtCert, stagesFor, daysUntil, dueStage, certStatusOf, slugify },
   };
 };
