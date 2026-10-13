@@ -43,6 +43,9 @@
   // per-call flag gave each of them its own. One click then sent two
   // identical reorders, both forked, and two modules came back as four.
   var ORDER_BUSY = false;
+  // Which module or week is being renamed, and one busy flag for the save --
+  // same reasoning as ORDER_BUSY above.
+  var REN_MOD = null, REN_WEEK = null, REN_BUSY = false;
 
   function api(path, opts) {
     opts = opts || {};
@@ -1023,14 +1026,21 @@
             var mods = m.items || [];
             return '<div class="ac-comp" data-cu-week="' + m.id + '" style="margin-bottom:10px;background:#fff;border-color:var(--border,#e5e7eb);">'
               + '<div class="ac-row" style="justify-content:space-between;">'
-                + "<div><strong>Week " + esc(m.week) + " — " + esc(m.title) + "</strong>"
-                + (m.focus ? '<div class="ac-sub">' + esc(m.focus) + "</div>" : "") + "</div>"
+                + (editing && REN_WEEK === m.id
+                    ? '<div style="flex:1;min-width:0;"><input data-cu-wrenin="' + m.id + '" value="'
+                      + esc(m.title) + '" style="width:100%;max-width:420px;" aria-label="Week title">'
+                      + '<div class="ac-row" style="gap:6px;margin-top:6px;">'
+                      + '<button class="btn small" data-cu-wrensave="' + m.id + '">Save</button>'
+                      + '<button class="btn small secondary" data-cu-rencancel="1">Cancel</button></div></div>'
+                    : "<div><strong>Week " + esc(m.week) + ' — <span data-cu-wktitle>' + esc(m.title) + "</span></strong>"
+                      + (m.focus ? '<div class="ac-sub">' + esc(m.focus) + "</div>" : "") + "</div>")
                 + (editing
                     ? '<div class="ac-row" style="gap:4px;">'
                       + '<button class="btn small secondary" data-cu-wmove="' + m.id + '" data-cu-dir="-1"'
                         + (wi === 0 ? " disabled" : "") + ' title="Move this week earlier">&uarr;</button>'
                       + '<button class="btn small secondary" data-cu-wmove="' + m.id + '" data-cu-dir="1"'
                         + (wi === weeks.length - 1 ? " disabled" : "") + ' title="Move this week later">&darr;</button>'
+                      + '<button class="btn small secondary" data-cu-wren="' + m.id + '">Rename</button>'
                       + '<button class="btn small secondary" data-cu-mdel="' + m.id + '">Remove week</button>'
                     + "</div>"
                     : "")
@@ -1039,9 +1049,15 @@
               + mods.map(function (i) {
                   n++;
                   return '<div class="ac-item" data-cu-mod="' + i.id + '" data-cu-in="' + m.id + '"'
-                    + (editing ? ' draggable="true" style="cursor:grab;"' : "") + ">"
+                    + (editing && REN_MOD !== i.id ? ' draggable="true" style="cursor:grab;"' : "") + ">"
                     + '<div style="flex:1;min-width:0;">'
-                    + "<div><strong>" + n + '.</strong> <span data-cu-modtitle>' + esc(i.title) + "</span></div>"
+                    + (editing && REN_MOD === i.id
+                        ? '<div><strong>' + n + '.</strong> <input data-cu-mrenin="' + i.id + '" value="'
+                          + esc(i.title) + '" style="width:100%;max-width:420px;" aria-label="Module name">'
+                          + '<div class="ac-row" style="gap:6px;margin-top:6px;">'
+                          + '<button class="btn small" data-cu-mrensave="' + i.id + '">Save</button>'
+                          + '<button class="btn small secondary" data-cu-rencancel="1">Cancel</button></div></div>'
+                        : "<div><strong>" + n + '.</strong> <span data-cu-modtitle>' + esc(i.title) + "</span></div>")
                     + '<div class="ac-sub">' + esc(i.kind) + (i.required ? "" : " · optional") + "</div>"
                     + resourcesHtml(i.resources)
                     + (editing
@@ -1055,6 +1071,7 @@
                           + (n === 1 ? " disabled" : "") + ' title="Move this module up">&uarr;</button>'
                         + '<button class="btn small secondary" data-cu-mmove="' + i.id + '" data-cu-dir="1"'
                           + ' title="Move this module down">&darr;</button>'
+                        + '<button class="btn small secondary" data-cu-mren="' + i.id + '">Rename</button>'
                         + '<button class="btn small secondary" data-cu-idel="' + i.id + '">Remove</button>'
                       + "</div>"
                       : "")
@@ -1525,6 +1542,69 @@
       }
       return false;
     }
+
+    // ---- RENAMING A WEEK OR A MODULE ------------------------------------
+    //
+    // The server already took a new title on both; there was simply no way to
+    // ask for one. Renaming forks a new curriculum version when somebody is
+    // enrolled, exactly as any other edit does, so their copy keeps the name
+    // it had when they started.
+    function rename(url, value, whenDone) {
+      var title = String(value == null ? "" : value).trim();
+      var box = HOST.querySelector("#ac-cu-order-msg");
+      if (!title) { if (box) box.textContent = "It needs a name."; return; }
+      if (REN_BUSY) return;
+      REN_BUSY = true;
+      api(url, { method: "PATCH", body: { title: title } })
+        .then(function () { REN_MOD = null; REN_WEEK = null; return loadCurriculum(); })
+        .catch(function (e) { if (box) box.textContent = e.message; })
+        .then(function () { REN_BUSY = false; whenDone && whenDone(); });
+    }
+
+    HOST.querySelectorAll("[data-cu-mren]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        REN_MOD = Number(b.getAttribute("data-cu-mren")); REN_WEEK = null; render();
+      });
+    });
+    HOST.querySelectorAll("[data-cu-wren]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        REN_WEEK = Number(b.getAttribute("data-cu-wren")); REN_MOD = null; render();
+      });
+    });
+    HOST.querySelectorAll("[data-cu-rencancel]").forEach(function (b) {
+      b.addEventListener("click", function () { REN_MOD = null; REN_WEEK = null; render(); });
+    });
+    HOST.querySelectorAll("[data-cu-mrensave]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var id = Number(b.getAttribute("data-cu-mrensave"));
+        var input = HOST.querySelector('[data-cu-mrenin="' + id + '"]');
+        rename("/api/academy/items/" + id, input && input.value);
+      });
+    });
+    HOST.querySelectorAll("[data-cu-wrensave]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var id = Number(b.getAttribute("data-cu-wrensave"));
+        var input = HOST.querySelector('[data-cu-wrenin="' + id + '"]');
+        rename("/api/academy/modules/" + id, input && input.value);
+      });
+    });
+    // Enter saves and Escape gives up, because reaching for the mouse to
+    // confirm a name you have just typed is a small irritation repeated once
+    // per module.
+    HOST.querySelectorAll("[data-cu-mrenin], [data-cu-wrenin]").forEach(function (input) {
+      var isWeek = input.hasAttribute("data-cu-wrenin");
+      var id = Number(input.getAttribute(isWeek ? "data-cu-wrenin" : "data-cu-mrenin"));
+      input.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          rename((isWeek ? "/api/academy/modules/" : "/api/academy/items/") + id, input.value);
+        } else if (ev.key === "Escape") {
+          ev.preventDefault(); REN_MOD = null; REN_WEEK = null; render();
+        }
+      });
+      // Put the cursor in the box being renamed, at the end of the name.
+      try { input.focus(); input.setSelectionRange(input.value.length, input.value.length); } catch (e) {}
+    });
 
     HOST.querySelectorAll("[data-cu-wmove]").forEach(function (b) {
       if (b.__acBound) return;
