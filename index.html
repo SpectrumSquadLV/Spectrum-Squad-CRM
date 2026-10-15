@@ -1180,6 +1180,29 @@ async function route() {
   // section. No ABA data is ever loaded or rendered for them.
   const OT_ONLY = ["ot_admin", "ot_staff"].includes(state.user.role);
   if (OT_ONLY) {
+    // ONE DOOR IN THE OT WALL, opened PER PERSON and never per role.
+    //
+    // Asked for: an OT Admin who needs the Credentialing Tracker. The wall
+    // exists to keep OT accounts out of ABA CLIENT data -- clinical,
+    // authorization, billing, financial. Staff credentialing is not that: it
+    // is about employees, their credentials and their payer enrolments, and
+    // holds no client record at all. So it is the one section that can be
+    // granted across.
+    //
+    // THE SERVER DECIDES WHO. For an OT role, credentialingAccess is true
+    // only where that person has been granted it explicitly in the Access
+    // editor -- their role gives them nothing, so this opens the door for
+    // nobody by default.
+    //
+    // AND IT RETURNS HERE, before the client-data block below. That ordering
+    // is the load-bearing part: no client, stage or therapist is ever fetched
+    // for an OT account, which is what the wall is actually made of.
+    if (hash.startsWith("#/credentialing") && state.credentialingAccess) {
+      renderShell("credentialing");
+      const otMount = document.getElementById("view-mount");
+      if (window.__renderCredentialing) await window.__renderCredentialing(otMount);
+      return;
+    }
     renderShell("ot");
     if (!hash.startsWith("#/ot")) { location.hash = "#/ot"; return; }
     if (window.__otRender) window.__otRender();
@@ -1571,7 +1594,12 @@ function renderShell(active) {
   // New-hire credentialing. Not a role: HR, owner/admin, and whoever is
   // designated Clinical Director or Assistant -- the server says which, on the
   // nav-order call every session already makes, and enforces the same rule.
-  if (!OT_ONLY && state.credentialingAccess)
+  // NOT gated on OT_ONLY, and that is the exception explained in route():
+  // credentialing is about employees rather than clients, so an OT account
+  // that has been granted it may have the entry. The server has already
+  // decided -- for an OT role this flag is only ever true on an explicit
+  // per-person grant.
+  if (state.credentialingAccess)
     navItems.push({ key: "credentialing", label: "Credentialing", icon: "◈", hash: "#/credentialing" });
   // Company-wide compliance training. Not a role either: HR and the owner
   // administer it, clinical leadership reads it, and the server says which on

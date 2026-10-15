@@ -5082,7 +5082,28 @@ async function handle(req, res, pathname, method, query = {}) {
       pathname.startsWith("/api/auth/") ||
       pathname === "/api/logout" ||
       pathname.includes("/public") ||
-      PUBLIC_ROUTES.has(pathname);
+      PUBLIC_ROUTES.has(pathname) ||
+      // THE ONE DOOR IN THIS WALL, and it is opened PER PERSON rather than
+      // per role: staff credentialing, for an OT account that has been
+      // GRANTED it in the Access editor. Their role grants nothing, so this
+      // admits nobody by default.
+      //
+      // WHY IT IS DEFENSIBLE WHERE NOTHING ELSE IS. This wall exists to keep
+      // OT accounts out of ABA CLIENT data -- clinical, authorization,
+      // billing, financial. The Credentialing Tracker is about EMPLOYEES:
+      // their credentials, their expiry dates, their payer enrolments. There
+      // is no client record in it.
+      //
+      // nav-order comes with it because the sidebar cannot draw the entry
+      // without it, and it carries no client data either -- the saved button
+      // order and a few booleans. Without the grant it stays refused, exactly
+      // as before.
+      //
+      // /api/staff-progression is deliberately NOT here: that is the
+      // dashboard widget, it rides on the dashboard key, and an OT account
+      // has no dashboard.
+      ((pathname === "/api/nav-order" || pathname.startsWith("/api/credentialing"))
+        && moduleGranted(user, "credentialing"));
     if (!otAllowed) {
       json(res, 403, { error: "Not permitted." });
       return true;
