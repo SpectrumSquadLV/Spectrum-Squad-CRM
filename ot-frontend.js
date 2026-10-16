@@ -185,6 +185,75 @@
     });
   }
 
+  // The parent's full intake answers, laid out section by section in the same
+  // order as the form they filled in (ot-intake.html). Blank answers show "—".
+  function intakeHtml(o) {
+    const a = o.intake_data || {};
+    const v = (x) => {
+      if (Array.isArray(x)) x = x.filter(Boolean).join(", ");
+      if (x === true) x = "Yes";
+      if (x === false) x = "No";
+      return x == null || String(x).trim() === "" ? '<span style="color:#8a8797;">—</span>' : esc(x).replace(/\n/g, "<br>");
+    };
+    const row = (label, val) => '<div style="display:flex;gap:12px;padding:7px 0;border-bottom:1px solid #f0ede3;font-size:13px;"><div style="flex:0 0 190px;color:#767488;font-weight:600;">' + esc(label) + '</div><div style="flex:1;min-width:0;">' + v(val) + "</div></div>";
+    const sec = (title, rows) => '<div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:' + ACCENT + ';margin:18px 0 4px;">' + esc(title) + "</div>" + rows;
+    const cgs = a.caregivers || [];
+    const cg = cgs[0] || {};
+    const cg2 = cgs[1] || {};
+    const ins = a.insurance || {};
+    const sec2 = a.secondary || {};
+    const avail = a.availability || {};
+    const availTxt = Object.keys(avail).map((d) => {
+      const ps = Object.keys(avail[d] || {}).filter((p) => avail[d][p]);
+      return ps.length ? d + ": " + ps.join(", ") : null;
+    }).filter(Boolean).join("\n");
+    const child = [a.child_first, a.child_middle, a.child_last].filter(Boolean).join(" ") || a.child_name;
+    const status = o.intake_submitted_at
+      ? "Submitted " + fmtWhen(o.intake_submitted_at)
+      : "Not submitted yet — " + (o.intake_progress || 0) + "% complete (answers so far shown below)";
+    return '<div style="font-size:12.5px;color:#767488;margin-bottom:6px;">' + esc(status) + "</div>" +
+      sec("Child",
+        row("Name", child) + row("Preferred name", a.child_nickname) + row("Date of birth", a.dob)) +
+      sec("Caregivers",
+        row("Primary caregiver", cg.name || a.parent_name) + row("Relationship", cg.relationship) +
+        row("Phone", cg.phone || a.parent_phone) + row("Email", cg.email || a.parent_email) +
+        row("Preferred contact", a.preferred_contact_arr) +
+        (cg2.name || cg2.phone || cg2.email ? row("Second caregiver", cg2.name) + row("Second phone", cg2.phone) + row("Second email", cg2.email) : "")) +
+      sec("Home address",
+        row("Address", [a.street, a.apt].filter(Boolean).join(", ")) + row("City / State / Zip", [a.city, a.state, a.zip].filter(Boolean).join(", "))) +
+      sec("Insurance",
+        row("Primary provider", ins.provider) + row("Member ID", ins.member_id) +
+        (sec2.provider || sec2.member_id ? row("Secondary provider", sec2.provider) + row("Secondary member ID", sec2.member_id) : "") +
+        row("Previous OT in Nevada", a.previous_ot_nv) +
+        (a.previous_ot_nv ? row("Discharge letter", a.no_discharge_yet ? "Parent doesn't have it yet" : "See Documents") : "")) +
+      sec("Goals", row("Primary goals", a.reason)) +
+      sec("Background", row("Diagnoses / identities", a.diagnoses) + row("Medical / developmental history", a.history)) +
+      sec("What they love", row("Brings them joy", a.strengths)) +
+      sec("Support needs", row("Areas of support", a.support_needs) + row("Dislikes / overwhelming", a.aversions)) +
+      sec("Session settings", row("Open to", a.settings)) +
+      sec("Availability",
+        row("Days & times", availTxt) + row("Specific availability", a.availability_text) + row("Flexibility", a.flexibility) +
+        row("Barriers / accommodations", a.barriers) + (a.interpreter_language ? row("Interpreter language", a.interpreter_language) : "")) +
+      sec("Signature", row("Signed by", o.signed_name || a.signed_name) + row("Signed on", o.signed_at ? fmtWhen(o.signed_at) : ""));
+  }
+
+  function openIntake(o, childName) {
+    const { bd } = otModal(
+      '<div class="modal-header"><h2>Intake Form — ' + esc(childName || "OT Client") + '</h2><button class="close-btn">✕</button></div>' +
+      '<div style="margin:-4px 0 6px;"><button class="btn small secondary" id="ot-intake-print">Print</button></div>' +
+      '<div id="ot-intake-body" style="max-height:70vh;overflow:auto;">' + intakeHtml(o) + "</div>",
+      "720px"
+    );
+    bd.querySelector("#ot-intake-print").addEventListener("click", () => {
+      const w = window.open("", "_blank");
+      if (!w) return;
+      w.document.write("<!doctype html><title>OT Intake — " + esc(childName || "") + '</title><body style="font-family:system-ui,sans-serif;padding:24px;max-width:760px;margin:auto;"><h2>OT Intake — ' + esc(childName || "") + "</h2>" + bd.querySelector("#ot-intake-body").innerHTML + "</body>");
+      w.document.close();
+      w.focus();
+      w.print();
+    });
+  }
+
   async function openDetail(otId) {
     let d;
     try { d = await api("/api/ot/clients/" + otId); } catch (e) { alert(e.message); return; }
@@ -226,6 +295,9 @@
           (canAdminOT() ? ' <button class="btn small secondary" id="ot-elig-resend">' + (o.eligibility_sent_at ? "Resend Eligibility Verification" : "Send Eligibility Verification") + "</button>" : "") +
           '<span id="ot-elig-res" style="font-size:12px;color:var(--text-muted);"></span></div>';
       })() +
+      '<div class="section-title">Intake Form</div>' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><button class="btn small" id="ot-view-intake">View intake form</button>' +
+      '<span style="font-size:12px;color:var(--text-muted);">' + (d.ot.intake_submitted_at ? "Submitted " + esc(String(d.ot.intake_submitted_at).slice(0, 10)) : "In progress — " + esc(d.ot.intake_progress || 0) + "%") + "</span></div>" +
       '<div class="section-title">Documents</div>' + docs +
       '<div class="section-title">Activity</div>' + activity +
       "</div>";
@@ -233,6 +305,7 @@
     const close = () => back.remove();
     back.querySelector(".close-btn").addEventListener("click", close);
     back.addEventListener("click", (e) => { if (e.target === back) close(); });
+    back.querySelector("#ot-view-intake").addEventListener("click", () => openIntake(d.ot, s.child_name));
     back.querySelector("#ot-status-save").addEventListener("click", async () => {
       const res = back.querySelector("#ot-status-res");
       try { await api("/api/ot/clients/" + otId + "/status", { method: "POST", body: { status: back.querySelector("#ot-status").value } }); res.textContent = "Saved ✓"; render(); }
