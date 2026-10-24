@@ -1221,7 +1221,22 @@ async function route() {
 
   // Enforce per-user module access on direct hash navigation.
   const maGuard = getModuleAccess(state.user);
-  if (maGuard && view && maGuard[view] === false) { location.hash = "#/dashboard"; return; }
+  // A denied section used to bounce to #/dashboard unconditionally. For
+  // somebody whose Dashboard is itself switched off that is a redirect to the
+  // hash they are already on: no hashchange fires, nothing renders, and the
+  // sign-in card just sits there with no error. Send them to a section they
+  // do have instead, and say so plainly if there is none.
+  if (maGuard && maGuard[view || "dashboard"] === false) {
+    const dest = firstGrantedHash(maGuard);
+    if (dest && dest !== hash) { location.hash = dest; return; }
+    renderShell(view || "dashboard");
+    document.getElementById("view-mount").innerHTML = `
+      <div class="card" style="max-width:520px;margin:40px auto;">
+        <h2 style="margin-top:0;">No sections are switched on for your account</h2>
+        <p>You are signed in, but every page of the CRM is turned off for you. Ask the owner to open the Access editor and switch on the sections you need.</p>
+      </div>`;
+    return;
+  }
   // Role check for the client pipeline / client records themselves.
   if (view === "pipeline" && !canAccessClients() && !(maGuard && maGuard.pipeline === true)) {
     location.hash = "#/dashboard";
@@ -1449,6 +1464,19 @@ const MODULE_CATALOG = {
 const CLIENT_ACCESS_ROLES = ["owner", "super_admin", "admin", "intake", "clinical", "billing", "scheduling"];
 function canAccessClients() {
   return !!state.user && CLIENT_ACCESS_ROLES.includes(state.user.role);
+}
+// Where to land somebody whose Dashboard is switched off: the first section
+// they were explicitly granted. Only explicit grants count -- "role default"
+// may still be refused by the server, and landing on a refusal is the same
+// dead end this exists to avoid. Clients follows the same rule as its own
+// route guard, or the two would bounce a person between them forever.
+function firstGrantedHash(ma) {
+  for (const [key, entry] of Object.entries(MODULE_CATALOG)) {
+    if (key === "dashboard" || entry.external || entry.capability) continue;
+    if (ma[key] !== true) continue;
+    return entry.hash || `#/${key}`;
+  }
+  return null;
 }
 // Does the signed-in user carry this grant? Mirrors moduleGranted() on the
 // server, so the sidebar entry and the route guard cannot disagree about who
@@ -1893,6 +1921,20 @@ function renderLogin() {
         method: "POST",
         body: { email: fd.get("email"), password: fd.get("password") },
       });
+      // The password was right, but that is only half a sign-in: the browser
+      // has to keep the session cookie and send it back. When it does not
+      // (cookies blocked, a strict private window), the very next request is
+      // a 401, the api() helper sends the hash to #/login, and the login card
+      // is redrawn over the top of any error -- the person sees the same page
+      // again and nothing else. Ask once, directly, and say what happened.
+      const me = await fetch("/api/auth/me", { credentials: "same-origin" })
+        .then((r) => r.json()).catch(() => ({}));
+      if (!me || !me.user) {
+        document.getElementById("login-error").textContent =
+          "Your password was accepted, but this browser did not keep you signed in. " +
+          "Allow cookies for this site (or leave private browsing) and try again.";
+        return;
+      }
       state.user = user;
       await loadNavOrder();
       location.hash = "#/dashboard";
