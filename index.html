@@ -1151,7 +1151,35 @@ async function boot() {
   route();
 }
 
+// Every caller fires route() without awaiting it, so anything that threw in
+// here used to vanish: no message, and whatever was on screen stayed there --
+// the login card after a sign-in, or a blank page after a reload. Say what
+// broke, and give the person a way out of an account they cannot use.
 async function route() {
+  try {
+    await renderRoute();
+  } catch (err) {
+    console.error("route() failed:", err);
+    const esc = (v) => { const d = document.createElement("div"); d.textContent = v == null ? "" : String(v); return d.innerHTML; };
+    const msg = String((err && err.message) || err || "Unknown error");
+    root.innerHTML = `
+      <div class="card" style="max-width:560px;margin:60px auto;">
+        <h2 style="margin-top:0;">This page could not load</h2>
+        <p>You are signed in${state.user && state.user.email ? " as <b>" + esc(state.user.email) + "</b>" : ""}, but the CRM hit an error while opening it. Send this message to the owner:</p>
+        <pre style="white-space:pre-wrap;background:#f4f1ea;padding:10px;border-radius:6px;">${esc(msg)}</pre>
+        <button class="btn" id="route-error-signout">Sign out</button>
+      </div>`;
+    const out = document.getElementById("route-error-signout");
+    if (out) out.addEventListener("click", async () => {
+      await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+      state.user = null;
+      location.hash = "#/login";
+      location.reload();
+    });
+  }
+}
+
+async function renderRoute() {
   const hash = location.hash || "#/dashboard";
 
   // The two password screens are reachable WITHOUT a session, which is the

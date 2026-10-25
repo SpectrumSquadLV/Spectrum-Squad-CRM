@@ -130,6 +130,32 @@ async function ownerApi() {
       await ctx.close();
     }
 
+    section("Something breaks while the first page is drawn");
+    {
+      await setAccess({});
+      const ctx = await browser.newContext();
+      const p = await ctx.newPage();
+      // Stands in for whatever breaks on one person's account: a request the
+      // first page needs fails outright.
+      await p.route("**/api/stages**", (route) => route.fulfill({ status: 500, body: "{}" }));
+      await p.goto(BASE + "/", { waitUntil: "networkidle" });
+      await p.fill('#login-form input[name="email"]', "clinical@spectrumsquadlv.com");
+      await p.fill('#login-form input[name="password"]', "TestStaff123!");
+      await p.click('#login-form button[type="submit"]');
+      await p.waitForTimeout(1500);
+      const text = await p.locator("#app").innerText().catch(() => "");
+      check("she is shown the error instead of a frozen login card",
+        /This page could not load/.test(text) && (await p.locator("#login-form").count()) === 0, text);
+      await p.reload({ waitUntil: "networkidle" });
+      await p.waitForTimeout(1000);
+      const after = await p.locator("#app").innerText().catch(() => "");
+      check("...and after a reload, instead of a blank page", /This page could not load/.test(after), after);
+      await p.click("#route-error-signout");
+      await p.waitForTimeout(1500);
+      check("Sign out gets her back to the login card", (await p.locator("#login-form").count()) === 1);
+      await ctx.close();
+    }
+
     section("Dashboard left alone");
     {
       await setAccess({});
