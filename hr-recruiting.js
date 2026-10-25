@@ -1350,185 +1350,808 @@ async function hrRenderCandidate(mount, id) {
   }
 }
 
-// ---------------- Timecards (future HR) ----------------
+// ---------------- Timecards: Timecard Management Hub ----------------
+// One pay period at a time: summary cards, a compact employee table with a
+// single action menu per row, bulk actions, a detail panel, and an archive of
+// fully-signed periods. Built on the same endpoints the old list used --
+// sending, previewing, the sent-email view, signed PDFs and owner-only delete
+// all go through the routes they always did. Nothing on this screen edits
+// hours or a signed document.
+
+const TC_STATUS = {
+  not_sent: { label: "Not sent", cls: "ns" },
+  awaiting: { label: "Awaiting signature", cls: "aw" },
+  overdue: { label: "Overdue", cls: "od" },
+  signed: { label: "Signed", cls: "sg" },
+  changes: { label: "Changes requested", cls: "ch" },
+};
+
+const TCHub = {
+  view: "period",          // period | archive
+  period: null,            // { start, end } -- null = let the server pick
+  filters: { q: "", status: "", position: "", sent: "", signed: "" },
+  selected: new Set(),
+  filtersOpen: false,
+  data: null,
+  result: null,            // last bulk-action summary { kind, html }
+  busy: false,
+};
+
+function hrTcInjectStyles() {
+  if (document.getElementById("hr-tc-styles")) return;
+  const s = document.createElement("style");
+  s.id = "hr-tc-styles";
+  s.textContent = `
+    .tch { --tc-navy: var(--brand-navy,#1b2a6b); --tc-cream:#faf6ee; --tc-cream-2:#f4efe3; --tc-line:#ece6d8; }
+    .tch-top { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+    .tch-viewtabs { display:inline-flex; background:var(--tc-cream-2); border-radius:10px; padding:3px; }
+    .tch-viewtabs button { border:none; background:none; padding:7px 14px; border-radius:8px; font-size:13px; font-weight:600; color:var(--text-muted,#6b6a86); cursor:pointer; }
+    .tch-viewtabs button.on { background:#fff; color:var(--tc-navy); box-shadow:0 1px 2px rgba(27,42,107,.12); }
+    .tch-period { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .tch-period select { padding:8px 10px; border:1px solid var(--border,#d1d5db); border-radius:8px; font-size:14px; font-weight:600; color:var(--tc-navy); background:#fff; max-width:100%; }
+    .tch-cards { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; margin-bottom:12px; }
+    .tch-card { text-align:left; background:#fff; border:1px solid var(--tc-line); border-radius:12px; padding:11px 12px; cursor:pointer; font:inherit; color:inherit; min-width:0; }
+    .tch-card:hover { border-color:var(--tc-navy); }
+    .tch-card.on { border-color:var(--tc-navy); box-shadow:0 0 0 2px rgba(27,42,107,.15); }
+    .tch-card .n { font-size:22px; font-weight:700; color:var(--tc-navy); line-height:1.1; }
+    .tch-card .l { font-size:11.5px; color:var(--text-muted,#6b6a86); margin-top:3px; }
+    .tch-card.warn .n { color:#b45309; } .tch-card.bad .n { color:#b91c1c; } .tch-card.good .n { color:#15803d; }
+    .tch-card.static { cursor:default; background:var(--tc-cream); }
+    .tch-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+    .tch-toolbar .grow { flex:1 1 200px; min-width:0; }
+    .tch-search { width:100%; box-sizing:border-box; padding:9px 12px; border:1px solid var(--border,#d1d5db); border-radius:8px; font-size:14px; }
+    .tch-filters { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+    .tch-filters select { padding:7px 9px; border:1px solid var(--border,#d1d5db); border-radius:8px; font-size:13px; background:#fff; }
+    .tch-filter-toggle { display:none; }
+    .tch-list { background:#fff; border:1px solid var(--tc-line); border-radius:12px; overflow:hidden; }
+    .tch-row { display:grid; grid-template-columns:30px minmax(0,2.2fr) 70px minmax(0,1.4fr) 80px 80px 40px; align-items:center; gap:8px; padding:8px 12px; border-top:1px solid #f1ede3; font-size:13.5px; }
+    .tch-row:first-child { border-top:none; }
+    .tch-row.head { background:var(--tc-cream); font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted,#6b6a86); font-weight:600; padding-top:9px; padding-bottom:9px; }
+    .tch-row.sel { background:#f3f4fb; }
+    .tch-name { font-weight:600; color:var(--tc-navy); background:none; border:none; padding:0; text-align:left; cursor:pointer; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+    .tch-name:hover { text-decoration:underline; }
+    .tch-sub { font-size:11.5px; color:var(--text-muted,#6b6a86); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .tch-num { font-variant-numeric:tabular-nums; }
+    .tch-meta-m { display:none; }
+    .tch-pill { display:inline-flex; align-items:center; gap:5px; border-radius:999px; padding:2px 9px; font-size:11.5px; font-weight:600; white-space:nowrap; }
+    .tch-pill::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+    .tch-pill.ns { background:#f1f1f4; color:#5b5b6b; }
+    .tch-pill.aw { background:#e8ecfa; color:var(--tc-navy); }
+    .tch-pill.od { background:#fde8e8; color:#b91c1c; }
+    .tch-pill.sg { background:#dcfce7; color:#15803d; }
+    .tch-pill.ch { background:#fdf0d5; color:#92400e; }
+    .tch-dots { width:32px; height:32px; border-radius:8px; border:1px solid transparent; background:none; cursor:pointer; font-size:18px; line-height:1; color:var(--tc-navy); }
+    .tch-dots:hover, .tch-dots.open { background:var(--tc-cream-2); border-color:var(--tc-line); }
+    .tch-menu { position:fixed; z-index:1100; background:#fff; border:1px solid var(--tc-line); border-radius:10px; box-shadow:0 12px 32px rgba(27,42,107,.18); padding:5px; min-width:210px; }
+    .tch-menu button, .tch-menu a { display:block; width:100%; text-align:left; background:none; border:none; padding:9px 11px; border-radius:7px; font-size:13.5px; color:var(--text,#201a4d); text-decoration:none; cursor:pointer; box-sizing:border-box; }
+    .tch-menu button:hover, .tch-menu a:hover { background:var(--tc-cream); }
+    .tch-menu button[disabled] { color:#a3a3b2; cursor:default; background:none; }
+    .tch-menu .danger { color:#b91c1c; }
+    .tch-menu hr { border:none; border-top:1px solid #f1ede3; margin:4px 0; }
+    .tch-bulk { position:sticky; bottom:10px; z-index:20; display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:var(--tc-navy); color:#fff; border-radius:12px; padding:9px 12px; margin-top:10px; box-shadow:0 10px 24px rgba(27,42,107,.25); }
+    .tch-bulk .cnt { font-weight:700; margin-right:4px; }
+    .tch-bulk button { background:rgba(255,255,255,.14); color:#fff; border:1px solid rgba(255,255,255,.25); border-radius:8px; padding:6px 11px; font-size:12.5px; font-weight:600; cursor:pointer; }
+    .tch-bulk button:hover { background:rgba(255,255,255,.24); }
+    .tch-bulk button[disabled] { opacity:.5; cursor:default; }
+    .tch-result { border-radius:10px; padding:10px 12px; margin-bottom:10px; font-size:13px; background:#ecfdf3; border:1px solid #bbf7d0; color:#14532d; }
+    .tch-result.err { background:#fef2f2; border-color:#fecaca; color:#7f1d1d; }
+    .tch-result button { float:right; border:none; background:none; cursor:pointer; color:inherit; font-size:16px; line-height:1; }
+    .tch-empty { padding:28px 16px; text-align:center; color:var(--text-muted,#6b6a86); font-size:13.5px; }
+    .tch-arch { display:grid; grid-template-columns:minmax(0,1.6fr) 80px 80px 1fr; gap:8px; align-items:center; padding:9px 12px; border-top:1px solid #f1ede3; font-size:13.5px; }
+    .tch-arch:first-child { border-top:none; }
+    .tch-arch .acts { display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap; }
+    .tch-more { margin-top:16px; }
+    .tch-more > summary { cursor:pointer; font-size:13px; font-weight:600; color:var(--tc-navy); padding:8px 0; }
+    .tch-panel-back { position:fixed; inset:0; background:rgba(28,23,64,.4); z-index:990; display:flex; justify-content:flex-end; }
+    .tch-panel { background:#fff; width:min(560px,100%); height:100%; overflow-y:auto; box-shadow:-12px 0 40px rgba(28,23,64,.25); display:flex; flex-direction:column; }
+    .tch-panel-h { position:sticky; top:0; background:var(--tc-navy,#1b2a6b); color:#fff; padding:16px 18px; z-index:1; }
+    .tch-panel-h h2 { margin:0; font-size:18px; color:#fff; }
+    .tch-panel-h .sub { font-size:12.5px; opacity:.85; margin-top:3px; }
+    .tch-panel-h .x { float:right; background:none; border:none; color:#fff; font-size:22px; cursor:pointer; line-height:1; }
+    .tch-panel-b { padding:16px 18px 28px; }
+    .tch-sec { margin-top:16px; }
+    .tch-sec h3 { font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-muted,#6b6a86); margin:0 0 8px; }
+    .tch-kv { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+    .tch-kv div { background:var(--tc-cream,#faf6ee); border-radius:10px; padding:9px 10px; }
+    .tch-kv b { display:block; font-size:16px; color:var(--tc-navy,#1b2a6b); }
+    .tch-kv span { font-size:11px; color:var(--text-muted,#6b6a86); }
+    .tch-timeline { list-style:none; margin:0; padding:0; }
+    .tch-timeline li { display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom:1px dashed #eee; font-size:13px; }
+    .tch-timeline li span:last-child { color:var(--text-muted,#6b6a86); text-align:right; }
+    .tch-days { width:100%; border-collapse:collapse; font-size:13px; }
+    .tch-days td, .tch-days th { padding:6px 4px; border-bottom:1px solid #f1ede3; text-align:left; }
+    .tch-days th { font-size:11px; color:var(--text-muted,#6b6a86); text-transform:uppercase; }
+    .tch-days td.r, .tch-days th.r { text-align:right; }
+    .tch-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+    @media (max-width: 980px) { .tch-cards { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+    @media (max-width: 640px) {
+      .hr-wrap { padding:14px 12px; }
+      .tch-cards { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+      .tch-card { padding:9px 10px; } .tch-card .n { font-size:19px; }
+      .tch-filter-toggle { display:inline-block; }
+      .tch-filters { display:none; } .tch-filters.open { display:flex; }
+      .tch-filters select { flex:1 1 45%; min-width:0; }
+      .tch-row.head { display:none; }
+      .tch-row { grid-template-columns:26px minmax(0,1fr) 36px; gap:6px 8px; padding:9px 10px; }
+      .tch-row .c-hours, .tch-row .c-status, .tch-row .c-sent, .tch-row .c-signed { display:none; }
+      .tch-meta-m { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:3px; font-size:11.5px; color:var(--text-muted,#6b6a86); }
+      .tch-arch { grid-template-columns:minmax(0,1fr) auto; }
+      .tch-arch .c-n, .tch-arch .c-h { display:none; }
+      .tch-panel { width:100%; }
+      .tch-kv { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .tch-bulk { bottom:6px; }
+      .tch-period select { width:100%; }
+      .tch-period { width:100%; }
+    }
+  `;
+  document.head.appendChild(s);
+}
+
+function hrTcShort(d) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return String(d);
+  return dt.toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
+}
+// Pay-period dates are plain YYYY-MM-DD. Parsed as local dates so a period
+// ending on the 15th never shows as the 14th west of UTC.
+function hrTcDay(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ""));
+  if (!m) return s ? String(s) : "?";
+  return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+function hrTcPeriodLabel(p) {
+  if (!p) return "No pay period";
+  return `${hrTcDay(p.pay_period_start)} – ${hrTcDay(p.pay_period_end)}`;
+}
+function hrTcHours(n) {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  return String(v);
+}
+function hrTcPill(st) {
+  const s = TC_STATUS[st] || { label: st, cls: "ns" };
+  return `<span class="tch-pill ${s.cls}">${hrEsc(s.label)}</span>`;
+}
+
 async function hrRenderTimecards(body) {
-  const canManage = hrCanManage();
-  const [employees, timecards] = await Promise.all([
+  hrTcInjectStyles();
+  const qs = new URLSearchParams();
+  if (TCHub.period) { qs.set("period_start", TCHub.period.start || ""); qs.set("period_end", TCHub.period.end || ""); }
+  const [employees, data] = await Promise.all([
     hrApi("/api/hr/employees").catch(() => []),
-    hrApi("/api/hr/timecards").catch(() => []),
+    hrApi("/api/hr/timecards/hub" + (qs.toString() ? "?" + qs : "")),
   ]);
+  TCHub.data = data;
+  if (data.selected_period) TCHub.period = { start: data.selected_period.pay_period_start || "", end: data.selected_period.pay_period_end || "" };
+  // Selections never outlive the rows they pointed at.
+  const ids = new Set((data.timecards || []).map((t) => String(t.id)));
+  [...TCHub.selected].forEach((id) => { if (!ids.has(id)) TCHub.selected.delete(id); });
+  hrTcDraw(body, employees);
+}
+
+function hrTcFiltered() {
+  const f = TCHub.filters;
+  const q = f.q.trim().toLowerCase();
+  return ((TCHub.data && TCHub.data.timecards) || []).filter((t) => {
+    if (q && !String(t.employee_name || "").toLowerCase().includes(q)) return false;
+    if (f.status === "pending" && !["awaiting", "overdue"].includes(t.hub_status)) return false;
+    if (f.status && f.status !== "pending" && t.hub_status !== f.status) return false;
+    if (f.position && (t.role_title || "") !== f.position) return false;
+    if (f.sent === "sent" && t.hub_status === "not_sent") return false;
+    if (f.sent === "unsent" && t.hub_status !== "not_sent") return false;
+    if (f.signed === "signed" && t.hub_status !== "signed") return false;
+    if (f.signed === "unsigned" && t.hub_status === "signed") return false;
+    return true;
+  });
+}
+
+function hrTcDraw(body, employees) {
+  const canManage = hrCanManage();
+  const d = TCHub.data || { periods: [], timecards: [] };
+  const all = d.timecards || [];
+  const rows = hrTcFiltered();
+  const sel = TCHub.selected;
+  const count = (st) => all.filter((t) => t.hub_status === st).length;
+  const pending = count("awaiting") + count("overdue");
+  const hours = all.reduce((s, t) => s + (Number(t.total_hours) || 0), 0);
+  const f = TCHub.filters;
+  const card = (key, n, label, tone) => `<button class="tch-card ${tone || ""} ${f.status === key ? "on" : ""}" data-tccard="${key}"><div class="n">${n}</div><div class="l">${hrEsc(label)}</div></button>`;
+
+  const openP = (d.periods || []).filter((p) => !p.complete);
+  const doneP = (d.periods || []).filter((p) => p.complete);
+  const curKey = TCHub.period ? `${TCHub.period.start}|${TCHub.period.end}` : "";
+  const opt = (p) => {
+    const k = `${p.pay_period_start || ""}|${p.pay_period_end || ""}`;
+    return `<option value="${hrEsc(k)}" ${k === curKey ? "selected" : ""}>${hrEsc(hrTcPeriodLabel(p))} · ${p.signed}/${p.total} signed</option>`;
+  };
+  const periodSelect = (d.periods || []).length
+    ? `<select id="tc-period" aria-label="Payroll period">${openP.length ? `<optgroup label="Open periods">${openP.map(opt).join("")}</optgroup>` : ""}${doneP.length ? `<optgroup label="Completed (all signed)">${doneP.map(opt).join("")}</optgroup>` : ""}</select>`
+    : "";
+
+  const positions = [...new Set(all.map((t) => t.role_title).filter(Boolean))].sort();
+  const sel2 = (id, cur, opts) => `<select id="${id}">${opts.map(([v, l]) => `<option value="${v}" ${cur === v ? "selected" : ""}>${hrEsc(l)}</option>`).join("")}</select>`;
+
+  const result = TCHub.result
+    ? `<div class="tch-result ${TCHub.result.err ? "err" : ""}" id="tc-hub-result"><button data-x title="Dismiss">×</button>${TCHub.result.html}</div>` : "";
+
+  const visibleIds = rows.map((t) => String(t.id));
+  const allVisibleSelected = visibleIds.length && visibleIds.every((id) => sel.has(id));
+  const rowHtml = (t) => {
+    const id = String(t.id);
+    const sentAt = t.first_sent_at || t.verification_requested_at;
+    const sentLbl = t.hub_status === "not_sent" ? "—" : hrTcShort(sentAt);
+    const signedLbl = t.hub_status === "signed" ? hrTcShort(t.accepted_at) : "—";
+    const sub = [t.role_title, TCHub.data.searching_all ? `${hrTcDay(t.pay_period_start)} – ${hrTcDay(t.pay_period_end)}` : "", !t.has_email ? "no email on file" : "", Number(t.open_flags) ? `${t.open_flags} open flag${Number(t.open_flags) === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+    return `<div class="tch-row ${sel.has(id) ? "sel" : ""}" data-row="${id}">
+      <div>${canManage ? `<input type="checkbox" class="tc-pick" value="${id}" ${sel.has(id) ? "checked" : ""} aria-label="Select ${hrEsc(t.employee_name || "timecard")}"/>` : ""}</div>
+      <div style="min-width:0">
+        <button class="tch-name" data-tc="${id}">${hrEsc(t.employee_name || "Unassigned")}</button>
+        ${sub ? `<div class="tch-sub">${hrEsc(sub)}</div>` : ""}
+        <div class="tch-meta-m">${hrTcPill(t.hub_status)}<span class="tch-num">${hrTcHours(t.total_hours)}h</span>${t.hub_status !== "not_sent" ? `<span>Sent ${hrEsc(sentLbl)}</span>` : ""}${t.hub_status === "signed" ? `<span>Signed ${hrEsc(signedLbl)}</span>` : ""}</div>
+      </div>
+      <div class="c-hours tch-num">${hrTcHours(t.total_hours)}</div>
+      <div class="c-status">${hrTcPill(t.hub_status)}</div>
+      <div class="c-sent tch-num" title="${t.verification_requested_at && t.verification_requested_at !== sentAt ? "Last sent " + hrEsc(hrFmtDateTime(t.verification_requested_at)) : ""}">${hrEsc(sentLbl)}</div>
+      <div class="c-signed tch-num">${hrEsc(signedLbl)}</div>
+      <div style="text-align:right"><button class="tch-dots" data-tcmenu="${id}" aria-label="Actions for ${hrEsc(t.employee_name || "timecard")}" title="Actions">⋯</button></div>
+    </div>`;
+  };
+
+  const signedInPeriod = count("signed");
+  const periodView = `
+    <div class="tch-cards">
+      ${card("", all.length, "Total timecards")}
+      ${card("pending", pending, "Pending signatures", pending ? "warn" : "")}
+      ${card("signed", signedInPeriod, "Signed", signedInPeriod && signedInPeriod === all.length ? "good" : "")}
+      ${card("not_sent", count("not_sent"), "Not yet sent")}
+      ${card("overdue", count("overdue"), "Overdue", count("overdue") ? "bad" : "")}
+      <div class="tch-card static"><div class="n tch-num">${hrTcHours(hours)}</div><div class="l">Total hours</div></div>
+    </div>
+    ${result}
+    <div class="tch-toolbar">
+      <div class="grow"><input class="tch-search" id="tc-search" type="search" placeholder="Search employees in this period" value="${hrEsc(f.q)}"/></div>
+      <button class="hr-btn sm ghost tch-filter-toggle" id="tc-filter-toggle">Filters${["status", "position", "sent", "signed"].some((k) => f[k]) ? " •" : ""}</button>
+      ${canManage && all.length ? `<button class="hr-btn sm ghost" id="tc-resend-pending" ${pending ? "" : "disabled"}>Resend to pending (${pending})</button>
+      <button class="hr-btn sm ghost" id="tc-zip-period" ${signedInPeriod ? "" : "disabled"}>Download all signed (ZIP)</button>
+      <a class="hr-btn sm ghost" id="tc-csv-period" style="text-decoration:none" href="/api/hr/timecards/export.csv?period_start=${encodeURIComponent(TCHub.period ? TCHub.period.start : "")}&period_end=${encodeURIComponent(TCHub.period ? TCHub.period.end : "")}">Export CSV</a>` : ""}
+    </div>
+    <div class="tch-filters ${TCHub.filtersOpen ? "open" : ""}" id="tc-filters">
+      ${sel2("tc-f-status", f.status, [["", "All statuses"], ["not_sent", "Not sent"], ["pending", "Pending (awaiting + overdue)"], ["awaiting", "Awaiting signature"], ["overdue", "Overdue"], ["signed", "Signed"], ["changes", "Changes requested"]])}
+      ${sel2("tc-f-position", f.position, [["", "All positions"], ...positions.map((p) => [hrEsc(p), p])])}
+      ${sel2("tc-f-signed", f.signed, [["", "Signed + unsigned"], ["signed", "Signed only"], ["unsigned", "Unsigned only"]])}
+      ${sel2("tc-f-sent", f.sent, [["", "Sent + unsent"], ["sent", "Sent only"], ["unsent", "Unsent only"]])}
+      ${["status", "position", "sent", "signed"].some((k) => f[k]) || f.q ? `<button class="hr-btn sm ghost" id="tc-f-clear">Clear</button>` : ""}
+    </div>
+    <div class="tch-list" id="tc-list">
+      ${all.length ? `<div class="tch-row head">
+        <div>${canManage ? `<input type="checkbox" id="tc-check-all" title="Select all shown" ${allVisibleSelected ? "checked" : ""}/>` : ""}</div>
+        <div>Employee</div><div>Hours</div><div>Status</div><div>Sent</div><div>Signed</div><div></div>
+      </div>` : ""}
+      ${rows.map(rowHtml).join("") || `<div class="tch-empty">${all.length ? "No timecards match these filters." : "No timecards for this pay period yet. Use Build timecards to create them."}</div>`}
+    </div>
+    ${canManage && sel.size ? `<div class="tch-bulk" id="tc-bulk">
+      <span class="cnt">${sel.size} selected</span>
+      <button id="tc-send-selected">Send / resend</button>
+      <button id="tc-zip-selected">Download signed PDFs</button>
+      <button id="tc-csv-selected">Export CSV</button>
+      <button id="tc-sel-clear">Clear</button>
+    </div>` : ""}`;
+
+  const archive = hrTcArchiveHtml();
 
   const empRows = employees.length
-    ? employees
-        .map((e) => {
-          const creds = (e.credentials || [])
-            .map((c) => `<span class="hr-badge">${hrEsc(c.credential_type)}${c.expiration_date ? " · exp " + hrFmtDate(c.expiration_date) : ""}</span>`)
-            .join(" ");
-          return `<div style="padding:8px 0;border-bottom:1px solid #f0f0f3"><strong>${hrEsc(e.name)}</strong> <span class="hr-muted">${hrEsc(e.role_title || "")}</span><div style="margin-top:4px">${creds || '<span class="hr-muted">No credentials on file</span>'} ${canManage ? `<button class="hr-btn sm ghost" data-addcred="${e.id}">+ Credential</button>` : ""}</div></div>`;
-        })
-        .join("")
+    ? employees.map((e) => {
+        const creds = (e.credentials || []).map((c) => `<span class="hr-badge">${hrEsc(c.credential_type)}${c.expiration_date ? " · exp " + hrFmtDate(c.expiration_date) : ""}</span>`).join(" ");
+        return `<div style="padding:8px 0;border-bottom:1px solid #f0f0f3"><strong>${hrEsc(e.name)}</strong> <span class="hr-muted">${hrEsc(e.role_title || "")}</span><div style="margin-top:4px">${creds || '<span class="hr-muted">No credentials on file</span>'} ${canManage ? `<button class="hr-btn sm ghost" data-addcred="${e.id}">+ Credential</button>` : ""}</div></div>`;
+      }).join("")
     : `<p class="hr-muted">No employees yet.</p>`;
 
-  const tcHours = (t) => {
-    let entries = t.entries;
-    if (typeof entries === "string") { try { entries = JSON.parse(entries); } catch (e) { entries = []; } }
-    if (!Array.isArray(entries)) return "";
-    const n = entries.reduce((sum, e) => sum + (Number(e.hours) || 0), 0);
-    return n ? (Math.round(n * 100) / 100) + "h" : "";
-  };
-  const tcRows = timecards.length
-    ? `<table class="hr-table"><thead><tr>${canManage ? `<th style="width:28px"><input type="checkbox" id="tc-check-all" title="Select all" /></th>` : ""}<th>Employee</th><th>Period</th><th>Hours</th><th>Source</th><th>Status</th><th>Flags</th><th></th></tr></thead><tbody>${timecards
-        .map(
-          (t) => {
-            const sendBtn = canManage ? `<button class="hr-btn sm" data-tcsend="${t.id}">${t.verification_requested_at ? "Resend" : "Send"}</button>` : "";
-            const previewBtn = canManage ? `<button class="hr-btn sm ghost" data-tcpreview="${t.id}">Preview</button>` : "";
-            // Only offered once something has actually gone out. A "Sent email"
-            // button on a timecard nobody has sent invites a click that can only
-            // report nothing.
-            const sentBtn = canManage && t.verification_requested_at
-              ? `<button class="hr-btn sm ghost" data-tcsent="${t.id}">Sent email</button>` : "";
-            const pdfLink = t.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${t.pdf_doc_id}" target="_blank">Signed PDF</a>` : "";
-            const delBtn = hrCanDelete() ? `<button class="hr-btn sm ghost" data-tcdel="${t.id}" data-tcwho="${hrEsc(t.employee_name || "this timecard")}" style="color:#b91c1c">Delete</button>` : "";
-            const check = canManage ? `<td><input type="checkbox" class="tc-pick" value="${t.id}" ${t.status === "accepted" ? "disabled" : ""} /></td>` : "";
-            const sentMark = t.verification_requested_at ? `<div class="hr-muted" style="font-size:11px">sent</div>` : "";
-            // Legible response status: accepted (with signer), edits requested,
-            // awaiting the employee, or the raw workflow status.
-            const st = t.status === "accepted"
-              ? `<span class="hr-badge qualified">Accepted ✓</span>${t.signed_name ? `<div class="hr-muted" style="font-size:11px">by ${hrEsc(t.signed_name)}</div>` : ""}`
-              : t.status === "edit_requested"
-              ? `<span class="hr-badge paused">✏ Edits requested</span>`
-              : t.verification_requested_at
-              ? `<span class="hr-badge">Awaiting response</span>`
-              : `<span class="hr-badge ${Number(t.open_flags) ? "paused" : "qualified"}">${hrEsc(t.status)}</span>`;
-            return `<tr>${check}<td>${hrEsc(t.employee_name || "—")}${sentMark}</td><td>${hrEsc((t.pay_period_start || "?") + " → " + (t.pay_period_end || "?"))}</td><td>${hrEsc(tcHours(t))}</td><td>${hrEsc(t.source || "")}</td><td>${st}</td><td>${t.open_flags}/${t.flag_count} open</td><td style="white-space:nowrap">${previewBtn} <button class="hr-btn sm ghost" data-tc="${t.id}">View</button> ${sentBtn} ${sendBtn} ${pdfLink} ${delBtn}</td></tr>`;
-          }
-        )
-        .join("")}</tbody></table>`
-    : `<p class="hr-muted">No timecards imported yet.</p>`;
-
-  body.innerHTML = `
-    <div class="hr-alert">Timecard verification. Timecards are built from staff-verified Rethink sessions, checked for anomalies, and sent to each person to review and sign \u2014 nothing here changes payroll, and nothing is emailed until you send it.</div>
-    <div class="hr-2col">
-      <div class="hr-card"><h2>Employees</h2>
+  body.innerHTML = `<div class="tch">
+    <div class="tch-top">
+      <div class="tch-viewtabs" role="tablist">
+        <button data-tcview="period" class="${TCHub.view === "period" ? "on" : ""}">Pay period</button>
+        <button data-tcview="archive" class="${TCHub.view === "archive" ? "on" : ""}">Archive</button>
+      </div>
+      <div class="hr-row">
+        ${canManage ? `<button class="hr-btn sm" id="tc-open-builder">Build timecards…</button><button class="hr-btn sm ghost" id="tc-settings">Reminders</button>` : ""}
+        <span class="hr-status" id="tc-builder-status"></span>
+      </div>
+    </div>
+    ${TCHub.view === "period" ? `<div class="tch-period" style="margin-bottom:12px">${periodSelect || `<span class="hr-muted">No pay periods yet.</span>`}</div>${periodView}` : archive}
+    <details class="tch-more"><summary>Employees &amp; credentials</summary>
+      <div class="hr-card" style="margin-top:6px">
         ${canManage ? `<div class="hr-2col"><div class="hr-field"><label>Name</label><input id="emp-name"/></div><div class="hr-field"><label>Email</label><input id="emp-email"/></div></div>
         <div class="hr-2col"><div class="hr-field"><label>Role title</label><input id="emp-role"/></div><div class="hr-field"><label>Employment type</label><input id="emp-type" placeholder="full_time / part_time"/></div></div>
         <div class="hr-row"><button class="hr-btn sm" id="emp-add">Add employee</button><span class="hr-status" id="emp-status"></span></div><hr style="border:none;border-top:1px solid #eee;margin:12px 0"/>` : ""}
         ${empRows}
       </div>
-      <div class="hr-card"><h2>Build timecards</h2>
-        ${canManage ? `<p class="hr-muted" style="margin:0 0 10px;">Timecards are built from the sessions each staff member has already verified in Rethink. Pick a date range, and either everyone or one person \u2014 no spreadsheet, no JSON.</p>
-        <div class="hr-row"><button class="hr-btn sm" id="tc-open-builder">Build timecards\u2026</button><span class="hr-status" id="tc-builder-status"></span></div>
-        <p class="hr-muted" style="margin:10px 0 0;font-size:12px;">The same builder is on Staff &rsaquo; Staff, under <strong>Import payroll &rarr; timecards</strong>.</p>` : `<p class="hr-muted">Managers can build timecards.</p>`}
-      </div>
-    </div>
-    <div class="hr-card"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><h2 style="margin:0;">Timecards</h2>${canManage && timecards.length ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><button class="hr-btn sm" id="tc-send-selected" disabled>Send selected (0)</button><button class="hr-btn sm ghost" id="tc-send-all">Send to all unaccepted</button><span class="hr-status" id="tc-send-all-status"></span></div>` : ""}</div>${tcRows}</div>`;
+    </details>
+    <p class="hr-lock" style="margin-top:10px">Nothing on this page changes payroll hours or a signed timecard. Emails only go out when you send them${TCHub.data && TCHub.data.settings && TCHub.data.settings.auto_reminders ? ", plus the automatic reminders you switched on" : ""}.</p>
+  </div>`;
 
-  if (canManage) {
-    document.getElementById("emp-add").addEventListener("click", async () => {
-      const st = document.getElementById("emp-status");
-      const name = document.getElementById("emp-name").value.trim();
-      if (!name) { st.textContent = "Name required."; st.className = "hr-status err"; return; }
-      try {
-        await hrApi("/api/hr/employees", { method: "POST", body: { name, email: document.getElementById("emp-email").value, role_title: document.getElementById("emp-role").value, employment_type: document.getElementById("emp-type").value } });
-        hrRenderTimecards(body);
-      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
-    });
-    body.querySelectorAll("[data-addcred]").forEach((b) =>
-      b.addEventListener("click", async () => {
-        const type = window.prompt("Credential type (e.g. RBT, BCBA, CPR, background_check):", "");
-        if (!type) return;
-        const exp = window.prompt("Expiration date (YYYY-MM-DD, optional):", "");
-        try { await hrApi("/api/hr/employees/" + b.dataset.addcred + "/credentials", { method: "POST", body: { credential_type: type, expiration_date: exp || null } }); hrRenderTimecards(body); } catch (e) { alert(e.message); }
-      })
-    );
-    // The hand-written-JSON import that used to live here is gone. It looked
-    // like the way to make a timecard and could not be used without writing a
-    // JSON array by hand, so it caught people who were looking for the real
-    // builder. One way in now: the same modal the Staff directory opens.
-    const builderBtn = document.getElementById("tc-open-builder");
-    if (builderBtn) builderBtn.addEventListener("click", () => {
-      const st = document.getElementById("tc-builder-status");
-      if (typeof window.openPayrollImportModal !== "function") {
-        // Only reachable if this page is open against an older index.html.
-        if (st) { st.textContent = "Open Staff \u203a Staff and use Import payroll \u2192 timecards."; st.className = "hr-status err"; }
-        return;
-      }
-      // No page mount: there is no staff directory behind this modal to
-      // refresh when it closes, and handing it this page's body would render
-      // the Staff page into HR & Recruiting.
-      window.openPayrollImportModal(null);
-    });
-    const sendAllBtn = document.getElementById("tc-send-all");
-    if (sendAllBtn) sendAllBtn.addEventListener("click", async () => {
-      if (!confirm("Send the timecard review email to every employee who hasn't accepted yet? (Employees with no email on file are skipped.)")) return;
-      const st = document.getElementById("tc-send-all-status");
-      sendAllBtn.disabled = true; st.textContent = "Sending…"; st.className = "hr-status";
-      try {
-        const r = await hrApi("/api/hr/timecards/send-all", { method: "POST", body: {} });
-        st.textContent = `Sent ${r.sent}.` + (r.skipped && r.skipped.length ? ` Skipped (no email): ${r.skipped.join(", ")}` : "");
-        st.className = r.skipped && r.skipped.length ? "hr-status err" : "hr-status ok";
-        hrRenderTimecards(body);
-      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; sendAllBtn.disabled = false; }
-    });
-    body.querySelectorAll("[data-tcsend]").forEach((b) =>
-      b.addEventListener("click", async () => {
-        b.disabled = true; const old = b.textContent; b.textContent = "Sending…";
-        try {
-          const r = await hrApi("/api/hr/timecards/" + b.dataset.tcsend + "/request-verification", { method: "POST", body: {} });
-          alert(r.sent ? "Timecard email sent to the employee." : "Link created, but this employee has no email on file. Add their email in the Employees list, then resend.");
-          hrRenderTimecards(body);
-        } catch (e) { alert(e.message); b.disabled = false; b.textContent = old; }
-      })
-    );
+  hrTcWire(body, employees);
+}
 
-    // ---- pick-and-send ------------------------------------------------
-    const picks = () => [...body.querySelectorAll(".tc-pick:checked")].map((c) => c.value);
-    const selBtn = document.getElementById("tc-send-selected");
-    const syncSel = () => {
-      if (!selBtn) return;
-      const n = picks().length;
-      selBtn.textContent = `Send selected (${n})`;
-      selBtn.disabled = n === 0;
-    };
-    body.querySelectorAll(".tc-pick").forEach((c) => c.addEventListener("change", syncSel));
-    const allBox = document.getElementById("tc-check-all");
-    if (allBox) allBox.addEventListener("change", () => {
-      body.querySelectorAll(".tc-pick:not([disabled])").forEach((c) => { c.checked = allBox.checked; });
-      syncSel();
-    });
-    if (selBtn) selBtn.addEventListener("click", async () => {
-      const ids = picks();
-      if (!ids.length) return;
-      if (!confirm(`Send the timecard review email to ${ids.length} employee${ids.length === 1 ? "" : "s"}?`)) return;
-      const st = document.getElementById("tc-send-all-status");
-      selBtn.disabled = true; st.textContent = "Sending…"; st.className = "hr-status";
-      try {
-        const r = await hrApi("/api/hr/timecards/send", { method: "POST", body: { ids } });
-        st.textContent = `Sent ${r.sent}.` + (r.skipped && r.skipped.length ? ` Skipped (no email on file): ${r.skipped.join(", ")}` : "");
-        st.className = r.skipped && r.skipped.length ? "hr-status err" : "hr-status ok";
-        hrRenderTimecards(body);
-      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; selBtn.disabled = false; }
-    });
+function hrTcArchiveHtml() {
+  const d = TCHub.data || { periods: [] };
+  const done = (d.periods || []).filter((p) => p.complete);
+  const searchRows = TCHub.archiveSearch;
+  const list = done.length
+    ? `<div class="tch-list">${done.map((p) => `<div class="tch-arch">
+        <div><strong style="color:var(--brand-navy,#1b2a6b)">${hrEsc(hrTcPeriodLabel(p))}</strong><div class="tch-sub">${p.total} timecard${p.total === 1 ? "" : "s"} · ${hrTcHours(p.total_hours)} hours · all signed</div></div>
+        <div class="c-n tch-num">${p.total}</div><div class="c-h tch-num">${hrTcHours(p.total_hours)}h</div>
+        <div class="acts"><button class="hr-btn sm ghost" data-arch-open="${hrEsc((p.pay_period_start || "") + "|" + (p.pay_period_end || ""))}">Open</button>${hrCanManage() ? `<button class="hr-btn sm ghost" data-arch-zip="${hrEsc((p.pay_period_start || "") + "|" + (p.pay_period_end || ""))}">ZIP</button>` : ""}</div>
+      </div>`).join("")}</div>`
+    : `<div class="tch-empty" style="border:1px dashed var(--border,#e5e7eb);border-radius:12px">No completed pay periods yet. A period moves here once every timecard in it is signed. Nothing is ever deleted.</div>`;
+  const results = searchRows
+    ? `<div class="tch-list" style="margin-bottom:14px">${searchRows.length ? searchRows.map((t) => `<div class="tch-arch">
+        <div style="min-width:0"><button class="tch-name" data-tc="${t.id}">${hrEsc(t.employee_name || "Unassigned")}</button><div class="tch-sub">${hrEsc(hrTcDay(t.pay_period_start))} – ${hrEsc(hrTcDay(t.pay_period_end))} · ${hrTcHours(t.total_hours)}h</div></div>
+        <div class="c-n">${hrTcPill(t.hub_status)}</div><div class="c-h tch-num">${t.hub_status === "signed" ? hrEsc(hrTcShort(t.accepted_at)) : ""}</div>
+        <div class="acts">${t.pdf_doc_id ? `<a class="hr-btn sm ghost" style="text-decoration:none" href="/api/hr/employee-documents/${t.pdf_doc_id}" target="_blank">Signed PDF</a>` : ""}<button class="hr-btn sm ghost" data-arch-open="${hrEsc((t.pay_period_start || "") + "|" + (t.pay_period_end || ""))}">Period</button></div>
+      </div>`).join("") : `<div class="tch-empty">No timecards found for that name.</div>`}</div>`
+    : "";
+  return `<div class="tch-toolbar"><div class="grow"><input class="tch-search" id="tc-arch-q" type="search" placeholder="Find a timecard in any pay period by employee name" value="${hrEsc(TCHub.archiveQ || "")}"/></div><button class="hr-btn sm" id="tc-arch-go">Search</button>${searchRows ? `<button class="hr-btn sm ghost" id="tc-arch-clear">Clear</button>` : ""}</div>
+    ${results}
+    <h2 style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted,#6b6a86);margin:6px 0 8px">Completed pay periods</h2>
+    ${list}`;
+}
 
-    body.querySelectorAll("[data-tcpreview]").forEach((b) =>
-      b.addEventListener("click", () => hrOpenTimecardPreview(b.dataset.tcpreview, body))
-    );
-    body.querySelectorAll("[data-tcsent]").forEach((b) =>
-      b.addEventListener("click", () => hrOpenTimecardSentEmails(b.dataset.tcsent))
-    );
+function hrTcSetResult(html, err) { TCHub.result = { html, err: !!err }; }
+function hrTcNames(list) { return list.map((n) => hrEsc(n)).join(", "); }
+
+function hrTcSendSummary(r, verb) {
+  const parts = [`<strong>${verb} ${r.sent} timecard${r.sent === 1 ? "" : "s"}.</strong>`];
+  if (r.already_signed && r.already_signed.length) parts.push(`Skipped ${r.already_signed.length} already signed: ${hrTcNames(r.already_signed)}.`);
+  if (r.just_sent && r.just_sent.length) parts.push(`Skipped ${r.just_sent.length} sent within the last minute (no duplicate emails): ${hrTcNames(r.just_sent)}.`);
+  if (r.skipped && r.skipped.length) parts.push(`Not sent, no email on file: ${hrTcNames(r.skipped)}. Add their email under Employees &amp; credentials, then resend.`);
+  return parts.join(" ");
+}
+
+async function hrTcDownloadZip(payload) {
+  const res = await fetch("/api/hr/timecards/signed-zip", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let msg = "Download failed.";
+    try { const j = await res.json(); msg = j.error || msg; } catch (e) { /* not json */ }
+    throw new Error(msg);
   }
-  body.querySelectorAll("[data-tc]").forEach((b) => b.addEventListener("click", () => hrOpenTimecardModal(b.dataset.tc, body)));
-  // Owner-only delete. Confirm first (destructive), then refresh the list.
-  body.querySelectorAll("[data-tcdel]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      if (!confirm(`Delete the timecard for ${b.dataset.tcwho}? This removes the imported hours and cannot be undone. (Any signed PDF already filed is kept.)`)) return;
-      b.disabled = true; b.textContent = "Deleting…";
+  const skipped = Number(res.headers.get("X-Skipped-Count") || 0);
+  const cd = res.headers.get("Content-Disposition") || "";
+  const m = /filename="([^"]+)"/.exec(cd);
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = m ? decodeURIComponent(m[1]) : "signed-timecards.zip";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  return { skipped };
+}
+
+// One action menu, floated on the page and placed next to the button that
+// opened it, so it is never clipped by the list and never makes the page
+// scroll sideways on a phone.
+function hrTcCloseMenu() {
+  document.querySelectorAll(".tch-menu").forEach((m) => m.remove());
+  document.querySelectorAll(".tch-dots.open").forEach((b) => b.classList.remove("open"));
+}
+function hrTcOpenMenu(btn, tc, body) {
+  const wasOpen = btn.classList.contains("open");
+  hrTcCloseMenu();
+  if (wasOpen) return;
+  const canManage = hrCanManage();
+  const sent = tc.hub_status !== "not_sent";
+  const signed = tc.hub_status === "signed";
+  const items = [];
+  items.push(`<button data-tc="${tc.id}">View timecard</button>`);
+  if (canManage && !signed) items.push(`<button data-tcpreview="${tc.id}">Preview email</button>`);
+  // Only once something has actually gone out -- a history button on a
+  // timecard nobody has sent can only report nothing.
+  if (canManage && tc.verification_requested_at) items.push(`<button data-tcsent="${tc.id}">View email history</button>`);
+  if (canManage && !signed) items.push(`<button data-tcsend="${tc.id}">${sent ? "Resend email" : "Send email"}</button>`);
+  if (tc.pdf_doc_id) {
+    items.push(`<a href="/api/hr/employee-documents/${tc.pdf_doc_id}?inline=1" target="_blank" rel="noopener">View signed PDF</a>`);
+    items.push(`<a href="/api/hr/employee-documents/${tc.pdf_doc_id}">Download signed PDF</a>`);
+  }
+  if (hrCanDelete()) items.push(`<hr/><button class="danger" data-tcdel="${tc.id}" data-tcwho="${hrEsc(tc.employee_name || "this timecard")}">Delete timecard</button>`);
+  const menu = document.createElement("div");
+  menu.className = "tch-menu";
+  menu.setAttribute("role", "menu");
+  menu.innerHTML = items.join("");
+  document.body.appendChild(menu);
+  btn.classList.add("open");
+  const r = btn.getBoundingClientRect();
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  let left = Math.min(r.right - mw, window.innerWidth - mw - 8);
+  left = Math.max(8, left);
+  let top = r.bottom + 4;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+  menu.style.left = left + "px";
+  menu.style.top = top + "px";
+  hrTcWireActions(menu, body, true);
+}
+
+// Row and menu actions share one wiring so the menu, the detail panel and the
+// archive search results all behave the same way.
+function hrTcWireActions(root, body, fromMenu) {
+  const refresh = () => hrRenderTimecards(body);
+  const done = () => { if (fromMenu) hrTcCloseMenu(); };
+  root.querySelectorAll("[data-tc]").forEach((b) => b.addEventListener("click", (e) => { e.preventDefault(); done(); hrOpenTimecardDetail(b.dataset.tc, body); }));
+  root.querySelectorAll("[data-tcpreview]").forEach((b) => b.addEventListener("click", () => { done(); hrOpenTimecardPreview(b.dataset.tcpreview, body); }));
+  root.querySelectorAll("[data-tcsent]").forEach((b) => b.addEventListener("click", () => { done(); hrOpenTimecardSentEmails(b.dataset.tcsent); }));
+  root.querySelectorAll("a[href]").forEach((a) => a.addEventListener("click", () => done()));
+  root.querySelectorAll("[data-tcsend]").forEach((b) => b.addEventListener("click", async () => {
+    if (b.disabled) return;
+    b.disabled = true; const old = b.textContent; b.textContent = "Sending…";
+    try {
+      const r = await hrApi("/api/hr/timecards/" + b.dataset.tcsend + "/request-verification", { method: "POST", body: {} });
+      done();
+      const t = ((TCHub.data && TCHub.data.timecards) || []).find((x) => String(x.id) === String(b.dataset.tcsend));
+      const who = hrEsc((t && t.employee_name) || "the employee");
+      if (r.sent) hrTcSetResult(`<strong>Timecard emailed to ${who}.</strong>`);
+      else if (r.reason === "just_sent" || r.reason === "in_progress") hrTcSetResult(`Already sent to ${who} within the last minute, so it was not sent again.`);
+      else hrTcSetResult(`Link created, but ${who} has no email on file. Add their email under Employees &amp; credentials, then resend.`, true);
+      refresh();
+    } catch (e) { alert(e.message); b.disabled = false; b.textContent = old; }
+  }));
+  root.querySelectorAll("[data-tcdel]").forEach((b) => b.addEventListener("click", async () => {
+    done();
+    if (!confirm(`Delete the timecard for ${b.dataset.tcwho}? This removes the imported hours and cannot be undone. (Any signed PDF already filed is kept.)`)) return;
+    b.disabled = true;
+    try {
+      await hrApi("/api/hr/timecards/" + b.dataset.tcdel, { method: "DELETE" });
+      TCHub.selected.delete(String(b.dataset.tcdel));
+      hrTcSetResult(`Timecard for ${hrEsc(b.dataset.tcwho)} deleted.`);
+      refresh();
+    } catch (e) { alert(e.message || "Could not delete."); b.disabled = false; }
+  }));
+}
+
+function hrTcWire(body, employees) {
+  const canManage = hrCanManage();
+  const redraw = () => hrTcDraw(body, employees);
+  const refresh = () => hrRenderTimecards(body);
+  const rowsById = new Map(((TCHub.data && TCHub.data.timecards) || []).map((t) => [String(t.id), t]));
+
+  body.querySelectorAll("[data-tcview]").forEach((b) => b.addEventListener("click", () => {
+    TCHub.view = b.dataset.tcview; TCHub.result = null; redraw();
+  }));
+  const res = body.querySelector("#tc-hub-result [data-x]");
+  if (res) res.addEventListener("click", () => { TCHub.result = null; redraw(); });
+
+  const per = body.querySelector("#tc-period");
+  if (per) per.addEventListener("change", () => {
+    const [start, end] = per.value.split("|");
+    TCHub.period = { start, end }; TCHub.selected.clear(); TCHub.result = null;
+    TCHub.filters = { q: "", status: "", position: "", sent: "", signed: "" };
+    refresh();
+  });
+
+  body.querySelectorAll("[data-tccard]").forEach((b) => b.addEventListener("click", () => {
+    const k = b.dataset.tccard;
+    TCHub.filters.status = TCHub.filters.status === k ? "" : k;
+    if (k === "") TCHub.filters.status = "";
+    TCHub.filters.signed = ""; TCHub.filters.sent = "";
+    redraw();
+  }));
+
+  // Search filters in place without redrawing the box being typed in.
+  const search = body.querySelector("#tc-search");
+  if (search) {
+    let tmr = null;
+    search.addEventListener("input", () => {
+      clearTimeout(tmr);
+      tmr = setTimeout(() => {
+        TCHub.filters.q = search.value;
+        const pos = search.selectionStart;
+        redraw();
+        const again = body.querySelector("#tc-search");
+        if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) { /* type=search */ } }
+      }, 160);
+    });
+  }
+  const ft = body.querySelector("#tc-filter-toggle");
+  if (ft) ft.addEventListener("click", () => { TCHub.filtersOpen = !TCHub.filtersOpen; redraw(); });
+  [["tc-f-status", "status"], ["tc-f-position", "position"], ["tc-f-signed", "signed"], ["tc-f-sent", "sent"]].forEach(([id, key]) => {
+    const el = body.querySelector("#" + id);
+    if (el) el.addEventListener("change", () => { TCHub.filters[key] = el.value; redraw(); });
+  });
+  const fc = body.querySelector("#tc-f-clear");
+  if (fc) fc.addEventListener("click", () => { TCHub.filters = { q: "", status: "", position: "", sent: "", signed: "" }; redraw(); });
+
+  // Selection.
+  body.querySelectorAll(".tc-pick").forEach((c) => c.addEventListener("change", () => {
+    if (c.checked) TCHub.selected.add(c.value); else TCHub.selected.delete(c.value);
+    redraw();
+  }));
+  const allBox = body.querySelector("#tc-check-all");
+  if (allBox) allBox.addEventListener("change", () => {
+    hrTcFiltered().forEach((t) => { if (allBox.checked) TCHub.selected.add(String(t.id)); else TCHub.selected.delete(String(t.id)); });
+    redraw();
+  });
+  const clr = body.querySelector("#tc-sel-clear");
+  if (clr) clr.addEventListener("click", () => { TCHub.selected.clear(); redraw(); });
+
+  // Menus.
+  body.querySelectorAll("[data-tcmenu]").forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const t = rowsById.get(String(b.dataset.tcmenu));
+    if (t) hrTcOpenMenu(b, t, body);
+  }));
+  if (!window.__tcMenuCloser) {
+    window.__tcMenuCloser = true;
+    document.addEventListener("click", (e) => { if (!e.target.closest(".tch-menu") && !e.target.closest(".tch-dots")) hrTcCloseMenu(); });
+    window.addEventListener("resize", hrTcCloseMenu);
+    window.addEventListener("scroll", hrTcCloseMenu, true);
+    window.addEventListener("hashchange", hrTcCloseMenu);
+  }
+  hrTcWireActions(body.querySelector("#tc-list") || body, body, false);
+
+  // A guarded runner: one bulk action at a time, the button disabled while it
+  // runs, so a double tap can't fire it twice.
+  const run = async (btn, fn) => {
+    if (TCHub.busy) return;
+    TCHub.busy = true;
+    const old = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "Working…"; }
+    try { await fn(); }
+    catch (e) { hrTcSetResult(hrEsc(e.message || "Something went wrong."), true); }
+    finally {
+      TCHub.busy = false;
+      if (btn && document.body.contains(btn)) { btn.disabled = false; btn.textContent = old; }
+    }
+  };
+  const selectedIds = () => [...TCHub.selected];
+  const per2 = TCHub.period || { start: "", end: "" };
+
+  const rp = body.querySelector("#tc-resend-pending");
+  if (rp) rp.addEventListener("click", () => {
+    const n = ((TCHub.data && TCHub.data.timecards) || []).filter((t) => ["awaiting", "overdue"].includes(t.hub_status)).length;
+    if (!confirm(`Send a signature reminder to ${n} employee${n === 1 ? "" : "s"} who haven't signed for ${hrTcPeriodLabel(TCHub.data.selected_period)}?`)) return;
+    run(rp, async () => {
+      const r = await hrApi("/api/hr/timecards/send-all", { method: "POST", body: { pay_period_start: per2.start, pay_period_end: per2.end, only_pending: true } });
+      hrTcSetResult(hrTcSendSummary(r, "Reminded on"));
+      await refresh();
+    });
+  });
+  const zp = body.querySelector("#tc-zip-period");
+  if (zp) zp.addEventListener("click", () => run(zp, async () => {
+    const r = await hrTcDownloadZip({ pay_period_start: per2.start, pay_period_end: per2.end });
+    hrTcSetResult(`<strong>Signed timecards downloaded.</strong>${r.skipped ? ` ${r.skipped} unsigned timecard${r.skipped === 1 ? " was" : "s were"} left out.` : ""}`);
+    redraw();
+  }));
+
+  const ss = body.querySelector("#tc-send-selected");
+  if (ss) ss.addEventListener("click", () => {
+    const ids = selectedIds();
+    const eligible = ids.filter((id) => { const t = rowsById.get(id); return t && t.hub_status !== "signed"; });
+    if (!eligible.length) { hrTcSetResult("Everyone selected has already signed, so there is nothing to send.", true); redraw(); return; }
+    const signedN = ids.length - eligible.length;
+    if (!confirm(`Email the timecard to ${eligible.length} employee${eligible.length === 1 ? "" : "s"}?${signedN ? ` (${signedN} already signed will be skipped.)` : ""}`)) return;
+    run(ss, async () => {
+      const r = await hrApi("/api/hr/timecards/send", { method: "POST", body: { ids: eligible } });
+      r.already_signed = (r.already_signed || []).concat(ids.filter((id) => !eligible.includes(id)).map((id) => (rowsById.get(id) || {}).employee_name || "#" + id));
+      hrTcSetResult(hrTcSendSummary(r, "Sent"));
+      TCHub.selected.clear();
+      await refresh();
+    });
+  });
+  const zs = body.querySelector("#tc-zip-selected");
+  if (zs) zs.addEventListener("click", () => {
+    const ids = selectedIds().filter((id) => { const t = rowsById.get(id); return t && t.pdf_doc_id; });
+    if (!ids.length) { hrTcSetResult("None of the selected timecards has a signed PDF yet.", true); redraw(); return; }
+    run(zs, async () => {
+      await hrTcDownloadZip({ ids });
+      const left = TCHub.selected.size - ids.length;
+      hrTcSetResult(`<strong>Downloaded ${ids.length} signed PDF${ids.length === 1 ? "" : "s"}.</strong>${left ? ` ${left} selected without a signed PDF ${left === 1 ? "was" : "were"} left out.` : ""}`);
+      redraw();
+    });
+  });
+  const cs = body.querySelector("#tc-csv-selected");
+  if (cs) cs.addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = "/api/hr/timecards/export.csv?ids=" + encodeURIComponent(selectedIds().join(","));
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+
+  // Archive.
+  const aq = body.querySelector("#tc-arch-q");
+  const go = async () => {
+    const q = (aq && aq.value.trim()) || "";
+    TCHub.archiveQ = q;
+    if (!q) { TCHub.archiveSearch = null; redraw(); return; }
+    const r = await hrApi("/api/hr/timecards/hub?q=" + encodeURIComponent(q));
+    TCHub.archiveSearch = r.timecards || [];
+    redraw();
+  };
+  const ag = body.querySelector("#tc-arch-go");
+  if (ag) ag.addEventListener("click", () => go().catch((e) => alert(e.message)));
+  if (aq) aq.addEventListener("keydown", (e) => { if (e.key === "Enter") go().catch((er) => alert(er.message)); });
+  const ac = body.querySelector("#tc-arch-clear");
+  if (ac) ac.addEventListener("click", () => { TCHub.archiveQ = ""; TCHub.archiveSearch = null; redraw(); });
+  body.querySelectorAll("[data-arch-open]").forEach((b) => b.addEventListener("click", () => {
+    const [start, end] = b.dataset.archOpen.split("|");
+    TCHub.period = { start, end }; TCHub.view = "period"; TCHub.selected.clear(); TCHub.result = null;
+    TCHub.filters = { q: "", status: "", position: "", sent: "", signed: "" };
+    refresh();
+  }));
+  body.querySelectorAll("[data-arch-zip]").forEach((b) => b.addEventListener("click", () => {
+    const [start, end] = b.dataset.archZip.split("|");
+    run(b, async () => { await hrTcDownloadZip({ pay_period_start: start, pay_period_end: end }); });
+  }));
+  if (TCHub.view === "archive") hrTcWireActions(body.querySelector(".tch") || body, body, false);
+
+  if (!canManage) return;
+
+  const builderBtn = body.querySelector("#tc-open-builder");
+  if (builderBtn) builderBtn.addEventListener("click", () => {
+    const st = body.querySelector("#tc-builder-status");
+    if (typeof window.openPayrollImportModal !== "function") {
+      if (st) { st.textContent = "Open Staff › Staff and use Import payroll → timecards."; st.className = "hr-status err"; }
+      return;
+    }
+    // No page mount: there is no staff directory behind this modal to refresh
+    // when it closes, and handing it this page's body would render the Staff
+    // page into HR & Recruiting.
+    window.openPayrollImportModal(null);
+  });
+  const setBtn = body.querySelector("#tc-settings");
+  if (setBtn) setBtn.addEventListener("click", () => hrTcOpenSettings(body));
+
+  const empAdd = body.querySelector("#emp-add");
+  if (empAdd) empAdd.addEventListener("click", async () => {
+    const st = body.querySelector("#emp-status");
+    const name = body.querySelector("#emp-name").value.trim();
+    if (!name) { st.textContent = "Name required."; st.className = "hr-status err"; return; }
+    try {
+      await hrApi("/api/hr/employees", { method: "POST", body: { name, email: body.querySelector("#emp-email").value, role_title: body.querySelector("#emp-role").value, employment_type: body.querySelector("#emp-type").value } });
+      refresh();
+    } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
+  });
+  body.querySelectorAll("[data-addcred]").forEach((b) => b.addEventListener("click", async () => {
+    const type = window.prompt("Credential type (e.g. RBT, BCBA, CPR, background_check):", "");
+    if (!type) return;
+    const exp = window.prompt("Expiration date (YYYY-MM-DD, optional):", "");
+    try { await hrApi("/api/hr/employees/" + b.dataset.addcred + "/credentials", { method: "POST", body: { credential_type: type, expiration_date: exp || null } }); refresh(); } catch (e) { alert(e.message); }
+  }));
+}
+
+function hrTcOpenSettings(body) {
+  const s = (TCHub.data && TCHub.data.settings) || { overdue_days: 3, auto_reminders: false, reminder_days: 2, max_reminders: 3 };
+  const back = document.createElement("div");
+  back.className = "hr-modal-back";
+  back.innerHTML = `<div class="hr-modal" style="max-width:460px">
+    <button class="hr-close" data-x>×</button>
+    <h2>Signature reminders</h2>
+    <div class="hr-field"><label>Mark a timecard Overdue when it is unsigned this many days after it was first sent</label><input type="number" id="tcs-overdue" min="1" max="60" value="${s.overdue_days}"/></div>
+    <div class="hr-field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="tcs-auto" style="width:auto" ${s.auto_reminders ? "checked" : ""}/><label for="tcs-auto" style="margin:0">Send reminders automatically</label></div>
+    <div class="hr-2col">
+      <div class="hr-field"><label>Every (days)</label><input type="number" id="tcs-every" min="1" max="30" value="${s.reminder_days}"/></div>
+      <div class="hr-field"><label>Stop after (reminders)</label><input type="number" id="tcs-max" min="1" max="10" value="${s.max_reminders}"/></div>
+    </div>
+    <p class="hr-muted" style="font-size:12px">Reminders go only to people who were sent their timecard and haven't signed. Anyone who asked for changes is left for you to handle first.</p>
+    <div class="hr-row"><button class="hr-btn" id="tcs-save">Save</button><span class="hr-status" id="tcs-st"></span></div>
+  </div>`;
+  document.body.appendChild(back);
+  const close = () => back.remove();
+  back.querySelector("[data-x]").addEventListener("click", close);
+  back.addEventListener("click", (e) => { if (e.target === back) close(); });
+  back.querySelector("#tcs-save").addEventListener("click", async (e) => {
+    const btn = e.currentTarget; const st = back.querySelector("#tcs-st");
+    btn.disabled = true;
+    try {
+      await hrApi("/api/hr/timecards/hub-settings", { method: "POST", body: {
+        overdue_days: Number(back.querySelector("#tcs-overdue").value),
+        auto_reminders: back.querySelector("#tcs-auto").checked,
+        reminder_days: Number(back.querySelector("#tcs-every").value),
+        max_reminders: Number(back.querySelector("#tcs-max").value),
+      } });
+      close(); hrRenderTimecards(body);
+    } catch (er) { st.textContent = er.message; st.className = "hr-status err"; btn.disabled = false; }
+  });
+}
+
+// Detail panel: everything about one timecard without leaving the dashboard.
+// Slides in from the right on a computer, fills the screen on a phone.
+function hrOpenTimecardDetail(id, tcBody) {
+  const canManage = hrCanManage();
+  const back = document.createElement("div");
+  back.className = "tch-panel-back";
+  back.innerHTML = `<div class="tch-panel" role="dialog" aria-modal="true"><div class="tch-panel-h"><button class="x" data-x aria-label="Close">×</button><h2>Loading…</h2></div><div class="tch-panel-b" id="tcd-body"></div></div>`;
+  document.body.appendChild(back);
+  const close = () => back.remove();
+  back.querySelector("[data-x]").addEventListener("click", close);
+  back.addEventListener("click", (e) => { if (e.target === back) close(); });
+  const onKey = (e) => { if (e.key === "Escape") { close(); document.removeEventListener("keydown", onKey); } };
+  document.addEventListener("keydown", onKey);
+
+  Promise.all([
+    hrApi("/api/hr/timecards/" + id),
+    canManage ? hrApi("/api/hr/timecards/" + id + "/emails").catch(() => null) : Promise.resolve(null),
+  ]).then(([tc, mail]) => {
+    const row = ((TCHub.data && TCHub.data.timecards) || []).find((t) => String(t.id) === String(id)) || {};
+    const hub = row.hub_status || (tc.status === "accepted" ? "signed" : tc.status === "edit_requested" ? "changes" : tc.verification_requested_at ? "awaiting" : "not_sent");
+    const entries = tc.entries || [];
+    const total = entries.reduce((s, e) => s + (Number(e.hours) || 0), 0);
+    const byDay = new Map();
+    entries.forEach((e) => {
+      const k = e.date || "—";
+      const cur = byDay.get(k) || { hours: 0, n: 0 };
+      cur.hours += Number(e.hours) || 0; cur.n++;
+      byDay.set(k, cur);
+    });
+    const days = [...byDay.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    const emp = tc.employee || {};
+    const name = emp.name || row.employee_name || "Unassigned";
+    const sentFirst = tc.first_sent_at || tc.verification_requested_at;
+
+    const timeline = [
+      ["Generated", tc.created_at ? hrFmtDateTime(tc.created_at) : "—"],
+      ["First emailed", sentFirst ? hrFmtDateTime(sentFirst) : "Not sent"],
+      ...(tc.verification_requested_at && tc.verification_requested_at !== sentFirst ? [["Last emailed", hrFmtDateTime(tc.verification_requested_at)]] : []),
+      ...(Number(tc.reminder_count) ? [["Automatic reminders", `${tc.reminder_count}${tc.last_reminder_at ? " · last " + hrFmtDateTime(tc.last_reminder_at) : ""}`]] : []),
+      ["Signed", tc.status === "accepted" ? `${hrFmtDateTime(tc.accepted_at)}${tc.signed_name ? " · as " + tc.signed_name : ""}` : "Not signed"],
+    ];
+
+    const flags = tc.flags || [];
+    const flagsHtml = flags.length ? flags.map((f) => `<div class="hr-note" style="border-left:3px solid ${["approved", "corrected"].includes(f.status) ? "#22c55e" : "#e0a430"}">
+        <div><strong>${hrEsc(f.flag_type.replace(/_/g, " "))}</strong> — ${hrEsc(f.status)}</div>
+        <div class="hr-muted">${hrEsc(f.detail)}</div>
+        ${f.employee_explanation ? `<div style="margin-top:4px"><em>Employee:</em> ${hrEsc(f.employee_explanation)}</div>` : ""}
+        ${canManage && !["approved", "corrected"].includes(f.status) ? `<div class="hr-row" style="margin-top:6px"><button class="hr-btn sm" data-resolve="${f.id}" data-st="approved">Approve</button><button class="hr-btn sm ghost" data-resolve="${f.id}" data-st="corrected">Mark corrected</button></div>` : ""}
+      </div>`).join("") : "";
+
+    const edited = Array.isArray(tc.edited_entries) ? tc.edited_entries : [];
+    const changes = tc.status === "edit_requested" ? `<div class="hr-note" style="border-left:3px solid #e0a430;background:#fdf6e6;margin-top:12px">
+        <div><strong>Employee requested changes</strong> — they did not accept as-is.</div>
+        ${tc.employee_note ? `<div style="margin-top:4px"><em>Their note:</em> ${hrEsc(tc.employee_note)}</div>` : ""}
+        ${edited.length ? `<table class="tch-days" style="margin-top:6px"><tr><th>Date</th><th>In</th><th>Out</th><th class="r">Hours</th></tr>${edited.map((e) => `<tr><td>${hrEsc(e.date || "")}</td><td>${hrEsc(e.clock_in || "—")}</td><td>${hrEsc(e.clock_out || "—")}</td><td class="r">${hrEsc(e.hours != null ? e.hours : "")}</td></tr>`).join("")}</table>` : ""}
+      </div>` : "";
+
+    const mails = (mail && mail.emails) || [];
+    const mailHtml = mail
+      ? (mails.length ? `<ul class="tch-timeline">${mails.map((m) => `<li><span>${hrEsc(m.subject || "(no subject)")}<br><span class="hr-muted" style="font-size:11.5px">to ${hrEsc(m.recipient)} · ${hrEsc(m.delivered || "unknown")}</span></span><span>${hrEsc(hrFmtDateTime(m.sent_at))}</span></li>`).join("")}</ul>${tc.verification_requested_at ? `<button class="hr-btn sm ghost" style="margin-top:8px" data-tcsent="${tc.id}">Show the messages as sent</button>` : ""}`
+        : `<p class="hr-muted" style="margin:0">No email recorded for this timecard yet.</p>`)
+      : "";
+
+    back.querySelector(".tch-panel-h").innerHTML = `<button class="x" data-x aria-label="Close">×</button>
+      <h2>${hrEsc(name)}</h2>
+      <div class="sub">${hrEsc(hrTcDay(tc.pay_period_start))} – ${hrEsc(hrTcDay(tc.pay_period_end))}${emp.role_title ? " · " + hrEsc(emp.role_title) : ""}</div>`;
+    back.querySelector("[data-x]").addEventListener("click", close);
+
+    const pdf = tc.pdf_doc_id;
+    back.querySelector("#tcd-body").innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${hrTcPill(hub)}${!emp.email && canManage ? `<span class="hr-muted" style="font-size:12px">No email on file</span>` : emp.email ? `<span class="hr-muted" style="font-size:12px">${hrEsc(emp.email)}</span>` : ""}</div>
+      <div class="tch-actions">
+        ${canManage && hub !== "signed" ? `<button class="hr-btn sm" data-tcsend="${tc.id}">${hub === "not_sent" ? "Send for signature" : "Resend"}</button><button class="hr-btn sm ghost" data-tcpreview="${tc.id}">Preview email</button>` : ""}
+        ${pdf ? `<a class="hr-btn sm ghost" style="text-decoration:none" href="/api/hr/employee-documents/${pdf}" target="_blank" rel="noopener">Download signed PDF</a>` : ""}
+      </div>
+      <div class="tch-sec"><div class="tch-kv">
+        <div><b class="tch-num">${hrTcHours(total)}</b><span>Total hours</span></div>
+        <div><b class="tch-num">${days.length}</b><span>Days worked</span></div>
+        <div><b class="tch-num">${entries.length}</b><span>Sessions</span></div>
+      </div></div>
+      ${changes}
+      <div class="tch-sec"><h3>Signature tracking</h3><ul class="tch-timeline">${timeline.map(([k, v]) => `<li><span>${hrEsc(k)}</span><span>${hrEsc(v)}</span></li>`).join("")}</ul></div>
+      <div class="tch-sec"><h3>Daily hours</h3>${days.length ? `<table class="tch-days"><tr><th>Date</th><th class="r">Sessions</th><th class="r">Hours</th></tr>${days.map(([d, v]) => `<tr><td>${hrEsc(hrTcDay(d))}</td><td class="r">${v.n}</td><td class="r tch-num">${hrTcHours(v.hours)}</td></tr>`).join("")}<tr><td><strong>Total</strong></td><td></td><td class="r tch-num"><strong>${hrTcHours(total)}</strong></td></tr></table>` : `<p class="hr-muted">No entries on this timecard.</p>`}</div>
+      ${pdf ? `<div class="tch-sec"><h3>Signed timecard</h3><iframe title="Signed timecard PDF" src="/api/hr/employee-documents/${pdf}?inline=1#view=FitH" style="width:100%;height:360px;border:1px solid var(--border,#e5e7eb);border-radius:10px;background:#fff"></iframe><p class="hr-muted" style="font-size:11.5px;margin:4px 0 0">If it doesn't display here, use Download signed PDF above.</p></div>` : ""}
+      ${canManage ? `<div class="tch-sec"><h3>Email history</h3>${mailHtml}</div>` : ""}
+      ${flagsHtml ? `<div class="tch-sec"><h3>Flags</h3>${flagsHtml}<p class="hr-lock">Approving a flag records supervisor sign-off only — it never changes payroll or timecard hours.</p></div>` : ""}`;
+
+    const panel = back.querySelector("#tcd-body");
+    hrTcWireActions(panel, tcBody, false);
+    panel.querySelectorAll("[data-tcsend],[data-tcpreview],[data-tcsent]").forEach((b) => b.addEventListener("click", () => {
+      if (b.matches("[data-tcsend]")) close();
+    }));
+    panel.querySelectorAll("[data-resolve]").forEach((b) => b.addEventListener("click", async () => {
       try {
-        await hrApi("/api/hr/timecards/" + b.dataset.tcdel, { method: "DELETE" });
-        hrRenderTimecards(body);
-      } catch (e) { alert(e.message || "Could not delete."); b.disabled = false; b.textContent = "Delete"; }
-    })
-  );
+        await hrApi("/api/hr/timecard-flags/" + b.dataset.resolve + "/resolve", { method: "POST", body: { status: b.dataset.st } });
+        close(); hrOpenTimecardDetail(id, tcBody); if (tcBody) hrRenderTimecards(tcBody);
+      } catch (e) { alert(e.message); }
+    }));
+  }).catch((e) => {
+    back.querySelector("#tcd-body").innerHTML = `<p class="hr-status err">${hrEsc(e.message || "Could not load this timecard.")}</p>`;
+  });
 }
 
 // What was ACTUALLY emailed to this person about this timecard -- the message
@@ -1664,7 +2287,8 @@ function hrOpenTimecardPreview(id, tcBody) {
       sendBtn.disabled = true; st.textContent = "Sending…"; st.className = "hr-status";
       try {
         const r = await hrApi("/api/hr/timecards/" + id + "/request-verification", { method: "POST", body: {} });
-        st.textContent = r.sent ? "Sent." : "Link created, but no email on file.";
+        st.textContent = r.sent ? "Sent." : (r.reason === "just_sent" || r.reason === "in_progress")
+          ? "Already sent within the last minute, so it was not sent again." : "Link created, but no email on file.";
         st.className = r.sent ? "hr-status ok" : "hr-status err";
         if (tcBody) hrRenderTimecards(tcBody);
         setTimeout(close, 900);
@@ -1673,87 +2297,9 @@ function hrOpenTimecardPreview(id, tcBody) {
   }).catch((e) => alert(e.message));
 }
 
+// Older entry point, kept so anything still calling it lands on the new panel.
 function hrOpenTimecardModal(id, tcBody) {
-  const canManage = hrCanManage();
-  hrApi("/api/hr/timecards/" + id).then((tc) => {
-    const flagsHtml = (tc.flags || []).length
-      ? (tc.flags || [])
-          .map(
-            (f) =>
-              `<div class="hr-note" style="border-left:3px solid ${["approved", "corrected"].includes(f.status) ? "#22c55e" : "#e0a430"}">
-                <div><strong>${hrEsc(f.flag_type.replace(/_/g, " "))}</strong> — ${hrEsc(f.status)}</div>
-                <div class="hr-muted">${hrEsc(f.detail)}</div>
-                ${f.employee_explanation ? `<div style="margin-top:4px"><em>Employee:</em> ${hrEsc(f.employee_explanation)}</div>` : ""}
-                ${canManage && !["approved", "corrected"].includes(f.status) ? `<div class="hr-row" style="margin-top:6px"><button class="hr-btn sm" data-resolve="${f.id}" data-st="approved">Approve</button><button class="hr-btn sm ghost" data-resolve="${f.id}" data-st="corrected">Mark corrected</button></div>` : ""}
-              </div>`
-          )
-          .join("")
-      : `<p class="hr-muted">No flags — this timecard looks clean.</p>`;
-    const entriesHtml = (tc.entries || []).length
-      ? `<table class="hr-table"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th></tr></thead><tbody>${(tc.entries || [])
-          .map((e) => `<tr><td>${hrEsc(e.date || "")}</td><td>${hrEsc(e.clock_in || "—")}</td><td>${hrEsc(e.clock_out || "—")}</td><td>${hrEsc(e.hours != null ? e.hours : "")}</td></tr>`)
-          .join("")}</tbody></table>`
-      : "";
-    // The employee's response to the emailed timecard: accepted-and-signed, or
-    // edits requested (with their proposed hours + note), or still awaiting.
-    const fmtWhen = (s) => { if (!s) return ""; try { return new Date(s).toLocaleString(); } catch (e) { return s; } };
-    const editedRows = Array.isArray(tc.edited_entries) ? tc.edited_entries : [];
-    const editedTable = editedRows.length
-      ? `<table class="hr-table"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th></tr></thead><tbody>${editedRows
-          .map((e) => `<tr><td>${hrEsc(e.date || "")}</td><td>${hrEsc(e.clock_in || "—")}</td><td>${hrEsc(e.clock_out || "—")}</td><td>${hrEsc(e.hours != null ? e.hours : "")}</td></tr>`)
-          .join("")}</tbody></table>`
-      : "";
-    const pdfLink = tc.pdf_doc_id ? `<a class="hr-btn sm ghost" href="/api/hr/employee-documents/${tc.pdf_doc_id}" target="_blank">Open signed PDF</a>` : "";
-    let respHtml = "";
-    if (tc.status === "accepted") {
-      respHtml = `<div class="hr-note" style="border-left:3px solid #22c55e;background:#f0fbf5">
-        <div><strong>Accepted &amp; signed</strong> by ${hrEsc(tc.signed_name || "the employee")}${tc.accepted_at ? " on " + hrEsc(fmtWhen(tc.accepted_at)) : ""}.</div>
-        <div class="hr-muted">They accepted these hours as-is — the <strong>Entries</strong> below are exactly what to enter into payroll.</div>
-        ${pdfLink ? `<div style="margin-top:6px">${pdfLink}</div>` : ""}
-      </div>`;
-    } else if (tc.status === "edit_requested") {
-      respHtml = `<div class="hr-note" style="border-left:3px solid #e0a430;background:#fdf6e6">
-        <div><strong>✏ Employee requested changes</strong> — they did not accept as-is.</div>
-        ${tc.employee_note ? `<div style="margin-top:4px"><em>Their note:</em> ${hrEsc(tc.employee_note)}</div>` : ""}
-        ${editedTable ? `<div class="hr-muted" style="font-weight:600;margin:8px 0 4px">Hours the employee is proposing</div>${editedTable}` : `<div class="hr-muted" style="margin-top:4px">No line-item edits were provided — see their note above.</div>`}
-      </div>`;
-    } else if (tc.verification_requested_at) {
-      respHtml = `<div class="hr-note" style="border-left:3px solid #93a5cf"><div>Sent to the employee ${hrEsc(fmtWhen(tc.verification_requested_at))} — awaiting their response.</div></div>`;
-    } else {
-      respHtml = `<div class="hr-muted">Not sent to the employee yet.</div>`;
-    }
-    const back = document.createElement("div");
-    back.className = "hr-modal-back";
-    back.innerHTML = `<div class="hr-modal">
-      <button class="hr-close" id="hr-mclose">×</button>
-      <h2>Timecard — ${hrEsc(tc.employee ? tc.employee.name : "Unassigned")}</h2>
-      <p class="hr-muted">${hrEsc((tc.pay_period_start || "?") + " → " + (tc.pay_period_end || "?"))} · ${hrEsc(tc.source || "")} · <strong>${hrEsc(tc.status)}</strong></p>
-      <div style="margin:10px 0">${respHtml}</div>
-      ${canManage ? `<div class="hr-row" style="margin-bottom:10px"><button class="hr-btn sm ghost" id="tc-verify">Request employee verification</button><span class="hr-status" id="tc-verify-status"></span></div>` : ""}
-      <div class="hr-muted" style="font-weight:600;margin:8px 0 6px">Flags</div>${flagsHtml}
-      ${entriesHtml ? `<div class="hr-muted" style="font-weight:600;margin:14px 0 6px">Entries</div>${entriesHtml}` : ""}
-      <p class="hr-lock" style="margin-top:12px">Approving a flag records supervisor sign-off only — it never changes payroll or timecard hours.</p>
-    </div>`;
-    document.body.appendChild(back);
-    const close = () => back.remove();
-    back.querySelector("#hr-mclose").addEventListener("click", close);
-    back.addEventListener("click", (e) => { if (e.target === back) close(); });
-    back.querySelectorAll("[data-resolve]").forEach((b) =>
-      b.addEventListener("click", async () => {
-        try { await hrApi("/api/hr/timecard-flags/" + b.dataset.resolve + "/resolve", { method: "POST", body: { status: b.dataset.st } }); close(); hrOpenTimecardModal(id, tcBody); if (tcBody) hrRenderTimecards(tcBody); } catch (e) { alert(e.message); }
-      })
-    );
-    const vBtn = back.querySelector("#tc-verify");
-    if (vBtn) vBtn.addEventListener("click", async () => {
-      const st = back.querySelector("#tc-verify-status");
-      st.textContent = "Generating…"; st.className = "hr-status";
-      try {
-        const r = await hrApi("/api/hr/timecards/" + id + "/request-verification", { method: "POST" });
-        if (navigator.clipboard) navigator.clipboard.writeText(r.url);
-        st.textContent = (r.sent ? "Emailed employee. " : "") + "Link copied: " + r.url; st.className = "hr-status ok";
-      } catch (e) { st.textContent = e.message; st.className = "hr-status err"; }
-    });
-  });
+  hrOpenTimecardDetail(id, tcBody);
 }
 
 // ---------------- Audit log ----------------
@@ -1806,9 +2352,21 @@ async function hrDoRender(mount) {
 // Primary entry point: the native router calls this directly for #/hr routes,
 // handing us the real #view-mount inline (no race with the native dashboard).
 // Returns true if HR handled the route (i.e. the user may access it).
+// A render asked for while another is still running is not dropped: the
+// router replaces #view-mount on every navigation, so the render already in
+// flight may be drawing into a mount that is no longer on the page. Once it
+// finishes, the newest mount is checked and drawn if it is still empty.
+let hrRenderAgain = false;
+function hrAfterRender(mount) {
+  if (hrRenderAgain || (mount && !mount.isConnected)) {
+    hrRenderAgain = false;
+    setTimeout(hrSyncView, 0);
+  }
+}
+
 window.__renderHR = async function (mount) {
   if (!hrCanSee()) return false;
-  if (hrRenderInFlight) return true;
+  if (hrRenderInFlight) { hrRenderAgain = true; return true; }
   hrRenderInFlight = true;
   try {
     await hrDoRender(mount);
@@ -1817,6 +2375,7 @@ window.__renderHR = async function (mount) {
     if (mount) mount.innerHTML = '<div class="hr-wrap"><div class="hr-err">Something went wrong loading HR &amp; Recruiting. Please refresh.</div></div>';
   } finally {
     hrRenderInFlight = false;
+    hrAfterRender(mount);
   }
   return true;
 };
@@ -1838,6 +2397,7 @@ async function hrSyncView() {
     console.error("HR view error:", e);
   } finally {
     hrRenderInFlight = false;
+    hrAfterRender(mount);
   }
 }
 
