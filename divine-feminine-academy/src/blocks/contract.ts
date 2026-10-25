@@ -1,5 +1,6 @@
 import type { FunctionComponent } from 'react'
 import type { z } from 'zod'
+import type { SlotImages } from '@/db/queries/images'
 import type { Area } from '@/features/assessment/scoring'
 
 /**
@@ -35,7 +36,7 @@ export interface BlockDefinition<
    * Day 7 reads her week back to her. The day runner resolves this on the
    * server and hands it to the block as `context`.
    */
-  resolvesContext?: 'her_evidence'
+  resolvesContext?: 'her_evidence' | 'founder_portrait'
   /** Where this block writes, beyond block_responses. */
   writesTo?: Array<
     | 'her_patterns'
@@ -57,6 +58,17 @@ export interface BlockMemberProps<Config, Response> {
   disabled?: boolean
   /** Server-resolved data, for blocks that declare `resolvesContext`. */
   context?: HerEvidence
+  /**
+   * Quiana's photograph, for blocks that declare `founder_portrait`.
+   *
+   * Separate from `context` rather than folded into it: the two are resolved
+   * from different places for different reasons, and a union would make every
+   * block that reads one narrow away the other before it could use it.
+   *
+   * Undefined when no block on the day asked for it; both crops null when she
+   * has not uploaded one yet. A block must render without it.
+   */
+  portrait?: SlotImages
   /**
    * What she has already written TODAY, by the name each block saved under.
    *

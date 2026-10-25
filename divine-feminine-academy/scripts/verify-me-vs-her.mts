@@ -313,6 +313,83 @@ check(
   qa.unlockedThrough === base.durationDays,
 )
 
+// ---------------------------------------------------------------- her voice
+
+const { founderNotes, founderNote } = await import(
+  '../src/features/challenge/founder-notes'
+)
+
+const noteBlocks = days.flatMap((d) =>
+  d.blocks.filter((b) => b.type === 'founder_note'),
+)
+
+check(
+  'she speaks before a mirror at least twice',
+  noteBlocks.length >= 2,
+  String(noteBlocks.length),
+)
+
+check(
+  'every note a day asks for actually exists',
+  noteBlocks.every((b) => {
+    const key = (b.config as { note?: string }).note
+    return Boolean(key && founderNote(key))
+  }),
+)
+
+check(
+  'and every note written is actually used somewhere',
+  founderNotes.every((n) =>
+    noteBlocks.some((b) => (b.config as { note?: string }).note === n.key),
+  ),
+)
+
+// The whole point of the block. A note that appears anywhere else is fine in
+// principle, but one that appears immediately before a mirror is the reason
+// it exists, and the placement is easy to lose in a curriculum edit.
+days.forEach((day, i) => {
+  const idx = day.blocks.findIndex((b) => b.type === 'founder_note')
+  if (idx === -1) return
+  /*
+   * Her note FRAMES the mirror; it does not introduce it.
+   *
+   * The order is note, then the day's own setup copy, then the mirror - so
+   * the last words she reads before looking are still the curriculum's
+   * instruction, which is what she is meant to carry in with her. Putting the
+   * note last would displace that, and an earlier version of this did exactly
+   * that until the setup-copy check above caught it.
+   */
+  check(
+    `day ${i + 1}: her note frames the mirror without displacing the instruction`,
+    day.blocks[idx + 1]?.type === 'rich_text' &&
+      day.blocks[idx + 2]?.type === 'mirror_gaze',
+    `${day.blocks[idx + 1]?.type} then ${day.blocks[idx + 2]?.type}`,
+  )
+})
+
+check(
+  'no note invents a life she has not written',
+  founderNotes.every((n) => n.origin.length === 0 || n.status === 'hers'),
+  'an origin story may only ship once she has marked the note as hers',
+)
+
+// Not a failure - draft copy is a legitimate state and she is mid-writing.
+// But it must be impossible to forget, so it is printed every single run.
+const drafts = founderNotes.filter((n) => n.status === 'draft')
+if (drafts.length > 0) {
+  console.log(
+    `\n  note  ${drafts.length} founder note(s) still marked 'draft', awaiting Quiana's own words:`,
+  )
+  for (const d of drafts) console.log(`        ${d.key} — ${d.where}`)
+}
+
+const missingOrigin = founderNotes.filter((n) => n.origin.length === 0)
+if (missingOrigin.length > 0) {
+  console.log(
+    `        ${missingOrigin.length} note(s) have no origin story yet. They read correctly without one.`,
+  )
+}
+
 console.log(
   `\nME VS. HER: ${passed} passed, ${failed} failed`,
 )

@@ -16,7 +16,7 @@ import {
 } from '@/db/schema'
 import { getCohortById } from '@/db/queries/cohorts'
 import { getActor } from '@/lib/auth/actor-server'
-import { siteUrl } from '@/lib/auth/env'
+import { requestOrigin } from '@/lib/auth/env'
 import { paymentProvider } from '@/lib/payments'
 import { installmentSchedule, priceOrder, type Coupon, type Offer } from './pricing'
 
@@ -228,14 +228,26 @@ export async function startCheckout(
       ? `Payment ${first.number} of ${schedule.length}`
       : undefined
 
+  /*
+   * Where Stripe sends her back, resolved from THIS request.
+   *
+   * It used to be siteUrl(), which reads NEXT_PUBLIC_SITE_URL - inlined at
+   * BUILD time. So the two most important links in the whole purchase carried
+   * whatever that variable said when the image was built, and a woman who
+   * paid on one hostname could be returned to a different one that may not
+   * even answer. Exactly the bug that sent magic links to localhost, sitting
+   * in the return leg of checkout where it costs money rather than a login.
+   */
+  const origin = await requestOrigin()
+
   let checkout
   try {
     checkout = await paymentProvider().createCheckout({
       orderId: order.id,
       contactEmail: input.email,
       mode: 'payment',
-      successUrl: `${siteUrl()}/checkout/complete?order=${order.id}`,
-      cancelUrl: `${siteUrl()}/checkout/cancelled?order=${order.id}`,
+      successUrl: `${origin}/checkout/complete?order=${order.id}`,
+      cancelUrl: `${origin}/checkout/cancelled?order=${order.id}`,
       metadata: { orderId: order.id, offerId: offer.id },
       lineItems: [
         {
@@ -247,7 +259,25 @@ export async function startCheckout(
         },
       ],
     })
-  } catch {
+  } catch (error) {
+    /*
+     * The provider said WHY, and this used to throw that away.
+     *
+     * A bare `catch {}` here meant a failed checkout produced one vague
+     * sentence on screen and absolutely nothing anywhere else - no log, no
+     * trace, nothing to search. The first real failure was undiagnosable
+     * from outside, which is the worst possible property for the one screen
+     * that takes money.
+     *
+     * She still sees the vague sentence: a Stripe error string on a public
+     * page tells a stranger about the account's configuration. But the
+     * server now records the whole thing.
+     */
+    console.error('[checkout] provider refused to create a session', {
+      orderId: order.id,
+      offerId: offer.id,
+      error,
+    })
     return { error: 'Checkout is not available right now. Nothing was charged.' }
   }
 

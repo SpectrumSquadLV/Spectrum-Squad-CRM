@@ -30,6 +30,14 @@ function mmss(total: number): string {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
+/** "One minute", "Three minutes" - never "180s". */
+function describe(seconds: number): string {
+  if (seconds < 60) return `${seconds} seconds`
+  const minutes = Math.round(seconds / 60)
+  const names = ['One', 'Two', 'Three', 'Four', 'Five', 'Six']
+  return `${names[minutes - 1] ?? minutes} minute${minutes === 1 ? '' : 's'}`
+}
+
 /** A soft, short tone. Not a notification sound. */
 function chime() {
   try {
@@ -138,6 +146,41 @@ export function MirrorGazeMember({
     >
       {!running && !atRest && (
         <>
+          {/*
+            THIS IS A THING SHE DOES WITH HER BODY.
+            
+            The screen before this one is the day's own setup copy, and on Day
+            1 it says "look into your own eyes" and never once says to go and
+            find a mirror - Day 2 is the first day that says "Settle in front
+            of a mirror." So a woman on Day 1 can read the whole screen as a
+            metaphor, press a button, and be alone with a running clock and no
+            idea what she was meant to have done. She would assume she had
+            misunderstood, which on the day she is asked to look at herself for
+            the first time is the worst possible thing to be feeling.
+            
+            So the block says it plainly, on every day, rather than relying on
+            the curriculum to have mentioned it. Stated as equipment and
+            duration - the way a recipe says what pan - so it reads as
+            preparation rather than as another instruction to absorb.
+            
+            It also says the timer is silent and that stopping is allowed,
+            because both are true and neither is discoverable from a screen
+            that has a Start button and nothing else on it.
+          */}
+          <div className="mb-10 w-full max-w-sm border border-rule-strong px-6 py-6 text-left">
+            <p className="text-2xs uppercase tracking-[0.24em] text-clay-deep">
+              Exercise
+            </p>
+            <p className="mt-4 font-display text-xl leading-snug text-ink">
+              Go to a mirror before you start.
+            </p>
+            <ul className="mt-5 space-y-2 text-xs leading-relaxed text-ink-soft">
+              <li>{describe(config.seconds)}, with nothing on the screen but the time.</li>
+              <li>No sound, and nothing to answer afterwards.</li>
+              <li>You can stop whenever you want to. It still counts.</li>
+            </ul>
+          </div>
+
           {config.intention && (
             <p className="mb-10 font-display text-xl leading-snug text-ink-soft">
               {config.intention}

@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next'
-import { Fraunces, Inter } from 'next/font/google'
+import { Ephesis, Fraunces, Inter } from 'next/font/google'
 import './globals.css'
 import { siteUrl } from '@/lib/auth/env'
 
@@ -17,6 +17,32 @@ const display = Fraunces({
   display: 'swap',
   style: ['normal', 'italic'],
   axes: ['SOFT', 'WONK', 'opsz'],
+})
+
+/**
+ * HER handwriting.
+ *
+ * Not a third typeface so much as a second VOICE. Quiana's serif tells a
+ * woman the truth; every so often a line arrives in this hand - "you already
+ * know", "there you are", "I was waiting for you" - and by Day 7 she should
+ * recognise the handwriting before she has read the words. That is the whole
+ * reason it exists, and it is why it must stay rare: a face used on every
+ * screen stops being a voice and becomes a theme.
+ *
+ * Ephesis rather than any of the obvious scripts. The brief was a handwritten
+ * note in the margin of a beautiful book, not a wedding invitation - so no
+ * swash capitals, no copperplate flourishes, and enough irregularity in the
+ * baseline that it reads as a hand rather than a font.
+ *
+ * Used only at display sizes. A script at 16px is a legibility problem
+ * wearing a personality, and this one never appears small enough for that to
+ * be true.
+ */
+const script = Ephesis({
+  subsets: ['latin'],
+  weight: '400',
+  variable: '--font-script-family',
+  display: 'swap',
 })
 
 const sans = Inter({
@@ -74,7 +100,7 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className={`${display.variable} ${sans.variable}`}>
+    <html lang="en" className={`${display.variable} ${sans.variable} ${script.variable}`}>
       <body>{children}</body>
     </html>
   )

@@ -3,19 +3,20 @@ import { db } from '@/db/client'
 import { Eyebrow, Prose, Section, StaffNote } from '@/design-system/patterns'
 import { getPublishedAssessment } from '@/db/queries/assessments'
 import { QuizFlow, type FlowQuestion } from '@/features/quiz/QuizFlow'
+import { OracleCards } from '@/features/quiz/OracleCards'
 import { JoinForm } from '@/features/auth/JoinForm'
 import { siteImage } from '@/db/queries/images'
 import { SiteImage, SiteImageFrame } from '@/features/images/SiteImage'
 import { imageSlot } from '@/features/images/slots'
 
 export const metadata: Metadata = {
-  title: 'Which version of you is running the show?',
+  title: 'Which woman is running your life?',
   description:
-    'A free 90-second quiz. Four versions of you — fight, flight, freeze and sulk — and the one that takes over when you are under pressure.',
+    'A free 90-second quiz. Four Divine Feminine archetypes — and the one who takes the wheel when you are under pressure.',
   openGraph: {
-    title: 'Which version of you is running the show?',
+    title: 'Which woman is running your life?',
     description:
-      'Four versions of you. One of them takes the wheel when you are under pressure. Find out which.',
+      'Four of them. One has been running your life. Discover your Divine Feminine archetype.',
   },
 }
 
@@ -51,9 +52,27 @@ export default async function QuizPage() {
         )}
         <div>
           <Eyebrow>Free · about 90 seconds</Eyebrow>
+          {/*
+            The question is the headline, and it is set as a question about a
+            WOMAN rather than about a trait. "Which of these are you" invites
+            her to answer from the outside, as a category. "Which woman is
+            running your life" is answered from the inside, and it is the
+            actual claim the instrument makes: there is someone in there doing
+            this, she has a name, and she is not you.
+          */}
           <h1 className="mt-6 text-3xl md:text-5xl">
-            Which version of ME is running the show?
+            Which woman is running your life?
           </h1>
+          {/*
+            Her hand, once, on the promise rather than the question. The
+            headline is the hook and stays in the serif; the subtitle is the
+            thing she is being offered, and the script marks it as spoken
+            rather than printed. Two script lines on one screen and neither
+            means anything.
+          */}
+          <p className="mt-4 font-script text-2xl text-plum md:text-3xl">
+            Discover your Divine Feminine archetype
+          </p>
         </div>
       </div>
 
@@ -74,6 +93,16 @@ export default async function QuizPage() {
           put the job down.
         </p>
       </Prose>
+
+      {/*
+        The four, shown and not named.
+
+        The rule that they must not be listed here has not changed - naming
+        them biases every answer that follows and spends the reveal. Face down
+        satisfies it: she learns there are exactly four and that they are
+        distinct, and learns nothing that could tell her which is hers.
+      */}
+      <OracleCards className="mt-14" />
 
       {questions.length > 0 ? (
         <div className="mt-14">
@@ -104,16 +133,6 @@ export default async function QuizPage() {
           </div>
         </>
       )}
-
-      {/*
-        The four are deliberately NOT listed here.
-
-        Naming them on this page does two bad things at once: it tells her the
-        answer before she has answered, which biases every question that
-        follows, and it spends the reveal that the email box is asking her to
-        pay for. They are linked from the homepage and they rank on their own,
-        which is where strangers should find them.
-      */}
     </Section>
   )
 }
