@@ -1197,7 +1197,13 @@ async function route() {
   // Found by the role matrix on its first run, which is the entire point of
   // that suite: it opens the application as every role and watches.
   const maBoot = getModuleAccess(state.user);
-  const mayLoadClients = canAccessClients() || !!(maBoot && maBoot.pipeline === true);
+  // An explicit "Clients: off" in the Access editor wins over the role. The
+  // server already refuses /api/clients and /api/stages for that person, so
+  // asking anyway threw out of route() and left an Intake account with
+  // Clients switched off on a frozen sign-in card, or a blank page on reload.
+  const mayLoadClients = maBoot && maBoot.pipeline === false
+    ? false
+    : canAccessClients() || !!(maBoot && maBoot.pipeline === true);
   // loadStages() is in here too, and that is the one that was actually
   // throwing: /api/stages sits behind the SAME client-record lock as
   // /api/clients, because a pipeline stage is pipeline data. Departments are
