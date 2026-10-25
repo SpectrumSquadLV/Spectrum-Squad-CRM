@@ -40,6 +40,7 @@ module.exports = function initAcademy(ctx) {
   const getAppSetting = ctx.getAppSetting || (async () => "");
   const sendEmail = ctx.sendEmail || (async () => ({}));
   const onCompletion = ctx.onCompletion || (() => {});
+  const moduleGranted = ctx.moduleGranted || (() => false);
 
   // ---- vocabulary ---------------------------------------------------------
   const ITEM_KINDS = ["reading", "checklist", "competency", "quiz"];
@@ -1176,7 +1177,13 @@ module.exports = function initAcademy(ctx) {
     // onboarding is not affected: leadership still signs off competencies,
     // approves completion, writes development plans and moves somebody's
     // curriculum version. They just do not rewrite the curriculum.
-    const author = user.role === "owner";
+    //
+    // ...unless the owner hands it to somebody by name. The "Onboarding
+    // Training Editor" grant in the Access editor is that, and it is ONLY
+    // that: it writes the curriculum and reads it, and it does not make
+    // anybody leadership or a mentor, so nobody's enrolment, progress,
+    // check-ins or reviews come with it.
+    const author = user.role === "owner" || moduleGranted(user, "training-author");
     const actor = (user && (user.name || user.email)) || "unknown";
 
     // ---- who clinical leadership is ------------------------------------
@@ -1400,6 +1407,13 @@ module.exports = function initAcademy(ctx) {
     if (pathname === "/api/academy/enrollments" && method === "GET") {
       // A mentor sees their own mentees; leadership sees everyone. Anybody
       // else sees nothing, rather than an empty list that looks like a bug.
+      // A training editor who is neither gets the flag and nobody's record:
+      // the curriculum is theirs to write, the people on it are not theirs
+      // to see.
+      if (!lead && !me && author) {
+        json(res, 200, { enrollments: [], can_manage: false, is_owner: owner, can_author: true });
+        return true;
+      }
       if (!lead && !me) { json(res, 403, { error: "Not permitted" }); return true; }
       const rows = await dbAll(
         `SELECT a.*, e.name, e.email, e.role_title, p.name AS program_name,
@@ -2427,7 +2441,7 @@ module.exports = function initAcademy(ctx) {
       // READING the curriculum is leadership's; writing it is the owner's.
       // A Clinical Director supervising somebody through a 30-day programme
       // has to be able to see what that programme asks of them.
-      if (!lead) { json(res, 403, { error: "Only clinical leadership can read the curriculum." }); return true; }
+      if (!lead && !author) { json(res, 403, { error: "Only clinical leadership can read the curriculum." }); return true; }
       const rows = await dbAll("SELECT * FROM academy_programs ORDER BY active DESC, name").catch(() => []);
       const out = [];
       for (const r of rows) {

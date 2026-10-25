@@ -26,6 +26,10 @@
   var HOST = null;
   var DATA = null;
   var VIEW = "me";          // me | roster | review
+  // The Training Editor page: the curriculum and nothing else. Somebody
+  // brought in only to write training has no checklist, roster or reports
+  // of their own, so they open straight onto the thing they are here for.
+  var AUTHOR_ONLY = false;
   var OPEN_WEEK = null;
   var REVIEW = null;        // the loaded 30-day review, when VIEW === "review"
   var BACK_TO = "me";       // where Back goes: remembered, not guessed
@@ -1105,7 +1109,7 @@
     // leadership's. The Curriculum tab is the former.
     var canAuthor = !!(DATA.roster && DATA.roster.can_author);
     var tabs = "";
-    if (showRoster) {
+    if (showRoster && !AUTHOR_ONLY) {
       tabs = '<div style="margin-bottom:12px;">'
         + '<button class="ac-tab' + (VIEW === "me" ? " on" : "") + '" data-view="me">My training</button>'
         + '<button class="ac-tab' + (VIEW === "roster" ? " on" : "") + '" data-view="roster">'
@@ -1133,8 +1137,11 @@
            + threadsHtml(DATA.questions, DATA.gaps, true);
     } else if (VIEW === "reports" && canManage) {
       body = reportsHtml();
-    } else if (VIEW === "curriculum" && canManage) {
+    } else if (VIEW === "curriculum" && (canManage || canAuthor)) {
       body = curriculumHtml();
+    } else if (AUTHOR_ONLY) {
+      body = '<div class="ac-card"><div class="ac-sub">Your account is not set up to edit the onboarding training. '
+        + "Ask the owner to switch on Onboarding Training Editor for you in the Access editor.</div></div>";
     } else {
       body = meHtml(DATA.me);
     }
@@ -1933,11 +1940,13 @@
       });
   }
 
-  function reload() { window.__renderAcademy(HOST); }
+  function reload() { window.__renderAcademy(HOST, { authorOnly: AUTHOR_ONLY }); }
 
-  window.__renderAcademy = function (host) {
+  window.__renderAcademy = function (host, opts) {
     injectStyles();
     HOST = host;
+    AUTHOR_ONLY = !!(opts && opts.authorOnly);
+    if (AUTHOR_ONLY) VIEW = "curriculum";
     host.innerHTML = '<div class="ac-wrap"><div class="ac-card"><div class="ac-sub">Loading the Academy…</div></div></div>';
     Promise.all([
       api("/api/academy/me").catch(function () { return { enrolled: false, reason: "error" }; }),
@@ -1963,6 +1972,11 @@
       }
       return r;
     }).then(function (r) {
+      if (AUTHOR_ONLY) {
+        render();
+        if (DATA.roster && DATA.roster.can_author) loadCurriculum();
+        return;
+      }
       if (!DATA.me.enrolled && DATA.roster && (DATA.roster.enrollments || []).length) VIEW = "roster";
       render();
       // The candidate list follows, so the card can render immediately with

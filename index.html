@@ -1215,6 +1215,20 @@ async function route() {
 
   // A training-only account has one screen, so send them to it rather than to
   // a dashboard the server will refuse.
+  const mayEditTraining = (getModuleAccess(state.user) || {})["training-author"] === true
+    || state.user.role === "owner";
+  if (hash.startsWith("#/training-editor") && !mayEditTraining) {
+    location.hash = state.user.role === "employee" ? "#/training" : "#/dashboard";
+    return;
+  }
+  // A training-only login that holds the editor grant is there to write the
+  // training, not take it: the editor is the whole of the CRM for them, and
+  // "My Training" -- which would only say they have no employee record --
+  // is not offered.
+  if (state.user.role === "employee" && mayEditTraining && !hash.startsWith("#/training-editor")) {
+    location.hash = "#/training-editor";
+    return;
+  }
   if (state.user.role === "employee" && !hash.startsWith("#/training") && !hash.startsWith("#/policies")) {
     location.hash = "#/training";
     return;
@@ -1268,6 +1282,11 @@ async function route() {
   else if (hash.startsWith("#/pipeline")) await renderPipeline(mount);
   else if (hash.startsWith("#/tasks")) await renderTasks(mount);
   else if (hash.startsWith("#/outbox")) await renderOutbox(mount);
+  // Before "#/training", which it also starts with.
+  else if (hash.startsWith("#/training-editor")) {
+    if (window.__renderAcademy) await window.__renderAcademy(mount, { authorOnly: true });
+    else mount.innerHTML = '<div class="card">The Onboarding Academy could not be loaded.</div>';
+  }
   else if (hash.startsWith("#/training")) await renderMyTraining(mount);
   else if (hash.startsWith("#/staff")) await renderStaff(mount);
   else if (hash.startsWith("#/attendance")) { if (window.__renderAttendance) await window.__renderAttendance(mount); else await renderDashboard(mount); }
@@ -1448,6 +1467,11 @@ const MODULE_CATALOG = {
   // a button that routes nowhere -- the same trap `external` is guarded
   // against above.
   "care-team": { label: "Edit Care Team assignments", icon: "◉", capability: true },
+  // Writes the Onboarding Academy's curriculum -- programmes, weeks, modules,
+  // videos and documents -- and nothing else. No trainee records come with
+  // it. Meant to be given to a training-only login brought in to build the
+  // training; the owner already has it.
+  "training-author": { label: "Onboarding Training Editor", icon: "✎", hash: "#/training-editor" },
 };
 // Roles allowed to see client (family) records at all. HR-side roles such as
 // hiring_manager and interviewer are deliberately excluded -- they have no
@@ -1474,6 +1498,11 @@ function fidelityGranted(key) {
 // sidebar next to supply, falling back to the first nav item if supply is not
 // there. Filtering navItems alone left all of them on an RBT's sidebar.
 const EMPLOYEE_ROLE_ALLOWS = ["training", "policies"];
+function storedModuleAccess(user) {
+  if (!user || !user.module_access) return {};
+  try { return (typeof user.module_access === "string" ? JSON.parse(user.module_access) : user.module_access) || {}; }
+  catch (e) { return {}; }
+}
 function getModuleAccess(user) {
   if (user && user.role === "employee") {
     const deny = {};
@@ -1482,6 +1511,8 @@ function getModuleAccess(user) {
     // catalogue, so deny those by name too.
     ["maintenance", "policy_changes", "requests", "supply", "concerns", "training"].forEach((k) => { deny[k] = false; });
     EMPLOYEE_ROLE_ALLOWS.forEach((k) => { delete deny[k]; });
+    // The one grant a training-only login can carry: writing the training.
+    if (storedModuleAccess(user)["training-author"] === true) deny["training-author"] = true;
     return deny;
   }
   if (!user || !user.module_access) return null;
@@ -1640,7 +1671,11 @@ function renderShell(active) {
   // rest regardless -- this is so they are not shown buttons that 403.
   if (state.user.role === "employee") {
     navItems.push({ key: "training", label: "My Training", icon: "◳", hash: "#/training" });
-    const KEEP = new Set(["training", "policies"]);
+    // With the editor grant, the editor is the only entry (added below from
+    // the grant itself); see the router for why My Training is not offered.
+    const KEEP = storedModuleAccess(state.user)["training-author"] === true
+      ? new Set()
+      : new Set(["training", "policies"]);
     for (let i = navItems.length - 1; i >= 0; i--) if (!KEEP.has(navItems[i].key)) navItems.splice(i, 1);
   }
 
