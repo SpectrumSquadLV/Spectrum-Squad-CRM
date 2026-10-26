@@ -1930,18 +1930,127 @@ function renderLogin() {
     e.preventDefault();
     const fd = new FormData(e.target);
     try {
-      const { user } = await api("/api/auth/login", {
+      const r = await api("/api/auth/login", {
         method: "POST",
         body: { email: fd.get("email"), password: fd.get("password") },
       });
-      state.user = user;
-      await loadNavOrder();
-      location.hash = "#/dashboard";
-      route();
+      // The password was right; two-step sign-in may still want a code.
+      if (r.mfa_required) return renderMfaVerify(r.challenge);
+      if (r.mfa_setup_required) return renderMfaSetup(r.challenge);
+      await finishSignIn(r.user);
     } catch (err) {
       document.getElementById("login-error").textContent = err.message;
     }
   });
+}
+
+async function finishSignIn(user) {
+  state.user = user;
+  await loadNavOrder();
+  location.hash = "#/dashboard";
+  route();
+}
+
+// ---------------- Two-step sign-in ----------------
+// The second half of signing in: a six-digit code from an authenticator app.
+// Both screens hold only a short-lived challenge from the server, never a
+// session; an expired one sends the person back to the login card.
+function mfaCard(inner) {
+  root.innerHTML = `
+    <div class="login-wrap">
+      <div class="login-card" style="max-width:420px;">
+        <img src="/logo.png" alt="Spectrum Squad" style="display:block; max-width:180px; width:60%; height:auto; margin:0 auto 10px;" />
+        ${inner}
+        <p style="text-align:center; margin:16px 0 0; font-size:12.5px;">
+          <a href="#/login" id="mfa-start-over" style="color:var(--brand-navy); text-decoration:underline;">Start over</a>
+        </p>
+      </div>
+    </div>`;
+  document.getElementById("mfa-start-over").addEventListener("click", (e) => { e.preventDefault(); renderLogin(); });
+}
+function mfaFail(err) {
+  const box = document.getElementById("login-error");
+  if (box) box.textContent = err.message;
+  if (/sign in again/i.test(err.message)) setTimeout(renderLogin, 2500);
+}
+
+function renderMfaVerify(challenge) {
+  mfaCard(`
+    <h2 style="font-size:17px; text-align:center; margin:0 0 6px;">Enter your sign-in code</h2>
+    <p class="sub" style="text-align:center;">Open your authenticator app and type the 6-digit code for Spectrum Squad CRM.</p>
+    <div id="login-error" class="login-error"></div>
+    <form id="mfa-form">
+      <div class="field">
+        <label>Code</label>
+        <input name="code" required autocomplete="one-time-code" inputmode="numeric" autofocus
+               placeholder="123456" style="font-size:20px; letter-spacing:4px; text-align:center;" />
+      </div>
+      <button class="btn" type="submit" style="width:100%; justify-content:center; margin-top:8px;">Verify</button>
+      <p style="font-size:12px; color:var(--text-muted); margin:10px 0 0; text-align:center;">Lost your phone? Type one of your recovery codes instead.</p>
+    </form>`);
+  document.getElementById("mfa-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api("/api/auth/mfa/verify", { method: "POST", body: { challenge, code: new FormData(e.target).get("code") } });
+      if (typeof r.recovery_codes_left === "number") {
+        alert(`You used a recovery code. You have ${r.recovery_codes_left} left. If your phone is lost, ask the owner to reset your two-step sign-in.`);
+      }
+      await finishSignIn(r.user);
+    } catch (err) { mfaFail(err); }
+  });
+}
+
+async function renderMfaSetup(challenge) {
+  mfaCard(`<div class="sub" style="text-align:center;">Loading…</div><div id="login-error" class="login-error"></div>`);
+  let s;
+  try { s = await api("/api/auth/mfa/setup", { method: "POST", body: { challenge } }); }
+  catch (err) { return mfaFail(err); }
+  const esc = (v) => { const d = document.createElement("div"); d.textContent = v == null ? "" : String(v); return d.innerHTML; };
+  mfaCard(`
+    <h2 style="font-size:17px; text-align:center; margin:0 0 6px;">Set up two-step sign-in</h2>
+    <p class="sub" style="text-align:center;">The CRM now asks for a code from your phone each time you sign in. This takes about a minute, once.</p>
+    <ol style="font-size:13px; padding-left:18px; line-height:1.5;">
+      <li>Install an authenticator app on your phone: <b>Google Authenticator</b>, <b>Microsoft Authenticator</b> or <b>1Password</b>.</li>
+      <li>In the app, tap <b>+</b> and scan this code:</li>
+    </ol>
+    <div style="display:flex; justify-content:center; margin:6px 0;">${s.qr_svg || ""}</div>
+    <p style="font-size:11.5px; color:var(--text-muted); text-align:center; word-break:break-all; margin:0 0 10px;">Can't scan? Enter this key instead:<br><b id="mfa-secret" style="font-family:monospace; font-size:13px;">${esc(s.secret.replace(/(.{4})/g, "$1 ").trim())}</b></p>
+    <div id="login-error" class="login-error"></div>
+    <form id="mfa-form">
+      <div class="field">
+        <label>3. Type the 6-digit code the app shows</label>
+        <input name="code" required autocomplete="one-time-code" inputmode="numeric" autofocus
+               placeholder="123456" style="font-size:20px; letter-spacing:4px; text-align:center;" />
+      </div>
+      <button class="btn" type="submit" style="width:100%; justify-content:center; margin-top:8px;">Turn on and sign in</button>
+    </form>`);
+  document.getElementById("mfa-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api("/api/auth/mfa/setup/confirm", { method: "POST", body: { challenge, code: new FormData(e.target).get("code") } });
+      renderRecoveryCodes(r.recovery_codes, r.user);
+    } catch (err) { mfaFail(err); }
+  });
+}
+
+// Shown exactly once. The server keeps only their hashes.
+function renderRecoveryCodes(codes, user) {
+  mfaCard(`
+    <h2 style="font-size:17px; text-align:center; margin:0 0 6px;">Save your recovery codes</h2>
+    <p class="sub" style="text-align:center;">If you lose your phone, each of these lets you sign in once. Save them in your password manager or print them. <b>They won't be shown again.</b></p>
+    <pre id="mfa-recovery" style="background:#f4f1ea; padding:12px; border-radius:8px; font-size:15px; text-align:center; line-height:1.7;">${codes.join("\n")}</pre>
+    <button class="btn secondary" type="button" id="mfa-copy" style="width:100%; justify-content:center;">Copy codes</button>
+    <label style="display:flex; gap:8px; align-items:center; font-size:13px; margin:12px 0;">
+      <input type="checkbox" id="mfa-saved" /> I've saved my recovery codes
+    </label>
+    <button class="btn" type="button" id="mfa-continue" disabled style="width:100%; justify-content:center;">Continue to the CRM</button>`);
+  document.getElementById("mfa-copy").addEventListener("click", () => {
+    if (navigator.clipboard) navigator.clipboard.writeText(codes.join("\n")).catch(() => {});
+  });
+  document.getElementById("mfa-saved").addEventListener("change", (e) => {
+    document.getElementById("mfa-continue").disabled = !e.target.checked;
+  });
+  document.getElementById("mfa-continue").addEventListener("click", () => finishSignIn(user));
 }
 
 // ---------------- Forgotten password ----------------
@@ -7409,6 +7518,11 @@ async function renderTeamSection(mount) {
                 <button class="btn small" data-save-user="${u.id}">Save</button>
                 <button class="btn small secondary" data-access-user="${u.id}">Access</button>
                 <button class="btn small secondary" data-reset-user="${u.id}">Reset password</button>
+                ${["owner", "super_admin"].includes(state.user.role)
+                  ? (u.mfa_enabled
+                      ? `<button class="btn small secondary" data-mfa-reset-user="${u.id}" title="Two-step sign-in is ON. Reset it if they lost or replaced their phone; they set it up again at their next sign-in.">Reset 2-step</button>`
+                      : `<span style="font-size:11.5px; color:#946213; margin:0 4px;" title="They will be asked to set up two-step sign-in the next time they sign in.">2-step not set up</span>`)
+                  : ""}
                 <button class="btn small secondary" data-email-user="${u.id}" title="Change the address they sign in with. Their clients, tasks and staff record move with them.">Change email</button>
                 ${String(u.id) === String(state.user.id) ? "" : `<button class="btn small secondary" data-delete-user="${u.id}" style="color:#b91c1c;">Remove</button>`}
                 ${state.user.role === "owner" && String(u.id) !== String(state.user.id)
@@ -7481,6 +7595,22 @@ async function renderTeamSection(mount) {
     btn.addEventListener("click", () => {
       const u = users.find((x) => String(x.id) === btn.dataset.accessUser);
       if (u) openAccessModal(u, () => renderTeamSection(mount));
+    });
+  });
+
+  // A lost or replaced phone. They are signed out, and set it up again with a
+  // new phone the next time they sign in with their password.
+  body.querySelectorAll("[data-mfa-reset-user]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const u = users.find((x) => String(x.id) === btn.dataset.mfaResetUser);
+      if (!u || !confirm(`Reset two-step sign-in for ${u.name}?\n\nOnly do this if you have confirmed it is really them (call them). They will be signed out, and set it up again with their phone the next time they sign in.`)) return;
+      try {
+        await api(`/api/admin/users/${u.id}/mfa-reset`, { method: "POST", body: {} });
+        setStatus(`Two-step sign-in reset for ${u.name} ✓`, true);
+        renderTeamSection(mount);
+      } catch (e) {
+        setStatus(e.message, false);
+      }
     });
   });
 

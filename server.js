@@ -767,11 +767,22 @@ async function findUserByEmail(email) {
   return dbGet("SELECT * FROM users WHERE email = ?", [String(email == null ? "" : email).trim().toLowerCase()]);
 }
 
-async function login(email, password) {
+// The password half of a sign-in, with no session attached: two-step
+// sign-in (mfa.js) decides whether one is handed out yet.
+async function checkPassword(email, password) {
   const user = await findUserByEmail(email);
   if (!user) return null;
   if (!verifyPassword(password, user.password_salt, user.password_hash)) return null;
+  return user;
+}
 
+async function login(email, password) {
+  const user = await checkPassword(email, password);
+  if (!user) return null;
+  return startSessionFor(user);
+}
+
+async function startSessionFor(user) {
   const token = crypto.randomBytes(32).toString("hex");
   const expires = new Date(Date.now() + SESSION_TTL_HOURS * 3600 * 1000).toISOString();
   await dbRun("INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)", [
@@ -834,7 +845,9 @@ async function getUserFromToken(token) {
 }
 
 function sanitizeUser(user) {
-  const { password_hash, password_salt, ...safe } = user;
+  // The second factor's secret and recovery codes never leave the server, any
+  // more than the password hash does.
+  const { password_hash, password_salt, mfa_secret, mfa_recovery_codes, mfa_last_step, ...safe } = user;
   return safe;
 }
 
@@ -932,7 +945,7 @@ async function completePasswordReset(row, user, newPassword) {
   await dbRun("DELETE FROM sessions WHERE user_id = ?", [user.id]);
 }
 
-const auth = { createUser, findUserByEmail, login, logout, getUserFromToken, parseCookies, sanitizeUser };
+const auth = { createUser, findUserByEmail, checkPassword, login, startSessionFor, logout, getUserFromToken, parseCookies, sanitizeUser };
 
 // ============================== EMAIL ==============================
 // server/email.js
@@ -4731,6 +4744,11 @@ const PUBLIC_ROUTES = new Set([
   "/api/auth/forgot-password",
   "/api/auth/reset-password",
   "/api/auth/reset-password/check",
+  // The second half of a sign-in: reachable with a challenge token from
+  // /api/auth/login, before there is any session.
+  "/api/auth/mfa/verify",
+  "/api/auth/mfa/setup",
+  "/api/auth/mfa/setup/confirm",
   "/api/webhook/enrollment",
   "/api/admin/backfill-import",
   "/api/admin/purge-demo",
@@ -5410,11 +5428,18 @@ async function handle(req, res, pathname, method, query = {}) {
       if (lock > 0) {
         return json(res, 429, { error: `Too many failed attempts. Try again in ${lock} minute${lock === 1 ? "" : "s"}.` });
       }
-      const result = await auth.login(email || "", password || "");
-      if (!result) {
+      const pwUser = await auth.checkPassword(email || "", password || "");
+      if (!pwUser) {
         noteFailedLogin(who);
         return json(res, 401, { error: "Invalid email or password" });
       }
+      // Right password. Two-step sign-in decides whether that is enough: for
+      // anybody with it on, or required to set it up, this answers with a
+      // challenge instead of a session. The failed-attempt counter is left
+      // alone until the code is right too.
+      const step2 = await mfa.afterPassword(pwUser);
+      if (step2) return json(res, 200, step2);
+      const result = await auth.startSessionFor(pwUser);
       clearFailedLogins(who);
       // Session-only cookie (no Max-Age/Expires): it is cleared when the
       // browser closes, so providers must re-enter their password each new
@@ -5424,6 +5449,22 @@ async function handle(req, res, pathname, method, query = {}) {
         `session=${result.token}; HttpOnly; Path=/; SameSite=Lax`
       );
       return json(res, 200, { user: result.user });
+    }
+
+    // Two-step sign-in: the code after the password, first-time setup, and
+    // the owner's reset for a lost phone.
+    {
+      const handled = await mfa.handleApi(req, res, pathname, method, user, {
+        startSession: async (r, u) => {
+          const s = await auth.startSessionFor(u);
+          clearFailedLogins(loginKey(req, u.email));
+          r.setHeader("Set-Cookie", `session=${s.token}; HttpOnly; Path=/; SameSite=Lax`);
+          return s.user;
+        },
+        // A wrong code counts against the same lock as a wrong password.
+        onFailure: (u) => noteFailedLogin(loginKey(req, u.email)),
+      });
+      if (handled) return true;
     }
 
     if (pathname === "/api/auth/logout" && method === "POST") {
@@ -8142,7 +8183,8 @@ const deleteClientMatch = pathname.match(/^\/api\/clients\/(\d+)$/);
     if (pathname === "/api/admin/users" && method === "GET") {
       if (!canManageUsers(user)) return json(res, 403, { error: "Not permitted to manage users" });
       const rows = await dbAll(
-        `SELECT id, name, email, role, department_id, can_view_financials, module_access, created_at
+        `SELECT id, name, email, role, department_id, can_view_financials, module_access, created_at,
+                (mfa_enabled_at IS NOT NULL) AS mfa_enabled
          FROM users ORDER BY created_at NULLS LAST, id`
       );
       // A login and a staff record are separate rows joined only by email, so
@@ -9011,6 +9053,7 @@ const staffPortal = require("./staff-portal")({ dbRun });
 // clinician works through while carrying a caseload. Lives as a tab inside
 // the existing BCBA Hub; owns /api/academy/*. The curriculum is DATA, so the
 // same machinery serves RBT and Squad Leader programmes later. =====
+const mfa = require("./mfa")({ dbGet, dbRun, nowISO, readBody, json });
 const academy = require("./academy")({
   dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, sendEmail, moduleGranted,
   onCompletion: (...args) => completions.record(...args),
@@ -9566,6 +9609,7 @@ async function start() {
   await concerns.initTables().catch((e) => console.error("Concerns initTables failed:", e));
   await staffPortal.initTables().catch((e) => console.error("Staff portal initTables failed:", e));
   await academy.initTables().catch((e) => console.error("Academy initTables failed:", e));
+  await mfa.initTables().catch((e) => console.error("MFA initTables failed:", e));
   await compliance.initTables().catch((e) => console.error("Compliance initTables failed:", e));
   await policyChanges.initTables().catch((e) => console.error("Policy change requests initTables failed:", e));
   await billable.initTables().catch((e) => console.error("Billable initTables failed:", e));
