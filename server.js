@@ -4982,7 +4982,11 @@ async function handle(req, res, pathname, method, query = {}) {
       pathname.startsWith("/api/auth/")
       || pathname === "/api/nav-order"
       || pathname.startsWith("/api/compliance/")
-      || pathname.startsWith("/api/policies");
+      || pathname.startsWith("/api/policies")
+      // Somebody brought in to write the onboarding training, and nothing
+      // else, is a training-only login with this one grant. The Academy gates
+      // every route itself; the grant opens authoring and nothing more.
+      || (pathname.startsWith("/api/academy/") && moduleGranted(user, "training-author"));
     if (!allowed) {
       json(res, 403, { error: "This account is for your required training only." });
       return true;
@@ -9008,7 +9012,7 @@ const staffPortal = require("./staff-portal")({ dbRun });
 // the existing BCBA Hub; owns /api/academy/*. The curriculum is DATA, so the
 // same machinery serves RBT and Squad Leader programmes later. =====
 const academy = require("./academy")({
-  dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, sendEmail,
+  dbGet, dbAll, dbRun, nowISO, readBody, json, getAppSetting, sendEmail, moduleGranted,
   onCompletion: (...args) => completions.record(...args),
 });
 // ===== STAFF PROGRESSION add-on: the Clinical Director's view of every
