@@ -1407,7 +1407,9 @@ async function saveClientDocument(opts) {
 // came later. Its token opens the whole assessment -- every item and every
 // score -- with no CRM session at all, and acknowledges it as that RBT. It
 // belongs here as much as any of the others.
-const TOKEN_PATH_ROUTES = ["verify-timecard", "offer", "screener", "schedule", "apply", "new-hire", "fidelity-ack", "authorization-sign"];
+// peer-review opens one person's survey as them; peer-results opens their
+// consolidated report. Both are credentials in exactly the same way.
+const TOKEN_PATH_ROUTES = ["verify-timecard", "offer", "screener", "schedule", "apply", "new-hire", "fidelity-ack", "authorization-sign", "peer-review", "peer-results"];
 const TOKEN_PATH_RE = new RegExp("(/(?:" + TOKEN_PATH_ROUTES.join("|") + ")/)[A-Za-z0-9._~+-]{6,}", "g");
 function redactSecretLinks(html) {
   if (html == null) return html;
@@ -1449,8 +1451,16 @@ function redactFidelityScores(html) {
 // Message Outbox, the OT message log and the timecard "Sent email" view. Two
 // copies would drift, and the drift would be silent: one screen showing what
 // another hides.
+// Peer review results, for the same reason as Fidelity scores: what somebody's
+// coworkers think of them is not message-log data. These bodies are new, so
+// they carry a marker on every score cell rather than being matched by label.
+const PEER_SCORE_CELL_RE = /(<td\b[^>]*\bdata-peer-score\b[^>]*>)([^<]*)(<\/td>)/gi;
+function redactPeerScores(html) {
+  if (html == null) return html;
+  return String(html).replace(PEER_SCORE_CELL_RE, "$1[withheld]$3");
+}
 function redactStoredBody(html) {
-  return redactFidelityScores(redactSecretLinks(html));
+  return redactPeerScores(redactFidelityScores(redactSecretLinks(html)));
 }
 
 function shapeNotificationForDisplay(row) {
@@ -4983,6 +4993,10 @@ async function handle(req, res, pathname, method, query = {}) {
       || pathname === "/api/nav-order"
       || pathname.startsWith("/api/compliance/")
       || pathname.startsWith("/api/policies")
+      // The peer review survey and report pages take a private link, not a
+      // session. A training-only login that happens to be signed in in the
+      // same browser must not be what stops an RBT filling in their survey.
+      || pathname.startsWith("/api/peer-review/public/")
       // Somebody brought in to write the onboarding training, and nothing
       // else, is a training-only login with this one grant. The Academy gates
       // every route itself; the grant opens authoring and nothing more.
@@ -5017,6 +5031,8 @@ async function handle(req, res, pathname, method, query = {}) {
         pathname.startsWith("/api/compliance") ? "compliance" :
         pathname.startsWith("/api/ot/") ? "ot" :
         pathname.startsWith("/api/supervision") ? "supervision" :
+        // Peer reviews have their own grant; see peer-review.js.
+        pathname.startsWith("/api/peer-review") ? "peer-review" :
         pathname.startsWith("/api/fin/") ? "financial-center" :
         pathname.startsWith("/api/leads") ? "leads" :
         pathname.startsWith("/api/policies") ? "policies" :
@@ -5320,6 +5336,15 @@ async function handle(req, res, pathname, method, query = {}) {
   // review routes are gated on a NAMED permission rather than on a job title.
   if (pathname.startsWith("/api/concerns")) {
     const handled = await concerns.handleApi(req, res, pathname, method, query, user);
+    if (handled) return true;
+  }
+
+  // Peer Performance Consensus Report owns /api/peer-review/*. Above the
+  // sign-in gate because the survey and the report are opened by private
+  // link, and most of the people filling in the survey have no login. Every
+  // other route refuses an unauthenticated caller of its own accord.
+  if (pathname.startsWith("/api/peer-review")) {
+    const handled = await peerReview.handleApi(req, res, pathname, method, query, user);
     if (handled) return true;
   }
 
@@ -8703,6 +8728,7 @@ const PUBLIC_FILES = new Set([
   "/supply-requests-frontend.js",
   "/maintenance-requests-frontend.js",
   "/concerns-frontend.js",
+  "/peer-review-frontend.js",
   "/requests-hub-frontend.js",
   "/report-concern.html",
   "/policy-change-requests-frontend.js",
@@ -9050,6 +9076,14 @@ const compliance = require("./compliance")({
 
 const concerns = require("./concerns")({
   dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json, sendFile,
+  moduleGranted, moduleDenied,
+});
+// ===== PEER PERFORMANCE CONSENSUS REPORT add-on: the peer review cycle --
+// one section per person, a private survey link each, scores combined into
+// one report per employee and sent once. Reads the HR Hub roster; owns
+// /api/peer-review/*, /peer-review/<token> and /peer-results/<token>. =====
+const peerReview = require("./peer-review")({
+  dbGet, dbAll, dbRun, sendEmail, nowISO, crypto, APP_BASE_URL, readBody, json,
   moduleGranted, moduleDenied,
 });
 // ===== POLICY CHANGE REQUESTS + POLICY EXCEPTION LOG add-on: the monthly
@@ -9485,6 +9519,12 @@ const server = http.createServer(async (req, res) => {
     if (concerns.servePage(req, res, pathname)) return;
   }
 
+  // A reviewer's peer review survey, and an employee's results report. Both by
+  // private link with no session: most RBTs do not have a CRM login.
+  if (pathname.startsWith("/peer-review/") || pathname.startsWith("/peer-results/")) {
+    if (peerReview.servePage(req, res, pathname)) return;
+  }
+
   // The QR code's landing page.
   if (pathname === "/staff" || pathname.startsWith("/staff/")) {
     if (staffPortal.servePage(req, res, pathname)) return;
@@ -9564,6 +9604,7 @@ async function start() {
   await supply.initTables().catch((e) => console.error("Supply initTables failed:", e));
   await maintenance.initTables().catch((e) => console.error("Maintenance initTables failed:", e));
   await concerns.initTables().catch((e) => console.error("Concerns initTables failed:", e));
+  await peerReview.initTables().catch((e) => console.error("Peer review initTables failed:", e));
   await staffPortal.initTables().catch((e) => console.error("Staff portal initTables failed:", e));
   await academy.initTables().catch((e) => console.error("Academy initTables failed:", e));
   await compliance.initTables().catch((e) => console.error("Compliance initTables failed:", e));
