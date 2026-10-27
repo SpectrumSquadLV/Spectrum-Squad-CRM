@@ -1301,6 +1301,7 @@ async function route() {
   else if (hash.startsWith("#/rethink-staff")) { if (window.__renderRethinkStaff) await window.__renderRethinkStaff(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/dob-check")) { if (window.__renderDobCheck) await window.__renderDobCheck(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/fidelity")) { if (window.__renderFidelity) await window.__renderFidelity(mount); else await renderDashboard(mount); }
+  else if (hash.startsWith("#/peer-review")) { if (window.__renderPeerReview) await window.__renderPeerReview(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/leads")) { if (window.__renderLeads) await window.__renderLeads(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/events")) { if (window.__renderEvents) await window.__renderEvents(mount); else await renderDashboard(mount); }
   else if (hash.startsWith("#/grants")) { if (window.__renderGrants) await window.__renderGrants(mount); else await renderDashboard(mount); }
@@ -1386,7 +1387,7 @@ const NAV_GROUPS = [
   { key: "grp-clients", label: "Clients",
     members: ["pipeline", "client-behavior", "auth-alerts", "outbox", "leads"] },
   { key: "grp-staff", label: "Staff",
-    members: ["staff", "attendance", "supervision", "fidelity", "billable", "pto", "hr", "credentialing", "compliance"] },
+    members: ["staff", "attendance", "supervision", "fidelity", "peer-review", "billable", "pto", "hr", "credentialing", "compliance"] },
   // Map is deliberately NOT in here. Grouping put it behind a heading that
   // renders collapsed, and from the outside that is indistinguishable from the
   // Map having been removed -- which is exactly how it was reported. It goes
@@ -1431,6 +1432,9 @@ const MODULE_CATALOG = {
   // module, and conducting one observation.
   "fidelity": { label: "RBT Fidelity Management", icon: "◈", hash: "#/fidelity" },
   "fidelity-evaluator": { label: "Fidelity Evaluator", icon: "◈", hash: "#/fidelity" },
+  // Its own grant for the same reason as Fidelity: what coworkers think of
+  // somebody is performance information, not something a role title opens.
+  "peer-review": { label: "Peer Reviews", icon: "◎", hash: "#/peer-review" },
   leads: { label: "Lead Management", icon: "◎" },
   events: { label: "Events", icon: "▽" },
   policies: { label: "Policies & SOPs", icon: "▦" },
@@ -1627,6 +1631,16 @@ function renderShell(active) {
   if (state.user.role === "owner" || state.user.role === "super_admin"
       || fidelityGranted("fidelity") || fidelityGranted("fidelity-evaluator")) {
     navItems.push({ key: "fidelity", label: "RBT Fidelity", icon: "◈", hash: "#/fidelity" });
+  }
+  // Peer Reviews: owner and super admin by default, anyone else by grant, and
+  // an explicit Off removes it from anyone -- the same rule the server applies
+  // in peer-review.js. Braced, for the reason given above.
+  {
+    const ma = getModuleAccess(state.user);
+    const off = !!ma && ma["peer-review"] === false;
+    if (!off && (state.user.role === "owner" || state.user.role === "super_admin" || fidelityGranted("peer-review"))) {
+      navItems.push({ key: "peer-review", label: "Peer Reviews", icon: "◎", hash: "#/peer-review" });
+    }
   }
   // Rethink client matching. Owner/admin only, matching the server-side role
   // check on /api/rethink/client-match -- the nav entry hides it, the route
@@ -7805,6 +7819,7 @@ function openAccessModal(u, onDone) {
   <script src="rethink-staff-frontend.js"></script>
   <script src="dob-check-frontend.js"></script>
   <script src="fidelity-frontend.js"></script>
+  <script src="peer-review-frontend.js"></script>
   <script src="growth-frontend.js"></script>
   <script src="events-frontend.js"></script>
   <script src="supply-requests-frontend.js"></script>

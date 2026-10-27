@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Peer Performance Report — Spectrum Squad</title>
+<style>
+  :root { --navy:#1b2a6b; --ink:#201a4d; --muted:#6b6a86; --line:#e6e1d4; --bg:#faf8f2; --gold:#e0a430; --ok:#15803d; --bad:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 "Outfit", system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; padding:18px 16px 60px; }
+  .logo { display:block; width:190px; max-width:60%; margin:6px auto 14px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px 20px; margin-bottom:14px; }
+  h1 { font-size:21px; margin:0 0 2px; color:var(--navy); }
+  h2 { font-size:16px; margin:0 0 10px; color:var(--navy); }
+  .muted { color:var(--muted); font-size:13.5px; }
+  .hero { display:flex; flex-wrap:wrap; gap:18px; align-items:flex-end; }
+  .big { font-size:44px; font-weight:800; color:var(--navy); line-height:1; }
+  .big small { font-size:17px; color:var(--muted); font-weight:600; }
+  .chg { font-weight:700; font-size:14px; padding:4px 11px; border-radius:99px; }
+  .up { background:#dcfce7; color:var(--ok); } .down { background:#fee2e2; color:var(--bad); } .flat { background:#f1f5f9; color:#475569; }
+  .comp { display:grid; grid-template-columns: 1fr 64px; gap:4px 12px; align-items:center; padding:8px 0; border-top:1px solid #f1eee6; }
+  .comp:first-of-type { border-top:0; }
+  .meter { grid-column: 1 / -1; height:8px; background:#ece8dc; border-radius:99px; overflow:hidden; }
+  .meter span { display:block; height:100%; background:var(--gold); }
+  .val { text-align:right; font-weight:800; color:var(--navy); }
+  .na { color:var(--muted); font-size:12.5px; font-weight:600; text-align:right; }
+  ul.fb { margin:0; padding-left:18px; } ul.fb li { margin:6px 0; }
+  svg text { font-family: inherit; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><img class="logo" src="/logo.png" alt="Spectrum Squad" /><p class="muted" style="text-align:center;">Loading your report…</p></div>
+<script>
+(function () {
+  "use strict";
+  var token = decodeURIComponent(location.pathname.split("/").filter(Boolean)[1] || "");
+  var app = document.getElementById("app");
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+
+  // The trend across every approved cycle, drawn as a plain line chart.
+  function trend(hist) {
+    var pts = hist.filter(function (h) { return h.overall != null; });
+    if (pts.length < 2) return '<p class="muted">Your trend will appear here after your next review.</p>';
+    // Drawn at roughly phone width so the labels stay readable when scaled.
+    var W = 360, H = 190, L = 26, R = 34, T = 22, B = 30;
+    var x = function (i) { return L + (pts.length === 1 ? 0 : i * (W - L - R) / (pts.length - 1)); };
+    var y = function (v) { return T + (5 - v) * (H - T - B) / 4; };
+    var grid = [1, 2, 3, 4, 5].map(function (v) {
+      return '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="#ece8dc"/><text x="' + (L - 8) + '" y="' + (y(v) + 4) + '" font-size="11" text-anchor="end" fill="#6b6a86">' + v + "</text>";
+    }).join("");
+    var path = pts.map(function (p, i) { return (i ? "L" : "M") + x(i) + " " + y(p.overall); }).join(" ");
+    var dots = pts.map(function (p, i) {
+      return '<circle cx="' + x(i) + '" cy="' + y(p.overall) + '" r="4.5" fill="#1b2a6b"/>' +
+        '<text x="' + x(i) + '" y="' + (y(p.overall) - 10) + '" font-size="11.5" font-weight="700" text-anchor="middle" fill="#1b2a6b">' + p.overall.toFixed(2) + "</text>" +
+        '<text x="' + x(i) + '" y="' + (H - 12) + '" font-size="11" text-anchor="middle" fill="#6b6a86">' + esc(p.cycle_name) + "</text>";
+    }).join("");
+    return '<svg viewBox="0 0 ' + W + " " + H + '" width="100%" role="img" aria-label="Overall score by review cycle">' + grid +
+      '<path d="' + path + '" fill="none" stroke="#e0a430" stroke-width="3"/>' + dots + "</svg>";
+  }
+
+  fetch("/api/peer-review/public/report?token=" + encodeURIComponent(token), { credentials: "omit" })
+    .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || "Not available."); return d; }); })
+    .then(function (d) {
+      var chg = "";
+      if (d.change != null) {
+        var cls = d.change > 0 ? "up" : d.change < 0 ? "down" : "flat";
+        chg = '<span class="chg ' + cls + '">' + (d.change > 0 ? "+" : "") + d.change.toFixed(2) + " from " + esc(d.previous.cycle_name) + "</span>";
+      }
+      var comps = d.competencies.map(function (c) {
+        return '<div class="comp"><div>' + esc(c.label) + "</div>" +
+          (c.withheld ? '<div class="na">Not enough responses</div>' : '<div class="val">' + c.avg.toFixed(2) + "</div>") +
+          (c.withheld ? "" : '<div class="meter"><span style="width:' + (c.avg / 5 * 100) + '%"></span></div>') + "</div>";
+      }).join("");
+      var fb = d.feedback.map(function (g) {
+        return '<div class="card"><h2>' + esc(g.title) + "</h2>" +
+          (g.items.length ? '<ul class="fb">' + g.items.map(function (t) { return "<li>" + esc(t) + "</li>"; }).join("") + "</ul>"
+            : '<p class="muted" style="margin:0;">Nothing in this section this time.</p>') + "</div>";
+      }).join("");
+      app.innerHTML = '<img class="logo" src="/logo.png" alt="Spectrum Squad" />' +
+        '<div class="card"><h1>Peer Performance Consensus Report</h1>' +
+        '<div class="muted">' + esc(d.employee_name) + " · " + esc(d.cycle.name) + " · " + esc(d.section_label) + "</div>" +
+        '<div class="hero" style="margin-top:14px;"><div><div class="muted">Overall peer review score</div>' +
+        '<div class="big">' + (d.overall != null ? d.overall.toFixed(2) + " <small>/ 5.00</small>" : '<small>Not enough responses</small>') + "</div></div>" + chg + "</div>" +
+        '<p class="muted" style="margin:12px 0 0;">These scores combine the ratings from all of your coworkers. They show how your coworkers see your work as a group, not what any one person said.</p></div>' +
+        '<div class="card"><h2>By competency</h2>' + comps +
+        (d.competencies.some(function (c) { return c.withheld; }) ? '<p class="muted" style="margin:10px 0 0;">"Not enough responses" means fewer than ' + d.min_ratings + " coworkers rated this, so it's hidden to protect their privacy and left out of your overall score.</p>" : "") + "</div>" +
+        '<div class="card"><h2>Your trend</h2>' + trend(d.history) + "</div>" + fb;
+    })
+    .catch(function (e) {
+      app.innerHTML = '<img class="logo" src="/logo.png" alt="Spectrum Squad" /><div class="card"><h1>Report not available</h1><p>' + esc(e.message) + "</p></div>";
+    });
+})();
+</script>
+</body>
+</html>

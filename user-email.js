@@ -130,6 +130,8 @@ module.exports = function initUserEmail(ctx) {
     "event_community_partners.email_families",
     "fidelity_checks.email_status", "fidelity_checks.emailed_at",
     "hr_attendance_reviews.emailed_to", "hr_supervision_logs.emailed_at",
+    // When a peer review results report was sent. A timestamp, not an address.
+    "peer_review_results.emailed_at",
     // Where a submission was actually sent. Rewriting it would falsify the
     // record of what left the building and when.
     "auth_submissions.to_email",
