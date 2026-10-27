@@ -35,7 +35,12 @@ const SKIP = {};
 // deliberately absent: no STRIPE_SECRET_KEY, so nothing reaches Stripe.
 const SUITE_ENV = {
   "test-phase6b-stripe.js": { STRIPE_WEBHOOK_SECRET: "whsec_test" },
+  "test-mfa.js": { MFA_REQUIRED: "1", MFA_ENCRYPTION_KEY: "test-only-mfa-key" },
 };
+// Two-step sign-in is required in production. Every other suite signs in with
+// a password alone, so forced enrolment is off for them; test-mfa.js turns it
+// back on (above) and proves the real thing.
+const envFor = (suite) => ({ MFA_REQUIRED: "0", ...(SUITE_ENV[suite] || {}) });
 
 // The server seeds every account with a random unusable password on a fresh
 // install, by design -- nothing is ever written to the deploy log. The suites
@@ -289,10 +294,10 @@ function runSuite(suite, dbUrl, outPath, extraEnv) {
     let result = { code: 1, timedOut: false };
     try {
       await createDb(db);
-      server = startServer(dbUrl, serverLog, SUITE_ENV[suite] || {});
+      server = startServer(dbUrl, serverLog, envFor(suite));
       await waitForServer(server, serverLog);
       await seedFixtures(dbUrl, suite);
-      result = await runSuite(suite, dbUrl, suiteLog, SUITE_ENV[suite] || {});
+      result = await runSuite(suite, dbUrl, suiteLog, envFor(suite));
     } catch (e) {
       fs.writeFileSync(suiteLog, String(e.stack || e));
       result = { code: 1, timedOut: false, bootError: String(e.message || e) };
