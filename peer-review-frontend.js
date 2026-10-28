@@ -18,7 +18,7 @@
   "use strict";
   const HASH = "#/peer-review";
   const NAVY = "#1b2a6b";
-  const SECTION_ORDER = ["rbt", "squad_leader", "admin"];
+  const SECTION_ORDER = ["rbt", "squad_leader", "bcba", "admin"];
 
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   async function api(path, opts) {
