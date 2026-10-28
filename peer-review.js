@@ -4,11 +4,12 @@
 // person gets back ONE report: what their coworkers, taken together, think of
 // their work. Not 25 reports from 25 people -- one consolidated picture.
 //
-// The survey it digitises has three sections, and everybody is rated in
-// exactly one of them:
+// The survey it digitises has three sections, plus a fourth for BCBAs who
+// are not administration, and everybody is rated in exactly one of them:
 //
 //   RBT            7 competencies
 //   Squad Leader   4 competencies
+//   BCBA           6 competencies
 //   Administration 5 competencies
 //
 // ONE SECTION PER PERSON, ENFORCED BY THE SCHEMA. Somebody who is both an RBT
@@ -81,6 +82,16 @@ module.exports = function initPeerReview(ctx) {
       { key: "open_feedback", label: "Maintains Open and Positive Feedback" },
       { key: "approachable", label: "Is Approachable" },
       { key: "accountability_ownership", label: "Shows Accountability and Ownership" },
+    ] },
+    // Clinicians who supervise but are not administration. Not on the paper
+    // form; added at the owner's request with the questions she approved.
+    bcba: { label: "BCBA", competencies: [
+      { key: "clinical_supervision", label: "Provides Clear Clinical Direction and Supervision to RBTs" },
+      { key: "supportive_team", label: "Is Approachable and Supportive to the Team" },
+      { key: "family_communication", label: "Communicates Professionally with Families" },
+      { key: "documentation_current", label: "Keeps Programs, Notes and Documentation Current" },
+      { key: "bcba_accountability", label: "Shows Accountability and Ownership" },
+      { key: "bcba_professionalism_tone", label: "Professionalism & Tone" },
     ] },
     admin: { label: "Administration", competencies: [
       { key: "leads_by_example", label: "Leads by Example" },
@@ -264,6 +275,9 @@ module.exports = function initPeerReview(ctx) {
     const t = clean(title);
     if (/squad\s*lead/i.test(t)) return "squad_leader";
     if (/\brbt\b|registered behavior|behavior tech|behavior therapist|behavioral tech/i.test(t)) return "rbt";
+    // A director who is also a BCBA runs the practice: Administration.
+    if (/director/i.test(t)) return "admin";
+    if (/\bbcba\b|\bbcaba\b|behaviou?r analyst/i.test(t)) return "bcba";
     if (/admin|director|manager|coordinator|office|front desk|scheduler|billing|intake|owner|ceo|coo|hr\b|human resources/i.test(t)) return "admin";
     return null;
   }

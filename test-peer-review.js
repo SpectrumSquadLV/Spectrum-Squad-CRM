@@ -79,6 +79,15 @@ const q1 = async (sql, args) => (await pool.query(sql, args)).rows[0];
     thin.competencies.find((c) => c.key === "approachable").avg === null);
   check("the three sections have 7, 4 and 5 questions, as on the paper survey",
     [_internal.SECTIONS.rbt, _internal.SECTIONS.squad_leader, _internal.SECTIONS.admin].map((s) => s.competencies.length).join() === "7,4,5");
+  check("BCBAs who are not administration have their own section of 6 questions",
+    _internal.SECTIONS.bcba && _internal.SECTIONS.bcba.label === "BCBA" && _internal.SECTIONS.bcba.competencies.length === 6);
+  check("...and every competency key is unique across sections, since ratings are stored by key",
+    (() => { const ks = Object.values(_internal.SECTIONS).flatMap((s) => s.competencies.map((c) => c.key)); return new Set(ks).size === ks.length; })());
+  check("a BCBA job title suggests the BCBA section",
+    _internal.suggestSection("BCBA") === "bcba" && _internal.suggestSection("Board Certified Behavior Analyst") === "bcba");
+  check("...but a Clinical Director who is a BCBA stays Administration",
+    _internal.suggestSection("Clinical Director, BCBA") === "admin");
+  check("...and an RBT is still an RBT", _internal.suggestSection("RBT") === "rbt");
   check("Administration asks about Professionalism & Tone, not Teamwork",
     _internal.SECTIONS.admin.competencies.some((c) => c.label === "Professionalism & Tone") &&
     !_internal.SECTIONS.admin.competencies.some((c) => /teamwork/i.test(c.label)));
@@ -125,7 +134,9 @@ const q1 = async (sql, args) => (await pool.query(sql, args)).rows[0];
     (await owner(`/api/peer-review/cycles/${C}/assignments`, { method: "PUT", body: { assignments: [
       { employee_id: E.mark, section: "rbt" }, { employee_id: E.mark, section: "squad_leader" }] } })).status === 400);
   check("an unknown section is refused",
-    (await owner(`/api/peer-review/cycles/${C}/assignments`, { method: "PUT", body: { assignments: [{ employee_id: E.mark, section: "bcba" }] } })).status === 400);
+    (await owner(`/api/peer-review/cycles/${C}/assignments`, { method: "PUT", body: { assignments: [{ employee_id: E.mark, section: "not_a_section" }] } })).status === 400);
+  check("someone can be put in the BCBA section",
+    (await owner(`/api/peer-review/cycles/${C}/assignments`, { method: "PUT", body: { assignments: [{ employee_id: E.mark, section: "bcba" }] } })).status === 200);
 
   const assign = await owner(`/api/peer-review/cycles/${C}/assignments`, { method: "PUT", body: { assignments: [
     { employee_id: E.quiana, section: "admin" }, { employee_id: E.marissa, section: "admin" },
