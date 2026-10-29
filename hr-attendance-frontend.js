@@ -74,12 +74,17 @@
     container.innerHTML =
       '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap; margin-bottom:8px;">'
       + '<div style="display:flex; gap:6px; flex-wrap:wrap;">' + head + "</div>"
-      + '<button class="btn small" id="att-add-btn">+ Log occurrence</button></div>'
+      + '<div style="display:flex; gap:6px; flex-wrap:wrap;">'
+        + '<button class="btn small" id="att-pickup-btn" style="background:#166534; border-color:#166534;" title="Picked up a last-minute shift: takes a point off">+ Picked up a shift</button>'
+        + '<button class="btn small" id="att-add-btn">+ Log occurrence</button></div></div>'
       + (score && score.review_action ? '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Monthly review action: <strong>' + esc(score.review_action) + "</strong>" + (score.next_bonus_date ? " · next bonus date " + esc(score.next_bonus_date) : "") + "</div>" : "")
       + '<div id="att-add-form"></div>'
       + '<div id="att-list">' + rows + "</div>";
 
     container.querySelector("#att-add-btn").addEventListener("click", function () { showAddForm(container, empId, empName); });
+    container.querySelector("#att-pickup-btn").addEventListener("click", function () {
+      openShiftPickup(empId, empName, function () { renderSection(container, empId, empName); });
+    });
     wireRows(container, empId, empName);
   }
 
@@ -154,6 +159,59 @@
       box.querySelector("#att-status").textContent = "Saving…";
       try { await api("/api/attendance/employee/" + empId, { method: "POST", body: body }); box.innerHTML = ""; renderSection(container, empId, empName); }
       catch (e) { box.querySelector("#att-status").textContent = e.message || "Could not save."; }
+    });
+  }
+
+  // PICKING UP A LAST-MINUTE SHIFT, in one step. It is the earn-back people
+  // actually need to log, and it sat at the bottom of an "occurrence"
+  // dropdown full of call-offs and no-shows, under a button that reads as
+  // though it only records bad news -- so it was not being found. The point
+  // value still comes from the matrix (picked_up_shift), never from here.
+  var PICKUP_KEY = "picked_up_shift";
+  async function openShiftPickup(empId, empName, onDone) {
+    // The roster does not carry the matrix, so fetch it rather than guess
+    // what the point value is.
+    if (!(_types || []).length) {
+      try { var m = await api("/api/attendance/types"); _types = (m && m.types) || _types; } catch (e) { /* shown as the default below */ }
+    }
+    var t = (_types || []).filter(function (x) { return x.key === PICKUP_KEY; })[0];
+    var pts = t ? Number(t.points) : -1;
+    var today = new Date().toISOString().slice(0, 10);
+    var backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML =
+      '<div class="modal" style="width:440px; max-width:94vw;">'
+      + '<div class="modal-header"><h2 style="font-size:16px;">Picked up a last-minute shift</h2><button class="close-btn">&#10005;</button></div>'
+      + '<p style="font-size:13px; margin-top:0;"><strong>' + esc(empName || "This staff member") + '</strong> picked up a shift with less than 4 hours\' notice. '
+        + 'This takes <strong>' + Math.abs(pts) + ' point' + (Math.abs(pts) === 1 ? "" : "s") + '</strong> off their attendance score.</p>'
+      + '<div class="field"><label>Date of the shift</label><input id="att-pu-date" type="date" value="' + today + '" /></div>'
+      + '<div class="field"><label>Notes (optional)</label><input id="att-pu-notes" placeholder="e.g. covered for a call-off, client name" /></div>'
+      + '<label style="font-size:12.5px; display:flex; align-items:center; gap:6px; margin:6px 0 12px;"><input id="att-pu-notify" type="checkbox" checked style="width:auto;" /> Email the staff member</label>'
+      + '<div style="display:flex; gap:8px; align-items:center;"><button class="btn" id="att-pu-save" style="background:#166534; border-color:#166534;">Save</button>'
+        + '<button class="btn secondary" id="att-pu-cancel">Cancel</button><span id="att-pu-status" style="font-size:12.5px; color:var(--text-muted);"></span></div>'
+      + "</div>";
+    document.body.appendChild(backdrop);
+    var close = function () { backdrop.remove(); };
+    backdrop.querySelector(".close-btn").addEventListener("click", close);
+    backdrop.querySelector("#att-pu-cancel").addEventListener("click", close);
+    backdrop.addEventListener("click", function (e) { if (e.target === backdrop) close(); });
+    backdrop.querySelector("#att-pu-save").addEventListener("click", async function () {
+      var st = backdrop.querySelector("#att-pu-status");
+      var btn = backdrop.querySelector("#att-pu-save");
+      btn.disabled = true; st.textContent = "Saving…";
+      try {
+        await api("/api/attendance/employee/" + empId, { method: "POST", body: {
+          type_key: PICKUP_KEY,
+          incident_date: backdrop.querySelector("#att-pu-date").value || null,
+          notes: backdrop.querySelector("#att-pu-notes").value || null,
+          notify: backdrop.querySelector("#att-pu-notify").checked,
+        } });
+        close();
+        if (onDone) onDone();
+      } catch (e) {
+        btn.disabled = false;
+        st.textContent = e.message || "Could not save.";
+      }
     });
   }
 
@@ -273,8 +331,10 @@
           (s.next_bonus_date ? '<div style="font-size:11px;color:var(--text-muted);">next ' + esc(s.next_bonus_date) + "</div>" : "") + "</td>" +
         '<td style="padding:9px 10px;text-align:center;">' + (s.unsigned_acknowledgments
             ? '<span class="tag" style="background:#fef3c7;color:#92400e;">' + s.unsigned_acknowledgments + " unsigned</span>" : "—") + "</td>" +
+        '<td style="padding:9px 10px;text-align:right;white-space:nowrap;">' +
+          '<button class="btn small" data-att-pickup="' + s.employee_id + '" data-att-pickup-name="' + esc(s.name) + '" style="background:#166534;border-color:#166534;" title="Picked up a last-minute shift: takes a point off">+ Picked up a shift</button></td>' +
         "</tr>";
-    }).join("") || '<tr><td colspan="7"><div class="empty-state">No staff on the roster yet.</div></td></tr>';
+    }).join("") || '<tr><td colspan="8"><div class="empty-state">No staff on the roster yet.</div></td></tr>';
 
     mount.innerHTML =
       '<div class="page-header"><div><h1>Staff Attendance</h1>' +
@@ -301,10 +361,18 @@
           '<th style="padding:7px 10px;text-align:right;">90-day</th><th style="padding:7px 10px;">Monthly review</th>' +
           '<th style="padding:7px 10px;">Standing</th><th style="padding:7px 10px;">Bonus</th>' +
           '<th style="padding:7px 10px;text-align:center;">Acknowledgments</th>' +
+          '<th style="padding:7px 10px;"></th>' +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
-        '<div style="font-size:12px;color:var(--text-muted);margin-top:10px;">Click a staff member to open their record and log an occurrence.</div>' +
+        '<div style="font-size:12px;color:var(--text-muted);margin-top:10px;">Click a staff member to open their record and log an occurrence. Use <strong>+ Picked up a shift</strong> to take a point off for a last-minute shift.</div>' +
       "</div>";
 
+    mount.querySelectorAll("[data-att-pickup]").forEach(function (b) {
+      b.addEventListener("click", function (e) {
+        // The row itself opens the staff card; this button must not.
+        e.stopPropagation();
+        openShiftPickup(b.getAttribute("data-att-pickup"), b.getAttribute("data-att-pickup-name"), function () { renderRoster(mount); });
+      });
+    });
     mount.querySelectorAll(".att-row").forEach(function (el) {
       el.addEventListener("click", function () {
         if (typeof openStaffModal === "function") openStaffModal(el.getAttribute("data-emp"));
