@@ -1302,6 +1302,51 @@ module.exports = function initHrAttendance(ctx) {
         });
       }
 
+      // Every occurrence ever recorded, in one list -- Squad Leader QR reports,
+      // ones the office logged on a staff card, and rows brought across by the
+      // sheet import. Until this existed the only way to see the history was
+      // one staff card at a time, and the QR reports had an API but no screen.
+      //
+      // Includes terminated staff on purpose: the history is the record, and a
+      // person leaving does not take their occurrences with them. Voided rows
+      // are returned too, marked, so the screen can show or hide them.
+      if (pathname === "/api/attendance/history" && method === "GET") {
+        const base =
+          `SELECT f.id, f.employee_id, f.incident_date, f.incident_time, f.reason, f.type_key, f.points,
+                  f.notes, f.acknowledged, f.signed_date, f.created_by, f.created_at,
+                  f.voided, f.voided_reason, f.voided_by, f.voided_at, f.imported_from,
+                  f.submitted_via, f.submitted_by_employee_id,
+                  e.name AS employee_name, e.role_title, e.status AS employee_status,
+                  t.label AS type_label, t.kind AS type_kind`;
+        const from =
+          ` FROM hr_attendance_flags f
+             LEFT JOIN hr_employees e ON e.id = f.employee_id
+             LEFT JOIN hr_attendance_types t ON t.key = f.type_key`;
+        const order = " ORDER BY COALESCE(NULLIF(f.incident_date, ''), f.created_at) DESC, f.id DESC";
+        // The squad tables belong to squad-attendance.js. If they are not there
+        // the history must still load -- it just cannot name the leader's squad.
+        let rows = await dbAll(
+          base + ", l.name AS reported_by_name, sq.name AS squad_name" + from +
+          " LEFT JOIN hr_employees l ON l.id = f.submitted_by_employee_id" +
+          " LEFT JOIN hr_squads sq ON sq.id = f.submitted_squad_id" + order
+        ).catch(() => null);
+        if (!rows) {
+          rows = await dbAll(
+            "SELECT f.*, e.name AS employee_name, e.role_title, e.status AS employee_status," +
+            " t.label AS type_label, t.kind AS type_kind" + from + order
+          ).catch(() => []);
+        }
+        rows.forEach((r) => {
+          delete r.signature; delete r.pdf_stored; delete r.ack_token;
+          r.points = r.points == null ? null : num(r.points);
+          r.voided = !!r.voided;
+          r.acknowledged = !!r.acknowledged;
+          r.source = r.submitted_via === "squad_qr" ? "squad_qr" : (r.imported_from ? "import" : "office");
+          r.self_reported = r.source === "squad_qr" && r.submitted_by_employee_id === r.employee_id;
+        });
+        return json(res, 200, { flags: rows, types: await matrixTypes() });
+      }
+
       // Void an occurrence logged in error. Never a hard delete: this is a
       // disciplinary record, and a row that vanishes takes the reason with it.
       const voidMatch = pathname.match(/^\/api\/attendance\/flag\/(\d+)\/void$/);
