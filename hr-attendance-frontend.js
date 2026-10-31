@@ -339,7 +339,8 @@
     mount.innerHTML =
       '<div class="page-header"><div><h1>Staff Attendance</h1>' +
         '<p>Points, standing and bonus eligibility under the Attendance &amp; Punctuality Policy. Rolling 90 days for standing; the last 30 days for the monthly review.</p></div>' +
-        '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn secondary small" id="att-matrix-btn">Attendance matrix</button>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn small" id="att-history-btn">Infraction history</button>' +
+        '<button class="btn secondary small" id="att-matrix-btn">Attendance matrix</button>' +
         '<button class="btn secondary small" id="att-squads-btn">Squad Leaders</button>' +
         '<button class="btn secondary small" id="att-import-btn">Import attendance log</button>' +
         '<button class="btn secondary small" id="att-review-btn">Send monthly review</button></div></div>' +
@@ -379,6 +380,7 @@
         else location.hash = "#/staff";
       });
     });
+    mount.querySelector("#att-history-btn").addEventListener("click", openHistory);
     mount.querySelector("#att-matrix-btn").addEventListener("click", openMatrixEditor);
     mount.querySelector("#att-squads-btn").addEventListener("click", function () { openSquadManager(mount); });
     mount.querySelector("#att-import-btn").addEventListener("click", function () { openImporter(mount); });
@@ -639,6 +641,145 @@
       try { await api("/api/attendance/types", { method: "PUT", body: { types: types } }); st.textContent = "Saved ✓"; }
       catch (e) { st.textContent = e.message || "Could not save."; }
     });
+  }
+
+  // ---------------- infraction history: every occurrence, one list ----------------
+  // Squad Leader QR reports, office-logged occurrences and imported rows, newest
+  // first. Before this the history could only be read one staff card at a time.
+  var SOURCE_LABEL = { squad_qr: "Squad Leader (QR)", office: "Logged by office", "import": "Imported log" };
+
+  // A bare YYYY-MM-DD read through new Date() is midnight UTC, which is the
+  // previous evening in Las Vegas -- every date would show a day early.
+  function ymd(d) {
+    if (!d) return "";
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d));
+    return m ? Number(m[2]) + "/" + Number(m[3]) + "/" + m[1] : String(d);
+  }
+  function histDate(f) { return f.incident_date || (f.created_at || "").slice(0, 10); }
+  function histType(f) { return f.type_label || f.reason || "Other"; }
+  function histReporter(f) {
+    if (f.source === "squad_qr") return (f.reported_by_name || "Squad Leader") + (f.squad_name ? " · " + f.squad_name : "");
+    if (f.source === "import") return "Attendance log import";
+    return f.created_by || "";
+  }
+
+  async function openHistory() {
+    var bd = document.createElement("div");
+    bd.className = "modal-backdrop";
+    bd.innerHTML = '<div class="modal" style="max-width:1150px;width:96vw;max-height:90vh;overflow:auto;">' +
+      '<div class="modal-header"><div><h2>Infraction history</h2>' +
+      '<div style="font-size:12.5px;color:var(--text-muted);">Every attendance occurrence on record: Squad Leader reports, ones logged by the office, and the imported log. Includes former staff.</div></div>' +
+      '<button class="close-btn">✕</button></div>' +
+      '<div id="ah-body"><div style="font-size:13px;color:var(--text-muted);">Loading…</div></div></div>';
+    document.body.appendChild(bd);
+    var close = function () { bd.remove(); };
+    bd.querySelector(".close-btn").addEventListener("click", close);
+    bd.addEventListener("click", function (e) { if (e.target === bd) close(); });
+
+    var d;
+    try { d = await api("/api/attendance/history"); }
+    catch (e) { bd.querySelector("#ah-body").innerHTML = '<div class="empty-state">' + esc(e.message || "Could not load the history.") + "</div>"; return; }
+    var all = d.flags || [];
+
+    var typeOpts = {};
+    all.forEach(function (f) { typeOpts[f.type_key || ("reason:" + histType(f))] = histType(f); });
+    var typeKeys = Object.keys(typeOpts).sort(function (a, b) { return typeOpts[a].localeCompare(typeOpts[b]); });
+    var squadOpts = {};
+    all.forEach(function (f) { if (f.squad_name) squadOpts[f.squad_name] = true; });
+
+    var inp = 'style="padding:6px 8px;font-size:13px;"';
+    bd.querySelector("#ah-body").innerHTML =
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px;">' +
+        '<label style="font-size:12px;">Staff<br><input id="ah-q" type="search" placeholder="Name" ' + inp + "></label>" +
+        '<label style="font-size:12px;">From<br><input id="ah-from" type="date" ' + inp + "></label>" +
+        '<label style="font-size:12px;">To<br><input id="ah-to" type="date" ' + inp + "></label>" +
+        '<label style="font-size:12px;">Type<br><select id="ah-type" ' + inp + '><option value="">All types</option>' +
+          typeKeys.map(function (k) { return '<option value="' + esc(k) + '">' + esc(typeOpts[k]) + "</option>"; }).join("") + "</select></label>" +
+        '<label style="font-size:12px;">Reported via<br><select id="ah-src" ' + inp + '><option value="">All</option>' +
+          '<option value="squad_qr">Squad Leader (QR)</option><option value="office">Logged by office</option><option value="import">Imported log</option></select></label>' +
+        (Object.keys(squadOpts).length ? '<label style="font-size:12px;">Squad<br><select id="ah-squad" ' + inp + '><option value="">All squads</option>' +
+          Object.keys(squadOpts).sort().map(function (s) { return '<option>' + esc(s) + "</option>"; }).join("") + "</select></label>" : "") +
+        '<label style="font-size:12.5px;display:flex;gap:5px;align-items:center;padding-bottom:7px;"><input id="ah-voided" type="checkbox"> Show voided</label>' +
+        '<button class="btn secondary small" id="ah-csv" style="margin-left:auto;">Download CSV</button>' +
+      "</div>" +
+      '<div id="ah-summary" style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px;"></div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">' +
+        '<thead><tr style="text-align:left;border-bottom:2px solid var(--border,#e5e7eb);">' +
+          '<th style="padding:8px;">Date</th><th style="padding:8px;">Staff</th><th style="padding:8px;">Infraction</th>' +
+          '<th style="padding:8px;text-align:right;">Points</th><th style="padding:8px;">Reported by</th>' +
+          '<th style="padding:8px;">Signed</th><th style="padding:8px;">Notes</th></tr></thead>' +
+        '<tbody id="ah-rows"></tbody></table></div>';
+
+    var val = function (id) { var el = bd.querySelector(id); return el ? el.value : ""; };
+    var current = [];
+    function filtered() {
+      var q = val("#ah-q").trim().toLowerCase(), from = val("#ah-from"), to = val("#ah-to");
+      var type = val("#ah-type"), src = val("#ah-src"), squad = val("#ah-squad");
+      var showVoided = bd.querySelector("#ah-voided").checked;
+      return all.filter(function (f) {
+        var day = histDate(f);
+        if (!showVoided && f.voided) return false;
+        if (q && (f.employee_name || "").toLowerCase().indexOf(q) === -1) return false;
+        if (from && day < from) return false;
+        if (to && day > to) return false;
+        if (type && (f.type_key || ("reason:" + histType(f))) !== type) return false;
+        if (src && f.source !== src) return false;
+        if (squad && f.squad_name !== squad) return false;
+        return true;
+      });
+    }
+    function draw() {
+      current = filtered();
+      var live = current.filter(function (f) { return !f.voided; });
+      var pts = live.reduce(function (n, f) { return n + (Number(f.points) || 0); }, 0);
+      var people = {};
+      live.forEach(function (f) { people[f.employee_id] = true; });
+      bd.querySelector("#ah-summary").textContent = current.length + " shown · " + Object.keys(people).length +
+        " staff · " + (Math.round(pts * 10) / 10) + " net points" + (all.length !== current.length ? " (of " + all.length + " on record)" : "");
+      bd.querySelector("#ah-rows").innerHTML = current.map(function (f) {
+        var p = f.points == null ? "—" : (f.points > 0 ? "+" : "") + f.points;
+        var pColor = f.points < 0 ? "#166534" : (f.points > 0 ? "#b45309" : "var(--text-muted)");
+        var strike = f.voided ? "text-decoration:line-through;opacity:.55;" : "";
+        return '<tr style="border-bottom:1px solid var(--border,#f0f0f0);vertical-align:top;' + strike + '">' +
+          '<td style="padding:8px;white-space:nowrap;">' + esc(ymd(histDate(f))) + (f.incident_time ? '<div style="font-size:11px;color:var(--text-muted);">' + esc(f.incident_time) + "</div>" : "") + "</td>" +
+          '<td style="padding:8px;"><a href="#" data-ah-emp="' + f.employee_id + '" style="font-weight:600;">' + esc(f.employee_name || "Unknown staff") + "</a>" +
+            (f.employee_status === "terminated" ? ' <span class="tag" style="font-size:10.5px;">Former</span>' : "") +
+            (f.role_title ? '<div style="font-size:11px;color:var(--text-muted);">' + esc(f.role_title) + "</div>" : "") + "</td>" +
+          '<td style="padding:8px;">' + esc(histType(f)) + (f.voided ? '<div style="font-size:11px;color:#b91c1c;">Voided' + (f.voided_reason ? ": " + esc(f.voided_reason) : "") + "</div>" : "") + "</td>" +
+          '<td style="padding:8px;text-align:right;font-weight:600;color:' + pColor + ';">' + esc(p) + "</td>" +
+          '<td style="padding:8px;">' + esc(histReporter(f)) + '<div style="font-size:11px;color:var(--text-muted);">' + esc(SOURCE_LABEL[f.source] || "") +
+            (f.self_reported ? ' · <span style="color:#b45309;">self-reported</span>' : "") + "</div></td>" +
+          '<td style="padding:8px;white-space:nowrap;">' + (f.acknowledged ? "Yes" + (f.signed_date ? '<div style="font-size:11px;color:var(--text-muted);">' + esc(ymd(f.signed_date)) + "</div>" : "")
+            : '<span style="color:#92400e;">Unsigned</span>') + "</td>" +
+          '<td style="padding:8px;max-width:280px;">' + esc(f.notes || "") + "</td></tr>";
+      }).join("") || '<tr><td colspan="7"><div class="empty-state">No infractions match these filters.</div></td></tr>';
+      bd.querySelectorAll("[data-ah-emp]").forEach(function (a) {
+        a.addEventListener("click", function (e) {
+          e.preventDefault();
+          if (typeof openStaffModal === "function") openStaffModal(a.getAttribute("data-ah-emp"));
+        });
+      });
+    }
+    ["#ah-q", "#ah-from", "#ah-to", "#ah-type", "#ah-src", "#ah-squad", "#ah-voided"].forEach(function (id) {
+      var el = bd.querySelector(id);
+      if (el) { el.addEventListener("input", draw); el.addEventListener("change", draw); }
+    });
+    bd.querySelector("#ah-csv").addEventListener("click", function () {
+      var cell = function (v) { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+      var lines = [["Date", "Time", "Staff", "Role", "Infraction", "Points", "Reported by", "Reported via", "Squad", "Self-reported", "Signed", "Signed date", "Voided", "Void reason", "Notes"].join(",")];
+      current.forEach(function (f) {
+        lines.push([histDate(f), f.incident_time, f.employee_name, f.role_title, histType(f), f.points, histReporter(f),
+          SOURCE_LABEL[f.source], f.squad_name, f.self_reported ? "Yes" : "", f.acknowledged ? "Yes" : "No", f.signed_date,
+          f.voided ? "Yes" : "", f.voided_reason, f.notes].map(cell).join(","));
+      });
+      var blob = new Blob([lines.join("\n")], { type: "text/csv" });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "attendance-infractions-" + new Date().toISOString().slice(0, 10) + ".csv";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    });
+    draw();
   }
 
   // ---------------- one-time import of the attendance log ----------------
