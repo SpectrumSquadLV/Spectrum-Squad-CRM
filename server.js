@@ -847,7 +847,7 @@ async function getUserFromToken(token) {
 function sanitizeUser(user) {
   // The second factor's secret and recovery codes never leave the server, any
   // more than the password hash does.
-  const { password_hash, password_salt, mfa_secret, mfa_recovery_codes, mfa_last_step, ...safe } = user;
+  const { password_hash, password_salt, mfa_secret, mfa_pending_secret, mfa_recovery_codes, mfa_last_step, ...safe } = user;
   return safe;
 }
 
