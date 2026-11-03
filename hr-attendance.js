@@ -106,11 +106,11 @@ module.exports = function initHrAttendance(ctx) {
   // between an acceptable month and one that needs a conversation is a policy
   // decision, not an arithmetic one, and it must not exist twice.
   const MONTHLY_REVIEW = [
-    { min: 6, level: "Leadership Review", action: "Review caseload / disciplinary action", bonus: "Not bonus eligible", meets: false },
-    { min: 5, level: "Attendance Improvement Plan", action: "Create improvement plan", bonus: "Not bonus eligible for active cycle", meets: false },
-    { min: 4, level: "Coaching Conversation", action: "Discuss patterns / support", bonus: "Not guaranteed", meets: false },
-    { min: 0.5, level: "Meets Expectations", action: "Monitor and document", bonus: "May remain eligible only if 90-day points return to 0", meets: true },
-    { min: 0, level: "Exceeds Expectations", action: "Recognize reliability", bonus: "Can remain eligible if 90-day points are 0", meets: true },
+    { min: 6, level: "Leadership Review", action: "Review caseload / disciplinary action", meets: false },
+    { min: 5, level: "Attendance Improvement Plan", action: "Create improvement plan", meets: false },
+    { min: 4, level: "Coaching Conversation", action: "Discuss patterns / support", meets: false },
+    { min: 0.5, level: "Meets Expectations", action: "Monitor and document", meets: true },
+    { min: 0, level: "Exceeds Expectations", action: "Recognize reliability", meets: true },
   ];
 
   // WHERE A CONVERSATION STARTS, read off the matrix rather than written out
@@ -125,9 +125,6 @@ module.exports = function initHrAttendance(ctx) {
   // that now starts at 4, and the sentence would have been wrong rather than
   // merely stale.
   const COACHING_MIN = Math.min(...MONTHLY_REVIEW.filter((b) => b.meets !== true).map((b) => b.min));
-
-  const BONUS_AMOUNT = 50;      // $50
-  const BONUS_CYCLE_DAYS = 90;  // paid every 90 days from hire date
 
   // ------------------------------------------------------------------ schema
   async function initTables() {
@@ -207,8 +204,8 @@ module.exports = function initHrAttendance(ctx) {
       review_action TEXT,
       points_90 NUMERIC,
       discipline_level TEXT,
-      bonus_eligible BOOLEAN,
-      next_bonus_date TEXT,
+      bonus_eligible BOOLEAN,               -- no longer written: the attendance
+      next_bonus_date TEXT,                 -- bonus was discontinued; old rows keep theirs
       emailed_to TEXT,
       created_at TEXT,
       UNIQUE (employee_id, period)
@@ -221,22 +218,13 @@ module.exports = function initHrAttendance(ctx) {
   // There are two columns. `hire_date` is the original; `hr_hire_date` was
   // added later and is the one the Staff card writes and the offer-accepted
   // flow sets. Attendance read only the old one, so for anybody hired through
-  // the app the bonus cycle said "No hire date on file" and never started --
-  // which is exactly the bug this fixes. The Staff card already displays
+  // the app the roster showed no hire date -- which is the bug this fixed. The Staff card already displays
   // `hr_hire_date || hire_date`, so this matches what a person sees on screen.
   //
   // NULLIF guards the empty string: a cleared date field stores "" rather than
   // NULL, and COALESCE alone would happily hand back "" as though it were set.
   const HIRE_DATE_SQL =
     "COALESCE(NULLIF(hr_hire_date, ''), NULLIF(hire_date, '')) AS hire_date";
-
-  // The role on the CRM account linked to this employee, for bonus eligibility.
-  // A correlated subquery rather than a LEFT JOIN on purpose: hr_employees and
-  // users both have id, name, email and role columns, so a join would make
-  // every existing unqualified column in these queries ambiguous and would mean
-  // rewriting each of them to find out.
-  const CRM_ROLE_SQL =
-    "(SELECT u.role FROM users u WHERE u.id = hr_employees.user_id) AS crm_role";
 
   function role(user) { return (user && (user.role || user.role_key || "")) || ""; }
 
@@ -259,13 +247,13 @@ module.exports = function initHrAttendance(ctx) {
     return !!user && moduleGranted(user, "attendance");
   }
   // Changing point values, or firing the monthly review by hand, decides
-  // discipline levels and who is owed a $50 bonus. Narrower than canManage on
+  // discipline levels. Narrower than canManage on
   // purpose: an hr_admin can log and read attendance, but not rewrite the
   // policy the numbers come from.
   //
   // DELIBERATELY NOT grant-aware. A nav toggle unlocks a section's ordinary
-  // access; it must never hand over the policy the discipline levels and the
-  // bonus are calculated from. Granting somebody Staff Attendance lets them
+  // access; it must never hand over the policy the discipline levels are
+  // calculated from. Granting somebody Staff Attendance lets them
   // read and log it, and still refuses them the matrix, the import and the
   // monthly review.
   function canEditMatrix(user) {
@@ -306,11 +294,6 @@ module.exports = function initHrAttendance(ctx) {
   function daysBefore(isoDay, n) {
     const d = new Date(String(isoDay).slice(0, 10) + "T00:00:00Z");
     d.setUTCDate(d.getUTCDate() - n);
-    return d.toISOString().slice(0, 10);
-  }
-  function addDays(isoDay, n) {
-    const d = new Date(String(isoDay).slice(0, 10) + "T00:00:00Z");
-    d.setUTCDate(d.getUTCDate() + n);
     return d.toISOString().slice(0, 10);
   }
   function today() { return nowISO().slice(0, 10); }
@@ -440,101 +423,6 @@ module.exports = function initHrAttendance(ctx) {
     return MONTHLY_REVIEW[MONTHLY_REVIEW.length - 1];
   }
 
-  // Bonus cycles run from the hire date in 90-day steps, exactly as the sheet's
-  // "Cycle 1/2/3/4 Eligible" columns do -- but the cycle only sets the PAYOUT
-  // DATE. Eligibility is the rolling 90-day total, per the policy line "0
-  // attendance points during a 90-day period".
-  //
-  // These come apart, which is why it is worth being explicit. Martha Vera in
-  // the sheet is +2.5 rolling but NEGATIVE inside her current hire-date cycle
-  // (four picked-up shifts since it began), and the sheet has her NOT
-  // ELIGIBLE. Keying off the cycle window would have paid her the $50.
-  // WHO THE ATTENDANCE BONUS IS NOT FOR
-  //
-  // BCBAs and administrative staff are not in the $50 attendance bonus. It is
-  // for the people whose work is a scheduled shift; a BCBA's day is a caseload
-  // and an admin's is not shift-based, so counting their punctuality toward a
-  // reliability bonus measures the wrong thing.
-  //
-  // TWO SOURCES, IN ORDER OF HOW MUCH THEY CAN BE TRUSTED:
-  //
-  //   1. The CRM ROLE on the account linked to this employee. Somebody chose it
-  //      in Admin Settings and it is maintained; "clinical" is the BCBA role.
-  //   2. Failing that -- plenty of staff have an HR record and no login -- the
-  //      JOB TITLE, matched narrowly.
-  //
-  // The title match is deliberately narrow. role_title is free text, so a
-  // generous pattern is a way to silently stop paying somebody: a withheld
-  // bonus produces no error, no email and nothing on the employee's own screen,
-  // and the first anyone knows is a person asking why their $50 never came.
-  // Anything the two sources do not clearly identify STAYS ELIGIBLE, because
-  // wrongly paying $50 is a conversation and wrongly withholding it is not.
-  //
-  //   * "BCaBA" is NOT a BCBA and is not excluded. It does not contain the
-  //     letters "bcba" in that order, so \bbcba\b does not match it -- worth
-  //     saying out loud, because widening this pattern would catch them.
-  //   * "Office Manager", "Coordinator", "Lead" and similar are not matched.
-  //     They may or may not be administrative; the CRM role decides, not a
-  //     guess from a job title.
-  const BONUS_EXCLUDED_CRM_ROLES = {
-    clinical: "BCBAs are not in the attendance bonus",
-    owner: "Administrative staff are not in the attendance bonus",
-    super_admin: "Administrative staff are not in the attendance bonus",
-    admin: "Administrative staff are not in the attendance bonus",
-  };
-  const BONUS_EXCLUDED_TITLES = [
-    [/\bbcba\b/i, "BCBAs are not in the attendance bonus"],
-    [/board\s*certified\s*behavio(u)?r\s*analyst/i, "BCBAs are not in the attendance bonus"],
-    [/\bclinical\s*director\b/i, "BCBAs are not in the attendance bonus"],
-    [/\badministrator\b/i, "Administrative staff are not in the attendance bonus"],
-  ];
-
-  function bonusExclusion(emp) {
-    const crmRole = emp && (emp.crm_role || emp.role);
-    if (crmRole && BONUS_EXCLUDED_CRM_ROLES[crmRole]) {
-      return { excluded: true, reason: BONUS_EXCLUDED_CRM_ROLES[crmRole], source: "crm_role" };
-    }
-    const title = String((emp && emp.role_title) || "");
-    for (const [re, reason] of BONUS_EXCLUDED_TITLES) {
-      if (re.test(title)) return { excluded: true, reason, source: "role_title" };
-    }
-    return { excluded: false, reason: null, source: null };
-  }
-
-  function bonusCycle(hireDate, rows, asOfDay, points90) {
-    const asOf = asOfDay || today();
-    const hire = hireDate ? String(hireDate).slice(0, 10) : null;
-    if (!hire || isNaN(new Date(hire + "T00:00:00Z").getTime())) {
-      return { eligible: false, status: "No hire date on file", cycle_start: null, next_bonus_date: null, points_in_cycle: null };
-    }
-    const dayMs = 86400000;
-    const elapsed = Math.floor(
-      (new Date(asOf + "T00:00:00Z") - new Date(hire + "T00:00:00Z")) / dayMs
-    );
-    if (elapsed < 0) {
-      return { eligible: false, status: "Hire date is in the future", cycle_start: hire, next_bonus_date: addDays(hire, BONUS_CYCLE_DAYS), points_in_cycle: null };
-    }
-    const completed = Math.floor(elapsed / BONUS_CYCLE_DAYS);
-    const cycleStart = addDays(hire, completed * BONUS_CYCLE_DAYS);
-    const nextBonus = addDays(hire, (completed + 1) * BONUS_CYCLE_DAYS);
-    const inCycle = pointsBetween(rows, cycleStart, asOf);
-    const rolling = points90 == null ? pointsBetween(rows, daysBefore(asOf, 90), asOf) : points90;
-    const clean = rolling <= 0;
-    if (completed === 0) {
-      return {
-        eligible: clean, status: "First 90-day cycle in progress",
-        cycle_start: cycleStart, next_bonus_date: nextBonus,
-        points_in_cycle: inCycle, points_rolling_90: rolling,
-      };
-    }
-    return {
-      eligible: clean,
-      status: clean ? `Eligible — $${BONUS_AMOUNT} at next payout` : "Not eligible this cycle",
-      cycle_start: cycleStart, next_bonus_date: nextBonus,
-      points_in_cycle: inCycle, points_rolling_90: rolling,
-    };
-  }
-
   // The full picture for one employee, which is what both the roster and the
   // monthly review email are built from.
   function scoreEmployee(emp, rows, asOfDay) {
@@ -542,11 +430,6 @@ module.exports = function initHrAttendance(ctx) {
     const points90 = pointsBetween(rows, daysBefore(asOf, 90), asOf);
     const points30 = pointsBetween(rows, daysBefore(asOf, 30), asOf);
     const band = monthlyReviewFor(points30);
-    const bonus = bonusCycle(emp && emp.hire_date, rows, asOf, points90);
-    // Applied AFTER the cycle is worked out, not instead of it, so the roster
-    // still shows a BCBA's points and standing -- the policy's discipline
-    // ladder applies to everybody. It is only the payout they are outside of.
-    const exclusion = bonusExclusion(emp);
     const unsigned = (rows || []).filter((f) => countable(f) && !(f.acknowledged === true || f.acknowledged === "t")).length;
     // Which kinds of occurrence fall inside the rolling window, for the
     // floors. Same window and the same countable filter the points use, so a
@@ -581,17 +464,6 @@ module.exports = function initHrAttendance(ctx) {
       // green chip beside the words "Written warning".
       discipline_needs_action: step90.at > 0,
       discipline_min: DISCIPLINE_MIN,
-      bonus_impact: exclusion.excluded ? "Not in the attendance bonus" : band.bonus,
-      bonus_eligible: exclusion.excluded ? false : bonus.eligible,
-      bonus_status: exclusion.excluded ? exclusion.reason : bonus.status,
-      bonus_excluded: exclusion.excluded,
-      bonus_exclusion_reason: exclusion.reason,
-      bonus_exclusion_source: exclusion.source,
-      bonus_cycle_start: bonus.cycle_start,
-      // No payout date for somebody outside the bonus: "next bonus 12 Nov" on
-      // their row is a promise the policy does not make.
-      next_bonus_date: exclusion.excluded ? null : bonus.next_bonus_date,
-      points_in_bonus_cycle: bonus.points_in_cycle,
       unsigned_acknowledgments: unsigned,
       // "Staff who demonstrate repeated call-offs ... may have their caseload
       // reduced or split" -- surfaced at the written-warning threshold, which
@@ -804,8 +676,8 @@ module.exports = function initHrAttendance(ctx) {
   // The practice tracked attendance in a Google Sheet ("Attendance Log - RBTs")
   // before this module existed. The CRM is the system of record now, so the
   // history has to come across rather than everyone restarting at zero points --
-  // a rolling 90-day total that begins today would hand out bonuses nobody has
-  // earned and erase warnings people are already on.
+  // a rolling 90-day total that begins today would erase warnings people are
+  // already on.
   //
   // Deliberately an import-with-preview rather than a hard-coded backfill:
   //   * the sheet's own lookup formula keys on the typed staff name, so it has
@@ -1187,7 +1059,7 @@ module.exports = function initHrAttendance(ctx) {
       const listMatch = pathname.match(/^\/api\/attendance\/employee\/(\d+)$/);
       if (listMatch && method === "GET") {
         const empId = Number(listMatch[1]);
-        const emp = await dbGet("SELECT id, name, role_title, " + HIRE_DATE_SQL + ", " + CRM_ROLE_SQL + ", email FROM hr_employees WHERE id = ?", [empId]);
+        const emp = await dbGet("SELECT id, name, role_title, " + HIRE_DATE_SQL + ", email FROM hr_employees WHERE id = ?", [empId]);
         const rows = await dbAll("SELECT * FROM hr_attendance_flags WHERE employee_id = ? ORDER BY COALESCE(incident_date, created_at) DESC, id DESC", [empId]);
         rows.forEach((r) => { r.has_pdf = !!r.pdf_stored; r.points = r.points == null ? null : num(r.points); delete r.signature; });
         return json(res, 200, {
@@ -1200,7 +1072,7 @@ module.exports = function initHrAttendance(ctx) {
 
       // Log an occurrence. The point value comes from the matrix, not the
       // caller -- a client that could post its own points would be a way to
-      // hand out or withhold a $50 bonus by editing a request.
+      // change somebody's discipline level by editing a request.
       if (listMatch && method === "POST") {
         const empId = Number(listMatch[1]);
         const emp = await dbGet("SELECT id, name, email, " + HIRE_DATE_SQL + " FROM hr_employees WHERE id = ?", [empId]);
@@ -1274,7 +1146,7 @@ module.exports = function initHrAttendance(ctx) {
       if (pathname === "/api/attendance/roster" && method === "GET") {
         const asOf = /^\d{4}-\d{2}-\d{2}$/.test(query.as_of || "") ? query.as_of : today();
         const emps = await dbAll(
-          `SELECT id, name, role_title, ${HIRE_DATE_SQL}, ${CRM_ROLE_SQL}, email, status FROM hr_employees
+          `SELECT id, name, role_title, ${HIRE_DATE_SQL}, email, status FROM hr_employees
             WHERE COALESCE(status,'active') <> 'terminated' ORDER BY name`
         ).catch(() => []);
         const all = await dbAll("SELECT * FROM hr_attendance_flags").catch(() => []);
@@ -1287,18 +1159,10 @@ module.exports = function initHrAttendance(ctx) {
           totals: {
             people: staff.length,
             with_points_90: staff.filter((s) => s.points_90 > 0).length,
-            bonus_eligible: staff.filter((s) => s.bonus_eligible).length,
-            // Reported separately so the tile above it reconciles. Without
-            // this, "6 on track" out of 14 people reads as eight staff with
-            // attendance problems when four of them are simply not in the
-            // scheme at all.
-            bonus_excluded: staff.filter((s) => s.bonus_excluded).length,
-            bonus_in_scheme: staff.filter((s) => !s.bonus_excluded).length,
             needing_action: staff.filter((s) => s.points_30 >= COACHING_MIN).length,
             coaching_min: COACHING_MIN,
             unsigned: staff.reduce((n, s) => n + s.unsigned_acknowledgments, 0),
           },
-          bonus_amount: BONUS_AMOUNT,
         });
       }
 
@@ -1447,8 +1311,8 @@ module.exports = function initHrAttendance(ctx) {
         return true;
       }
 
-      // Legacy delete. Now that attendance drives discipline levels and a $50
-      // bonus, an occurrence that disappears without trace is a hole: it is
+      // Legacy delete. Now that attendance drives discipline levels, an
+      // occurrence that disappears without trace is a hole: it is
       // voided instead, which stops it counting but keeps the row and the
       // reason. Kept on DELETE so anything still calling it behaves safely.
       const delMatch = pathname.match(/^\/api\/attendance\/flag\/(\d+)$/);
@@ -1485,7 +1349,6 @@ module.exports = function initHrAttendance(ctx) {
       <tr><td style="padding:5px 14px 5px 0;color:#555;">Points, last 30 days</td><td style="padding:5px 0;font-weight:700;">${round2(score.points_30)}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#555;">Points, rolling 90 days</td><td style="padding:5px 0;font-weight:700;">${round2(score.points_90)}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#555;">Standing</td><td style="padding:5px 0;font-weight:700;">${esc(score.discipline_level)}</td></tr>
-      ${score.bonus_excluded ? "" : `<tr><td style="padding:5px 14px 5px 0;color:#555;">Attendance bonus</td><td style="padding:5px 0;font-weight:700;">${esc(score.bonus_status)}</td></tr>`}
     </table>`;
   }
 
@@ -1529,7 +1392,7 @@ module.exports = function initHrAttendance(ctx) {
     const asOf = period === today().slice(0, 7) ? today() : lastDayOf(period);
 
     const emps = await dbAll(
-      `SELECT id, name, email, role_title, ${HIRE_DATE_SQL}, ${CRM_ROLE_SQL} FROM hr_employees
+      `SELECT id, name, email, role_title, ${HIRE_DATE_SQL} FROM hr_employees
         WHERE COALESCE(status,'active') <> 'terminated' ORDER BY name`
     ).catch(() => []);
     const all = await dbAll("SELECT * FROM hr_attendance_flags").catch(() => []);
@@ -1561,10 +1424,8 @@ module.exports = function initHrAttendance(ctx) {
             <tr><td style="padding:5px 14px 5px 0;color:#555;">Next step</td><td style="padding:5px 0;">${esc(score.review_action)}</td></tr>
             <tr><td style="padding:5px 14px 5px 0;color:#555;">Rolling 90-day points</td><td style="padding:5px 0;font-weight:700;">${round2(score.points_90)}</td></tr>
             <tr><td style="padding:5px 14px 5px 0;color:#555;">Standing</td><td style="padding:5px 0;font-weight:700;">${esc(score.discipline_level)}</td></tr>
-            ${score.bonus_excluded ? "" : `<tr><td style="padding:5px 14px 5px 0;color:#555;">Attendance bonus</td><td style="padding:5px 0;font-weight:700;">${esc(score.bonus_status)}</td></tr>`}
-            ${score.next_bonus_date ? `<tr><td style="padding:5px 14px 5px 0;color:#555;">Next bonus date</td><td style="padding:5px 0;">${esc(score.next_bonus_date)}</td></tr>` : ""}
           </table>
-          <p style="font-size:13px;color:#666;">Points can be earned back: perfect attendance for 30 days, perfect attendance for 60 days, picking up a last-minute shift, or completing an attendance improvement plan.${score.bonus_excluded ? "" : ` Every 90 days with zero points earns the $${BONUS_AMOUNT} attendance bonus.`}</p>
+          <p style="font-size:13px;color:#666;">Points can be earned back: perfect attendance for 30 days, perfect attendance for 60 days, picking up a last-minute shift, or completing an attendance improvement plan.</p>
           <p>Thank you for everything you do for our families,<br/>Spectrum Squad</p>`;
         const r = await sendEmail({
           to: emp.email,
@@ -1578,16 +1439,15 @@ module.exports = function initHrAttendance(ctx) {
       await dbRun(
         `INSERT INTO hr_attendance_reviews
            (employee_id, period, points_30, review_level, review_action, points_90,
-            discipline_level, bonus_eligible, next_bonus_date, emailed_to, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            discipline_level, emailed_to, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?)
          ON CONFLICT (employee_id, period) DO UPDATE SET
            points_30 = EXCLUDED.points_30, review_level = EXCLUDED.review_level,
            review_action = EXCLUDED.review_action, points_90 = EXCLUDED.points_90,
-           discipline_level = EXCLUDED.discipline_level, bonus_eligible = EXCLUDED.bonus_eligible,
-           next_bonus_date = EXCLUDED.next_bonus_date,
+           discipline_level = EXCLUDED.discipline_level,
            emailed_to = COALESCE(EXCLUDED.emailed_to, hr_attendance_reviews.emailed_to)`,
         [emp.id, period, score.points_30, score.review_level, score.review_action, score.points_90,
-         score.discipline_level, score.bonus_eligible, score.next_bonus_date, sentTo, nowISO()]
+         score.discipline_level, sentTo, nowISO()]
       ).catch((e) => console.error("attendance review row:", e.message));
       if (hasActivity) await logEmpActivity(emp.id, `Monthly attendance review ${period}: ${score.review_level} (${round2(score.points_30)} pts in period, ${round2(score.points_90)} rolling).`);
     }
@@ -1602,26 +1462,23 @@ module.exports = function initHrAttendance(ctx) {
     if (recipients.length && !nothingNew) {
       const needing = scored.filter((x) => x.score.points_30 >= COACHING_MIN)
         .sort((a, b) => b.score.points_30 - a.score.points_30);
-      const bonusDue = scored.filter((x) => x.score.bonus_eligible);
       const row = (x) => `<tr>
         <td style="padding:6px 10px;border-bottom:1px solid #eee;">${esc(x.score.name)}</td>
         <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;">${round2(x.score.points_30)}</td>
         <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;">${round2(x.score.points_90)}</td>
         <td style="padding:6px 10px;border-bottom:1px solid #eee;">${esc(x.score.review_level)}</td>
         <td style="padding:6px 10px;border-bottom:1px solid #eee;">${esc(x.score.discipline_level)}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #eee;">${x.score.bonus_eligible ? `$${BONUS_AMOUNT}` : "—"}</td>
       </tr>`;
       const html = `
         <p><strong>Monthly attendance review — ${esc(monthLabel(period))}</strong></p>
         <p>${needing.length
           ? `${needing.length} staff member${needing.length === 1 ? "" : "s"} at Coaching Conversation or above this period.`
-          : "No staff member reached the coaching threshold this period."}
-          ${bonusDue.length ? ` ${bonusDue.length} currently on track for the $${BONUS_AMOUNT} attendance bonus.` : ""}</p>
+          : "No staff member reached the coaching threshold this period."}</p>
         <table style="border-collapse:collapse;font-size:13px;width:100%;">
           <tr style="text-align:left;background:#f5f5f7;">
             <th style="padding:7px 10px;">Staff</th><th style="padding:7px 10px;text-align:right;">30-day</th>
             <th style="padding:7px 10px;text-align:right;">90-day</th><th style="padding:7px 10px;">Review level</th>
-            <th style="padding:7px 10px;">Standing</th><th style="padding:7px 10px;">Bonus</th>
+            <th style="padding:7px 10px;">Standing</th>
           </tr>
           ${scored.slice().sort((a, b) => b.score.points_30 - a.score.points_30 || String(a.score.name).localeCompare(String(b.score.name))).map(row).join("")}
         </table>
@@ -1843,8 +1700,8 @@ module.exports = function initHrAttendance(ctx) {
     matrixTypes, typeByKey, logEmpActivity, attendanceCompliance,
     _internal: {
       buildAckPdf, REASONS, ATTENDANCE_MATRIX, DISCIPLINE_STEPS, DISCIPLINE_FLOORS, MONTHLY_REVIEW, COACHING_MIN, DISCIPLINE_MIN, CASELOAD_RISK_AT,
-      scoreEmployee, disciplineFor, disciplineStepFor, monthlyReviewFor, bonusCycle, bonusExclusion, noticeHours,
-      pointsBetween, daysBefore, addDays, lastDayOf, monthLabel, monthsBetween,
+      scoreEmployee, disciplineFor, disciplineStepFor, monthlyReviewFor, noticeHours,
+      pointsBetween, daysBefore, lastDayOf, monthLabel, monthsBetween,
     },
   };
 };

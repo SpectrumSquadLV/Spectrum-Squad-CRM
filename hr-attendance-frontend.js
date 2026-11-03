@@ -68,7 +68,6 @@
         + " " + chip("90-day points", score.points_90,
                       score.discipline_needs_action ? ["#fee2e2", "#991b1b"] : ["#dcfce7", "#166534"])
         + " " + pill(score.discipline_level) + " " + pill(score.review_level)
-        + " " + chip("Bonus", score.bonus_eligible ? "$50 on track" : score.bonus_status, score.bonus_eligible ? ["#dcfce7", "#166534"] : ["#f1f5f9", "#475569"])
       : chip("Flags in last 90 days", count90, count90 ? ["#fee2e2", "#991b1b"] : ["#dcfce7", "#166534"]);
 
     container.innerHTML =
@@ -77,7 +76,7 @@
       + '<div style="display:flex; gap:6px; flex-wrap:wrap;">'
         + '<button class="btn small" id="att-pickup-btn" style="background:#166534; border-color:#166534;" title="Picked up a last-minute shift: takes a point off">+ Picked up a shift</button>'
         + '<button class="btn small" id="att-add-btn">+ Log occurrence</button></div></div>'
-      + (score && score.review_action ? '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Monthly review action: <strong>' + esc(score.review_action) + "</strong>" + (score.next_bonus_date ? " · next bonus date " + esc(score.next_bonus_date) : "") + "</div>" : "")
+      + (score && score.review_action ? '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Monthly review action: <strong>' + esc(score.review_action) + "</strong></div>" : "")
       + '<div id="att-add-form"></div>'
       + '<div id="att-list">' + rows + "</div>";
 
@@ -319,26 +318,16 @@
         '<td style="padding:9px 10px;text-align:right;font-weight:700;">' + s.points_90 + "</td>" +
         '<td style="padding:9px 10px;">' + pill(s.review_level) + "</td>" +
         '<td style="padding:9px 10px;">' + pill(s.discipline_level) + "</td>" +
-        '<td style="padding:9px 10px;font-size:12.5px;">' + (s.bonus_eligible
-            ? '<span style="color:#166534;font-weight:700;">$' + (d.bonus_amount || 50) + "</span>"
-            : s.bonus_excluded
-              // Distinct from "not eligible this cycle". Somebody outside the
-              // scheme has not failed anything, and a grey "Not eligible" next
-              // to their name reads as though they had.
-              ? '<span class="tag" style="background:#f1f5f9;color:#475569;">Not in the scheme</span>'
-                + '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' + esc(s.bonus_status) + "</div>"
-              : '<span style="color:var(--text-muted);">' + esc(s.bonus_status) + "</span>") +
-          (s.next_bonus_date ? '<div style="font-size:11px;color:var(--text-muted);">next ' + esc(s.next_bonus_date) + "</div>" : "") + "</td>" +
         '<td style="padding:9px 10px;text-align:center;">' + (s.unsigned_acknowledgments
             ? '<span class="tag" style="background:#fef3c7;color:#92400e;">' + s.unsigned_acknowledgments + " unsigned</span>" : "—") + "</td>" +
         '<td style="padding:9px 10px;text-align:right;white-space:nowrap;">' +
           '<button class="btn small" data-att-pickup="' + s.employee_id + '" data-att-pickup-name="' + esc(s.name) + '" style="background:#166534;border-color:#166534;" title="Picked up a last-minute shift: takes a point off">+ Picked up a shift</button></td>' +
         "</tr>";
-    }).join("") || '<tr><td colspan="8"><div class="empty-state">No staff on the roster yet.</div></td></tr>';
+    }).join("") || '<tr><td colspan="7"><div class="empty-state">No staff on the roster yet.</div></td></tr>';
 
     mount.innerHTML =
       '<div class="page-header"><div><h1>Staff Attendance</h1>' +
-        '<p>Points, standing and bonus eligibility under the Attendance &amp; Punctuality Policy. Rolling 90 days for standing; the last 30 days for the monthly review.</p></div>' +
+        '<p>Points and standing under the Attendance &amp; Punctuality Policy. Rolling 90 days for standing; the last 30 days for the monthly review.</p></div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn small" id="att-history-btn">Infraction history</button>' +
         '<button class="btn secondary small" id="att-matrix-btn">Attendance matrix</button>' +
         '<button class="btn secondary small" id="att-squads-btn">Squad Leaders</button>' +
@@ -348,11 +337,6 @@
         tile(t.people || 0, "Staff tracked") +
         tile(t.with_points_90 || 0, "With points (90 days)", (t.with_points_90 ? "#b45309" : null)) +
         tile(t.needing_action || 0, "At coaching level or above", (t.needing_action ? "#b91c1c" : null)) +
-        // "On track" is counted against the people the bonus actually applies
-        // to. Showing 6 of 14 when four of those are BCBAs and admin reads as
-        // eight staff with attendance problems.
-        tile((t.bonus_eligible || 0) + (t.bonus_in_scheme != null ? " / " + t.bonus_in_scheme : ""),
-             "On track for the bonus", "#166534") +
         tile(t.unsigned || 0, "Unsigned acknowledgments", (t.unsigned ? "#b45309" : null)) +
       "</div>" +
       '<div id="att-review-status" style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px;"></div>' +
@@ -360,7 +344,7 @@
         '<thead><tr style="text-align:left;color:var(--text-muted);font-size:11.5px;text-transform:uppercase;">' +
           '<th style="padding:7px 10px;">Staff</th><th style="padding:7px 10px;text-align:right;">30-day</th>' +
           '<th style="padding:7px 10px;text-align:right;">90-day</th><th style="padding:7px 10px;">Monthly review</th>' +
-          '<th style="padding:7px 10px;">Standing</th><th style="padding:7px 10px;">Bonus</th>' +
+          '<th style="padding:7px 10px;">Standing</th>' +
           '<th style="padding:7px 10px;text-align:center;">Acknowledgments</th>' +
           '<th style="padding:7px 10px;"></th>' +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>" +

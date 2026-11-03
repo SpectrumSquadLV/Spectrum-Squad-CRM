@@ -3,8 +3,8 @@
 //
 // The practice tracked attendance in a Google Sheet before this module. The
 // CRM is the system of record now, so the history has to come across: a rolling
-// 90-day total that restarted at zero would hand out $50 bonuses nobody earned
-// and erase warnings people are already carrying.
+// 90-day total that restarted at zero would erase warnings people are already
+// carrying.
 //
 // The rows below are the real shapes out of "Attendance Log - RBTs", including
 // the four things actually wrong with it:

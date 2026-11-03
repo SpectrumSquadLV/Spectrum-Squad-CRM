@@ -9017,7 +9017,7 @@ const ot = require("./ot")({
   redactSecretLinks, redactStoredBody,
 });
 // ===== EMPLOYEE ATTENDANCE MANAGEMENT add-on: points engine, discipline,
-// bonus cycles, policy editor, attendance emails, historical import. Reuses the
+// policy editor, attendance emails, historical import. Reuses the
 // existing hr_employees identity + Resend. Owns all /api/attendance/* routes. =====
 let attendance;
 try {

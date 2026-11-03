@@ -1594,7 +1594,7 @@ function renderShell(active) {
     navItems.push({ key: "hr", label: "HR & Recruiting", icon: "◐" });
   if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
     navItems.push({ key: "staff", label: "Staff", icon: "◉" });
-  // Staff attendance points, discipline levels and bonus eligibility. Same
+  // Staff attendance points and discipline levels. Same
   // roles the /api/attendance routes accept -- the nav entry hides it, the
   // module's own canManage() is what enforces it.
   if (["owner", "admin", "super_admin", "hr_admin"].includes(state.user.role))
@@ -6996,7 +6996,7 @@ async function renderAdmin(mount) {
       <div class="task-row">
         <div class="info">
           <strong>Monthly staff attendance review</strong>
-          <div class="due">Who receives the monthly attendance roster — each staff member's points, their monthly review level, discipline step and bonus standing. It goes out on the 1st for the month just ended. Comma-separate for more than one person. Leave blank to use the owner notification email above.</div>
+          <div class="due">Who receives the monthly attendance roster — each staff member's points, their monthly review level, discipline step. It goes out on the 1st for the month just ended. Comma-separate for more than one person. Leave blank to use the owner notification email above.</div>
         </div>
         <div style="display:flex; gap:8px;">
           <input id="att-review-to" type="text" placeholder="qblake@spectrumsquadlv.com" style="width:260px;" />
