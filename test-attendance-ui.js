@@ -88,7 +88,8 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   check("with their 30-day points", /\b4\b/.test(page));
   check("and a monthly review level", /Coaching Conversation/i.test(page), page.slice(0, 800));
   check("and a standing", /Good standing/i.test(page), page.slice(0, 800));
-  check("the tiles summarise the roster", /Staff tracked/i.test(page) && /On track for the bonus/i.test(page));
+  check("the tiles summarise the roster", /Staff tracked/i.test(page));
+  check("the discontinued attendance bonus is gone from the roster", !/bonus/i.test(page), page.slice(0, 800));
   check("unsigned acknowledgments are surfaced", /Unsigned acknowledgments/i.test(page));
 
   const rowCount = await owner.locator(".att-row").count();
@@ -132,7 +133,7 @@ const STAFF_PW = process.env.STAFF_PASSWORD || "TestStaff123!";
   // same breath as being told a conversation was needed. The conversation now
   // comes first, and this screen is where you would see it.
   check("and their standing", /Good standing/i.test(atext), atext.slice(0, 300));
-  check("and their bonus position", /Bonus/i.test(atext), atext.slice(0, 300));
+  check("and no bonus position", !/bonus/i.test(atext), atext.slice(0, 300));
   // The points chip is amber for a month that needs a conversation and green
   // for one that does not, and the colour comes from the server's verdict
   // rather than being re-derived in the browser from a threshold somebody

@@ -15,8 +15,8 @@
 // "Not permitted". That reads as a broken CRM, not a missing wire.
 //
 // What a grant must NOT do is hand over the policy. The points matrix, the
-// attendance import and the monthly review decide discipline levels and who is
-// owed a bonus; those stay role-gated, and this suite proves the line holds.
+// attendance import and the monthly review decide discipline levels; those
+// stay role-gated, and this suite proves the line holds.
 //
 //   DATABASE_URL=... node run-tests.js test-attendance-grant.js
 "use strict";
@@ -59,7 +59,7 @@ const login = async (email, password) => {
 
 // The roster is the ordinary tier: reading who is where on attendance.
 const ROSTER = "/api/attendance/roster";
-// The matrix is the policy the points and the bonus come from.
+// The matrix is the policy the points come from.
 const MATRIX = "/api/attendance/types";
 
 (async () => {

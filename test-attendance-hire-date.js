@@ -1,10 +1,10 @@
-// The attendance bonus cycle has to read the hire date staff actually enter.
+// Attendance has to read the hire date staff actually enter.
 //
 // hr_employees carries TWO hire-date columns. `hire_date` is the original;
 // `hr_hire_date` was added later and is the one the Staff card writes and the
 // offer-accepted flow sets. Attendance read only the old one -- so for anybody
-// hired through the app the bonus cycle reported "No hire date on file" and
-// never started, which is what Quiana saw.
+// hired through the app the attendance roster had no hire date, which is
+// what Quiana saw.
 //
 // The Staff card displays `hr_hire_date || hire_date`, so the rule this pins
 // is: attendance agrees with what a person sees on screen.
@@ -93,15 +93,10 @@ const ago = (days) => new Date(Date.now() - days * 86400000).toISOString().slice
   section("A hire date entered in the app is seen by attendance");
   const app = find(viaApp);
   check("the roster carries the hire date", !!app.hire_date, app);
-  check("and the bonus cycle actually started",
-    app.bonus_status && app.bonus_status !== "No hire date on file", app.bonus_status);
-  check("with a next bonus date to work towards", !!app.bonus_next_date || !!app.bonus_cycle_start, app);
 
   section("An older record with only the original column still works");
   const leg = find(legacy);
   check("the legacy hire date is read", !!leg.hire_date, leg);
-  check("its cycle started too",
-    leg.bonus_status && leg.bonus_status !== "No hire date on file", leg.bonus_status);
 
   section("When both are set, the one on screen wins");
   const bo = find(both);
@@ -112,14 +107,10 @@ const ago = (days) => new Date(Date.now() - days * 86400000).toISOString().slice
   const bl = find(blanked);
   check("a blanked new column falls back to the old one rather than to ''",
     (bl.hire_date || "").slice(0, 10) === ago(200), { got: bl.hire_date });
-  check("and the cycle runs on it",
-    bl.bonus_status && bl.bonus_status !== "No hire date on file", bl.bonus_status);
 
-  section("No hire date still says so plainly");
+  section("No hire date is left empty");
   const nn = find(none);
-  check("it is reported as missing rather than guessed",
-    nn.bonus_status === "No hire date on file", nn.bonus_status);
-  check("and nobody is marked eligible on no information", nn.bonus_eligible !== true, nn.bonus_eligible);
+  check("it is reported as missing rather than guessed", !nn.hire_date, nn.hire_date);
 
   section("The precedence lives in one place");
   const fs = require("fs");

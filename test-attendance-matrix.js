@@ -220,28 +220,18 @@ const daysAgo = (n) => {
   check("it comes off the 90-day total", score.points_90 === 10, score.points_90);
   check("which drops them back to Final warning", score.discipline_level === "Final warning or probation", score.discipline_level);
 
-  // ============ the bonus cycle ============
-  section("The 90-day, $50 attendance bonus");
+  // ============ no attendance bonus ============
+  // The $50 attendance bonus was discontinued. Nothing about it is calculated
+  // or sent any more, so a stale "on track" cannot promise anybody money.
+  section("There is no attendance bonus");
 
   const clean = await owner("/api/hr/employees", {
     method: "POST", body: { name: "Clean Record " + stamp, email: `clean.${stamp}@example.invalid`, role_title: "RBT", status: "active", hire_date: daysAgo(200) },
   });
   const cleanId = clean.data.id || (clean.data.employee && clean.data.employee.id);
   score = await scoreOf(cleanId);
-  check("a clean record past its first cycle is bonus eligible", score.bonus_eligible === true, score);
-  check("and says so", /Eligible/i.test(score.bonus_status), score.bonus_status);
-  check("with a next bonus date", /^\d{4}-\d{2}-\d{2}$/.test(score.next_bonus_date || ""), score.next_bonus_date);
-
-  const newHire = await owner("/api/hr/employees", {
-    method: "POST", body: { name: "New Hire " + stamp, email: `newhire.${stamp}@example.invalid`, role_title: "RBT", status: "active", hire_date: daysAgo(20) },
-  });
-  const newId = newHire.data.id || (newHire.data.employee && newHire.data.employee.id);
-  score = await scoreOf(newId);
-  check("someone inside their first 90 days is reported as in progress",
-    /first 90-day cycle/i.test(score.bonus_status), score.bonus_status);
-
-  score = await scoreOf(ladderId);
-  check("a record with points is not bonus eligible", score.bonus_eligible === false, score);
+  check("a clean record still gets its points and standing", score.points_90 === 0 && !!score.discipline_level, score);
+  check("but no bonus field of any kind", !Object.keys(score).some((k) => /bonus/i.test(k)), Object.keys(score));
 
   // ============ voiding ============
   section("Voiding an occurrence logged in error");
@@ -266,11 +256,11 @@ const daysAgo = (n) => {
   check("the roster loads", r.status === 200, r.data);
   const roster = Object.fromEntries((r.data.staff || []).map((s) => [s.employee_id, s]));
   check("it covers the staff we created", !!roster[empId] && !!roster[ladderId] && !!roster[cleanId]);
-  check("it carries points, level and bonus for each",
-    roster[ladderId].points_90 === 10 && roster[ladderId].discipline_level === "Final warning or probation" && roster[ladderId].bonus_eligible === false,
+  check("it carries points and level for each",
+    roster[ladderId].points_90 === 10 && roster[ladderId].discipline_level === "Final warning or probation",
     roster[ladderId]);
   check("the totals count who needs action", typeof r.data.totals.needing_action === "number", r.data.totals);
-  check("and who is on track for the bonus", r.data.totals.bonus_eligible >= 1, r.data.totals);
+  check("and nothing about a bonus", !JSON.stringify(r.data).match(/bonus/i), Object.keys(r.data.totals));
 
   // ============ permissions ============
   section("Permissions");

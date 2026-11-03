@@ -35,7 +35,7 @@
 //     in Postgres, so restarting the server does not clear it.
 //   * The roster a leader can see is scoped to their own squad, and returns
 //     names and job titles only -- no email, no address, no points, no
-//     discipline level, no bonus status.
+//     discipline level.
 //   * Every report records who submitted it, from which squad, at what time,
 //     and through which channel.
 //
@@ -256,8 +256,8 @@ module.exports = function initSquadAttendance(ctx) {
 
   // ---------------------------------------------------------------- reporting
   // Create the flag. Point values come from the matrix, never from the request:
-  // a form that could post its own points would be a way to hand out or hold
-  // back a $50 attendance bonus by editing a request in the browser.
+  // a form that could post its own points would be a way to change somebody's
+  // discipline level by editing a request in the browser.
   async function fileReport(leader, body) {
     const empId = Number(body.employee_id);
     if (!empId) return { ok: false, status: 400, error: "Choose who the report is about." };
