@@ -255,6 +255,14 @@ module.exports = function initSquadAttendance(ctx) {
   }
 
   // ---------------------------------------------------------------- reporting
+  // The ONE earn-back a Squad Leader may record. A leader is usually the
+  // person who sees a teammate cover a last-minute shift, so the owner asked
+  // for it on the QR form. The other earn-backs (perfect 30/60 days, a
+  // completed improvement plan) are judgements about a whole period, and stay
+  // with the office. A leader cannot record one for themselves: that would be
+  // taking their own points off.
+  const SQUAD_EARNBACKS = ["picked_up_shift"];
+
   // Create the flag. Point values come from the matrix, never from the request:
   // a form that could post its own points would be a way to change somebody's
   // discipline level by editing a request in the browser.
@@ -279,8 +287,13 @@ module.exports = function initSquadAttendance(ctx) {
     const type = await attendance.typeByKey(body.type_key);
     if (!type) return { ok: false, status: 400, error: "Choose an attendance type from the policy list." };
     if (type.kind !== "occurrence") {
-      // Earn-backs remove points. A peer should not be able to award one.
-      return { ok: false, status: 403, error: "Only the office can record an earn-back." };
+      // Earn-backs remove points. A peer may record only the ones listed above.
+      if (!SQUAD_EARNBACKS.includes(type.key)) {
+        return { ok: false, status: 403, error: "Only the office can record an earn-back." };
+      }
+      if (empId === Number(leader.employee_id)) {
+        return { ok: false, status: 403, error: "The office records a picked-up shift for you. Let them know which shift you covered." };
+      }
     }
 
     const incidentDate = String(body.incident_date || today()).slice(0, 10);
@@ -374,7 +387,7 @@ module.exports = function initSquadAttendance(ctx) {
       `<ul>` +
         `<li><strong>Employee:</strong> ${esc(member.name)}${member.role_title ? ` (${esc(member.role_title)})` : ""}</li>` +
         `<li><strong>Type:</strong> ${esc(type.label)} (${Number(type.points) > 0 ? "+" : ""}${Number(type.points)} points)</li>` +
-        `<li><strong>Date of infraction:</strong> ${esc(incidentDate)}${incidentTime ? ` at ${esc(incidentTime)}` : ""}</li>` +
+        `<li><strong>Date:</strong> ${esc(incidentDate)}${incidentTime ? ` at ${esc(incidentTime)}` : ""}</li>` +
         `<li><strong>Submitted by:</strong> ${esc(leader.name)} — ${esc(leader.squad_name)}</li>` +
         `<li><strong>Submitted:</strong> ${esc(nowISO())}</li>` +
       `</ul>` +
@@ -489,8 +502,8 @@ module.exports = function initSquadAttendance(ctx) {
         if (pathname === "/api/squad/public/form" && method === "GET") {
           const members = await squadMembers(leader.squad_id, leader.employee_id);
           const types = (await attendance.matrixTypes())
-            .filter((t) => t.kind === "occurrence" && t.active !== false)
-            .map((t) => ({ key: t.key, label: t.label, description: t.description || "" }));
+            .filter((t) => (t.kind === "occurrence" || SQUAD_EARNBACKS.includes(t.key)) && t.active !== false)
+            .map((t) => ({ key: t.key, label: t.label, description: t.description || "", kind: t.kind }));
           return json(res, 200, {
             leader: { name: leader.name, squad_name: leader.squad_name, expires_at: leader.expires_at },
             members,
@@ -777,7 +790,13 @@ module.exports = function initSquadAttendance(ctx) {
               : '')+
             '<label class="f" for="sq-type">What happened</label>'+
             '<select id="sq-type"><option value="">Choose from the attendance policy…</option>'+
-              types.map(function(t){return '<option value="'+esc(t.key)+'">'+esc(t.label)+'</option>';}).join('')+
+              (function(){
+                var opt=function(t){return '<option value="'+esc(t.key)+'">'+esc(t.label)+'</option>';};
+                var occ=types.filter(function(t){return t.kind!=='earnback';});
+                var back=types.filter(function(t){return t.kind==='earnback';});
+                return '<optgroup label="Infractions">'+occ.map(opt).join('')+'</optgroup>'+
+                  (back.length?'<optgroup label="Good news: takes a point off">'+back.map(opt).join('')+'</optgroup>':'');
+              })()+
             '</select>'+
             '<div class="note" id="sq-type-note"></div>'+
             '<div class="row">'+

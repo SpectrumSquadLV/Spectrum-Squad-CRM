@@ -304,6 +304,13 @@ const BASE = process.env.BASE || "http://localhost:3009";
   check("...and first, under the placeholder", (options[1] || "").indexOf(`ZzUi Lead ${SQ}`) === 0, options);
   check("their squad mate is still there too", options.some((o) => o.indexOf(`ZzUi Mate ${SQ}`) === 0), options);
 
+  const groups = await scan.evaluate(() =>
+    [].slice.call(document.querySelectorAll("#sq-type optgroup")).map((g) => ({
+      label: g.label, keys: [].slice.call(g.querySelectorAll("option")).map((o) => o.value) })));
+  const good = groups.find((g) => /takes a point off/i.test(g.label));
+  check("the QR form offers Picked up a shift, in its own group", good && good.keys.join() === "picked_up_shift", groups);
+  check("...apart from the infractions", groups.some((g) => g.label === "Infractions" && g.keys.includes("late") && !g.keys.includes("picked_up_shift")), groups);
+
   await scan.selectOption("#sq-emp", String(setup.leaderId));
   await scan.selectOption("#sq-type", "late");
   await scan.fill("#sq-date", "2026-08-22");

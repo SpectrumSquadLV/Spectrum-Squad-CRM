@@ -16,8 +16,8 @@
 //       "multiple"/"not specified" rather than forcing a wrong one.
 //   5.  Squad Leader reporting: the QR page reveals nothing, the PIN is not
 //       guessable or enumerable, a leader can only report their own squad,
-//       cannot set their own points, cannot award an earn-back, and gains no
-//       HR access at all.
+//       cannot set their own points, cannot award an earn-back other than a
+//       teammate's picked-up shift, and gains no HR access at all.
 //   6.  A completed authorization alert leaves the active list, stays in
 //       history, and is never deleted.
 //   7.  BCBA caseloads count live clients only.
@@ -493,7 +493,7 @@ const RUN = Math.random().toString(36).slice(2, 8);
     (form.data.members || []).map((m) => m.name));
   const leaked = (form.data.members || []).some((m) => m.email || m.points_90 || m.discipline_level || m.hire_date || m.address);
   check("the roster carries names and titles only -- no contact details, points or standing", !leaked, form.data.members);
-  check("the infraction list is the attendance policy matrix, occurrences only",
+  check("the list is the attendance policy matrix: occurrences, plus a picked-up shift",
     (form.data.types || []).length > 0 && (form.data.types || []).every((t) => !!t.key),
     (form.data.types || []).length);
 
@@ -511,6 +511,18 @@ const RUN = Math.random().toString(36).slice(2, 8);
     method: "POST", body: { employee_id: memberA, type_key: "perfect_60", incident_date: "2026-08-20" },
   });
   check("a leader cannot award an earn-back (which would REMOVE points)", earnback.status === 403, earnback.status);
+  // ...except a picked-up shift, which the owner asked leaders to report.
+  const formTypes = (form.data.types || []).map((t) => t.key);
+  check("the QR form offers Picked up a shift", formTypes.includes("picked_up_shift"), formTypes);
+  check("...but no other earn-back", !formTypes.includes("perfect_60") && !formTypes.includes("perfect_30") && !formTypes.includes("completed_aip"), formTypes);
+  const pickup = await leaderClient.req("/api/squad/public/report", {
+    method: "POST", body: { employee_id: memberB, type_key: "picked_up_shift", incident_date: "2026-08-19", notes: "Covered a call-off" },
+  });
+  check("a leader can report a squad member picking up a shift", pickup.status === 201 && pickup.data.points === -1, pickup.data);
+  const bView = await owner.req(`/api/attendance/employee/${memberB}`);
+  const bFlag = (bView.data.flags || []).find((f) => f.type_key === "picked_up_shift");
+  check("...which lands on their record at -1, marked as a QR report",
+    bFlag && Number(bFlag.points) === -1 && bFlag.submitted_via === "squad_qr", bFlag);
   const future = await leaderClient.req("/api/squad/public/report", {
     method: "POST", body: { employee_id: memberA, type_key: "late", incident_date: "2099-01-01" },
   });
@@ -576,6 +588,10 @@ const RUN = Math.random().toString(36).slice(2, 8);
     method: "POST", body: { employee_id: leaderId, type_key: "perfect_60", incident_date: "2026-08-21" },
   });
   check("and they still cannot award themselves an earn-back", selfEarnback.status === 403, selfEarnback.status);
+  const selfPickup = await leaderClient.req("/api/squad/public/report", {
+    method: "POST", body: { employee_id: leaderId, type_key: "picked_up_shift", incident_date: "2026-08-21" },
+  });
+  check("...including a picked-up shift: the office records their own", selfPickup.status === 403, selfPickup.status);
 
   section("Squad Leader reporting: no HR access comes with it");
   for (const p of ["/api/hr/employees", "/api/attendance/roster", "/api/clients", "/api/dashboard",
