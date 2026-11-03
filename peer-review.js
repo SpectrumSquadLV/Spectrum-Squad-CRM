@@ -10,7 +10,7 @@
 //   RBT            7 competencies
 //   Squad Leader   4 competencies
 //   BCBA           6 competencies
-//   Administration 5 competencies
+//   Administration 4 competencies
 //
 // ONE SECTION PER PERSON, ENFORCED BY THE SCHEMA. Somebody who is both an RBT
 // and a Squad Leader on paper is rated as a Squad Leader here, because a score
@@ -96,9 +96,11 @@ module.exports = function initPeerReview(ctx) {
     admin: { label: "Administration", competencies: [
       { key: "leads_by_example", label: "Leads by Example" },
       { key: "problem_solves", label: "Problem Solves Effectively" },
-      { key: "demonstrates_professionalism", label: "Demonstrates Professionalism" },
       { key: "approachability_accountability", label: "Approachability & Accountability" },
       { key: "professionalism_tone", label: "Professionalism & Tone" },
+      // "Demonstrates Professionalism" used to sit here too: the same question
+      // asked twice. Dropped at the owner's request; reports already closed
+      // keep it, because they store the competencies they were scored on.
     ] },
   };
   const SECTION_KEYS = Object.keys(SECTIONS);
