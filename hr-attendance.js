@@ -423,6 +423,52 @@ module.exports = function initHrAttendance(ctx) {
     return MONTHLY_REVIEW[MONTHLY_REVIEW.length - 1];
   }
 
+  // ONE PERSON'S ATTENDANCE, MONTH BY MONTH, for the Monthly log on their
+  // record. Calendar months, newest first, from the month of their first
+  // occurrence to this one -- a clean month in between is shown as clean
+  // rather than skipped, because "nothing happened in March" is part of the
+  // record too.
+  //
+  // Points in the month are the calendar month's own; the 90-day total and
+  // the standing are as they stood on its last day (today, for this month).
+  // Where the monthly review ran for that month, its saved row comes along,
+  // so the log also shows whether the review email went and to whom.
+  // Voided occurrences are listed, marked, and count for nothing.
+  function monthlyLog(emp, rows, savedReviews, asOfDay) {
+    const asOf = asOfDay || today();
+    const dayOf = (f) => String(f.incident_date || f.created_at || "").slice(0, 10);
+    const days = (rows || []).map(dayOf).filter(Boolean).filter((d) => d <= asOf).sort();
+    const saved = {};
+    (savedReviews || []).forEach((r) => { saved[r.period] = r; });
+    const firsts = [days[0], ...Object.keys(saved).map((p) => p + "-01")].filter(Boolean).sort();
+    if (!firsts.length) return [];
+    return monthsBetween(firsts[0], asOf).reverse().map((period) => {
+      const start = period + "-01";
+      const end = period === asOf.slice(0, 7) ? asOf : lastDayOf(period);
+      const inMonth = (rows || []).filter((f) => { const d = dayOf(f); return d >= start && d <= end; })
+        .sort((a, b) => dayOf(a).localeCompare(dayOf(b)) || (a.id || 0) - (b.id || 0));
+      const points = pointsBetween(rows, start, end);
+      const atEnd = scoreEmployee(emp, rows, end);
+      const rv = saved[period];
+      return {
+        period,
+        label: monthLabel(period),
+        in_progress: period === asOf.slice(0, 7),
+        points_month: points,
+        review_level: monthlyReviewFor(points).level,
+        points_90: atEnd.points_90,
+        discipline_level: atEnd.discipline_level,
+        occurrence_count: inMonth.filter(countable).length,
+        review: rv ? { emailed_to: rv.emailed_to || null, created_at: rv.created_at || null } : null,
+        occurrences: inMonth.map((f) => ({
+          id: f.id, date: dayOf(f), reason: f.reason || null, type_key: f.type_key || null,
+          points: f.points == null ? null : num(f.points), notes: f.notes || null,
+          voided: !countable(f), voided_reason: f.voided_reason || null,
+        })),
+      };
+    });
+  }
+
   // The full picture for one employee, which is what both the roster and the
   // monthly review email are built from.
   function scoreEmployee(emp, rows, asOfDay) {
@@ -1062,10 +1108,12 @@ module.exports = function initHrAttendance(ctx) {
         const emp = await dbGet("SELECT id, name, role_title, " + HIRE_DATE_SQL + ", email FROM hr_employees WHERE id = ?", [empId]);
         const rows = await dbAll("SELECT * FROM hr_attendance_flags WHERE employee_id = ? ORDER BY COALESCE(incident_date, created_at) DESC, id DESC", [empId]);
         rows.forEach((r) => { r.has_pdf = !!r.pdf_stored; r.points = r.points == null ? null : num(r.points); delete r.signature; });
+        const saved = await dbAll("SELECT period, emailed_to, created_at FROM hr_attendance_reviews WHERE employee_id = ?", [empId]).catch(() => []);
         return json(res, 200, {
           flags: rows,
           count_90d: flagsInLast90(rows),
           score: emp ? scoreEmployee(emp, rows) : null,
+          monthly: emp ? monthlyLog(emp, rows, saved) : [],
           types: await matrixTypes(),
         });
       }
@@ -1700,7 +1748,7 @@ module.exports = function initHrAttendance(ctx) {
     matrixTypes, typeByKey, logEmpActivity, attendanceCompliance,
     _internal: {
       buildAckPdf, REASONS, ATTENDANCE_MATRIX, DISCIPLINE_STEPS, DISCIPLINE_FLOORS, MONTHLY_REVIEW, COACHING_MIN, DISCIPLINE_MIN, CASELOAD_RISK_AT,
-      scoreEmployee, disciplineFor, disciplineStepFor, monthlyReviewFor, noticeHours,
+      scoreEmployee, disciplineFor, disciplineStepFor, monthlyReviewFor, monthlyLog, noticeHours,
       pointsBetween, daysBefore, lastDayOf, monthLabel, monthsBetween,
     },
   };

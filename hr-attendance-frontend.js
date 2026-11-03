@@ -21,6 +21,61 @@
     try { var dt = new Date(d); if (isNaN(dt)) return String(d); return dt.toLocaleDateString(); } catch (e) { return String(d); }
   }
 
+  // A stored YYYY-MM-DD shown as a date. Not new Date(): on a bare date that
+  // is midnight UTC, which puts every occurrence a day early in Las Vegas.
+  function fmtDay(day) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(day || ""));
+    if (!m) return day ? String(day) : "—";
+    var names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return names[Number(m[2]) - 1] + " " + Number(m[3]) + ", " + m[1];
+  }
+  function signed(n) { return (n > 0 ? "+" : "") + n; }
+
+  // The Monthly log: one dropdown per calendar month, newest first. The
+  // closed row is the month at a glance; opening it lists that month's
+  // occurrences.
+  function monthlyLogHtml(months) {
+    if (!months || !months.length) return '<div class="empty-state">No months to show yet. The log starts with their first occurrence.</div>';
+    return months.map(function (m, i) {
+      var occ = (m.occurrences || []).map(function (o) {
+        return '<div style="display:flex;gap:10px;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border,#eee);' + (o.voided ? "opacity:.55;" : "") + '">'
+          + '<div><strong>' + esc(fmtDay(o.date)) + "</strong> · " + esc(o.reason || "Occurrence")
+          + (o.notes ? '<div class="due">' + esc(o.notes) + "</div>" : "")
+          + (o.voided ? '<div class="due" style="color:#b45309;">Voided' + (o.voided_reason ? ": " + esc(o.voided_reason) : "") + " — does not count</div>" : "")
+          + "</div>"
+          + '<div style="white-space:nowrap;font-weight:700;">' + (o.points == null ? "" : esc(signed(o.points)) + " pts") + "</div></div>";
+      }).join("") || '<div class="due" style="padding:6px 0;border-top:1px solid var(--border,#eee);">Nothing logged this month.</div>';
+      var sent = m.review
+        ? (m.review.emailed_to ? "Monthly review emailed to " + esc(m.review.emailed_to) : "Monthly review recorded (no email: nothing to report)")
+        : (m.in_progress ? "Month in progress" : "No monthly review on file");
+      return '<div class="att-month" style="border:1px solid var(--border,#e5e7eb);border-radius:10px;margin-bottom:6px;">'
+        + '<button type="button" class="att-month-toggle" data-att-month="' + i + '" aria-expanded="false" '
+          + 'style="width:100%;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:none;border:0;padding:10px 12px;cursor:pointer;text-align:left;font:inherit;color:inherit;">'
+          + '<span class="att-month-caret" aria-hidden="true" style="display:inline-block;width:12px;">&#9656;</span>'
+          + '<strong style="min-width:120px;">' + esc(m.label) + (m.in_progress ? ' <span style="font-weight:400;color:var(--text-muted);">(so far)</span>' : "") + "</strong>"
+          + '<span class="tag" style="background:#e0e7ff;color:#3730a3;">' + esc(signed(m.points_month)) + " pts</span>"
+          + '<span style="font-size:12.5px;">' + m.occurrence_count + (m.occurrence_count === 1 ? " entry" : " entries") + "</span>"
+          + '<span style="font-size:12.5px;color:var(--text-muted);">' + esc(m.review_level) + " · " + esc(m.discipline_level) + "</span>"
+        + "</button>"
+        + '<div class="att-month-body" hidden style="padding:0 12px 10px 34px;font-size:12.5px;">'
+          + '<div class="due" style="margin-bottom:4px;">90-day points at month end: <strong>' + esc(signed(m.points_90)) + "</strong> · " + sent + "</div>"
+          + occ
+        + "</div></div>";
+    }).join("");
+  }
+
+  function wireMonthlyLog(container) {
+    container.querySelectorAll(".att-month-toggle").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var body = b.parentNode.querySelector(".att-month-body");
+        var open = body.hidden;
+        body.hidden = !open;
+        b.setAttribute("aria-expanded", open ? "true" : "false");
+        b.querySelector(".att-month-caret").innerHTML = open ? "&#9662;" : "&#9656;";
+      });
+    });
+  }
+
   async function renderSection(container, empId, empName) {
     if (!container) return;
     container.innerHTML = '<div style="font-size:12.5px; color:var(--text-muted);">Loading attendance…</div>';
@@ -78,8 +133,11 @@
         + '<button class="btn small" id="att-add-btn">+ Log occurrence</button></div></div>'
       + (score && score.review_action ? '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Monthly review action: <strong>' + esc(score.review_action) + "</strong></div>" : "")
       + '<div id="att-add-form"></div>'
-      + '<div id="att-list">' + rows + "</div>";
+      + '<div id="att-list">' + rows + "</div>"
+      + '<div style="margin-top:14px;"><div style="font-weight:700;margin-bottom:6px;">Monthly log</div>'
+      + '<div id="att-monthly">' + monthlyLogHtml(data && data.monthly) + "</div></div>";
 
+    wireMonthlyLog(container);
     container.querySelector("#att-add-btn").addEventListener("click", function () { showAddForm(container, empId, empName); });
     container.querySelector("#att-pickup-btn").addEventListener("click", function () {
       openShiftPickup(empId, empName, function () { renderSection(container, empId, empName); });
