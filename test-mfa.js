@@ -97,7 +97,15 @@ async function enrol(email, password) {
 
   section("Setting it up");
   {
-    const s = await c("/api/auth/mfa/setup", { method: "POST", body: { challenge } });
+    const first = await c("/api/auth/mfa/setup", { method: "POST", body: { challenge } });
+    // She scans, gets interrupted and signs in again: the QR code she already
+    // scanned must still be the one on screen, or every code is "not right".
+    const d = client();
+    const r2 = await d("/api/auth/login", { method: "POST", body: { email: OWNER[0], password: OWNER[1] } });
+    const s = await d("/api/auth/mfa/setup", { method: "POST", body: { challenge: r2.body.challenge } });
+    check("signing in again mid-setup shows the SAME secret", s.status === 200 && first.body && s.body.secret === first.body.secret, [first.body, s.body]);
+    // The new sign-in replaced the first one's challenge; carry on with it.
+    challenge = r2.body.challenge;
     secret = s.body && s.body.secret;
     check("setup returns a secret", s.status === 200 && /^[A-Z2-7]{32}$/.test(secret || ""), s.body);
     check("...an otpauth link an app understands", /^otpauth:\/\/totp\/.+secret=[A-Z2-7]+&issuer=/.test(s.body.otpauth || ""), s.body.otpauth);
@@ -114,7 +122,7 @@ async function enrol(email, password) {
     const me = await c("/api/auth/me");
     check("the session works", me.body && me.body.user && me.body.user.email === OWNER[0]);
     check("the secret and recovery codes never leave the server",
-      me.body && me.body.user && !("mfa_secret" in me.body.user) && !("mfa_recovery_codes" in me.body.user) && !("mfa_last_step" in me.body.user),
+      me.body && me.body.user && !("mfa_secret" in me.body.user) && !("mfa_pending_secret" in me.body.user) && !("mfa_recovery_codes" in me.body.user) && !("mfa_last_step" in me.body.user),
       Object.keys((me.body && me.body.user) || {}));
 
     const again = await c("/api/auth/mfa/setup/confirm", { method: "POST", body: { challenge, code: totp(secret) } });
@@ -192,6 +200,8 @@ async function enrol(email, password) {
     const fresh = client();
     const again = await fresh("/api/auth/login", { method: "POST", body: { email: CLIN[0], password: CLIN[1] } });
     check("...and she sets it up again with her new phone", again.body && again.body.mfa_setup_required === true, again.body);
+    const newQr = await fresh("/api/auth/mfa/setup", { method: "POST", body: { challenge: again.body.challenge } });
+    check("...with a NEW QR code, not the lost phone's", newQr.status === 200 && newQr.body.secret && newQr.body.secret !== clin.secret, newQr.body);
   }
 
   section("In the browser");

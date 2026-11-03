@@ -17,6 +17,9 @@
 //   2b. Not set up yet: /api/auth/mfa/setup returns a secret and its QR code;
 //       /api/auth/mfa/setup/confirm proves the app was set up with it, turns
 //       MFA on, returns ten recovery codes ONCE, and starts the session.
+//       The secret is kept on the person until it is confirmed, so signing in
+//       again mid-setup shows the SAME QR code: an app that already scanned
+//       it keeps working, instead of every code coming back "not right".
 //
 // THE SECRET IS ENCRYPTED AT REST when MFA_ENCRYPTION_KEY is set, so a copy
 // of the database alone does not hand over everybody's second factor. Without
@@ -128,6 +131,8 @@ module.exports = function initMfa(ctx) {
     await dbRun("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled_at TEXT");
     await dbRun("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_last_step BIGINT");
     await dbRun("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_recovery_codes TEXT");
+    // Set up but not yet confirmed, sealed like mfa_secret.
+    await dbRun("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_pending_secret TEXT");
     await dbRun(`CREATE TABLE IF NOT EXISTS mfa_challenges (
       token_hash TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -220,7 +225,14 @@ module.exports = function initMfa(ctx) {
       const b = await readBody(req).catch(() => ({}));
       const c = await loadChallenge(b.challenge, "enroll");
       if (c.error) return json(res, 400, { error: c.error, restart: true }), true;
-      const secret = base32Encode(crypto.randomBytes(20));
+      // Reuse the secret from an earlier, unfinished setup so the QR code
+      // they may already have scanned is the one shown again.
+      let secret = null;
+      try { secret = c.user.mfa_pending_secret ? openSecret(c.user.mfa_pending_secret) : null; } catch (e) { secret = null; }
+      if (!secret) {
+        secret = base32Encode(crypto.randomBytes(20));
+        await dbRun("UPDATE users SET mfa_pending_secret = ? WHERE id = ?", [sealSecret(secret), c.user.id]);
+      }
       await dbRun("UPDATE mfa_challenges SET pending_secret = ? WHERE token_hash = ?", [sealSecret(secret), c.row.token_hash]);
       const label = encodeURIComponent(ISSUER + ":" + c.user.email);
       const uri = `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(ISSUER)}&algorithm=SHA1&digits=${DIGITS}&period=${STEP_SECONDS}`;
@@ -243,7 +255,7 @@ module.exports = function initMfa(ctx) {
       }
       const recovery = newRecoveryCodes();
       await dbRun(
-        `UPDATE users SET mfa_secret = ?, mfa_enabled_at = ?, mfa_last_step = ?, mfa_recovery_codes = ? WHERE id = ?`,
+        `UPDATE users SET mfa_secret = ?, mfa_enabled_at = ?, mfa_last_step = ?, mfa_recovery_codes = ?, mfa_pending_secret = NULL WHERE id = ?`,
         [c.row.pending_secret, nowISO(), step, JSON.stringify(recovery.map((r) => sha(normRecovery(r)))), c.user.id]
       );
       await finish(c.row);
@@ -260,7 +272,7 @@ module.exports = function initMfa(ctx) {
       }
       const id = Number(reset[1]);
       await dbRun(
-        "UPDATE users SET mfa_secret = NULL, mfa_enabled_at = NULL, mfa_last_step = NULL, mfa_recovery_codes = NULL WHERE id = ?",
+        "UPDATE users SET mfa_secret = NULL, mfa_enabled_at = NULL, mfa_last_step = NULL, mfa_recovery_codes = NULL, mfa_pending_secret = NULL WHERE id = ?",
         [id]
       );
       await dbRun("DELETE FROM mfa_challenges WHERE user_id = ?", [id]);

@@ -3,8 +3,8 @@
 //
 // What is held to account here:
 //
-//   * THE ARITHMETIC. The spec's worked example -- five competency averages
-//     giving 4.36 overall -- comes out exactly, N/A is not a rating, and a
+//   * THE ARITHMETIC. The spec's worked example -- four competency averages
+//     giving 4.30 overall -- comes out exactly, N/A is not a rating, and a
 //     competency rated by fewer than three people is withheld from the
 //     employee and left out of their overall.
 //   * ONE SECTION PER PERSON. The schema refuses a second one.
@@ -59,12 +59,14 @@ const q1 = async (sql, args) => (await pool.query(sql, args)).rows[0];
   };
   const ex = _internal.score("admin", [
     ...make("leads_by_example", 4.40), ...make("problem_solves", 4.20),
-    ...make("demonstrates_professionalism", 4.60), ...make("approachability_accountability", 4.10),
+    ...make("approachability_accountability", 4.10),
     ...make("professionalism_tone", 4.50),
   ]);
-  check("the five competency averages come out as in the example",
-    JSON.stringify(ex.competencies.map((c) => c.avg)) === JSON.stringify([4.4, 4.2, 4.6, 4.1, 4.5]), ex.competencies.map((c) => c.avg));
-  check("OVERALL IS THE MEAN OF THE COMPETENCY MEANS: 4.36", ex.overall === 4.36, ex.overall);
+  check("the four competency averages come out as in the example",
+    JSON.stringify(ex.competencies.map((c) => c.avg)) === JSON.stringify([4.4, 4.2, 4.1, 4.5]), ex.competencies.map((c) => c.avg));
+  check("OVERALL IS THE MEAN OF THE COMPETENCY MEANS: 4.30", ex.overall === 4.3, ex.overall);
+  check("Administration asks about professionalism once, not twice",
+    _internal.SECTIONS.admin.competencies.filter((c) => /professionalism/i.test(c.label)).length === 1);
 
   const thin = _internal.score("squad_leader", [
     { competency: "clinical_guidance", rating: 5 }, { competency: "clinical_guidance", rating: 1 },
@@ -77,8 +79,8 @@ const q1 = async (sql, args) => (await pool.query(sql, args)).rows[0];
   check("a 5 and a 1 on the same question is flagged DIVIDED", cg.divided === true, cg);
   check("a competency nobody rated has no average, not zero",
     thin.competencies.find((c) => c.key === "approachable").avg === null);
-  check("the three sections have 7, 4 and 5 questions, as on the paper survey",
-    [_internal.SECTIONS.rbt, _internal.SECTIONS.squad_leader, _internal.SECTIONS.admin].map((s) => s.competencies.length).join() === "7,4,5");
+  check("the three sections have 7, 4 and 4 questions (the paper survey asked about professionalism twice)",
+    [_internal.SECTIONS.rbt, _internal.SECTIONS.squad_leader, _internal.SECTIONS.admin].map((s) => s.competencies.length).join() === "7,4,4");
   check("BCBAs who are not administration have their own section of 6 questions",
     _internal.SECTIONS.bcba && _internal.SECTIONS.bcba.label === "BCBA" && _internal.SECTIONS.bcba.competencies.length === 6);
   check("...and every competency key is unique across sections, since ratings are stored by key",
@@ -187,32 +189,32 @@ const q1 = async (sql, args) => (await pool.query(sql, args)).rows[0];
 
   // ==================================================================
   section("Everyone fills it in");
-  // Marissa: rated by five people, so all five Administration questions show.
-  const adminSet = (l, p, d, a, t) => [R("marissa", "leads_by_example", l), R("marissa", "problem_solves", p),
-    R("marissa", "demonstrates_professionalism", d), R("marissa", "approachability_accountability", a), R("marissa", "professionalism_tone", t)];
-  const okMark = await submit("mark", [...adminSet(5, 4, 5, 4, 5), R("martha", "punctuality", 2), R("stephanie", "clinical_guidance", 5)],
+  // Marissa: rated by five people, so all four Administration questions show.
+  const adminSet = (l, p, a, t) => [R("marissa", "leads_by_example", l), R("marissa", "problem_solves", p),
+    R("marissa", "approachability_accountability", a), R("marissa", "professionalism_tone", t)];
+  const okMark = await submit("mark", [...adminSet(5, 4, 4, 5), R("martha", "punctuality", 2), R("stephanie", "clinical_guidance", 5)],
     [{ subject_employee_id: E.martha, kind: "below3", competency: "punctuality", body: "Late to three sessions in September at the Henderson clinic." },
      { subject_employee_id: E.marissa, kind: "shoutout", body: "Marissa sorted my schedule out in a day." },
      { subject_employee_id: null, kind: "additional", body: "The break room needs a second fridge." }]);
   check("a complete survey is accepted", okMark.status === 200, okMark.data);
-  await submit("martha", [...adminSet(4, 4, 5, 4, 4), R("stephanie", "clinical_guidance", 4)],
+  await submit("martha", [...adminSet(4, 4, 4, 4), R("stephanie", "clinical_guidance", 4)],
     [{ subject_employee_id: E.marissa, kind: "additional", body: "Could reply to texts faster." }]);
-  await submit("lana", [...adminSet(5, 5, 5, 4, 4), R("stephanie", "clinical_guidance", 1)],
+  await submit("lana", [...adminSet(5, 5, 4, 4), R("stephanie", "clinical_guidance", 1)],
     [{ subject_employee_id: E.stephanie, kind: "below3", competency: "clinical_guidance", body: "Gave conflicting instructions." }]);
-  await submit("stephanie", adminSet(4, 4, 4, 5, 5));
-  await submit("quiana", [...adminSet(4, 4, 4, 4, 5), R("mark", "punctuality", 5), R("mark", "cleanliness", 4), R("mark", "remains_professional", 5)]);
+  await submit("stephanie", adminSet(4, 4, 5, 5));
+  await submit("quiana", [...adminSet(4, 4, 4, 5), R("mark", "punctuality", 5), R("mark", "cleanliness", 4), R("mark", "remains_professional", 5)]);
   // Marissa rates the owner, so there is something about the owner to withhold.
   await submit("marissa", [R("quiana", "leads_by_example", 5)],
     [{ subject_employee_id: E.quiana, kind: "shoutout", body: "Always there when it counts." }]);
 
-  const resub = await submit("mark", [...adminSet(5, 4, 5, 4, 5), R("martha", "punctuality", 2), R("stephanie", "clinical_guidance", 5)],
+  const resub = await submit("mark", [...adminSet(5, 4, 4, 5), R("martha", "punctuality", 2), R("stephanie", "clinical_guidance", 5)],
     [{ subject_employee_id: E.martha, kind: "below3", competency: "punctuality", body: "Late to three sessions in September at the Henderson clinic." },
      { subject_employee_id: E.marissa, kind: "shoutout", body: "Marissa sorted my schedule out in a day." },
      { subject_employee_id: null, kind: "additional", body: "The break room needs a second fridge." }]);
   check("submitting again REPLACES the earlier answers rather than adding to them", resub.status === 200 &&
-    Number((await q1("SELECT count(*) AS n FROM peer_review_ratings WHERE cycle_id = $1 AND reviewer_employee_id = $2", [C, E.mark])).n) === 7);
+    Number((await q1("SELECT count(*) AS n FROM peer_review_ratings WHERE cycle_id = $1 AND reviewer_employee_id = $2", [C, E.mark])).n) === 6);
   const back = await anon("/api/peer-review/public/survey?token=" + encodeURIComponent(T.mark));
-  check("coming back to the link shows your own answers to edit", back.data.answers.ratings.length === 7 && !!back.data.submitted_at);
+  check("coming back to the link shows your own answers to edit", back.data.answers.ratings.length === 6 && !!back.data.submitted_at);
 
   const live = await owner(`/api/peer-review/cycles/${C}`);
   check("leadership can see who has and hasn't submitted", live.data.progress.submitted === 6 && live.data.progress.assigned === 7, live.data.progress);
@@ -234,7 +236,7 @@ const q1 = async (sql, args) => (await pool.query(sql, args)).rows[0];
   const mar = closed.data.people.find((p) => p.employee_id === E.marissa);
   const lp = mar.result.competencies.find((c) => c.key === "leads_by_example");
   check("Marissa's Leads by Example combines all five ratings: 4.40", lp.avg === 4.4 && lp.n === 5, lp);
-  check("her overall is the mean of her five competency means: 4.40", mar.result.overall === 4.4, mar.result.overall);
+  check("her overall is the mean of her four competency means: 4.35", mar.result.overall === 4.35, mar.result.overall);
   check("leadership sees how many people rated her", mar.result.reviewer_count === 5, mar.result.reviewer_count);
   check("leadership sees the spread", lp.min === 4 && lp.max === 5, lp);
 
@@ -306,20 +308,20 @@ const q1 = async (sql, args) => (await pool.query(sql, args)).rows[0];
   check("PRESSING SEND AGAIN SENDS NOTHING", sent2.data.sent === 0, sent2.data);
   const mails = await pool.query("SELECT body FROM notifications_log WHERE type = 'peer_review_results' AND recipient = 'marissa@example.com'");
   check("Marissa has exactly one results email", mails.rows.length === 1, mails.rows.length);
-  check("it has her overall, and her full-report link", /4\.40 \/ 5\.00/.test(mails.rows[0].body) && mails.rows[0].body.includes("/peer-results/" + marTok));
+  check("it has her overall, and her full-report link", /4\.35 \/ 5\.00/.test(mails.rows[0].body) && mails.rows[0].body.includes("/peer-results/" + marTok));
 
   const rs = await owner(`/api/peer-review/results/${marRes}/resend`, { method: "POST" });
   check("a resend goes out", rs.status === 200, rs.data);
   const after = await q1("SELECT overall, report_token, resend_count FROM peer_review_results WHERE id = $1", [marRes]);
   check("...WITH THE SAME SCORE AND THE SAME LINK, nothing recalculated",
-    after.overall === 4.4 && after.report_token === marTok && after.resend_count === 1, after);
+    after.overall === 4.35 && after.report_token === marTok && after.resend_count === 1, after);
   check("the owner can't resend her own report", (await owner(`/api/peer-review/results/${myRes.id}/resend`, { method: "POST" })).status === 403);
 
   // ==================================================================
   section("What Marissa sees");
   const rep = await anon("/api/peer-review/public/report?token=" + encodeURIComponent(marTok));
   check("her report opens from the link, with no login", rep.status === 200, rep.data);
-  check("one overall and five competency averages", rep.data.overall === 4.4 && rep.data.competencies.length === 5);
+  check("one overall and four competency averages", rep.data.overall === 4.35 && rep.data.competencies.length === 4);
   check("NO REVIEWER COUNT AND NO SPREAD", !JSON.stringify(rep.data).match(/reviewer_count|"min"|"max"|"n":/));
   const strengths = rep.data.feedback.find((f) => f.kind === "shoutout").items;
   check("she sees the comment as leadership edited it", JSON.stringify(strengths) === JSON.stringify(["Sorted out a schedule problem in a day."]), strengths);
@@ -345,16 +347,16 @@ const q1 = async (sql, args) => (await pool.query(sql, args)).rows[0];
   for (const who of ["mark", "martha", "lana"]) {
     const t = (await q1("SELECT token FROM peer_review_reviewers WHERE cycle_id = $1 AND employee_id = $2", [c2, E[who]])).token;
     await anon("/api/peer-review/public/survey", { method: "POST", body: { token: t, ratings: [
-      R("marissa", "leads_by_example", 5), R("marissa", "problem_solves", 5), R("marissa", "demonstrates_professionalism", 5),
+      R("marissa", "leads_by_example", 5), R("marissa", "problem_solves", 5),
       R("marissa", "approachability_accountability", 5), R("marissa", "professionalism_tone", 4)] } });
   }
   await owner(`/api/peer-review/cycles/${c2}/close`, { method: "POST" });
   const r2 = await q1("SELECT id, report_token FROM peer_review_results WHERE cycle_id = $1 AND employee_id = $2", [c2, E.marissa]);
   await owner(`/api/peer-review/results/${r2.id}/approve`, { method: "POST" });
   const rep2 = await anon("/api/peer-review/public/report?token=" + encodeURIComponent(r2.report_token));
-  check("the new report names her previous score", rep2.data.previous && rep2.data.previous.overall === 4.4, rep2.data.previous);
+  check("the new report names her previous score", rep2.data.previous && rep2.data.previous.overall === 4.35, rep2.data.previous);
   check("...and the change: +0.40", rep2.data.change === 0.4, rep2.data.change);
-  check("her history has one score per cycle", JSON.stringify(rep2.data.history.map((h) => h.overall)) === JSON.stringify([4.4, 4.8]), rep2.data.history);
+  check("her history has one score per cycle", JSON.stringify(rep2.data.history.map((h) => h.overall)) === JSON.stringify([4.35, 4.75]), rep2.data.history);
   const old = await anon("/api/peer-review/public/report?token=" + encodeURIComponent(marTok));
   check("last cycle's report still shows last cycle's history, not the future", old.data.history.length === 1);
 
