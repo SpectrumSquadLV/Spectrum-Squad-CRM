@@ -67,6 +67,31 @@ const { openCardSection, cardHintText } = require("./card-test-helpers");
   check("on the waitlist: names the packet deadline", /7-day packet deadline is stopped/i.test(text));
   check("on the waitlist: says it resumes", /resumes?.*when you remove them/i.test(text));
 
+  // --- the way off the waitlist sits at the top of the card ---
+  // Asked for as "I don't see a move from waitlist button": the one in the
+  // Waitlist section is a long scroll down a long card.
+  const banner = page.locator(".modal-backdrop").last().locator("#waitlist-banner");
+  check("on the waitlist: a banner at the top of the card says so", (await banner.count()) === 1 && /On the waitlist/.test(await banner.innerText()), await banner.count());
+  const firstSection = await page.evaluate(() => {
+    const m = document.querySelectorAll(".modal-backdrop");
+    const modal = m[m.length - 1];
+    const b = modal.querySelector("#waitlist-banner");
+    const sec = modal.querySelector("details.cs");
+    return !!(b && sec && (b.compareDocumentPosition(sec) & Node.DOCUMENT_POSITION_FOLLOWING));
+  });
+  check("...above every section of the card", firstSection === true);
+  page.once("dialog", (d) => d.accept());
+  await page.locator(".modal-backdrop").last().locator("#waitlist-remove-top-btn").click();
+  await page.waitForTimeout(1500);
+  const after = await page.evaluate(async (id) => {
+    const list = await (await fetch("/api/clients", { credentials: "include" })).json();
+    const c = list.find((x) => x.id === id);
+    return c && c.waitlisted;
+  }, clientId);
+  check("...and its Remove from waitlist button takes the family off it", after === false, after);
+  text = await openCard();
+  check("off the waitlist again: the banner is gone", (await page.locator(".modal-backdrop").last().locator("#waitlist-banner").count()) === 0);
+
   // --- put it back ---
   await page.evaluate(async (id) => {
     await fetch(`/api/clients/${id}/waitlist`, {
