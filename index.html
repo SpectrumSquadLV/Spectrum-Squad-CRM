@@ -3822,6 +3822,16 @@ async function openClientModal(id) {
         <button class="close-btn">✕</button>
       </div>
 
+      ${client.waitlisted ? `
+      <div id="waitlist-banner" style="background:#fef3c7; border:1px solid #fcd34d; border-left:4px solid #c98a1b; border-radius:8px; padding:11px 13px; margin:0 0 12px; font-size:13px; color:#78350f; display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap;">
+        <div>
+          <strong>On the waitlist${client.waitlisted_at ? ` since ${fmtDate(client.waitlisted_at)}` : ""}.</strong>
+          Nothing automated goes to this family, including the enrollment packet, until they come off it.
+          ${client.waitlist_reason ? `<div style="margin-top:4px; font-size:12.5px;">${ea(client.waitlist_reason)}</div>` : ""}
+        </div>
+        <button class="btn small" id="waitlist-remove-top-btn">Remove from waitlist</button>
+      </div>` : ""}
+
       ${chasing.on_hold ? `
       <div style="background:#f3f4f6; border:1px solid #d1d5db; border-left:4px solid #6b7280; border-radius:8px; padding:11px 13px; margin:0 0 12px; font-size:13px; color:#374151;">
         <strong>Automatic intake reminders are on hold.</strong>
@@ -4687,8 +4697,9 @@ async function openClientModal(id) {
       }
     });
   }
-  const waitlistRemoveBtn = backdrop.querySelector("#waitlist-remove-btn");
-  if (waitlistRemoveBtn) {
+  // Two buttons, one action: the banner at the top of the card, and the one
+  // inside the Waitlist section further down.
+  backdrop.querySelectorAll("#waitlist-remove-btn, #waitlist-remove-top-btn").forEach((waitlistRemoveBtn) => {
     waitlistRemoveBtn.addEventListener("click", async () => {
       const emailNote = client.parent_email
         ? `\n\nAn automated "a spot has opened" email will be sent to ${client.parent_email}.`
@@ -4703,7 +4714,7 @@ async function openClientModal(id) {
         alert("Could not update waitlist: " + e.message);
       }
     });
-  }
+  });
 
   // The advance / close-out trio is only rendered while a client is live; a
   // closed-out record shows the Reactivate panel in its place.
