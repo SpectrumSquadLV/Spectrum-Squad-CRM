@@ -43,6 +43,9 @@
 //   leaves every transcript intact.
 "use strict";
 
+const fs = require("fs");
+const path = require("path");
+
 module.exports = function initCompliance(ctx) {
   const { dbGet, dbAll, dbRun, nowISO, readBody, json } = ctx;
   const getAppSetting = ctx.getAppSetting || (async (k, f) => f);
@@ -202,6 +205,7 @@ module.exports = function initCompliance(ctx) {
       changed_at TEXT
     )`).catch((e) => console.error("compliance_audit:", e.message));
     await dbRun("CREATE INDEX IF NOT EXISTS compliance_audit_course ON compliance_audit (course_id)").catch(() => {});
+    await initLessonTables();
 
     await seedLibrary();
     console.log("Compliance & Certification Hub schema ready.");
@@ -283,6 +287,7 @@ module.exports = function initCompliance(ctx) {
       passing_score: c.passing_score == null ? null : Number(c.passing_score),
       version: Number(c.version || 1),
       active: !!c.active,
+      has_lesson: !!lessonContent(c.key),
       retired_at: c.retired_at || null,
       rules: (rules || []).map(publicRule),
       // Said plainly, because a library entry that is required of nobody
@@ -697,7 +702,11 @@ module.exports = function initCompliance(ctx) {
             acknowledged_version: ack.acknowledged_version || null }
         : null,
       // Acknowledging a policy happens on the policy, not here.
-      can_self_report: course.delivery !== "policy_ack",
+      // A course with a lesson in the CRM is completed by passing its quiz,
+      // which verifies itself; offering "I have done this" beside it would
+      // invite a claim that skips the training it is a claim about.
+      has_lesson: !!lessonContent(course.key),
+      can_self_report: course.delivery !== "policy_ack" && !(course.delivery === "internal" && lessonContent(course.key)),
     };
   }
 
@@ -860,9 +869,219 @@ module.exports = function initCompliance(ctx) {
     return { status: 200, ok: true };
   }
 
+  // ======================= LESSONS: VIDEO + QUIZ ===============
+  //
+  // A course "delivered here" gets its material from two files in the repo,
+  // keyed by the course's key:
+  //
+  //   compliance-content/<key>.json   the slides, the narration (which is also
+  //                                   the transcript shown under the video) and
+  //                                   the quiz, ANSWERS INCLUDED.
+  //   compliance-videos/<key>.mp4     the narrated video built from it by
+  //                                   scripts/build-compliance-videos.py.
+  //
+  // THE ANSWERS NEVER LEAVE THE SERVER. The lesson route strips them, the quiz
+  // is graded here, and a passing score is what records the completion -- so a
+  // completion earned this way is verified by the grading itself, the same way
+  // a policy acknowledgment is: the system watched it happen.
+  const CONTENT_DIR = ctx.contentDir || path.join(__dirname, "compliance-content");
+  const VIDEO_DIR = ctx.videoDir || path.join(__dirname, "compliance-videos");
+  const KEY_RE = /^[a-z0-9_]{1,60}$/;
+  const DEFAULT_PASS = 80;
+
+  function lessonContent(key) {
+    if (!KEY_RE.test(String(key || ""))) return null;
+    try {
+      const c = JSON.parse(fs.readFileSync(path.join(CONTENT_DIR, `${key}.json`), "utf8"));
+      if (!Array.isArray(c.slides) || !Array.isArray(c.quiz) || !c.quiz.length) return null;
+      return c;
+    } catch (e) { return null; }
+  }
+  const hasVideo = (key) => KEY_RE.test(String(key || "")) && fs.existsSync(path.join(VIDEO_DIR, `${key}.mp4`));
+  const passMark = (course, content) => {
+    const n = Number(course && course.passing_score);
+    if (Number.isFinite(n) && n >= 1 && n <= 100) return n;
+    const c = Number(content && content.passing_score);
+    return Number.isFinite(c) && c >= 1 && c <= 100 ? c : DEFAULT_PASS;
+  };
+
+  async function initLessonTables() {
+    // Every attempt, pass or fail. "How many tries did it take" is a question
+    // an auditor asks, and only a failed attempt can answer it.
+    await dbRun(`CREATE TABLE IF NOT EXISTS compliance_quiz_attempts (
+      id SERIAL PRIMARY KEY,
+      employee_id INTEGER NOT NULL,
+      course_id INTEGER NOT NULL,
+      course_version INTEGER NOT NULL,
+      content_version INTEGER,
+      score INTEGER NOT NULL,
+      correct INTEGER NOT NULL,
+      total INTEGER NOT NULL,
+      passed BOOLEAN NOT NULL,
+      answers TEXT,
+      completion_id INTEGER,
+      taken_at TEXT NOT NULL
+    )`).catch((e) => console.error("compliance_quiz_attempts:", e.message));
+    await dbRun("CREATE INDEX IF NOT EXISTS compliance_quiz_emp ON compliance_quiz_attempts (employee_id, course_id)").catch(() => {});
+  }
+
+  // Who may open a course's lesson: anybody it is assigned to, plus the people
+  // who can read the library (so the owner can preview what staff will see).
+  async function lessonAccess(user, courseId) {
+    const course = await dbGet("SELECT * FROM compliance_courses WHERE id = ? AND active = TRUE", [courseId]).catch(() => null);
+    if (!course) return { status: 404, error: "No such course." };
+    const content = lessonContent(course.key);
+    if (!content) return { status: 404, error: "This course does not have a lesson in the CRM yet." };
+    const emp = await employeeForUser(user);
+    let assigned = false;
+    if (emp) {
+      const rec = await trainingRecord(emp);
+      assigned = rec.required.concat(rec.optional).some((r) => r.course_id === course.id);
+    }
+    const preview = !assigned && (await canView(user));
+    if (!assigned && !preview) return { status: 403, error: "This course is not assigned to you." };
+    return { course, content, emp, assigned, preview };
+  }
+
+  function lessonView(a, attempts) {
+    const { course, content } = a;
+    return {
+      course_id: course.id, key: course.key, title: course.title,
+      version: Number(course.version || 1),
+      estimated_minutes: Number(content.estimated_minutes) || null,
+      passing_score: passMark(course, content),
+      video_url: hasVideo(course.key) ? `/api/compliance/video/${course.key}.mp4` : null,
+      preview: !!a.preview,
+      transcript: content.slides.map((s) => ({
+        heading: String(s.heading || ""), bullets: (s.bullets || []).map(String), narration: String(s.narration || ""),
+      })),
+      // Questions and choices only. The answer key stays on the server.
+      quiz: content.quiz.map((qq, i) => ({ n: i, question: String(qq.question), choices: (qq.choices || []).map(String) })),
+      attempts: attempts || [],
+    };
+  }
+
+  async function gradeQuiz(user, courseId, body) {
+    const a = await lessonAccess(user, courseId);
+    if (a.error) return a;
+    const { course, content, emp } = a;
+    const given = Array.isArray(body && body.answers) ? body.answers : null;
+    if (!given || given.length !== content.quiz.length) {
+      return { status: 400, error: `Answer all ${content.quiz.length} questions before submitting.` };
+    }
+    let correct = 0;
+    const results = content.quiz.map((qq, i) => {
+      const pick = Number(given[i]);
+      const ok = Number.isInteger(pick) && pick === Number(qq.answer);
+      if (ok) correct++;
+      return { n: i, correct: ok };
+    });
+    const total = content.quiz.length;
+    const score = Math.round((correct / total) * 100);
+    const mark = passMark(course, content);
+    const passed = score >= mark;
+
+    // Explanations (and so the right answers) only once they have passed.
+    // Handing them over after a failed attempt would make the retake a copy.
+    const out = {
+      status: 200, ok: true, score, correct, total, passing_score: mark, passed, preview: !!a.preview,
+      results: passed
+        ? results.map((r, i) => ({ ...r, answer: Number(content.quiz[i].answer), explanation: String(content.quiz[i].explanation || "") }))
+        : results,
+    };
+    if (a.preview) return out; // the owner trying it out: graded, never recorded
+
+    let completionId = null;
+    if (passed) {
+      const on = today();
+      const existing = await dbGet(
+        "SELECT id FROM compliance_completions WHERE employee_id = ? AND course_id = ? AND course_version = ? AND completed_on = ?",
+        [emp.id, course.id, Number(course.version || 1), on]).catch(() => null);
+      if (existing) {
+        completionId = existing.id;
+      } else {
+        const minutes = Number(content.estimated_minutes);
+        const row = await dbGet(
+          `INSERT INTO compliance_completions
+             (employee_id, course_id, course_version, completed_on, source, hours, expires_on, evidence_note,
+              verified_by, verified_at, recorded_by, recorded_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+          [emp.id, course.id, Number(course.version || 1), on, "quiz",
+           Number.isFinite(minutes) && minutes > 0 ? Math.round((minutes / 60) * 100) / 100 : null, null,
+           `Passed the CRM quiz with ${score}% (${correct} of ${total}); pass mark ${mark}%.`,
+           `Passed the quiz (${score}%)`, nowISO(), clean(user.name) || clean(user.email) || "Employee", nowISO()]
+        ).catch(() => null);
+        completionId = row && row.id ? row.id : null;
+        await audit(course.id, `${emp.name} passed the quiz with ${score}% (completed ${on}).`, clean(user.email) || "Employee");
+      }
+    }
+    await dbRun(
+      `INSERT INTO compliance_quiz_attempts
+         (employee_id, course_id, course_version, content_version, score, correct, total, passed, answers, completion_id, taken_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      [emp.id, course.id, Number(course.version || 1), Number(content.content_version) || null,
+       score, correct, total, passed, JSON.stringify(given.map(Number)), completionId, nowISO()]
+    ).catch((e) => console.error("compliance quiz attempt:", e.message));
+    return out;
+  }
+
+  // The video, streamed with Range support: Safari will not play an MP4
+  // without it, and nobody can scrub back to re-watch a section otherwise.
+  function streamVideo(req, res, key) {
+    if (!KEY_RE.test(key) || !hasVideo(key)) { res.writeHead(404); res.end("Not found"); return; }
+    const file = path.join(VIDEO_DIR, `${key}.mp4`);
+    const size = fs.statSync(file).size;
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ""));
+    const base = { "Content-Type": "video/mp4", "Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600" };
+    if (range && (range[1] || range[2])) {
+      let start = range[1] ? Number(range[1]) : size - Number(range[2]);
+      let end = range[1] && range[2] ? Number(range[2]) : size - 1;
+      if (!(start >= 0 && start < size && end >= start)) {
+        res.writeHead(416, { "Content-Range": `bytes */${size}` }); res.end(); return;
+      }
+      end = Math.min(end, size - 1);
+      res.writeHead(206, { ...base, "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": end - start + 1 });
+      if (req.method === "HEAD") { res.end(); return; }
+      fs.createReadStream(file, { start, end }).pipe(res);
+      return;
+    }
+    res.writeHead(200, { ...base, "Content-Length": size });
+    if (req.method === "HEAD") { res.end(); return; }
+    fs.createReadStream(file).pipe(res);
+  }
+
   // ======================= ROUTES ==============================
   async function handleApi(req, res, pathname, method, user, query) {
     if (!pathname.startsWith("/api/compliance/")) return false;
+
+    // ---- LESSONS ---------------------------------------------------------
+    let lm = pathname.match(/^\/api\/compliance\/video\/([a-z0-9_]{1,60})\.mp4$/);
+    if (lm && (method === "GET" || method === "HEAD")) {
+      if (!user) { json(res, 401, { error: "Sign in to watch the training." }); return true; }
+      streamVideo(req, res, lm[1]);
+      return true;
+    }
+    lm = pathname.match(/^\/api\/compliance\/my-training\/(\d+)\/lesson$/);
+    if (lm && method === "GET") {
+      if (!user) { json(res, 401, { error: "Sign in to see your training." }); return true; }
+      const a = await lessonAccess(user, Number(lm[1]));
+      if (a.error) { json(res, a.status, { error: a.error }); return true; }
+      const attempts = a.emp ? await dbAll(
+        `SELECT score, passed, taken_at FROM compliance_quiz_attempts
+          WHERE employee_id = ? AND course_id = ? ORDER BY id DESC LIMIT 20`,
+        [a.emp.id, a.course.id]).catch(() => []) : [];
+      json(res, 200, lessonView(a, attempts.map((t) => ({ score: Number(t.score), passed: !!t.passed, taken_at: t.taken_at }))));
+      return true;
+    }
+    lm = pathname.match(/^\/api\/compliance\/my-training\/(\d+)\/quiz$/);
+    if (lm && method === "POST") {
+      if (!user) { json(res, 401, { error: "Sign in first." }); return true; }
+      const r = await gradeQuiz(user, Number(lm[1]), await readBody(req));
+      if (r.error) { json(res, r.status, { error: r.error }); return true; }
+      const { status, ...rest } = r;
+      json(res, status, rest);
+      return true;
+    }
 
     if (pathname === "/api/compliance/courses" && method === "GET") {
       if (!(await canView(user))) { json(res, 403, { error: "Not permitted" }); return true; }

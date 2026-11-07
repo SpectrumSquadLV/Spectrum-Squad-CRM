@@ -1,0 +1,251 @@
+{
+  "key": "hipaa",
+  "title": "HIPAA Privacy & Security",
+  "content_version": 1,
+  "estimated_minutes": 10,
+  "passing_score": 80,
+  "slides": [
+    {
+      "heading": "Welcome: HIPAA Privacy & Security",
+      "bullets": [
+        "HIPAA protects the health information of the families we serve",
+        "Applies to every role: RBTs, BCBAs and office staff",
+        "Learn: PHI, allowed uses, rights, safeguards, breaches",
+        "Short quiz at the end; 80% needed to pass"
+      ],
+      "narration": "Welcome to Spectrum Squad's training on HIPAA privacy and security. HIPAA is a federal law that protects the health information of the families we serve. Everyone on our team handles this information, from behavior technicians and behavior analysts to our office staff. In this course, you will learn what protected health information is, when you are allowed to use and share it, the rights our clients and their guardians have, and how to keep information safe in homes, schools, the community, and the clinic. We will also cover texting, social media, Rethink, and what to do if something goes wrong. At the end, there is a short quiz. Let's get started."
+    },
+    {
+      "heading": "What Is PHI?",
+      "bullets": [
+        "Health, care or payment info that can identify a person",
+        "Session notes, data sheets, treatment plans, insurance info",
+        "Everything in Rethink, plus photos and videos of clients",
+        "Even the fact that a child receives therapy is protected"
+      ],
+      "narration": "Let's start with the basics. Protected health information, or P H I, is any information about a person's health, the care they receive, or payment for that care, that can identify who they are. Session notes are P H I. Paper data sheets are P H I. Treatment plans, insurance information, and everything in Rethink are P H I. Photos and videos of a client are P H I too, even a quick video you took to show your supervisor a new skill. Even the simple fact that a child receives therapy from Spectrum Squad is protected. If you are not sure whether something counts, treat it as P H I."
+    },
+    {
+      "heading": "The 18 Identifiers",
+      "bullets": [
+        "Names, addresses, dates like birth date or date of service",
+        "Phone, email, Social Security, record and insurance numbers",
+        "Face photos, plate numbers, device IDs, other unique details",
+        "Small details combined can point to one specific child"
+      ],
+      "narration": "HIPAA lists eighteen kinds of identifiers that can link health information to a person. Here are the common ones. They include names, street addresses and other location details smaller than a state, dates like a birth date or a date of service, phone numbers, email addresses, Social Security numbers, medical record numbers, insurance member numbers, photos of a face, and things like license plate numbers or device serial numbers. There is also a catch-all for any other unique detail. You might think a story about a seven year old boy on Maple Street who just started therapy is anonymous. But with a street name and an age, a neighbor could easily figure out who you mean. A first name, a school name, or a nickname can be enough to identify a child."
+    },
+    {
+      "heading": "Treatment, Payment and Operations",
+      "bullets": [
+        "Treatment: reading the plan, reviewing data, updating goals",
+        "Payment: sending claims and records to insurance",
+        "Operations: supervision, training, quality reviews, audits",
+        "Most other sharing needs a signed guardian authorization"
+      ],
+      "narration": "So when are we allowed to use and share P H I? HIPAA allows three main purposes without separate written permission. The first is treatment, like a behavior technician reading the treatment plan before a session, or a behavior analyst reviewing data to update goals. The second is payment, like our office staff sending claims and session records to an insurance company. The third is health care operations, which means running the practice, such as supervision, training, quality reviews, and audits. For most other purposes, like sharing details with a teacher, a grandparent, or a soccer coach, we usually need a signed authorization from the parent or guardian. Your supervisor can tell you whether one is on file. When in doubt, ask before you share."
+    },
+    {
+      "heading": "Minimum Necessary",
+      "bullets": [
+        "Use, share or view only what you need to do your job",
+        "Only open records for clients you have a work reason to see",
+        "Snooping is a violation, even if you never tell anyone",
+        "Send only what a request needs, not the whole chart"
+      ],
+      "narration": "Next is the minimum necessary rule. That means you use, share, or look at only the information you need to do your job, and nothing more. For example, a behavior technician needs the treatment plan and recent data for the clients on their own caseload. They do not need to browse the files of other clients, even out of curiosity, and even if the system lets them open the file. Looking at a record you have no work reason to see is a privacy violation, even if you never tell anyone. And if an insurance company asks for session dates, our office sends the session dates, not the whole chart. The rule does not stop providers from sharing what is needed to treat a client, but it is the right habit for everything else."
+    },
+    {
+      "heading": "Client and Guardian Rights",
+      "bullets": [
+        "Notice of Privacy Practices; see and get copies of records",
+        "Request corrections, limits, and how they are contacted",
+        "File a complaint without retaliation",
+        "Pass every request to your supervisor or the Privacy Officer"
+      ],
+      "narration": "Our clients and their parents or legal guardians have rights under HIPAA. They have the right to receive our Notice of Privacy Practices, which explains how we use their information. They can ask to see and get a copy of their records. They can ask us to correct information they believe is wrong. They can ask for a list of certain disclosures, ask us to limit sharing, and ask to be contacted a certain way, such as only on mom's cell phone. They can also file a complaint, with us or with the federal government, without any retaliation. If a parent at a session says, can I get a copy of all my son's notes, respond kindly and pass the request to your supervisor or the Privacy Officer right away. Also be careful with custody situations. Not every adult in a child's life has the right to their information, so check with your supervisor before sharing with anyone new."
+    },
+    {
+      "heading": "Safeguards in Homes, Schools, Community",
+      "bullets": [
+        "Discuss progress only with the guardian or authorized people",
+        "At school, share only what is authorized and approved",
+        "In public: low voice, no full names, screen out of view",
+        "Never leave devices or data sheets visible in your car"
+      ],
+      "narration": "Much of our work happens outside the clinic, so let's talk about protecting information in the real world. Only discuss the child's progress with the parent or guardian, or with people the guardian has authorized. At school, share only what the guardian has authorized and your supervisor has approved, and don't leave data sheets on a classroom table. In the community, keep your voice low and avoid using a client's full name. Imagine you finish a session and stop at a coffee shop to write your notes. Sit where no one can see your screen, don't take client calls where others can hear, and never leave your laptop unattended, even while you grab your drink. Never leave paper data sheets or devices visible in your car, and don't talk about a client on speakerphone with passengers riding along."
+    },
+    {
+      "heading": "Devices, Screens and Paper",
+      "bullets": [
+        "Lock devices with a passcode and auto-lock",
+        "Never share logins or let family use work devices",
+        "No client photos or notes on personal camera rolls or apps",
+        "Keep data sheets with you; shred, never trash them"
+      ],
+      "narration": "Devices and paper need special care. Lock your phone, tablet, and laptop with a passcode, and set them to lock automatically when you step away. Never share your login for Rethink or any other system, and never let a family member use your work device. Only use the devices and apps that Spectrum Squad's policy allows for client information. Don't save client photos, videos, or notes to your personal camera roll, cloud storage, or apps. Paper data sheets should stay with you, in a folder or bag, from the start of the session until they are entered into Rethink or turned in. When paper is no longer needed, it must be shredded or placed in a secure shred bin. Never toss it in regular trash at a client's house or a gas station. And if a device or a data sheet is ever lost or stolen, report it right away."
+    },
+    {
+      "heading": "Texting, Email and Social Media",
+      "bullets": [
+        "Use only communication tools approved by Spectrum Squad",
+        "Keep messages minimal; double check the recipient",
+        "Never post about clients, even without a name or face",
+        "Don't discuss sessions with families on personal accounts"
+      ],
+      "narration": "Follow Spectrum Squad's policy on which tools are approved for client communication, and keep messages short, using only the minimum necessary information. Never text a client's full name, diagnosis, or behavior details from your personal phone unless our policy says that tool is approved. Double check the recipient before you hit send, because a message sent to the wrong parent can be a breach. Social media has one simple rule. Never post anything about clients. No photos, no videos, and no proud of my little buddy today posts, even without a name or a face. A child's shoes, their house in the background, or a location tag can identify them. Don't discuss sessions with families on your personal accounts. And if a parent posts about their child and tags you, do not reply with any details about therapy."
+    },
+    {
+      "heading": "Rethink, Our Electronic Health Record",
+      "bullets": [
+        "Session notes and data belong in Rethink, not personal apps",
+        "Use your own login only, and log out when done",
+        "Access can be tracked; open only records you need",
+        "Report odd activity or a shared login to your supervisor"
+      ],
+      "narration": "Rethink is our electronic health record, and it is where client information belongs. Enter your session notes and data in Rethink, not in personal notes apps or spreadsheets. Log in with your own account only, log out when you are done, and never write down your password where others can find it. Systems like Rethink can record who opened which file and when. Only open the files of clients you are assigned to or have a work reason to view. Do not download or print client records unless your job requires it and Spectrum Squad's policy allows it. If you notice something odd, like a client you don't serve showing up on your schedule, or you think someone else has used your login, tell your supervisor."
+    },
+    {
+      "heading": "Breaches: Report Immediately",
+      "bullets": [
+        "Breach: PHI used, shared, seen or lost in a way not allowed",
+        "Lost data sheet, wrong-recipient text, stolen laptop, snooping",
+        "Report suspected breaches IMMEDIATELY to supervisor/Privacy Officer",
+        "Don't wait, hide it, or judge how serious it is yourself"
+      ],
+      "narration": "A breach is when P H I is used, shared, seen, or lost in a way that HIPAA doesn't allow. Examples include a data sheet left at a park, a text sent to the wrong parent, a stolen laptop, a staff member looking at a record out of curiosity, or a client's photo posted online. Here is the most important rule in this course. If you suspect a breach, report it immediately to your supervisor or the Privacy Officer. Don't wait, don't fix it quietly, and don't decide on your own whether it is serious enough to report. The Privacy Officer investigates and decides what happens next, including whether families or the government must be notified, and those decisions have legal deadlines. Reporting quickly protects our clients and you. Spectrum Squad does not retaliate against staff who report a concern in good faith."
+    },
+    {
+      "heading": "Penalties and Sanctions",
+      "bullets": [
+        "Federal civil fines for organizations, scaled by severity",
+        "Knowing misuse can bring criminal charges for individuals",
+        "Certification and licensing consequences are possible",
+        "Spectrum Squad sanctions: retraining up to termination"
+      ],
+      "narration": "Privacy violations have real consequences. Under federal law, organizations can face civil fines that grow with how serious and how careless the violation was. Individuals who knowingly misuse health information can face criminal charges, including fines and even prison time. State laws and certification boards can add their own consequences, and a behavior technician or behavior analyst could put their certification at risk. Inside Spectrum Squad, staff who violate privacy policies face sanctions under our policy. That can range from retraining or a written warning up to termination. But the biggest cost is trust. Families let us into their homes and trust us with their children's information. Protecting it is part of good care."
+    },
+    {
+      "heading": "Recap and Quiz",
+      "bullets": [
+        "PHI: notes, data sheets, Rethink, photos and videos",
+        "Treatment, payment, operations; minimum necessary",
+        "Lock devices, guard paper, approved tools, never post clients",
+        "Report suspected breaches immediately; quiz needs 80%"
+      ],
+      "narration": "Let's recap. P H I is any health information that can identify a client, including session notes, data sheets, Rethink records, photos, and videos. Use it for treatment, payment, and operations, and only the minimum necessary. Respect the rights of clients and guardians, and pass their requests to your supervisor or the Privacy Officer. Protect information in homes, schools, cars, and coffee shops. Lock your devices, guard your paper, use only approved tools, and never post about clients. And if you suspect a breach, report it immediately. Now it's time to take the quiz. You need eighty percent to pass. Good luck."
+    }
+  ],
+  "quiz": [
+    {
+      "question": "An RBT records a short video of a client's new skill on her personal phone to show her BCBA. Which statement is correct?",
+      "choices": [
+        "The video is not PHI because it only shows a skill, not a diagnosis",
+        "It is fine to keep it in her camera roll as long as she does not post it",
+        "The video is PHI and must not be stored on her personal camera roll or apps",
+        "Videos are only PHI if the child's full name is spoken"
+      ],
+      "answer": 2,
+      "explanation": "Photos and videos of clients are PHI. Staff should not save them to personal camera rolls, cloud storage or apps, and should use only tools Spectrum Squad's policy allows."
+    },
+    {
+      "question": "An RBT has a few free minutes and opens the Rethink file of a client on another technician's caseload, just to see how the child is doing. What is this?",
+      "choices": [
+        "A privacy violation, because there is no work reason to view that record",
+        "Acceptable, because all staff work for the same practice",
+        "Acceptable, as long as the RBT does not tell anyone what they saw",
+        "Acceptable, because Rethink allowed the file to open"
+      ],
+      "answer": 0,
+      "explanation": "Under the minimum necessary rule, you only look at records you need for your job. Viewing a record out of curiosity is a violation even if you never share what you saw."
+    },
+    {
+      "question": "You finish a session and stop at a coffee shop to write your notes on your work laptop. What is the best practice?",
+      "choices": [
+        "Leave the laptop open on the table while you pick up your drink",
+        "Call the parent on speaker to review the session while you type",
+        "Use the client's full name loudly so your notes are accurate",
+        "Sit where no one can see your screen and never leave the laptop unattended"
+      ],
+      "answer": 3,
+      "explanation": "In public, keep your screen out of view, keep your voice low, avoid client calls where others can hear, and never leave devices unattended."
+    },
+    {
+      "question": "During a home session, a parent asks you for a copy of all of her son's session notes. What should you do?",
+      "choices": [
+        "Tell her parents are not allowed to see therapy records",
+        "Respond kindly and pass the request to your supervisor or the Privacy Officer right away",
+        "Print the notes from Rethink at her house and hand them to her",
+        "Text her photos of the notes from your personal phone"
+      ],
+      "answer": 1,
+      "explanation": "Guardians have the right to see and get copies of records, but staff should not handle these requests alone. Route them to your supervisor or the Privacy Officer so they are handled correctly and on time."
+    },
+    {
+      "question": "Which of these is an example of using PHI for payment?",
+      "choices": [
+        "An RBT reading the treatment plan before a session",
+        "A BCBA reviewing data to update a client's goals",
+        "Office staff sending claims and session records to an insurance company",
+        "A supervisor using a session for staff training"
+      ],
+      "answer": 2,
+      "explanation": "Payment covers billing and claims to insurance. Reading the plan and updating goals are treatment, and training is health care operations."
+    },
+    {
+      "question": "An RBT wants to post a photo from the park showing only a client's shoes and the playground, with no name or face, captioned 'Proud of my little buddy today.' Is this allowed?",
+      "choices": [
+        "Yes, because there is no name or face in the photo",
+        "No, staff must never post anything about clients on social media",
+        "Yes, if the post is set to friends only",
+        "Yes, if the RBT deletes it within a day"
+      ],
+      "answer": 1,
+      "explanation": "The rule is simple: never post about clients. Details like shoes, a location or a background can still identify a child."
+    },
+    {
+      "question": "You realize you accidentally texted a session update to the wrong parent. What should you do?",
+      "choices": [
+        "Delete the text from your phone and hope they did not read it",
+        "Wait until your end-of-week check-in to mention it",
+        "Ask the other parent to delete it and tell no one else",
+        "Report it immediately to your supervisor or the Privacy Officer"
+      ],
+      "answer": 3,
+      "explanation": "A message sent to the wrong person can be a breach. Suspected breaches must be reported immediately; staff should not fix them quietly or decide on their own whether they are serious."
+    },
+    {
+      "question": "A teacher at a client's school asks you how the child's behavior has been at home. What should you do?",
+      "choices": [
+        "Share only what the guardian has authorized and your supervisor has approved",
+        "Share everything, because teachers are part of the child's team",
+        "Show the teacher the full data sheets so she has the details",
+        "Tell the teacher about the family's insurance situation too"
+      ],
+      "answer": 0,
+      "explanation": "At school, staff share only what the guardian has authorized and the supervisor has approved. Sharing with people like teachers usually needs a signed authorization."
+    },
+    {
+      "question": "After a session you have a paper data sheet you no longer need, and it has already been entered into Rethink. How should you dispose of it?",
+      "choices": [
+        "Throw it in the client family's kitchen trash",
+        "Shred it or place it in a secure shred bin",
+        "Toss it in a trash can at a gas station on the way home",
+        "Leave it on the back seat of your car until you have time"
+      ],
+      "answer": 1,
+      "explanation": "Paper with PHI must be shredded or put in a secure shred bin, never thrown in regular trash or left visible in a car."
+    },
+    {
+      "question": "Which of these could happen to a staff member who violates Spectrum Squad's privacy policies?",
+      "choices": [
+        "Nothing, because only the organization can be penalized",
+        "Only a verbal reminder, no matter what happened",
+        "Sanctions ranging from retraining or a written warning up to termination",
+        "Automatic loss of pay for one week, regardless of the situation"
+      ],
+      "answer": 2,
+      "explanation": "Spectrum Squad applies sanctions under its policy depending on what happened, from retraining or a written warning up to termination. Individuals who knowingly misuse health information can also face criminal charges."
+    }
+  ]
+}

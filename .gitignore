@@ -15,3 +15,6 @@ data/
 
 # Per-suite output from run-tests.js
 test-logs/
+
+# Kokoro voice model used by scripts/compliance-video/build.py (350 MB; download it, never commit it)
+scripts/compliance-video/models/

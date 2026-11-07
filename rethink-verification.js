@@ -442,7 +442,7 @@ module.exports = function initRethinkVerification(ctx) {
     // ---- sort this cohort's appointments into verified / not ---------------
     const unverified = [];          // rows that are this cohort's and still unverified
     const verifiedKeys = [];        // keys that ARE verified now, so an open infraction can close
-    let scanned = 0, noStaffId = 0, unmatched = 0, offCohort = 0;
+    let scanned = 0, noStaffId = 0, unmatched = 0, offCohort = 0, notCompleted = 0;
     const unmatchedIds = new Set();
 
     for (const row of rows) {
@@ -459,11 +459,19 @@ module.exports = function initRethinkVerification(ctx) {
         if (!emp) { unmatched++; unmatchedIds.add(staffId); continue; }
         if (cohortOf(emp) !== cohort) { offCohort++; continue; }
 
-        scanned++;
         const verdict = verificationVerdict(row, cfg);
+
+        // Only a session that actually happened can be late. A no-show, a
+        // rescheduled slot, or one still sitting at "Scheduled" has no note to
+        // verify, so it must never be filed as an infraction against anybody.
+        // "Completed" is the admin-confirmed status list, the same one the
+        // billable totals use.
+        if (!verdict || !verdict.statusOk) { notCompleted++; continue; }
+
+        scanned++;
         const key = appointmentKey(row);
 
-        if (verdict && verdict.verifiedOk) { verifiedKeys.push(key); continue; }
+        if (verdict.verifiedOk) { verifiedKeys.push(key); continue; }
 
         unverified.push({
           key, emp, staffId,

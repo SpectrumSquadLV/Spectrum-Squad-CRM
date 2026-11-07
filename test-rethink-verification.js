@@ -373,6 +373,23 @@ process.env.RETHINK_VERIFICATION_REPORT_TO = "";     // exercise the fallback ch
       !/clientId|clientName|patient/i.test(mail.html || ""));
   }
 
+  console.log("\n--- only completed sessions can be late ---");
+  {
+    const { state, ctx } = makeDb(seedOpts(FRIDAY_0630_PT));
+    stub.dwhGetAllPages = async () => ({ rows: [
+      { appointmentId: "C1", staffId: "S100", appointmentStatus: "Completed", staffVerification: false, actualDurationHours: 2, appointmentDate: "2026-09-17" },
+      { appointmentId: "C2", staffId: "S100", appointmentStatus: "No Show", staffVerification: false, actualDurationHours: 0, appointmentDate: "2026-09-17" },
+      { appointmentId: "C3", staffId: "S100", appointmentStatus: "Scheduled", staffVerification: null, actualDurationHours: 0, appointmentDate: "2026-09-16" },
+      { appointmentId: "C4", staffId: "S100", appointmentStatus: "Rescheduled", staffVerification: false, actualDurationHours: 0, appointmentDate: "2026-09-15" },
+    ], pages: 1, truncated: false });
+    const out = await initVerification(ctx).runCohort("rbt", { runDate: "2026-09-18", triggeredBy: "test" });
+    check("only the completed, unverified session is an infraction",
+      out.unverified_found === 1 && state.infractions.length === 1 && state.infractions[0].appointment_key === "id:C1",
+      JSON.stringify(state.infractions.map((i) => i.appointment_key)));
+    check("a no-show is never an infraction", !state.infractions.some((i) => i.appointment_key === "id:C2"));
+    check("a still-scheduled appointment is never an infraction", !state.infractions.some((i) => i.appointment_key === "id:C3"));
+  }
+
   console.log("\n--- where the report is addressed ---");
   {
     const { ctx } = makeDb(seedOpts(FRIDAY_0630_PT, {
