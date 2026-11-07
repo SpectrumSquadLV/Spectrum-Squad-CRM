@@ -1,0 +1,251 @@
+{
+  "key": "infection_control",
+  "title": "Infection Control & Bloodborne Pathogens",
+  "content_version": 1,
+  "estimated_minutes": 10,
+  "passing_score": 80,
+  "slides": [
+    {
+      "heading": "Welcome: Infection Control & BBP",
+      "bullets": [
+        "Why infection control matters in ABA sessions",
+        "Hand hygiene, gloves and standard precautions",
+        "What to do after a bite or blood exposure",
+        "Cleaning, spills, sick days, snacks and privacy"
+      ],
+      "narration": "Welcome to Infection Control and Bloodborne Pathogens at Spectrum Squad. In our work, we get close to the kids we serve. We play on the floor, share toys, help with toileting, and sometimes get scratched or bitten. That closeness means germs can move between people. In this course, you will learn how infections spread, how to use standard precautions, how to wash your hands the right way, and how to put on and take off gloves. We will talk about bloodborne pathogens and what to do if you have an exposure. We will also cover cleaning, spills, sick days, snacks, and toileting privacy. Let's get started."
+    },
+    {
+      "heading": "How Infections Spread",
+      "bullets": [
+        "Germs travel on hands, surfaces, toys and in the air",
+        "Body fluids: blood, saliva, vomit, urine, stool",
+        "Bites, scratches and broken skin let germs in",
+        "Kids with autism may mouth toys or have trouble with hygiene"
+      ],
+      "narration": "Germs need a way to get from one person to another. The most common way is on our hands. You touch a toy a child just mouthed, then touch your face, and the germ comes along for the ride. Germs also spread through coughs and sneezes, through contaminated surfaces like tables and tablets, and through body fluids such as blood, saliva, vomit, urine, and stool. Broken skin from a bite or scratch gives germs an easy way into the body. Many of our clients mouth toys, wipe their noses on their hands, or need help with toileting. That just means we have to be the ones who break the chain."
+    },
+    {
+      "heading": "Standard Precautions",
+      "bullets": [
+        "Treat all blood and body fluids as possibly infectious",
+        "Use the same precautions with every client",
+        "Hand hygiene, gloves and P P E when needed",
+        "Clean materials, handle sharps and waste safely"
+      ],
+      "narration": "Standard precautions are the basic safety habits we use with everyone, every time. The big idea is simple. Treat all blood and most body fluids as if they could carry an infection, because you can't tell by looking. A child who seems perfectly healthy can still carry a virus. Standard precautions include hand hygiene, wearing gloves and other P P E when you might touch body fluids, cleaning and disinfecting shared items, safe handling of waste, and covering coughs and sneezes. These habits protect you, your clients, and their families."
+    },
+    {
+      "heading": "Hand Hygiene: When and How",
+      "bullets": [
+        "Before and after each session and before snacks",
+        "After toileting, diapering, nose wiping or gloves off",
+        "Soap and water: scrub at least 20 seconds",
+        "Sanitizer: at least 60% alcohol, rub until dry"
+      ],
+      "narration": "Hand hygiene is the single most important thing you can do to stop the spread of germs. Clean your hands when you arrive and before you leave a session, before handling food or snacks, after helping with toileting or a diaper change, after wiping a nose, after touching body fluids, after taking off gloves, and after using the restroom yourself. To wash with soap and water, wet your hands, add soap, and scrub every part, including the backs of your hands, between your fingers, and under your nails, for at least twenty seconds. That's about two rounds of the Happy Birthday song. Rinse, then dry with a clean towel. Hand sanitizer with at least sixty percent alcohol is great when your hands are not visibly dirty. Rub it over all surfaces until your hands are dry. But use soap and water when your hands are visibly dirty or greasy, after toileting or diaper help, after contact with vomit or diarrhea, and before eating. Sanitizer does not work as well on some germs that cause stomach illness."
+    },
+    {
+      "heading": "Gloves, P P E and Glove Removal",
+      "bullets": [
+        "Wear gloves for toileting, blood, vomit and spills",
+        "New gloves for each task and each client",
+        "Peel off inside out without touching the outside",
+        "Throw gloves away, then clean your hands"
+      ],
+      "narration": "P P E means personal protective equipment. For most of our work, that means disposable gloves. Wear gloves any time you expect to touch blood, vomit, urine, stool, or other body fluids, such as during toileting help, a nosebleed, or cleaning a spill. Use a fresh pair of gloves for each task and each client, and never wash or reuse disposable gloves. Taking gloves off the right way matters, because the outside is now dirty. Here's how. With one gloved hand, pinch the outside of the other glove near the wrist. Peel it off so it turns inside out, and hold it in your gloved hand. Then slide a bare finger under the wrist of the remaining glove, being careful not to touch the outside, and peel it off over the first glove. Throw both away, then wash your hands or use sanitizer. Gloves do not replace hand hygiene."
+    },
+    {
+      "heading": "Bloodborne Pathogens and OSHA",
+      "bullets": [
+        "Hepatitis B, hepatitis C and H I V spread through blood",
+        "OSHA's Bloodborne Pathogens Standard protects workers",
+        "Employers provide training, P P E and an exposure plan",
+        "Hepatitis B vaccine offered at no cost: ask HR"
+      ],
+      "narration": "Bloodborne pathogens are germs carried in blood and some other body fluids that can cause serious disease. The three main ones are hepatitis B, hepatitis C, and H I V. Hepatitis B is especially tough, because it can survive on surfaces for up to a week. A federal agency called OSHA has a rule called the Bloodborne Pathogens Standard. In general terms, it requires employers to have a written plan for preventing exposures, to provide training and P P E, and to provide medical follow up after an exposure. There is a vaccine for hepatitis B. Employers must offer it at no cost to employees whose jobs carry a risk of exposure to blood. There is no vaccine for hepatitis C or H I V, which is why prevention matters so much. To get the hepatitis B vaccine, or to learn about our exposure plan, ask HR."
+    },
+    {
+      "heading": "What Is an Exposure Incident?",
+      "bullets": [
+        "A bite or scratch that breaks the skin and draws blood",
+        "Blood or body fluid splashed in your eyes or mouth",
+        "Blood touching your cuts, rashes or chapped skin",
+        "Unsure? Treat it as an exposure and report it"
+      ],
+      "narration": "An exposure incident is when blood or certain other body fluids get into your body through your eyes, nose, mouth, or broken skin. In ABA, here's what that can look like. A client bites your arm during a tantrum and the bite breaks the skin. A child with a nosebleed flails, and blood lands in your eye or mouth. You help a client who scraped a knee, and their blood touches a cut or chapped skin on your hand. Blood on intact, healthy skin is not an exposure, but you should still wash it off right away. If you aren't sure whether something counts, don't guess. Treat it as a possible exposure, follow the response steps, and let your supervisor and a medical provider help decide."
+    },
+    {
+      "heading": "Exposure Response Steps",
+      "bullets": [
+        "Wash the wound right away with soap and water",
+        "Flush eyes, nose or mouth with plenty of water",
+        "Report to your supervisor immediately",
+        "Get medical evaluation promptly and file a report"
+      ],
+      "narration": "If you have an exposure, act fast. First, make sure the client is safe, then take care of yourself. Wash any bite, scratch, or cut with soap and water. Don't scrub it with bleach or other harsh chemicals. If blood or body fluid splashed into your eyes, nose, or mouth, flush the area with lots of clean water. Next, report it to your supervisor immediately, the same day, even if it seems minor. Then get a medical evaluation promptly. This is time sensitive, because some treatments that lower the risk of infection work best when they are started within hours. Your supervisor and HR will help you with where to go. Finally, complete an incident report describing what happened, when, and where. Reporting is not about blame. It makes sure you get follow up care."
+    },
+    {
+      "heading": "Cleaning Materials Between Clients",
+      "bullets": [
+        "Clean, then disinfect toys, tablets and tables",
+        "Follow the label, including wet contact time",
+        "Set aside mouthed toys until they're cleaned",
+        "Don't move dirty materials from one client to another"
+      ],
+      "narration": "Materials travel with us between homes, schools, and the clinic. Cleaning means removing visible dirt and spit with soap and water or a wipe. Disinfecting means using an approved product to kill germs. Do both, in that order, for toys, reinforcers, tablets, table tops, and other shared items. Read the label on the disinfectant and follow its directions, especially the contact time, which is how long the surface needs to stay wet to work. If a client mouths a toy during a session, set it aside in a separate bin or bag until it can be cleaned. Follow Spectrum Squad's policy and your supervisor's direction on which products to use and how to store clean and dirty materials."
+    },
+    {
+      "heading": "Handling Body Fluid Spills",
+      "bullets": [
+        "Keep the client and others away from the spill",
+        "Put on gloves before you touch anything",
+        "Absorb, clean, then disinfect the area",
+        "Bag waste, remove gloves, wash hands, notify"
+      ],
+      "narration": "Vomit, urine, stool, and blood spills happen, especially with young children. First, move the client and anyone else away from the area. Put on gloves, and any other P P E your supervisor or the spill kit calls for. Soak up the spill with paper towels or an absorbent material, and throw it away in a plastic bag. Clean the area with soap and water, then apply a disinfectant and leave it on for the time the label says. Bag up all the waste and gloves, tie the bag closed, and throw it away according to Spectrum Squad's policy. Then wash your hands with soap and water. Let the caregiver or school staff know what happened. If you are ever unsure how to clean up a spill, call your supervisor."
+    },
+    {
+      "heading": "Sick Days, Coughs and Sneezes",
+      "bullets": [
+        "Stay home with fever, vomiting or diarrhea",
+        "Return only when Spectrum Squad's sick policy allows",
+        "Cover coughs and sneezes with a tissue or elbow",
+        "Toss tissues and clean your hands right away"
+      ],
+      "narration": "One of the kindest things you can do for your clients is to stay home when you're sick. If you have a fever, vomiting, diarrhea, or another contagious illness, don't come to session. Let your supervisor know as early as you can, and follow Spectrum Squad's sick policy. In general, you should be fever free without the help of fever reducing medicine before you return, and the sick policy tells you exactly how long to wait. When you or a client needs to cough or sneeze, use a tissue, or cough into your elbow, not your hands. Toss the tissue and clean your hands. You can also teach clients to cover their coughs as a skill."
+    },
+    {
+      "heading": "Snacks, Reinforcers and Privacy",
+      "bullets": [
+        "Clean hands before handling any food",
+        "Check allergies and the client's plan first",
+        "Serve portions; no double dipping or sharing",
+        "Toileting: give privacy, dignity and gloves"
+      ],
+      "narration": "Food is often a powerful reinforcer, so let's handle it safely. Always clean your hands before you touch food. Before you offer anything, check the client's allergies, any dietary needs, and their treatment plan, and make sure the caregiver has approved it. Use single servings or put a small portion in a clean cup instead of reaching into a shared bag. Don't share food between clients, don't double dip, and don't reuse food that fell on the floor or was in a client's mouth. Keep food that needs refrigeration cold, and check expiration dates. Toileting care calls for both safety and respect. Wear gloves, and clean your hands afterward. Close the door or use a privacy screen, keep only the people who need to be there in the room, and tell the client what you are about to do in a calm, simple way. Follow the plan your B C B A wrote, and protect each child's dignity every time."
+    },
+    {
+      "heading": "Recap and Quiz",
+      "bullets": [
+        "Use standard precautions with every client",
+        "Clean hands often; scrub at least 20 seconds",
+        "Exposure: wash, flush, report, get care, document",
+        "Take the quiz: you need 80% to pass"
+      ],
+      "narration": "Let's recap. Treat all blood and body fluids as possibly infectious, and use standard precautions with every client. Clean your hands often, scrubbing for at least twenty seconds with soap and water, or using sanitizer when your hands aren't visibly dirty. Wear gloves for body fluids and take them off inside out. Know the three main bloodborne pathogens, and ask HR about the hepatitis B vaccine. If you have an exposure, wash the area, flush your eyes or mouth, report to your supervisor immediately, get a medical evaluation promptly, and complete an incident report. Clean and disinfect materials between clients, handle spills carefully, stay home when sick, handle snacks safely, and protect each client's privacy. Now take the quiz. You need a score of eighty percent to pass."
+    }
+  ],
+  "quiz": [
+    {
+      "question": "A client seems completely healthy and has no known illness. When should you use standard precautions with this client?",
+      "choices": [
+        "Only if the parent says the child is sick",
+        "Every time, the same as with every other client",
+        "Only during toileting",
+        "Only if you see blood"
+      ],
+      "answer": 1,
+      "explanation": "Standard precautions are used with every client every time, because you can't tell by looking whether someone carries an infection."
+    },
+    {
+      "question": "After helping a client in the bathroom and taking off your gloves, your hands look clean. What should you do next?",
+      "choices": [
+        "Nothing, because you wore gloves",
+        "Wipe your hands on a paper towel",
+        "Use hand sanitizer only if you touched the toilet",
+        "Wash your hands with soap and water"
+      ],
+      "answer": 3,
+      "explanation": "Gloves don't replace hand hygiene, and soap and water is the best choice after toileting help."
+    },
+    {
+      "question": "How long should you scrub your hands with soap when washing them?",
+      "choices": [
+        "At least twenty seconds",
+        "About five seconds",
+        "Until the soap foams",
+        "Only as long as it takes to rinse"
+      ],
+      "answer": 0,
+      "explanation": "Scrub all surfaces of your hands for at least twenty seconds, about two rounds of Happy Birthday."
+    },
+    {
+      "question": "You are taking off gloves after cleaning up a child's nosebleed. Which method is correct?",
+      "choices": [
+        "Pull both gloves off by the fingertips at once",
+        "Rinse the gloves first so you can reuse them",
+        "Peel the first glove off inside out, then slide a bare finger under the second glove's wrist and peel it off",
+        "Use your teeth to loosen the cuffs"
+      ],
+      "answer": 2,
+      "explanation": "Removing gloves inside out without touching the dirty outside keeps germs off your hands, and disposable gloves are never reused."
+    },
+    {
+      "question": "During a session, a client bites your forearm and the bite breaks the skin. What should you do first once the client is safe?",
+      "choices": [
+        "Finish the session and mention it next week",
+        "Wash the bite with soap and water",
+        "Cover it with a bandage and ignore it",
+        "Pour bleach on the wound"
+      ],
+      "answer": 1,
+      "explanation": "Wash the wound right away with soap and water; harsh chemicals like bleach should not be used on the wound."
+    },
+    {
+      "question": "A child with a nosebleed flails and blood splashes into your eye. Which set of steps is correct?",
+      "choices": [
+        "Rub your eye, then keep working",
+        "Wait to see if your eye gets red before telling anyone",
+        "Flush your eye with plenty of water, report to your supervisor immediately, get a medical evaluation promptly, and complete an incident report",
+        "Only fill out an incident report at the end of the month"
+      ],
+      "answer": 2,
+      "explanation": "Blood in the eye is an exposure incident, so you flush with water, report right away, get prompt medical care, and document it."
+    },
+    {
+      "question": "Why does it matter that you get a medical evaluation promptly after an exposure?",
+      "choices": [
+        "Some treatments that lower the risk of infection work best when started within hours",
+        "It's only needed for paperwork",
+        "Medical care is only needed if you feel sick later",
+        "It lets you skip reporting to your supervisor"
+      ],
+      "answer": 0,
+      "explanation": "Post-exposure care is time sensitive, so prompt evaluation gives you the best protection."
+    },
+    {
+      "question": "You want to know whether you can get the hepatitis B vaccine through work. What should you do?",
+      "choices": [
+        "Assume it isn't available",
+        "Ask a client's parent",
+        "Ask HR, because the vaccine is offered at no cost to employees with occupational exposure risk",
+        "Wait until you have an exposure"
+      ],
+      "answer": 2,
+      "explanation": "OSHA's Bloodborne Pathogens Standard requires the hepatitis B vaccine be offered at no cost to at-risk employees, and HR can help you get it."
+    },
+    {
+      "question": "A client chewed on a toy car during your session. Your next client loves the same car. What should you do?",
+      "choices": [
+        "Give it to the next client right away",
+        "Wipe it on your shirt and hand it over",
+        "Rinse it in the sink for a second",
+        "Set it aside, then clean it and disinfect it following the label's contact time before anyone uses it"
+      ],
+      "answer": 3,
+      "explanation": "Mouthed items must be set aside, cleaned, and disinfected before being shared, so germs don't travel between clients."
+    },
+    {
+      "question": "You woke up with a fever and vomiting on a day you have three sessions. What should you do?",
+      "choices": [
+        "Stay home, tell your supervisor as early as you can, and follow Spectrum Squad's sick policy for returning",
+        "Take fever medicine and go to your sessions",
+        "Go, but wear gloves the whole time",
+        "Only cancel sessions at the clinic"
+      ],
+      "answer": 0,
+      "explanation": "Staying home when sick protects clients, and you return only when you meet the sick policy, which includes being fever free without fever reducing medicine."
+    }
+  ]
+}

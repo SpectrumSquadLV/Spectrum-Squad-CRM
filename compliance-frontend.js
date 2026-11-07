@@ -211,7 +211,8 @@
       <div class="cmp-panel" style="margin-top:16px; padding:16px;">
         <div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start; flex-wrap:wrap;">
           <h2 style="margin:0; font-size:17px; color:var(--brand-navy,#1b2a6b);">${c ? esc(c.title) : "Add a course"}</h2>
-          <button class="cmp-btn ghost small" id="cmp-close">Close</button>
+          <span style="display:flex;gap:8px;">${c && c.has_lesson ? `<button class="cmp-btn small" id="cmp-preview">Preview the video &amp; quiz</button>` : ""}
+          <button class="cmp-btn ghost small" id="cmp-close">Close</button></span>
         </div>
         <div class="cmp-f" style="margin-top:12px;">
           <label class="wide">Title<input data-f="title" value="${c ? esc(c.title) : ""}" ${edit ? "" : "disabled"} /></label>
@@ -246,6 +247,12 @@
       </div>`;
 
     host.querySelector("#cmp-close").addEventListener("click", () => { S.open = null; S.flash = null; host.innerHTML = ""; });
+    const pv = host.querySelector("#cmp-preview");
+    if (pv) pv.addEventListener("click", () => {
+      const back = () => { window.__renderCompliance ? window.__renderCompliance(S.mount) : location.reload(); };
+      lessonRender(S.mount, c.id, back);
+      window.scrollTo(0, 0);
+    });
     host.scrollIntoView({ behavior: "smooth", block: "nearest" });
 
     const msg = (id, t, bad) => {
@@ -362,7 +369,126 @@
   // deliberately shows a self-report as a CLAIM awaiting a check rather than
   // as a tick, because a certificate is only earned on verified completion.
   // ========================================================================
-  const T = { data: null, mount: null, busy: false, flash: null, open: null, err: null };
+  const T = { data: null, mount: null, busy: false, flash: null, open: null, err: null, lesson: null };
+
+  // ========================================================================
+  // THE LESSON: the narrated video, its transcript, and the quiz at the end.
+  // Used by My Training (where passing records the completion) and by the
+  // library panel, where the owner previews it and nothing is recorded.
+  // ========================================================================
+  function lessonStyles() {
+    if (document.getElementById("cmpl-styles")) return;
+    const el = document.createElement("style");
+    el.id = "cmpl-styles";
+    el.textContent = `
+      .cmpl-wrap{max-width:860px;}
+      .cmpl-back{margin-bottom:12px;}
+      .cmpl-video{width:100%;aspect-ratio:16/9;background:#0f1640;border-radius:12px;display:block;}
+      .cmpl-meta{font-size:13px;color:var(--text-muted,#6b6a86);margin:8px 0 16px;}
+      .cmpl-steps{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px;font-size:12.5px;}
+      .cmpl-steps span{padding:4px 10px;border-radius:999px;background:#f1f5f9;color:#475569;font-weight:600;}
+      .cmpl-steps span.on{background:#1b2a6b;color:#fff;}
+      .cmpl-box{border:1px solid var(--border,#eceef5);border-radius:12px;padding:14px 16px;background:var(--surface,#fff);margin-bottom:14px;}
+      .cmpl-box h2{font-size:16px;margin:0 0 8px;}
+      .cmpl-tr details{border-top:1px solid var(--border,#eceef5);padding:8px 0;}
+      .cmpl-tr summary{cursor:pointer;font-weight:600;font-size:13.5px;}
+      .cmpl-tr p{font-size:13.5px;line-height:1.55;margin:6px 0 0;}
+      .cmpl-q{border-top:1px solid var(--border,#eceef5);padding:12px 0;}
+      .cmpl-q:first-of-type{border-top:0;}
+      .cmpl-q .qt{font-weight:600;font-size:14px;margin-bottom:8px;}
+      .cmpl-q label{display:flex;gap:9px;align-items:flex-start;padding:8px 10px;border:1px solid var(--border,#eceef5);border-radius:9px;margin:6px 0;cursor:pointer;font-size:13.5px;line-height:1.4;}
+      .cmpl-q label:hover{background:#fafaff;}
+      .cmpl-q input{margin-top:2px;flex:0 0 auto;}
+      .cmpl-q.wrong .qt::after{content:"  Missed";color:#b91c1c;font-size:12px;font-weight:700;}
+      .cmpl-q.right .qt::after{content:"  Correct";color:#166534;font-size:12px;font-weight:700;}
+      .cmpl-q label.ans{border-color:#86efac;background:#f0fdf4;}
+      .cmpl-exp{font-size:12.5px;color:#166534;margin-top:4px;}
+      .cmpl-result{border-radius:12px;padding:14px 16px;margin-bottom:14px;font-size:14px;}
+      .cmpl-result.pass{background:#f0fdf4;border:1px solid #bbf7d0;color:#166534;}
+      .cmpl-result.fail{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;}
+      .cmpl-result b{font-size:20px;display:block;margin-bottom:4px;}
+      .cmpl-preview{background:#fef3c7;color:#92400e;border-radius:10px;padding:8px 12px;font-size:13px;margin-bottom:12px;}`;
+    document.head.appendChild(el);
+  }
+
+  async function lessonRender(mount, courseId, onBack) {
+    lessonStyles();
+    const L = { d: null, picks: {}, result: null, busy: false, err: null };
+    mount.innerHTML = `<div class="cmp-empty">Loading the training…</div>`;
+    try { L.d = await api(`/api/compliance/my-training/${Number(courseId)}/lesson`); }
+    catch (e) {
+      mount.innerHTML = `<button class="btn btn-secondary cmpl-back">Back</button><div class="mytr-err">${esc(e.message)}</div>`;
+      mount.querySelector(".cmpl-back").addEventListener("click", onBack);
+      return;
+    }
+
+    function quizHtml() {
+      const d = L.d, r = L.result;
+      const byN = r ? new Map(r.results.map((x) => [x.n, x])) : null;
+      return d.quiz.map((q) => {
+        const res = byN ? byN.get(q.n) : null;
+        const cls = res ? (res.correct ? "right" : "wrong") : "";
+        return `<div class="cmpl-q ${cls}" data-q="${q.n}">
+          <div class="qt">${q.n + 1}. ${esc(q.question)}</div>
+          ${q.choices.map((c, i) => `<label class="${res && res.answer === i ? "ans" : ""}">
+            <input type="radio" name="cmplq${q.n}" value="${i}" ${L.picks[q.n] === i ? "checked" : ""} ${r && r.passed ? "disabled" : ""}>
+            <span>${esc(c)}</span></label>`).join("")}
+          ${res && res.explanation ? `<div class="cmpl-exp">${esc(res.explanation)}</div>` : ""}
+        </div>`;
+      }).join("");
+    }
+
+    function draw() {
+      const d = L.d, r = L.result;
+      const best = (d.attempts || []).find((a) => a.passed);
+      const step = r && r.passed ? 3 : 2;
+      mount.innerHTML = `<div class="cmpl-wrap">
+        <button class="btn btn-secondary cmpl-back">Back</button>
+        <div class="page-head"><div><h1>${esc(d.title)}</h1>
+          <p>Watch the video, then pass the quiz (${d.passing_score}% or better) to complete this training.</p></div></div>
+        ${d.preview ? `<div class="cmpl-preview">Preview: this course is not assigned to you, so the quiz is graded but nothing is recorded.</div>` : ""}
+        <div class="cmpl-steps"><span class="on">1. Watch</span><span class="${step >= 2 ? "on" : ""}">2. Quiz</span><span class="${step >= 3 ? "on" : ""}">3. Done</span></div>
+        ${d.video_url
+          ? `<video class="cmpl-video" controls preload="metadata" playsinline src="${esc(d.video_url)}"></video>`
+          : `<div class="cmpl-box">The video for this course is not ready yet. Read the transcript below, then take the quiz.</div>`}
+        <div class="cmpl-meta">${d.estimated_minutes ? `About ${d.estimated_minutes} minutes · ` : ""}${d.quiz.length} quiz questions${best ? ` · You passed this on ${esc(String(best.taken_at).slice(0, 10))} with ${best.score}%` : ""}</div>
+        <div class="cmpl-box cmpl-tr"><h2>Transcript</h2>
+          ${d.transcript.map((s, i) => `<details><summary>${i + 1}. ${esc(s.heading)}</summary><p>${esc(s.narration)}</p></details>`).join("")}
+        </div>
+        <div class="cmpl-box" id="cmpl-quiz"><h2>Quiz</h2>
+          ${r ? `<div class="cmpl-result ${r.passed ? "pass" : "fail"}"><b>${r.score}% — ${r.passed ? "Passed" : "Not passed yet"}</b>
+            ${r.correct} of ${r.total} correct. ${r.passed
+              ? (r.preview ? "Preview only, nothing was recorded." : "Your training is complete and on your record. The right answers are shown below.")
+              : `You need ${r.passing_score}%. The questions you missed are marked. Re-watch those parts and try again.`}</div>` : ""}
+          ${L.err ? `<div class="mytr-err">${esc(L.err)}</div>` : ""}
+          ${quizHtml()}
+          ${r && r.passed ? `<button class="btn cmpl-back">Back to my training</button>`
+            : `<button class="btn" id="cmpl-submit" ${L.busy ? "disabled" : ""}>${L.busy ? "Grading…" : r ? "Submit again" : "Submit my answers"}</button>`}
+        </div>
+      </div>`;
+      mount.querySelectorAll(".cmpl-back").forEach((b) => b.addEventListener("click", onBack));
+      mount.querySelectorAll('input[type="radio"]').forEach((el) => el.addEventListener("change", () => {
+        L.picks[Number(el.closest(".cmpl-q").dataset.q)] = Number(el.value);
+      }));
+      const sub = mount.querySelector("#cmpl-submit");
+      if (sub) sub.addEventListener("click", async () => {
+        if (L.busy) return;
+        const missing = d.quiz.filter((q) => L.picks[q.n] === undefined).map((q) => q.n + 1);
+        if (missing.length) { L.err = `Answer every question first. Still open: ${missing.join(", ")}.`; draw(); return; }
+        L.busy = true; L.err = null; draw();
+        try {
+          L.result = await api(`/api/compliance/my-training/${d.course_id}/quiz`, {
+            method: "POST", body: { answers: d.quiz.map((q) => L.picks[q.n]) } });
+          if (L.result.passed) d.attempts = [{ score: L.result.score, passed: true, taken_at: new Date().toISOString() }].concat(d.attempts || []);
+        } catch (e) { L.err = e.message; }
+        L.busy = false; draw();
+        const qb = mount.querySelector("#cmpl-quiz"); if (qb) qb.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+    draw();
+  }
+  // The library panel opens the same lesson as a preview.
+  window.__renderComplianceLesson = lessonRender;
 
   function trStyles() {
     if (document.getElementById("mytr-styles")) return;
@@ -443,8 +569,11 @@
       }
       return out.join("");
     }
+    if (r.has_lesson) {
+      out.push(`<button class="btn mytr-lesson" data-c="${r.course_id}">${r.state === "complete" ? "Review the training" : "Start the training"}</button>`);
+    }
     if (r.external_url) {
-      out.push(`<a class="btn" href="${esc(r.external_url)}" target="_blank" rel="noopener noreferrer">Open the training${r.provider ? ` at ${esc(r.provider)}` : ""}</a>`);
+      out.push(`<a class="btn${r.has_lesson ? " btn-secondary" : ""}" href="${esc(r.external_url)}" target="_blank" rel="noopener noreferrer">Open the training${r.provider ? ` at ${esc(r.provider)}` : ""}</a>`);
     }
     if (r.state !== "submitted" && r.can_self_report) {
       const label = r.delivery === "external_certificate" ? "File my certificate"
@@ -483,7 +612,7 @@
       <table><thead><tr><th>Completed</th><th>How</th><th>Hours</th><th>Checked</th></tr></thead><tbody>
       ${r.history.slice().reverse().map((h) => `<tr>
         <td>${esc(h.completed_on)}</td>
-        <td>${esc(h.source === "self_report" ? "You reported it" : h.source === "recorded" ? "HR recorded it" : h.source)}</td>
+        <td>${esc(h.source === "self_report" ? "You reported it" : h.source === "recorded" ? "HR recorded it" : h.source === "quiz" ? "You passed the quiz" : h.source)}</td>
         <td>${h.hours == null ? "—" : esc(h.hours)}</td>
         <td>${h.verified_at ? `Yes, by ${esc(h.verified_by)}` : "Not yet"}</td>
       </tr>`).join("")}
@@ -501,7 +630,7 @@
       ${r.summary ? `<p class="mytr-sum">${esc(r.summary)}</p>` : ""}
       <div class="mytr-note">${esc(whenText(r))}</div>
       ${r.superseded ? `<div class="mytr-note">You completed version ${r.earned_version} of this; it is now at version ${r.version}. It still counts unless Spectrum Squad asks you to retake it.</div>` : ""}
-      ${r.delivery === "internal" && !r.external_url ? `<div class="mytr-note">The material for this is being added here. Until then, ask HR how to take it.</div>` : ""}
+      ${r.delivery === "internal" && !r.external_url && !r.has_lesson ? `<div class="mytr-note">The material for this is being added here. Until then, ask HR how to take it.</div>` : ""}
       <div class="mytr-acts">${actionsFor(r)}</div>
       ${T.open === r.course_id ? reportForm(r) : ""}
       ${historyHtml(r)}
@@ -548,6 +677,11 @@
   }
 
   function wireTraining() {
+    T.mount.querySelectorAll(".mytr-lesson").forEach((b) => b.addEventListener("click", () => {
+      T.lesson = Number(b.dataset.c);
+      lessonRender(T.mount, T.lesson, async () => { T.lesson = null; await trReload(); window.scrollTo(0, 0); });
+      window.scrollTo(0, 0);
+    }));
     T.mount.querySelectorAll(".mytr-report").forEach((b) => b.addEventListener("click", () => {
       T.open = Number(b.dataset.c); trRender();
     }));
